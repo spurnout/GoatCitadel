@@ -5,7 +5,7 @@ import type {
   TaskRecord,
   TaskStatus,
   TaskUpdateInput,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 
 interface TaskRow {
   task_id: string;
@@ -55,8 +55,12 @@ export class TaskRepository {
     this.listStmt = db.prepare(`
       SELECT * FROM tasks
       WHERE (@status IS NULL OR status = @status)
-        AND (@cursor IS NULL OR updated_at < @cursor)
-      ORDER BY updated_at DESC
+        AND (
+          @cursorUpdatedAt IS NULL
+          OR updated_at < @cursorUpdatedAt
+          OR (updated_at = @cursorUpdatedAt AND task_id < @cursorTaskId)
+        )
+      ORDER BY updated_at DESC, task_id DESC
       LIMIT @limit
     `);
 
@@ -117,9 +121,11 @@ export class TaskRepository {
   }
 
   public list(query: TaskListQuery): TaskRecord[] {
+    const parsedCursor = parseCompositeCursor(query.cursor);
     const rows = this.listStmt.all({
       status: query.status ?? null,
-      cursor: query.cursor ?? null,
+      cursorUpdatedAt: parsedCursor?.timestamp ?? null,
+      cursorTaskId: parsedCursor?.key ?? null,
       limit: query.limit,
     }) as unknown as TaskRow[];
     return rows.map(mapTaskRow);
@@ -127,13 +133,17 @@ export class TaskRepository {
 
   public update(taskId: string, input: TaskUpdateInput, now = new Date().toISOString()): TaskRecord {
     const current = this.get(taskId);
+    const nextAssignedAgentId = input.assignedAgentId === undefined
+      ? current.assignedAgentId ?? null
+      : input.assignedAgentId;
+
     this.updateStmt.run({
       taskId,
       title: input.title ?? current.title,
       description: input.description ?? current.description ?? null,
       status: input.status ?? current.status,
       priority: input.priority ?? current.priority,
-      assignedAgentId: input.assignedAgentId ?? current.assignedAgentId ?? null,
+      assignedAgentId: nextAssignedAgentId,
       dueAt: input.dueAt ?? current.dueAt ?? null,
       updatedAt: now,
     });
@@ -171,4 +181,31 @@ function mapTaskRow(row: TaskRow): TaskRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+interface CompositeCursor {
+  timestamp: string;
+  key: string;
+}
+
+function parseCompositeCursor(cursor?: string): CompositeCursor | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+
+  const separator = cursor.lastIndexOf("|");
+  if (separator <= 0) {
+    return {
+      timestamp: cursor,
+      key: "",
+    };
+  }
+
+  const timestamp = cursor.slice(0, separator);
+  const key = cursor.slice(separator + 1);
+  if (!timestamp || !key) {
+    return undefined;
+  }
+
+  return { timestamp, key };
 }

@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function createRepo(): ApprovalEventRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-approval-events-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-approval-events-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new ApprovalEventRepository(db);

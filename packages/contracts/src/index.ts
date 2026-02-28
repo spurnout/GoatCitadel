@@ -6,3 +6,6 @@ export * from "./orchestration.js";
 export * from "./tasks.js";
 export * from "./monitoring.js";
 export * from "./llm.js";
+export * from "./integrations.js";
+export * from "./mesh.js";
+export * from "./onboarding.js";

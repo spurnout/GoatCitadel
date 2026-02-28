@@ -23,6 +23,79 @@ export function createDatabase(options: SqliteOptions): DatabaseSync {
 
 function migrate(db: DatabaseSync): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+  `);
+
+  const appliedRows = db.prepare("SELECT version FROM schema_migrations ORDER BY version ASC").all() as Array<{ version: number }>;
+  const applied = new Set(appliedRows.map((row) => row.version));
+  const markApplied = db.prepare(`
+    INSERT INTO schema_migrations (version, name, applied_at)
+    VALUES (@version, @name, @appliedAt)
+  `);
+
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (applied.has(migration.version)) {
+      continue;
+    }
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      migration.up(db);
+      markApplied.run({
+        version: migration.version,
+        name: migration.name,
+        appliedAt: new Date().toISOString(),
+      });
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
+interface SchemaMigration {
+  version: number;
+  name: string;
+  up: (db: DatabaseSync) => void;
+}
+
+const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    version: 1,
+    name: "base_schema",
+    up: createBaseSchema,
+  },
+  {
+    version: 2,
+    name: "approval_explainer_columns",
+    up: migrateApprovalsColumns,
+  },
+  {
+    version: 3,
+    name: "task_subagent_agent_session_rename",
+    up: migrateTaskSubagentSessionColumns,
+  },
+  {
+    version: 4,
+    name: "drop_legacy_integration_index",
+    up: (db) => {
+      db.exec("DROP INDEX IF EXISTS idx_integration_connections_catalog_label");
+    },
+  },
+  {
+    version: 5,
+    name: "mesh_schema",
+    up: createMeshSchema,
+  },
+];
+
+function createBaseSchema(db: DatabaseSync): void {
+  db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_id TEXT PRIMARY KEY,
       session_key TEXT NOT NULL UNIQUE,
@@ -181,7 +254,7 @@ function migrate(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS task_subagent_sessions (
       subagent_session_id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
-      openclaw_session_id TEXT NOT NULL UNIQUE,
+      agent_session_id TEXT NOT NULL UNIQUE,
       agent_name TEXT,
       status TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -275,9 +348,100 @@ function migrate(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_orchestration_events_run_id
       ON orchestration_events(run_id, created_at);
-  `);
 
-  migrateApprovalsColumns(db);
+    CREATE TABLE IF NOT EXISTS integration_connections (
+      connection_id TEXT PRIMARY KEY,
+      catalog_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      integration_key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL,
+      config_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_sync_at TEXT,
+      last_error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_kind
+      ON integration_connections(kind, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_catalog_id
+      ON integration_connections(catalog_id, updated_at DESC);
+  `);
+}
+
+function createMeshSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mesh_nodes (
+      node_id TEXT PRIMARY KEY,
+      label TEXT,
+      advertise_address TEXT,
+      transport TEXT NOT NULL,
+      status TEXT NOT NULL,
+      capabilities_json TEXT NOT NULL,
+      tls_fingerprint TEXT,
+      joined_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mesh_nodes_status
+      ON mesh_nodes(status, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mesh_leases (
+      lease_key TEXT PRIMARY KEY,
+      holder_node_id TEXT NOT NULL,
+      fencing_token INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mesh_leases_expires_at
+      ON mesh_leases(expires_at);
+
+    CREATE TABLE IF NOT EXISTS mesh_session_owners (
+      session_id TEXT PRIMARY KEY,
+      owner_node_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL,
+      claimed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mesh_session_owners_owner
+      ON mesh_session_owners(owner_node_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mesh_replication_log (
+      replication_id TEXT PRIMARY KEY,
+      source_node_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(source_node_id, idempotency_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mesh_replication_log_created_at
+      ON mesh_replication_log(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mesh_replication_offsets (
+      consumer_node_id TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      last_replication_id TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (consumer_node_id, source_node_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS mesh_join_tokens (
+      token_hash TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      used_by_node_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mesh_join_tokens_expires_at
+      ON mesh_join_tokens(expires_at);
+  `);
 }
 
 function migrateApprovalsColumns(db: DatabaseSync): void {
@@ -296,4 +460,53 @@ function migrateApprovalsColumns(db: DatabaseSync): void {
   if (!columns.has("explanation_updated_at")) {
     db.exec("ALTER TABLE approvals ADD COLUMN explanation_updated_at TEXT");
   }
+}
+
+function migrateTaskSubagentSessionColumns(db: DatabaseSync): void {
+  const rows = db.prepare("PRAGMA table_info(task_subagent_sessions)").all() as Array<{ name: string }>;
+  const columns = new Set(rows.map((row) => row.name));
+
+  if (columns.has("agent_session_id")) {
+    return;
+  }
+
+  if (!columns.has("openclaw_session_id")) {
+    return;
+  }
+
+  try {
+    db.exec("ALTER TABLE task_subagent_sessions RENAME COLUMN openclaw_session_id TO agent_session_id");
+    return;
+  } catch {
+    // Fall back to table rebuild if RENAME COLUMN is not available.
+  }
+
+  db.exec(`
+    CREATE TABLE task_subagent_sessions_new (
+      subagent_session_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      agent_session_id TEXT NOT NULL UNIQUE,
+      agent_name TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      ended_at TEXT,
+      FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+    );
+
+    INSERT INTO task_subagent_sessions_new (
+      subagent_session_id, task_id, agent_session_id, agent_name, status, created_at, updated_at, ended_at
+    )
+    SELECT
+      subagent_session_id, task_id, openclaw_session_id, agent_name, status, created_at, updated_at, ended_at
+    FROM task_subagent_sessions;
+
+    DROP TABLE task_subagent_sessions;
+    ALTER TABLE task_subagent_sessions_new RENAME TO task_subagent_sessions;
+
+    CREATE INDEX IF NOT EXISTS idx_task_subagent_sessions_task_created_at
+      ON task_subagent_sessions(task_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_subagent_sessions_status
+      ON task_subagent_sessions(status, updated_at DESC);
+  `);
 }

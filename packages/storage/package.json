@@ -1,5 +1,5 @@
 {
-  "name": "@personal-ai/storage",
+  "name": "@goatcitadel/storage",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/storage/src/index.js",
@@ -11,7 +11,7 @@
     }
   },
   "dependencies": {
-    "@personal-ai/contracts": "workspace:*"
+    "@goatcitadel/contracts": "workspace:*"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

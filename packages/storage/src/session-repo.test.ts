@@ -1,0 +1,68 @@
+import { afterEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createDatabase } from "./sqlite.js";
+import { SessionRepository } from "./session-repo.js";
+
+const createdFiles: string[] = [];
+
+afterEach(() => {
+  for (const file of createdFiles.splice(0)) {
+    try {
+      fs.rmSync(file, { force: true });
+      fs.rmSync(`${file}-wal`, { force: true });
+      fs.rmSync(`${file}-shm`, { force: true });
+    } catch {
+      // ignore
+    }
+  }
+});
+
+function createRepo(): SessionRepository {
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-session-repo-${randomUUID()}.db`);
+  createdFiles.push(dbPath);
+  const db = createDatabase({ dbPath });
+  return new SessionRepository(db);
+}
+
+describe("SessionRepository", () => {
+  it("uses composite cursor pagination without dropping identical timestamps", () => {
+    const repo = createRepo();
+    const now = "2026-02-27T10:00:00.000Z";
+
+    repo.upsert({
+      sessionId: "session-a",
+      sessionKey: "discord:me:a",
+      kind: "dm",
+      channel: "discord",
+      account: "me",
+      timestamp: now,
+    });
+    repo.upsert({
+      sessionId: "session-b",
+      sessionKey: "discord:me:b",
+      kind: "dm",
+      channel: "discord",
+      account: "me",
+      timestamp: now,
+    });
+    repo.upsert({
+      sessionId: "session-c",
+      sessionKey: "discord:me:c",
+      kind: "dm",
+      channel: "discord",
+      account: "me",
+      timestamp: "2026-02-27T09:59:59.000Z",
+    });
+
+    const page1 = repo.list(1);
+    const cursor = `${page1[0]!.updatedAt}|${page1[0]!.sessionId}`;
+    const page2 = repo.list(10, cursor);
+
+    assert.equal(page2.length, 2);
+    assert.equal(page2.some((item) => item.sessionId === page1[0]?.sessionId), false);
+  });
+});

@@ -18,7 +18,10 @@ export const eventsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const items = fastify.gateway.listRealtimeEvents(parsed.data.limit, parsed.data.cursor);
-    const nextCursor = items.length === parsed.data.limit ? items[items.length - 1]?.timestamp : undefined;
+    const last = items[items.length - 1];
+    const nextCursor = items.length === parsed.data.limit && last
+      ? `${last.timestamp}|${last.eventId}`
+      : undefined;
     return reply.send({ items, nextCursor });
   });
 

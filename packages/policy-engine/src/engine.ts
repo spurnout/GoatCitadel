@@ -1,5 +1,5 @@
-import type { ToolInvokeRequest, ToolInvokeResult, ToolPolicyConfig } from "@personal-ai/contracts";
-import type { Storage } from "@personal-ai/storage";
+import type { ToolInvokeRequest, ToolInvokeResult, ToolPolicyConfig } from "@goatcitadel/contracts";
+import type { Storage } from "@goatcitadel/storage";
 import { randomUUID } from "node:crypto";
 import { ApprovalGate } from "./approval-gate.js";
 import { resolveEffectivePolicy, isToolAllowed } from "./policy-resolver.js";
@@ -186,10 +186,10 @@ export class ToolPolicyEngine {
     if (request.toolName === "shell.exec") {
       const command = String(request.args.command ?? "");
       const risk = classifyShellRisk(command, this.config.sandbox.riskyShellPatterns);
-      if (risk.risky && this.config.sandbox.requireApprovalForRiskyShell) {
+      if (this.config.sandbox.requireApprovalForRiskyShell) {
         const approval = await this.approvals.create({
           kind: "shell.exec",
-          riskLevel: "danger",
+          riskLevel: risk.risky ? "danger" : "caution",
           payload: request.args,
           preview: { command, matchedPattern: risk.matchedPattern },
         });
@@ -217,7 +217,9 @@ export class ToolPolicyEngine {
           auditEventId,
           request,
           "approval_required",
-          `risky shell command matched ${risk.matchedPattern}`,
+          risk.risky
+            ? `shell.exec requires approval: matched ${risk.matchedPattern}`
+            : "shell.exec requires approval",
           undefined,
           approval.approvalId,
         );
@@ -225,7 +227,9 @@ export class ToolPolicyEngine {
         return {
           outcome: "approval_required",
           approvalId: approval.approvalId,
-          policyReason: `risky shell command matched ${risk.matchedPattern}`,
+          policyReason: risk.risky
+            ? `shell.exec requires approval: matched ${risk.matchedPattern}`
+            : "shell.exec requires approval",
           auditEventId,
         };
       }

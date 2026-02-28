@@ -5,8 +5,8 @@ import type {
   GatewayEventResult,
   InboundEventIndexRow,
   TranscriptEvent,
-} from "@personal-ai/contracts";
-import type { Storage } from "@personal-ai/storage";
+} from "@goatcitadel/contracts";
+import type { Storage } from "@goatcitadel/storage";
 import { resolveSessionRoute } from "./session-key.js";
 import { TokenCostLedger } from "./token-cost-ledger.js";
 
@@ -27,25 +27,6 @@ export class EventIngestService {
     const now = new Date().toISOString();
     const route = resolveSessionRoute(options.payload.route);
     const payloadHash = hashPayload(options.payload);
-
-    const existing = this.storage.idempotency.find(options.endpoint, options.idempotencyKey);
-    if (existing) {
-      const session = this.storage.sessions.getBySessionKey(existing.sessionKey);
-      this.storage.idempotency.markProcessed(
-        options.endpoint,
-        options.idempotencyKey,
-        "deduped",
-        now,
-      );
-
-      return {
-        accepted: true,
-        deduped: true,
-        session,
-        transcriptOffset: 0,
-      };
-    }
-
     const idempotencyRow: InboundEventIndexRow = {
       endpoint: options.endpoint,
       idempotencyKey: options.idempotencyKey,
@@ -55,17 +36,6 @@ export class EventIngestService {
       receivedAt: now,
       status: "accepted",
     };
-
-    this.storage.idempotency.insertPending(idempotencyRow);
-
-    const session = this.storage.sessions.upsert({
-      sessionId: route.sessionId,
-      sessionKey: route.sessionKey,
-      kind: route.kind,
-      channel: options.payload.route.channel,
-      account: options.payload.route.account,
-      timestamp: now,
-    });
 
     const transcriptEvent: TranscriptEvent = {
       eventId: options.payload.eventId,
@@ -89,10 +59,59 @@ export class EventIngestService {
       costUsd: options.payload.usage?.costUsd,
     };
 
-    const transcriptOffset = await this.storage.transcripts.append(transcriptEvent);
-
     try {
-      this.storage.db.exec("BEGIN");
+      this.storage.db.exec("BEGIN IMMEDIATE");
+
+      const existing = this.storage.idempotency.find(options.endpoint, options.idempotencyKey);
+      if (existing) {
+        const session = this.storage.sessions.getBySessionKey(existing.sessionKey);
+        this.storage.idempotency.markProcessed(
+          options.endpoint,
+          options.idempotencyKey,
+          "deduped",
+          now,
+        );
+        this.storage.db.exec("COMMIT");
+        return {
+          accepted: true,
+          deduped: true,
+          session,
+          transcriptOffset: 0,
+        };
+      }
+
+      const inserted = this.storage.idempotency.insertPendingIfAbsent(idempotencyRow);
+      if (!inserted) {
+        const concurrent = this.storage.idempotency.find(options.endpoint, options.idempotencyKey);
+        if (concurrent) {
+          const session = this.storage.sessions.getBySessionKey(concurrent.sessionKey);
+          this.storage.idempotency.markProcessed(
+            options.endpoint,
+            options.idempotencyKey,
+            "deduped",
+            now,
+          );
+          this.storage.db.exec("COMMIT");
+          return {
+            accepted: true,
+            deduped: true,
+            session,
+            transcriptOffset: 0,
+          };
+        }
+      }
+
+      this.storage.sessions.upsert({
+        sessionId: route.sessionId,
+        sessionKey: route.sessionKey,
+        kind: route.kind,
+        channel: options.payload.route.channel,
+        account: options.payload.route.account,
+        timestamp: now,
+      });
+
+      const transcriptOffset = await this.storage.transcripts.append(transcriptEvent);
+
       this.storage.sessions.applyUsage({
         sessionId: route.sessionId,
         tokenInput: options.payload.usage?.inputTokens ?? 0,
@@ -120,23 +139,20 @@ export class EventIngestService {
         now,
       );
       this.storage.db.exec("COMMIT");
+      return {
+        accepted: true,
+        deduped: false,
+        session: this.storage.sessions.getBySessionId(route.sessionId),
+        transcriptOffset,
+      };
     } catch (error) {
-      this.storage.db.exec("ROLLBACK");
-      this.storage.idempotency.markProcessed(
-        options.endpoint,
-        options.idempotencyKey,
-        "failed",
-        now,
-      );
+      try {
+        this.storage.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures
+      }
       throw error;
     }
-
-    return {
-      accepted: true,
-      deduped: false,
-      session: this.storage.sessions.getBySessionId(route.sessionId),
-      transcriptOffset,
-    };
   }
 }
 

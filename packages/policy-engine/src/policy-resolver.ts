@@ -1,4 +1,4 @@
-import type { EffectiveToolPolicy, ToolPolicyConfig } from "@personal-ai/contracts";
+import type { EffectiveToolPolicy, ToolPolicyConfig } from "@goatcitadel/contracts";
 
 export function resolveEffectivePolicy(config: ToolPolicyConfig, agentId: string): EffectiveToolPolicy {
   const profileName = config.agents[agentId]?.tools?.profile ?? config.tools.profile;

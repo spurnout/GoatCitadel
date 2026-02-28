@@ -16,12 +16,13 @@ export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   if (!vitals) {
-    return <p>Loading system vitals...</p>;
+    return <p>Loading citadel vitals...</p>;
   }
 
   return (
     <section>
-      <h2>System</h2>
+      <h2>Engine</h2>
+      <p className="office-subtitle">Runtime health for the local GoatCitadel node.</p>
       <article className="card">
         <p>Hostname: {vitals.hostname}</p>
         <p>Platform: {vitals.platform} {vitals.release}</p>

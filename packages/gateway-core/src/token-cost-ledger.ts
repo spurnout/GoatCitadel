@@ -1,4 +1,4 @@
-import type { CostLedgerRepository } from "@personal-ai/storage";
+import type { CostLedgerRepository } from "@goatcitadel/storage";
 
 export interface UsageInput {
   sessionId: string;

@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   TaskActivityCreateInput,
   TaskActivityRecord,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 
 interface TaskActivityRow {
   activity_id: string;

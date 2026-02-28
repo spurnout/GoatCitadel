@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { OrchestrationPlan, OrchestrationRun } from "@personal-ai/contracts";
+import type { OrchestrationPlan, OrchestrationRun } from "@goatcitadel/contracts";
 import { validatePlan } from "./plan-schema.js";
 import { findOwnershipConflicts } from "./ownership-matrix.js";
 
@@ -45,6 +45,8 @@ export class OrchestrationEngine {
   }
 
   public startRun(plan: OrchestrationPlan, run: OrchestrationRun): OrchestrationRun {
+    this.validate(plan);
+
     const first = this.firstPhase(plan);
     if (!first) {
       return {
@@ -98,11 +100,14 @@ export class OrchestrationEngine {
     );
 
     if (
+      next
+      && (
       this.shouldStopByLimits(plan, {
         iterations: candidate.totalIterations,
         runtimeMinutes,
         costUsd: candidate.totalCostUsd,
       })
+      )
     ) {
       return {
         ...candidate,

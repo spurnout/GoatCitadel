@@ -1,4 +1,4 @@
-import type { OrchestrationWave } from "@personal-ai/contracts";
+import type { OrchestrationWave } from "@goatcitadel/contracts";
 
 export interface OwnershipConflict {
   waveId: string;

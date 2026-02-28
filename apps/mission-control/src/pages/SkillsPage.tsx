@@ -41,14 +41,15 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return <p className="error">{error}</p>;
   }
   if (!data) {
-    return <p>Loading skills...</p>;
+    return <p>Loading playbook skills...</p>;
   }
 
   return (
     <section>
-      <h2>Skills</h2>
+      <h2>Playbook Skills</h2>
+      <p className="office-subtitle">Reusable capabilities that keep the goat crew consistent.</p>
       <div className="controls-row">
-        <button onClick={onReload}>Reload Skills</button>
+        <button onClick={onReload}>Reload Playbook</button>
       </div>
       <table>
         <thead>

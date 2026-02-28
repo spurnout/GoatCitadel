@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { LoadedSkill, SkillResolveInput, SkillActivationDecision } from "@personal-ai/contracts";
+import type { LoadedSkill, SkillResolveInput, SkillActivationDecision } from "@goatcitadel/contracts";
 import { parseSkillMarkdown } from "./frontmatter.js";
 import { resolveSkillPrecedence } from "./precedence.js";
 import { resolveSkillActivation } from "./activation.js";

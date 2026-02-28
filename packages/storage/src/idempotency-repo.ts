@@ -1,4 +1,4 @@
-import type { InboundEventIndexRow } from "@personal-ai/contracts";
+import type { InboundEventIndexRow } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 
 interface InboundEventRow {
@@ -15,6 +15,7 @@ interface InboundEventRow {
 export class IdempotencyRepository {
   private readonly findStmt;
   private readonly insertStmt;
+  private readonly insertIgnoreStmt;
   private readonly markProcessedStmt;
 
   public constructor(private readonly db: DatabaseSync) {
@@ -23,6 +24,11 @@ export class IdempotencyRepository {
     );
     this.insertStmt = db.prepare(`
       INSERT INTO inbound_events (
+        endpoint, idempotency_key, event_id, session_key, payload_hash, received_at, status
+      ) VALUES (@endpoint, @idempotencyKey, @eventId, @sessionKey, @payloadHash, @receivedAt, @status)
+    `);
+    this.insertIgnoreStmt = db.prepare(`
+      INSERT OR IGNORE INTO inbound_events (
         endpoint, idempotency_key, event_id, session_key, payload_hash, received_at, status
       ) VALUES (@endpoint, @idempotencyKey, @eventId, @sessionKey, @payloadHash, @receivedAt, @status)
     `);
@@ -61,6 +67,19 @@ export class IdempotencyRepository {
       receivedAt: row.receivedAt,
       status: row.status,
     });
+  }
+
+  public insertPendingIfAbsent(row: InboundEventIndexRow): boolean {
+    const changes = this.insertIgnoreStmt.run({
+      endpoint: row.endpoint,
+      idempotencyKey: row.idempotencyKey,
+      eventId: row.eventId,
+      sessionKey: row.sessionKey,
+      payloadHash: row.payloadHash,
+      receivedAt: row.receivedAt,
+      status: row.status,
+    }).changes;
+    return changes > 0;
   }
 
   public markProcessed(endpoint: string, idempotencyKey: string, status: InboundEventIndexRow["status"], processedAt: string): void {

@@ -1,0 +1,147 @@
+import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import type {
+  IntegrationConnection,
+  IntegrationConnectionCreateInput,
+  IntegrationConnectionUpdateInput,
+  IntegrationKind,
+} from "@goatcitadel/contracts";
+
+interface IntegrationConnectionRow {
+  connection_id: string;
+  catalog_id: string;
+  kind: IntegrationKind;
+  integration_key: string;
+  label: string;
+  enabled: number;
+  status: IntegrationConnection["status"];
+  config_json: string;
+  created_at: string;
+  updated_at: string;
+  last_sync_at: string | null;
+  last_error: string | null;
+}
+
+export class IntegrationConnectionRepository {
+  private readonly listStmt;
+  private readonly getStmt;
+  private readonly insertStmt;
+  private readonly updateStmt;
+  private readonly deleteStmt;
+
+  public constructor(private readonly db: DatabaseSync) {
+    this.listStmt = db.prepare(`
+      SELECT * FROM integration_connections
+      WHERE (@kind IS NULL OR kind = @kind)
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT @limit
+    `);
+    this.getStmt = db.prepare("SELECT * FROM integration_connections WHERE connection_id = ?");
+    this.insertStmt = db.prepare(`
+      INSERT INTO integration_connections (
+        connection_id, catalog_id, kind, integration_key, label, enabled, status,
+        config_json, created_at, updated_at, last_sync_at, last_error
+      ) VALUES (
+        @connectionId, @catalogId, @kind, @integrationKey, @label, @enabled, @status,
+        @configJson, @createdAt, @updatedAt, @lastSyncAt, @lastError
+      )
+    `);
+    this.updateStmt = db.prepare(`
+      UPDATE integration_connections
+      SET
+        label = @label,
+        enabled = @enabled,
+        status = @status,
+        config_json = @configJson,
+        updated_at = @updatedAt,
+        last_sync_at = @lastSyncAt,
+        last_error = @lastError
+      WHERE connection_id = @connectionId
+    `);
+    this.deleteStmt = db.prepare("DELETE FROM integration_connections WHERE connection_id = ?");
+  }
+
+  public list(kind?: IntegrationKind, limit = 200): IntegrationConnection[] {
+    const rows = this.listStmt.all({
+      kind: kind ?? null,
+      limit,
+    }) as unknown as IntegrationConnectionRow[];
+    return rows.map(mapRow);
+  }
+
+  public get(connectionId: string): IntegrationConnection {
+    const row = this.getStmt.get(connectionId) as IntegrationConnectionRow | undefined;
+    if (!row) {
+      throw new Error(`Integration connection ${connectionId} not found`);
+    }
+    return mapRow(row);
+  }
+
+  public create(
+    input: IntegrationConnectionCreateInput & {
+      catalogId: string;
+      kind: IntegrationKind;
+      key: string;
+      label: string;
+    },
+    now = new Date().toISOString(),
+  ): IntegrationConnection {
+    const connectionId = randomUUID();
+    this.insertStmt.run({
+      connectionId,
+      catalogId: input.catalogId,
+      kind: input.kind,
+      integrationKey: input.key,
+      label: input.label,
+      enabled: (input.enabled ?? true) ? 1 : 0,
+      status: input.status ?? "connected",
+      configJson: JSON.stringify(input.config ?? {}),
+      createdAt: now,
+      updatedAt: now,
+      lastSyncAt: null,
+      lastError: null,
+    });
+    return this.get(connectionId);
+  }
+
+  public update(connectionId: string, input: IntegrationConnectionUpdateInput, now = new Date().toISOString()): IntegrationConnection {
+    const current = this.get(connectionId);
+    this.updateStmt.run({
+      connectionId,
+      label: input.label ?? current.label,
+      enabled: input.enabled === undefined ? (current.enabled ? 1 : 0) : (input.enabled ? 1 : 0),
+      status: input.status ?? current.status,
+      configJson: JSON.stringify(input.config ?? current.config),
+      updatedAt: now,
+      lastSyncAt: input.lastSyncAt ?? current.lastSyncAt ?? null,
+      lastError: input.lastError === undefined ? (current.lastError ?? null) : input.lastError,
+    });
+    return this.get(connectionId);
+  }
+
+  public delete(connectionId: string): boolean {
+    const current = this.getStmt.get(connectionId) as IntegrationConnectionRow | undefined;
+    if (!current) {
+      return false;
+    }
+    this.deleteStmt.run(connectionId);
+    return true;
+  }
+}
+
+function mapRow(row: IntegrationConnectionRow): IntegrationConnection {
+  return {
+    connectionId: row.connection_id,
+    catalogId: row.catalog_id,
+    kind: row.kind,
+    key: row.integration_key,
+    label: row.label,
+    enabled: Boolean(row.enabled),
+    status: row.status,
+    config: JSON.parse(row.config_json) as Record<string, unknown>,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastSyncAt: row.last_sync_at ?? undefined,
+    lastError: row.last_error ?? undefined,
+  };
+}

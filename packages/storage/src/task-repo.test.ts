@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function createRepos() {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-task-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-task-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return {
@@ -55,10 +55,10 @@ describe("task repositories", () => {
       path: "apps/gateway/src/routes/events.ts",
     });
     repos.subagents.create(task.taskId, {
-      openclawSessionId: "agent:main:subagent:test",
+      agentSessionId: "agent:main:subagent:test",
       agentName: "sse-agent",
     });
-    repos.subagents.updateByOpenclawSessionId("agent:main:subagent:test", {
+    repos.subagents.updateByAgentSessionId("agent:main:subagent:test", {
       status: "completed",
     });
 
@@ -76,5 +76,21 @@ describe("task repositories", () => {
     assert.equal(deliverables.length, 1);
     assert.equal(subagents[0]?.status, "completed");
     assert.equal(repos.subagents.activeCount(), 0);
+  });
+
+  it("supports composite cursors and explicit assignment clearing", () => {
+    const repos = createRepos();
+    const timestamp = "2026-02-27T12:00:00.000Z";
+    const first = repos.tasks.create({ title: "Task A", assignedAgentId: "architect" }, timestamp);
+    repos.tasks.create({ title: "Task B" }, timestamp);
+    repos.tasks.create({ title: "Task C" }, "2026-02-27T11:59:59.000Z");
+
+    const firstPage = repos.tasks.list({ limit: 1 });
+    const cursor = `${firstPage[0]!.updatedAt}|${firstPage[0]!.taskId}`;
+    const secondPage = repos.tasks.list({ limit: 10, cursor });
+    assert.equal(secondPage.length, 2);
+
+    const cleared = repos.tasks.update(first.taskId, { assignedAgentId: null });
+    assert.equal(cleared.assignedAgentId, undefined);
   });
 });

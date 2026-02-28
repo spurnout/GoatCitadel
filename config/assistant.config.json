@@ -6,12 +6,42 @@
   "auditDir": "./data/audit",
   "workspaceDir": "./workspace",
   "worktreesDir": "./.worktrees",
+  "auth": {
+    "mode": "none",
+    "allowLoopbackBypass": false,
+    "token": {
+      "queryParam": "access_token"
+    },
+    "basic": {}
+  },
   "approvalExplainer": {
     "enabled": true,
     "mode": "async",
     "minRiskLevel": "caution",
     "timeoutMs": 15000,
     "maxPayloadChars": 4000
+  },
+  "mesh": {
+    "enabled": false,
+    "mode": "lan",
+    "nodeId": "bld-258388",
+    "discovery": {
+      "mdns": true,
+      "staticPeers": []
+    },
+    "security": {
+      "joinTokenEnv": "GOATCITADEL_MESH_JOIN_TOKEN",
+      "requireMtls": true,
+      "tailnet": {
+        "enabled": false
+      }
+    },
+    "leases": {
+      "ttlSeconds": 30
+    },
+    "replication": {
+      "batchSize": 200
+    }
   },
   "budgets": {
     "dailyUsdWarning": 10,

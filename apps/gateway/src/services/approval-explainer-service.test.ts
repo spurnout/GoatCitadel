@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalRequest, ChatCompletionRequest, ChatCompletionResponse } from "@personal-ai/contracts";
-import type { Storage } from "@personal-ai/storage";
+import type { ApprovalRequest, ChatCompletionRequest, ChatCompletionResponse } from "@goatcitadel/contracts";
+import type { Storage } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { ApprovalReplayEvent } from "@personal-ai/contracts";
+import type { ApprovalReplayEvent } from "@goatcitadel/contracts";
 
 interface ApprovalEventRow {
   event_id: string;

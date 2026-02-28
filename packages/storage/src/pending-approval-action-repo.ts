@@ -1,4 +1,4 @@
-import type { PendingApprovalAction } from "@personal-ai/contracts";
+import type { PendingApprovalAction } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 
 interface PendingActionRow {

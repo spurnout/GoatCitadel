@@ -1,15 +1,16 @@
 {
-  "name": "@personal-ai/gateway",
+  "name": "@goatcitadel/gateway",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/apps/gateway/src/main.js",
   "dependencies": {
     "@fastify/cors": "^10.0.1",
-    "@personal-ai/contracts": "workspace:*",
-    "@personal-ai/gateway-core": "workspace:*",
-    "@personal-ai/policy-engine": "workspace:*",
-    "@personal-ai/skills": "workspace:*",
-    "@personal-ai/storage": "workspace:*",
+    "@goatcitadel/contracts": "workspace:*",
+    "@goatcitadel/gateway-core": "workspace:*",
+    "@goatcitadel/mesh-core": "workspace:*",
+    "@goatcitadel/policy-engine": "workspace:*",
+    "@goatcitadel/skills": "workspace:*",
+    "@goatcitadel/storage": "workspace:*",
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.0.1",
     "zod": "^3.24.1"
@@ -19,6 +20,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
+    "smoke": "tsx src/smoke.ts",
+    "onboarding:tui": "tsx src/onboarding-tui.ts",
     "lint": "tsc -p tsconfig.json --noEmit"
   }
 }

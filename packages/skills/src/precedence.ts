@@ -1,4 +1,4 @@
-import type { LoadedSkill } from "@personal-ai/contracts";
+import type { LoadedSkill } from "@goatcitadel/contracts";
 
 const PRECEDENCE: Record<LoadedSkill["source"], number> = {
   extra: 0,

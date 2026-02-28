@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addTaskActivity,
   addTaskDeliverable,
   createTask,
+  fetchSessions,
   fetchTaskActivities,
   fetchTaskDeliverables,
   fetchTasks,
@@ -15,6 +16,8 @@ import {
   type TaskRecord,
   type TaskSubagentSession,
 } from "../api/client";
+import { SelectOrCustom } from "../components/SelectOrCustom";
+import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 
 const statuses: TaskRecord["status"][] = [
   "inbox",
@@ -25,6 +28,38 @@ const statuses: TaskRecord["status"][] = [
   "done",
   "blocked",
 ];
+
+const TASK_TITLE_OPTIONS = [
+  "Implement feature request",
+  "Fix regression bug",
+  "Refactor module boundary",
+  "Add integration tests",
+  "Prepare release checklist",
+].map((value) => ({ value, label: value }));
+
+const ACTIVITY_OPTIONS = [
+  "Started implementation",
+  "Completed initial draft",
+  "Blocked by dependency",
+  "Requested review",
+  "Validated acceptance criteria",
+].map((value) => ({ value, label: value }));
+
+const DELIVERABLE_TITLE_OPTIONS = [
+  "Code patch",
+  "Test report",
+  "Architecture notes",
+  "Release notes",
+  "Verification logs",
+].map((value) => ({ value, label: value }));
+
+const DELIVERABLE_PATH_OPTIONS = [
+  "docs/notes.md",
+  "docs/architecture.md",
+  "artifacts/report.txt",
+  "tests/results.md",
+  "src/",
+].map((value) => ({ value, label: value }));
 
 export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
@@ -38,7 +73,10 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [deliverablePath, setDeliverablePath] = useState("");
   const [subagentSessionId, setSubagentSessionId] = useState("");
   const [subagentName, setSubagentName] = useState("");
+  const [sessionHints, setSessionHints] = useState<string[]>([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const detailRequestSeq = useRef(0);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.taskId === selectedTaskId),
@@ -55,12 +93,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const loadTaskDetail = (taskId: string) => {
+    const requestId = ++detailRequestSeq.current;
     void Promise.all([
       fetchTaskActivities(taskId),
       fetchTaskDeliverables(taskId),
       fetchTaskSubagents(taskId),
     ])
       .then(([a, d, s]) => {
+        if (requestId !== detailRequestSeq.current) {
+          return;
+        }
         setActivities(a.items);
         setDeliverables(d.items);
         setSubagents(s.items);
@@ -70,6 +112,12 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     loadTasks();
+  }, [refreshKey]);
+
+  useEffect(() => {
+    void fetchSessions()
+      .then((res) => setSessionHints(res.items.map((item) => item.sessionId)))
+      .catch((err: Error) => setError(err.message));
   }, [refreshKey]);
 
   useEffect(() => {
@@ -149,7 +197,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
     try {
       await registerTaskSubagent(selectedTask.taskId, {
-        openclawSessionId: subagentSessionId.trim(),
+        agentSessionId: subagentSessionId.trim(),
         agentName: subagentName.trim() || undefined,
       });
       setSubagentSessionId("");
@@ -174,16 +222,35 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
+  const subagentSessionOptions = useMemo(() => {
+    const values = new Set<string>([
+      ...sessionHints,
+      ...subagents.map((session) => session.agentSessionId),
+    ]);
+    return [...values].filter(Boolean).map((value) => ({ value, label: value }));
+  }, [sessionHints, subagents]);
+
+  const subagentNameOptions = useMemo(() => {
+    const values = new Set<string>([
+      ...BUILTIN_AGENT_ROSTER.map((agent) => agent.name),
+      ...subagents.map((session) => session.agentName).filter(Boolean) as string[],
+    ]);
+    return [...values].map((value) => ({ value, label: value }));
+  }, [subagents]);
+
   return (
     <section>
-      <h2>Tasks</h2>
+      <h2>Trailboard</h2>
+      <p className="office-subtitle">Plan and track work packets across the goat sub-agent roster.</p>
       {error ? <p className="error">{error}</p> : null}
 
       <div className="controls-row">
-        <input
-          placeholder="New task title"
+        <SelectOrCustom
           value={createTitle}
-          onChange={(event) => setCreateTitle(event.target.value)}
+          onChange={setCreateTitle}
+          options={TASK_TITLE_OPTIONS}
+          customPlaceholder="Custom task title"
+          customLabel="Task title"
         />
         <button onClick={onCreateTask}>Create Task</button>
       </div>
@@ -238,10 +305,12 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
               <h4>Activities</h4>
               <div className="controls-row">
-                <input
-                  placeholder="Log an activity"
+                <SelectOrCustom
                   value={activityMessage}
-                  onChange={(event) => setActivityMessage(event.target.value)}
+                  onChange={setActivityMessage}
+                  options={ACTIVITY_OPTIONS}
+                  customPlaceholder="Custom activity message"
+                  customLabel="Activity message"
                 />
                 <button onClick={onAddActivity}>Add</button>
               </div>
@@ -256,15 +325,19 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
               <h4>Deliverables</h4>
               <div className="controls-row">
-                <input
-                  placeholder="Deliverable title"
+                <SelectOrCustom
                   value={deliverableTitle}
-                  onChange={(event) => setDeliverableTitle(event.target.value)}
+                  onChange={setDeliverableTitle}
+                  options={DELIVERABLE_TITLE_OPTIONS}
+                  customPlaceholder="Custom deliverable title"
+                  customLabel="Deliverable title"
                 />
-                <input
-                  placeholder="Path (optional)"
+                <SelectOrCustom
                   value={deliverablePath}
-                  onChange={(event) => setDeliverablePath(event.target.value)}
+                  onChange={setDeliverablePath}
+                  options={DELIVERABLE_PATH_OPTIONS}
+                  customPlaceholder="Optional custom path"
+                  customLabel="Deliverable path"
                 />
                 <button onClick={onAddDeliverable}>Add</button>
               </div>
@@ -277,26 +350,38 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 ))}
               </ul>
 
-              <h4>Sub-Agent Sessions</h4>
+              <h4>Goat Sub-Agent Sessions</h4>
               <div className="controls-row">
-                <input
-                  placeholder="OpenClaw session id"
+                <SelectOrCustom
                   value={subagentSessionId}
-                  onChange={(event) => setSubagentSessionId(event.target.value)}
+                  onChange={setSubagentSessionId}
+                  options={subagentSessionOptions}
+                  customPlaceholder="Session id"
+                  customLabel="Session id"
                 />
-                <input
-                  placeholder="Agent name (optional)"
+                <SelectOrCustom
                   value={subagentName}
-                  onChange={(event) => setSubagentName(event.target.value)}
+                  onChange={setSubagentName}
+                  options={subagentNameOptions}
+                  customPlaceholder="Optional agent name"
+                  customLabel="Agent name"
                 />
                 <button onClick={onRegisterSubagent}>Register</button>
               </div>
+              <button onClick={() => setShowAdvanced((current) => !current)}>
+                {showAdvanced ? "Hide advanced sub-agent details" : "Show advanced sub-agent details"}
+              </button>
+              {showAdvanced ? (
+                <p className="office-subtitle">
+                  Advanced mode lets you provide arbitrary session IDs and agent names. Use this for external sessions.
+                </p>
+              ) : null}
               <ul className="compact-list">
                 {subagents.map((session) => (
                   <li key={session.subagentSessionId}>
-                    <strong>{session.agentName ?? session.openclawSessionId}</strong> - {session.status}
+                    <strong>{session.agentName ?? session.agentSessionId}</strong> - {session.status}
                     {session.status === "active" ? (
-                      <button onClick={() => onCompleteSubagent(session.openclawSessionId)}>Mark complete</button>
+                      <button onClick={() => onCompleteSubagent(session.agentSessionId)}>Mark complete</button>
                     ) : null}
                   </li>
                 ))}

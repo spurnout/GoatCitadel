@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function assertWritePathInJail(targetPath: string, writeJailRoots: string[]): void {
-  const resolvedTarget = path.resolve(targetPath);
+  const resolvedTarget = resolveWriteTargetPath(targetPath);
   assertWithinRoots(resolvedTarget, writeJailRoots, "write jail");
 }
 
@@ -11,7 +11,7 @@ export function assertReadPathAllowed(
   writeJailRoots: string[],
   readOnlyRoots: string[],
 ): void {
-  const resolvedTarget = path.resolve(targetPath);
+  const resolvedTarget = fs.realpathSync(path.resolve(targetPath));
   assertWithinRoots(resolvedTarget, [...writeJailRoots, ...readOnlyRoots], "read allowlist");
 }
 
@@ -34,4 +34,30 @@ function assertWithinRoots(target: string, roots: string[], scope: string): void
   if (!allowed) {
     throw new Error(`Path is outside ${scope}: ${target}`);
   }
+}
+
+function resolveWriteTargetPath(targetPath: string): string {
+  const absoluteTarget = path.resolve(targetPath);
+
+  // Resolve symlinks for the closest existing ancestor so writes cannot escape
+  // via links inside an otherwise allowed directory.
+  let probe = absoluteTarget;
+  while (true) {
+    if (fs.existsSync(probe)) {
+      const realExisting = fs.realpathSync(probe);
+      if (probe === absoluteTarget) {
+        return realExisting;
+      }
+      const relativeTail = path.relative(probe, absoluteTarget);
+      return path.resolve(realExisting, relativeTail);
+    }
+
+    const parent = path.dirname(probe);
+    if (parent === probe) {
+      break;
+    }
+    probe = parent;
+  }
+
+  return absoluteTarget;
 }

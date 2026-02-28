@@ -4,24 +4,50 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { EventIngestService } from "@personal-ai/gateway-core";
-import { OrchestrationEngine } from "@personal-ai/orchestration";
-import { ToolPolicyEngine, assertExistingPathRealpathAllowed, assertWritePathInJail } from "@personal-ai/policy-engine";
-import { SkillsService } from "@personal-ai/skills";
-import { Storage } from "@personal-ai/storage";
+import { EventIngestService } from "@goatcitadel/gateway-core";
+import { MeshService } from "@goatcitadel/mesh-core";
+import { OrchestrationEngine } from "@goatcitadel/orchestration";
+import { ToolPolicyEngine, assertExistingPathRealpathAllowed, assertWritePathInJail } from "@goatcitadel/policy-engine";
+import { SkillsService } from "@goatcitadel/skills";
+import { Storage } from "@goatcitadel/storage";
 import type {
+  AuthRuntimeSettings,
+  AuthSettingsUpdateInput,
   ApprovalCreateInput,
   ApprovalReplayEvent,
   ApprovalRequest,
   ApprovalResolveInput,
+  ChannelInboundMessageInput,
   CronJobRecord,
   DashboardState,
   ChatCompletionRequest,
   ChatCompletionResponse,
   GatewayEventInput,
   GatewayEventResult,
+  IntegrationCatalogEntry,
+  IntegrationConnection,
+  IntegrationConnectionCreateInput,
+  IntegrationConnectionUpdateInput,
+  IntegrationKind,
   LlmModelRecord,
   LlmRuntimeConfig,
+  OnboardingBootstrapInput,
+  OnboardingBootstrapResult,
+  OnboardingChecklistItem,
+  OnboardingState,
+  MeshJoinRequest,
+  MeshJoinResult,
+  MeshLeaseAcquireRequest,
+  MeshLeaseRecord,
+  MeshLeaseReleaseRequest,
+  MeshLeaseRenewRequest,
+  MeshNodeRecord,
+  MeshReplicationIngestRequest,
+  MeshReplicationRecord,
+  MeshSessionClaimRequest,
+  MeshSessionOwnerRecord,
+  MeshStatus,
+  MeshReplicationOffset,
   OperatorSummary,
   OrchestrationPlan,
   OrchestrationRun,
@@ -42,11 +68,12 @@ import type {
   TaskUpdateInput,
   ToolInvokeRequest,
   ToolInvokeResult,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 import type { GatewayRuntimeConfig } from "../config.js";
-import type { OrchestrationCheckpoint } from "@personal-ai/storage";
+import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
+import { INTEGRATION_CATALOG } from "./integration-catalog.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -93,7 +120,7 @@ export interface AgentSummary {
 export interface RuntimeSettings {
   environment: string;
   defaultToolProfile: string;
-  budgetMode: string;
+  budgetMode: "saver" | "balanced" | "power";
   workspaceDir: string;
   writeJailRoots: string[];
   readOnlyRoots: string[];
@@ -107,7 +134,17 @@ export interface RuntimeSettings {
     timeoutMs: number;
     maxPayloadChars: number;
   };
+  auth: AuthRuntimeSettings;
   llm: LlmRuntimeConfig;
+  mesh: {
+    enabled: boolean;
+    mode: "lan" | "wan" | "tailnet";
+    nodeId: string;
+    mdns: boolean;
+    staticPeers: string[];
+    requireMtls: boolean;
+    tailnetEnabled: boolean;
+  };
 }
 
 interface RealtimeListener {
@@ -121,8 +158,13 @@ export class GatewayService {
   private readonly skillsService: SkillsService;
   private readonly orchestrationEngine: OrchestrationEngine;
   private readonly llmService: LlmService;
+  private readonly meshService: MeshService;
   private readonly approvalExplainer: ApprovalExplainerService;
   private readonly realtime = new EventEmitter();
+  private readonly backgroundTasks = new Set<Promise<void>>();
+  private readonly onboardingMarkerPath: string;
+  private closing = false;
+  private onboardingMarker: { completedAt?: string; completedBy?: string } = {};
 
   public constructor(private readonly config: GatewayRuntimeConfig) {
     this.storage = new Storage({
@@ -130,6 +172,11 @@ export class GatewayService {
       transcriptsDir: path.resolve(config.rootDir, config.assistant.transcriptsDir),
       auditDir: path.resolve(config.rootDir, config.assistant.auditDir),
     });
+    this.onboardingMarkerPath = path.resolve(
+      config.rootDir,
+      config.assistant.dataDir,
+      "onboarding-state.json",
+    );
 
     this.eventIngestService = new EventIngestService(this.storage);
     this.policyEngine = new ToolPolicyEngine(config.toolPolicy, this.storage);
@@ -141,6 +188,17 @@ export class GatewayService {
     ]);
     this.orchestrationEngine = new OrchestrationEngine();
     this.llmService = new LlmService(config.llm);
+    this.meshService = new MeshService(this.storage, {
+      enabled: config.assistant.mesh.enabled,
+      mode: config.assistant.mesh.mode,
+      localNodeId: config.assistant.mesh.nodeId,
+      localNodeLabel: config.assistant.mesh.label,
+      advertiseAddress: config.assistant.mesh.advertiseAddress,
+      requireMtls: config.assistant.mesh.security.requireMtls,
+      tailnetEnabled: config.assistant.mesh.security.tailnet.enabled,
+      joinToken: process.env[config.assistant.mesh.security.joinTokenEnv],
+      defaultLeaseTtlSeconds: config.assistant.mesh.leases.ttlSeconds,
+    });
     this.approvalExplainer = new ApprovalExplainerService(
       this.storage,
       this.llmService,
@@ -152,8 +210,13 @@ export class GatewayService {
   }
 
   public async init(): Promise<void> {
+    await this.loadOnboardingMarker();
     await this.skillsService.reload();
     await this.loadCronJobsFromConfig();
+    this.meshService.init();
+    // Enforce env-only secret persistence policy on startup.
+    this.persistLlmConfig();
+    this.persistAssistantConfig();
   }
 
   public subscribeRealtime(listener: RealtimeListener): () => void {
@@ -455,8 +518,8 @@ export class GatewayService {
     return session;
   }
 
-  public updateTaskSubagent(openclawSessionId: string, input: TaskSubagentUpdateInput): TaskSubagentSession {
-    const updated = this.storage.taskSubagents.updateByOpenclawSessionId(openclawSessionId, {
+  public updateTaskSubagent(agentSessionId: string, input: TaskSubagentUpdateInput): TaskSubagentSession {
+    const updated = this.storage.taskSubagents.updateByAgentSessionId(agentSessionId, {
       ...input,
       endedAt: input.endedAt ?? (input.status && input.status !== "active" ? new Date().toISOString() : undefined),
     });
@@ -661,10 +724,10 @@ export class GatewayService {
     const byAgent = new Map<string, AgentSummary>();
 
     for (const session of sessions) {
-      const agentId = session.agentName?.trim() || session.openclawSessionId;
+      const agentId = session.agentName?.trim() || session.agentSessionId;
       const current = byAgent.get(agentId) ?? {
         agentId,
-        name: session.agentName?.trim() || session.openclawSessionId,
+        name: session.agentName?.trim() || session.agentSessionId,
         status: "idle",
         sessionCount: 0,
         activeSessions: 0,
@@ -702,14 +765,137 @@ export class GatewayService {
       readOnlyRoots: this.config.toolPolicy.sandbox.readOnlyRoots,
       networkAllowlist: this.config.toolPolicy.sandbox.networkAllowlist,
       approvalExplainer: this.config.assistant.approvalExplainer,
+      auth: this.getAuthRuntimeSettings(),
       llm: this.llmService.getRuntimeConfig(),
+      mesh: {
+        enabled: this.config.assistant.mesh.enabled,
+        mode: this.config.assistant.mesh.mode,
+        nodeId: this.config.assistant.mesh.nodeId,
+        mdns: this.config.assistant.mesh.discovery.mdns,
+        staticPeers: this.config.assistant.mesh.discovery.staticPeers,
+        requireMtls: this.config.assistant.mesh.security.requireMtls,
+        tailnetEnabled: this.config.assistant.mesh.security.tailnet.enabled,
+      },
     };
+  }
+
+  public getOnboardingState(): OnboardingState {
+    const settings = this.getSettings();
+    const activeProvider = settings.llm.providers.find(
+      (provider) => provider.providerId === settings.llm.activeProviderId,
+    );
+    const authReady = this.isAuthConfiguredForMode(settings.auth);
+    const llmReady = Boolean(
+      activeProvider
+      && settings.llm.activeModel.trim()
+      && (activeProvider.hasApiKey || this.isProviderLikelyLocal(activeProvider.baseUrl)),
+    );
+    const runtimeReady = Boolean(settings.defaultToolProfile.trim()) && Boolean(settings.budgetMode.trim());
+    const meshReady = settings.mesh.enabled
+      ? Boolean(settings.mesh.nodeId.trim()) && (settings.mesh.mode !== "tailnet" || settings.mesh.tailnetEnabled)
+      : true;
+
+    const checklist: OnboardingChecklistItem[] = [
+      {
+        id: "auth",
+        label: "Gateway access control",
+        status: authReady ? "complete" : "needs_input",
+        detail: authReady
+          ? `Mode ${settings.auth.mode} is configured.`
+          : "Configure token/basic credentials or explicitly choose none for local trusted use.",
+      },
+      {
+        id: "llm",
+        label: "LLM provider",
+        status: llmReady ? "complete" : "needs_input",
+        detail: llmReady
+          ? `Provider ${settings.llm.activeProviderId} with model ${settings.llm.activeModel} is ready.`
+          : "Select an active provider/model and configure an API key (or use a local endpoint).",
+      },
+      {
+        id: "runtime",
+        label: "Runtime defaults",
+        status: runtimeReady ? "complete" : "needs_input",
+        detail: runtimeReady
+          ? `Profile ${settings.defaultToolProfile} / budget ${settings.budgetMode}.`
+          : "Choose a default tool profile and budget mode.",
+      },
+      {
+        id: "mesh",
+        label: "Mesh (optional)",
+        status: settings.mesh.enabled ? (meshReady ? "complete" : "needs_input") : "optional",
+        detail: settings.mesh.enabled
+          ? `Mesh ${settings.mesh.mode} on node ${settings.mesh.nodeId}.`
+          : "Mesh disabled. You can enable this later.",
+      },
+    ];
+
+    return {
+      completed: Boolean(this.onboardingMarker.completedAt),
+      completedAt: this.onboardingMarker.completedAt,
+      completedBy: this.onboardingMarker.completedBy,
+      checklist,
+      settings: {
+        defaultToolProfile: settings.defaultToolProfile,
+        budgetMode: settings.budgetMode,
+        networkAllowlist: settings.networkAllowlist,
+        auth: settings.auth,
+        llm: {
+          activeProviderId: settings.llm.activeProviderId,
+          activeModel: settings.llm.activeModel,
+          providers: settings.llm.providers.map((provider) => ({
+            providerId: provider.providerId,
+            label: provider.label,
+            baseUrl: provider.baseUrl,
+            defaultModel: provider.defaultModel,
+            hasApiKey: provider.hasApiKey,
+            apiKeySource: provider.apiKeySource,
+          })),
+        },
+        mesh: settings.mesh,
+      },
+    };
+  }
+
+  public bootstrapOnboarding(input: OnboardingBootstrapInput): OnboardingBootstrapResult {
+    this.updateSettings({
+      defaultToolProfile: input.defaultToolProfile,
+      budgetMode: input.budgetMode,
+      networkAllowlist: input.networkAllowlist,
+      auth: input.auth,
+      llm: input.llm,
+      mesh: input.mesh,
+    });
+
+    if (input.markComplete) {
+      this.markOnboardingComplete(input.completedBy ?? "operator");
+    }
+
+    return {
+      state: this.getOnboardingState(),
+      appliedAt: new Date().toISOString(),
+    };
+  }
+
+  public markOnboardingComplete(completedBy = "operator"): OnboardingState {
+    this.onboardingMarker = {
+      completedAt: new Date().toISOString(),
+      completedBy: completedBy.trim() || "operator",
+    };
+    this.persistOnboardingMarker();
+    this.publishRealtime("system", "onboarding", {
+      type: "onboarding_completed",
+      completedAt: this.onboardingMarker.completedAt,
+      completedBy: this.onboardingMarker.completedBy,
+    });
+    return this.getOnboardingState();
   }
 
   public updateSettings(input: {
     defaultToolProfile?: string;
     budgetMode?: "saver" | "balanced" | "power";
     networkAllowlist?: string[];
+    auth?: AuthSettingsUpdateInput;
     llm?: {
       activeProviderId?: string;
       activeModel?: string;
@@ -723,21 +909,88 @@ export class GatewayService {
         headers?: Record<string, string>;
       };
     };
+    mesh?: {
+      enabled?: boolean;
+      mode?: "lan" | "wan" | "tailnet";
+      nodeId?: string;
+      mdns?: boolean;
+      staticPeers?: string[];
+      requireMtls?: boolean;
+      tailnetEnabled?: boolean;
+    };
   }): RuntimeSettings {
+    let persistAssistant = false;
+    let persistToolPolicy = false;
+    let persistBudgets = false;
+
     if (input.defaultToolProfile) {
       if (!Object.prototype.hasOwnProperty.call(this.config.toolPolicy.profiles, input.defaultToolProfile)) {
         throw new Error(`Unknown tool profile: ${input.defaultToolProfile}`);
       }
       this.config.toolPolicy.tools.profile = input.defaultToolProfile as typeof this.config.toolPolicy.tools.profile;
       this.config.assistant.defaultToolProfile = input.defaultToolProfile;
+      persistAssistant = true;
+      persistToolPolicy = true;
     }
 
     if (input.budgetMode) {
       this.config.budgets.mode = input.budgetMode;
+      persistBudgets = true;
     }
 
     if (input.networkAllowlist) {
-      this.config.toolPolicy.sandbox.networkAllowlist = input.networkAllowlist;
+      this.config.toolPolicy.sandbox.networkAllowlist = input.networkAllowlist
+        .map((host) => host.trim())
+        .filter(Boolean);
+      persistToolPolicy = true;
+    }
+
+    if (input.auth) {
+      this.updateAuthSettings(input.auth);
+      persistAssistant = true;
+    }
+
+    if (input.mesh) {
+      if (input.mesh.enabled !== undefined) {
+        this.config.assistant.mesh.enabled = input.mesh.enabled;
+      }
+      if (input.mesh.mode) {
+        this.config.assistant.mesh.mode = input.mesh.mode;
+      }
+      if (input.mesh.nodeId !== undefined) {
+        const trimmed = input.mesh.nodeId.trim();
+        if (!trimmed) {
+          throw new Error("mesh.nodeId cannot be empty");
+        }
+        this.config.assistant.mesh.nodeId = trimmed;
+      }
+      if (input.mesh.mdns !== undefined) {
+        this.config.assistant.mesh.discovery.mdns = input.mesh.mdns;
+      }
+      if (input.mesh.staticPeers) {
+        this.config.assistant.mesh.discovery.staticPeers = input.mesh.staticPeers
+          .map((peer) => peer.trim())
+          .filter(Boolean);
+      }
+      if (input.mesh.requireMtls !== undefined) {
+        this.config.assistant.mesh.security.requireMtls = input.mesh.requireMtls;
+      }
+      if (input.mesh.tailnetEnabled !== undefined) {
+        this.config.assistant.mesh.security.tailnet.enabled = input.mesh.tailnetEnabled;
+      }
+
+      this.meshService.updateOptions({
+        enabled: this.config.assistant.mesh.enabled,
+        mode: this.config.assistant.mesh.mode,
+        localNodeId: this.config.assistant.mesh.nodeId,
+        localNodeLabel: this.config.assistant.mesh.label,
+        advertiseAddress: this.config.assistant.mesh.advertiseAddress,
+        requireMtls: this.config.assistant.mesh.security.requireMtls,
+        tailnetEnabled: this.config.assistant.mesh.security.tailnet.enabled,
+        joinToken: process.env[this.config.assistant.mesh.security.joinTokenEnv],
+        defaultLeaseTtlSeconds: this.config.assistant.mesh.leases.ttlSeconds,
+      });
+      persistAssistant = true;
     }
 
     if (input.llm) {
@@ -745,7 +998,244 @@ export class GatewayService {
       this.persistLlmConfig();
     }
 
+    if (persistToolPolicy) {
+      this.persistToolPolicyConfig();
+    }
+    if (persistBudgets) {
+      this.persistBudgetsConfig();
+    }
+    if (persistAssistant) {
+      this.persistAssistantConfig();
+    }
+
     return this.getSettings();
+  }
+
+  public getAuthRuntimeSettings(): AuthRuntimeSettings {
+    return {
+      mode: this.config.assistant.auth.mode,
+      allowLoopbackBypass: this.config.assistant.auth.allowLoopbackBypass,
+      tokenConfigured: Boolean(this.config.assistant.auth.token.value?.trim()),
+      basicConfigured: Boolean(
+        this.config.assistant.auth.basic.username?.trim()
+        && this.config.assistant.auth.basic.password?.trim(),
+      ),
+    };
+  }
+
+  public updateAuthSettings(input: AuthSettingsUpdateInput): AuthRuntimeSettings {
+    if (input.mode) {
+      this.config.assistant.auth.mode = input.mode;
+    }
+    if (input.allowLoopbackBypass !== undefined) {
+      this.config.assistant.auth.allowLoopbackBypass = input.allowLoopbackBypass;
+    }
+    if (input.token !== undefined) {
+      this.config.assistant.auth.token.value = input.token.trim() || undefined;
+    }
+    if (input.basicUsername !== undefined) {
+      this.config.assistant.auth.basic.username = input.basicUsername.trim() || undefined;
+    }
+    if (input.basicPassword !== undefined) {
+      this.config.assistant.auth.basic.password = input.basicPassword.trim() || undefined;
+    }
+    return this.getAuthRuntimeSettings();
+  }
+
+  public listIntegrationCatalog(kind?: IntegrationKind): IntegrationCatalogEntry[] {
+    if (!kind) {
+      return INTEGRATION_CATALOG;
+    }
+    return INTEGRATION_CATALOG.filter((entry) => entry.kind === kind);
+  }
+
+  public listIntegrationConnections(kind?: IntegrationKind, limit = 300): IntegrationConnection[] {
+    return this.storage.integrationConnections.list(kind, limit);
+  }
+
+  public createIntegrationConnection(input: IntegrationConnectionCreateInput): IntegrationConnection {
+    const catalog = INTEGRATION_CATALOG.find((entry) => entry.catalogId === input.catalogId);
+    if (!catalog) {
+      throw new Error(`Unknown integration catalog id: ${input.catalogId}`);
+    }
+
+    const created = this.storage.integrationConnections.create({
+      ...input,
+      catalogId: catalog.catalogId,
+      kind: catalog.kind,
+      key: catalog.key,
+      label: input.label?.trim() || catalog.label,
+    });
+
+    this.publishRealtime("system", "integrations", {
+      type: "integration_connection_created",
+      connectionId: created.connectionId,
+      catalogId: created.catalogId,
+      kind: created.kind,
+      key: created.key,
+      enabled: created.enabled,
+      status: created.status,
+    });
+
+    return created;
+  }
+
+  public updateIntegrationConnection(connectionId: string, input: IntegrationConnectionUpdateInput): IntegrationConnection {
+    const updated = this.storage.integrationConnections.update(connectionId, input);
+    this.publishRealtime("system", "integrations", {
+      type: "integration_connection_updated",
+      connectionId: updated.connectionId,
+      enabled: updated.enabled,
+      status: updated.status,
+      lastError: updated.lastError,
+    });
+    return updated;
+  }
+
+  public deleteIntegrationConnection(connectionId: string): boolean {
+    const deleted = this.storage.integrationConnections.delete(connectionId);
+    if (deleted) {
+      this.publishRealtime("system", "integrations", {
+        type: "integration_connection_deleted",
+        connectionId,
+      });
+    }
+    return deleted;
+  }
+
+  public getMeshStatus(): MeshStatus {
+    return this.meshService.status();
+  }
+
+  public listMeshNodes(limit = 200): MeshNodeRecord[] {
+    return this.meshService.listNodes(limit);
+  }
+
+  public meshJoin(input: MeshJoinRequest): MeshJoinResult {
+    const joined = this.meshService.join(input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_node_joined",
+      nodeId: joined.node.nodeId,
+      transport: joined.node.transport,
+      advertiseAddress: joined.node.advertiseAddress,
+    });
+    return joined;
+  }
+
+  public acquireMeshLease(input: MeshLeaseAcquireRequest): MeshLeaseRecord {
+    const lease = this.meshService.acquireLease(input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_lease_acquired",
+      leaseKey: lease.leaseKey,
+      holderNodeId: lease.holderNodeId,
+      fencingToken: lease.fencingToken,
+      expiresAt: lease.expiresAt,
+    });
+    return lease;
+  }
+
+  public renewMeshLease(input: MeshLeaseRenewRequest): MeshLeaseRecord {
+    const lease = this.meshService.renewLease(input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_lease_renewed",
+      leaseKey: lease.leaseKey,
+      holderNodeId: lease.holderNodeId,
+      fencingToken: lease.fencingToken,
+      expiresAt: lease.expiresAt,
+    });
+    return lease;
+  }
+
+  public releaseMeshLease(input: MeshLeaseReleaseRequest): { released: boolean } {
+    const result = this.meshService.releaseLease(input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_lease_released",
+      leaseKey: input.leaseKey,
+      holderNodeId: input.holderNodeId,
+      fencingToken: input.fencingToken,
+      released: result.released,
+    });
+    return result;
+  }
+
+  public claimMeshSessionOwner(sessionId: string, input: MeshSessionClaimRequest): MeshSessionOwnerRecord {
+    const owner = this.meshService.claimSessionOwner(sessionId, input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_session_claimed",
+      sessionId,
+      ownerNodeId: owner.ownerNodeId,
+      epoch: owner.epoch,
+    });
+    return owner;
+  }
+
+  public getMeshSessionOwner(sessionId: string): MeshSessionOwnerRecord {
+    return this.meshService.getSessionOwner(sessionId);
+  }
+
+  public ingestMeshReplicationEvent(input: MeshReplicationIngestRequest): MeshReplicationRecord {
+    const event = this.meshService.ingestReplicationEvent(input);
+    this.publishRealtime("system", "mesh", {
+      type: "mesh_replication_event",
+      replicationId: event.replicationId,
+      sourceNodeId: event.sourceNodeId,
+      eventType: event.eventType,
+      idempotencyKey: event.idempotencyKey,
+    });
+    return event;
+  }
+
+  public listMeshLeases(limit = 200): MeshLeaseRecord[] {
+    return this.meshService.listLeases(limit);
+  }
+
+  public listMeshSessionOwners(limit = 500): MeshSessionOwnerRecord[] {
+    return this.meshService.listSessionOwners(limit);
+  }
+
+  public listMeshReplicationEvents(limit = 200, cursor?: string): MeshReplicationRecord[] {
+    return this.meshService.listReplicationEvents(limit, cursor);
+  }
+
+  public listMeshReplicationOffsets(limit = 500): MeshReplicationOffset[] {
+    return this.meshService.listReplicationOffsets(limit);
+  }
+
+  public async ingestChannelMessage(
+    channel: string,
+    idempotencyKey: string,
+    input: ChannelInboundMessageInput,
+  ): Promise<GatewayEventResult> {
+    const payload: GatewayEventInput = {
+      eventId: input.eventId ?? `channel-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      route: {
+        channel,
+        account: input.account,
+        peer: input.peer,
+        room: input.room,
+        threadId: input.threadId,
+      },
+      actor: {
+        type: input.actorType ?? "user",
+        id: input.actorId,
+      },
+      message: {
+        role: input.role ?? "user",
+        content: input.content,
+      },
+      usage: input.usage,
+    };
+
+    const result = await this.ingestEvent(idempotencyKey, payload);
+    this.publishRealtime("system", "channels", {
+      type: "channel_message_ingested",
+      channel,
+      eventId: payload.eventId,
+      sessionId: result.session.sessionId,
+      account: input.account,
+      actorId: input.actorId,
+    });
+    return result;
   }
 
   public listLlmProviders(): LlmRuntimeConfig["providers"] {
@@ -960,7 +1450,13 @@ export class GatewayService {
     return this.storage.orchestration.listCheckpoints(runId);
   }
 
-  public close(): void {
+  public async close(): Promise<void> {
+    this.closing = true;
+    if (this.backgroundTasks.size > 0) {
+      const tasks = [...this.backgroundTasks];
+      this.backgroundTasks.clear();
+      await Promise.allSettled(tasks);
+    }
     this.storage.close();
   }
 
@@ -978,16 +1474,33 @@ export class GatewayService {
   }
 
   private scheduleApprovalExplanation(approval: ApprovalRequest): void {
-    void this.approvalExplainer.explainApproval(approval).catch((error) => {
-      this.publishRealtime("system", "approvals", {
-        type: "approval_explainer_error",
-        approvalId: approval.approvalId,
-        error: (error as Error).message,
+    if (this.closing) {
+      return;
+    }
+
+    const task = this.approvalExplainer.explainApproval(approval)
+      .catch((error) => {
+        if (this.closing) {
+          return;
+        }
+        this.publishRealtime("system", "approvals", {
+          type: "approval_explainer_error",
+          approvalId: approval.approvalId,
+          error: (error as Error).message,
+        });
+      })
+      .finally(() => {
+        this.backgroundTasks.delete(task);
       });
-    });
+
+    this.backgroundTasks.add(task);
+    void task;
   }
 
   private scheduleApprovalExplanationById(approvalId: string): void {
+    if (this.closing) {
+      return;
+    }
     let approval: ApprovalRequest;
     try {
       approval = this.storage.approvals.get(approvalId);
@@ -1010,13 +1523,68 @@ export class GatewayService {
 
   private normalizeRelativePath(inputPath: string): string {
     const normalized = path.normalize(inputPath).replaceAll("\\", "/");
-    if (!normalized || normalized === "." || normalized.startsWith("../") || normalized.includes("/../")) {
+    if (
+      !normalized
+      || normalized === "."
+      || normalized === ".."
+      || normalized.startsWith("../")
+      || normalized.endsWith("/..")
+      || normalized.includes("/../")
+    ) {
       throw new Error(`Invalid relative path: ${inputPath}`);
     }
     if (path.isAbsolute(normalized)) {
       throw new Error(`Absolute paths are not allowed: ${inputPath}`);
     }
     return normalized;
+  }
+
+  private isAuthConfiguredForMode(auth: RuntimeSettings["auth"]): boolean {
+    if (auth.mode === "none") {
+      return true;
+    }
+    if (auth.mode === "token") {
+      return auth.tokenConfigured;
+    }
+    return auth.basicConfigured;
+  }
+
+  private isProviderLikelyLocal(baseUrl: string): boolean {
+    try {
+      const parsed = new URL(baseUrl);
+      const host = parsed.hostname.toLowerCase();
+      return host === "localhost" || host === "127.0.0.1" || host === "::1";
+    } catch {
+      return false;
+    }
+  }
+
+  private async loadOnboardingMarker(): Promise<void> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.onboardingMarkerPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.onboardingMarker = {};
+        return;
+      }
+      throw error;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as { completedAt?: string; completedBy?: string };
+      this.onboardingMarker = {
+        completedAt: parsed.completedAt?.trim() || undefined,
+        completedBy: parsed.completedBy?.trim() || undefined,
+      };
+    } catch {
+      this.onboardingMarker = {};
+    }
+  }
+
+  private persistOnboardingMarker(): void {
+    fsSync.mkdirSync(path.dirname(this.onboardingMarkerPath), { recursive: true });
+    fsSync.writeFileSync(this.onboardingMarkerPath, JSON.stringify(this.onboardingMarker, null, 2), "utf8");
   }
 
   private async loadCronJobsFromConfig(): Promise<void> {
@@ -1044,6 +1612,66 @@ export class GatewayService {
     const filePath = path.join(this.config.rootDir, "config", "llm-providers.json");
     fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
     fsSync.writeFileSync(filePath, JSON.stringify(this.llmService.exportConfigFile(), null, 2), "utf8");
+  }
+
+  private persistToolPolicyConfig(): void {
+    const filePath = path.join(this.config.rootDir, "config", "tool-policy.json");
+    const payload = {
+      ...this.config.toolPolicy,
+      sandbox: {
+        ...this.config.toolPolicy.sandbox,
+        writeJailRoots: this.config.toolPolicy.sandbox.writeJailRoots.map((root) => this.serializeRootPath(root)),
+        readOnlyRoots: this.config.toolPolicy.sandbox.readOnlyRoots.map((root) => this.serializeRootPath(root)),
+      },
+    };
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fsSync.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private persistBudgetsConfig(): void {
+    const filePath = path.join(this.config.rootDir, "config", "budgets.json");
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fsSync.writeFileSync(filePath, JSON.stringify(this.config.budgets, null, 2), "utf8");
+  }
+
+  private persistAssistantConfig(): void {
+    const filePath = path.join(this.config.rootDir, "config", "assistant.config.json");
+    const payload = {
+      environment: this.config.assistant.environment,
+      defaultToolProfile: this.config.assistant.defaultToolProfile,
+      dataDir: this.config.assistant.dataDir,
+      transcriptsDir: this.config.assistant.transcriptsDir,
+      auditDir: this.config.assistant.auditDir,
+      workspaceDir: this.config.assistant.workspaceDir,
+      worktreesDir: this.config.assistant.worktreesDir,
+      auth: {
+        mode: this.config.assistant.auth.mode,
+        allowLoopbackBypass: this.config.assistant.auth.allowLoopbackBypass,
+        token: {
+          queryParam: this.config.assistant.auth.token.queryParam,
+        },
+        basic: {},
+      },
+      approvalExplainer: this.config.assistant.approvalExplainer,
+      mesh: this.config.assistant.mesh,
+      budgets: this.config.assistant.budgets,
+    };
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fsSync.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private serializeRootPath(fullPath: string): string {
+    const relative = path.relative(this.config.rootDir, fullPath).replaceAll("\\", "/");
+    if (
+      relative
+      && relative !== "."
+      && !relative.startsWith("../")
+      && relative !== ".."
+      && !path.isAbsolute(relative)
+    ) {
+      return relative.startsWith("./") ? relative : `./${relative}`;
+    }
+    return fullPath.replaceAll("\\", "/");
   }
 }
 

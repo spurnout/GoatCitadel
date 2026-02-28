@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSessions, type SessionsResponse } from "../api/client";
+import { SelectOrCustom } from "../components/SelectOrCustom";
 
 export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<SessionsResponse | null>(null);
@@ -31,18 +32,29 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const totalTokens = filtered.reduce((sum, session) => sum + session.tokenTotal, 0);
   const totalCost = filtered.reduce((sum, session) => sum + session.costUsdTotal, 0);
 
+  const searchOptions = useMemo(() => {
+    const values = new Set<string>([
+      ...items.slice(0, 40).map((session) => session.sessionKey),
+      ...items.slice(0, 40).map((session) => session.sessionId),
+      "dm:",
+      "group:",
+      "thread:",
+    ]);
+    return [...values].filter(Boolean).map((value) => ({ value, label: value }));
+  }, [items]);
+
   if (error) {
     return <p className="error">{error}</p>;
   }
 
   if (!data) {
-    return <p>Loading sessions...</p>;
+    return <p>Loading herd runs...</p>;
   }
 
   return (
     <section>
-      <h2>Sessions</h2>
-      <p className="office-subtitle">Live session health, token usage, and cost visibility.</p>
+      <h2>Runs</h2>
+      <p className="office-subtitle">Live session health, token usage, and feed-cost visibility.</p>
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
@@ -68,10 +80,12 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </div>
 
       <div className="controls-row">
-        <input
-          placeholder="Search session key..."
+        <SelectOrCustom
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={setSearch}
+          options={searchOptions}
+          customPlaceholder="Search session key or id"
+          customLabel="Search query"
         />
         <select
           value={healthFilter}

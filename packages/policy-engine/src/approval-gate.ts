@@ -1,5 +1,5 @@
-import type { ApprovalCreateInput, ApprovalRequest } from "@personal-ai/contracts";
-import type { Storage } from "@personal-ai/storage";
+import type { ApprovalCreateInput, ApprovalRequest } from "@goatcitadel/contracts";
+import type { Storage } from "@goatcitadel/storage";
 
 export class ApprovalGate {
   public constructor(private readonly storage: Storage) {}

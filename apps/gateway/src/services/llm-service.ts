@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -6,7 +7,7 @@ import type {
   LlmProviderConfig,
   LlmProviderSummary,
   LlmRuntimeConfig,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 
 export interface LlmRuntimeUpdateInput {
   activeProviderId?: string;
@@ -26,6 +27,13 @@ interface ResolvedProvider {
   provider: LlmProviderConfig;
   apiKey?: string;
 }
+
+const DISALLOWED_BASE_HOSTS = new Set([
+  "0.0.0.0",
+  "169.254.169.254",
+  "metadata.google.internal",
+  "100.100.100.200",
+]);
 
 export class LlmService {
   private readonly providers = new Map<string, LlmProviderConfig>();
@@ -106,7 +114,10 @@ export class LlmService {
   public exportConfigFile(): LlmConfigFile {
     return {
       activeProviderId: this.activeProviderId,
-      providers: Array.from(this.providers.values()).map((provider) => ({ ...provider })),
+      providers: Array.from(this.providers.values()).map((provider) => ({
+        ...provider,
+        apiKey: undefined,
+      })),
     };
   }
 
@@ -116,7 +127,12 @@ export class LlmService {
       method: "GET",
       headers: this.buildHeaders(resolved),
       signal: AbortSignal.timeout(15000),
+      redirect: "manual",
     });
+
+    if (isRedirect(response.status)) {
+      throw new Error(`model listing blocked redirect (${response.status})`);
+    }
 
     if (!response.ok) {
       throw new Error(await buildHttpError("model listing", response));
@@ -157,7 +173,12 @@ export class LlmService {
       headers: this.buildHeaders(resolved),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(60000),
+      redirect: "manual",
     });
+
+    if (isRedirect(response.status)) {
+      throw new Error(`chat completion blocked redirect (${response.status})`);
+    }
 
     if (!response.ok) {
       throw new Error(await buildHttpError("chat completion", response));
@@ -205,6 +226,7 @@ export class LlmService {
 
 function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
   const base = provider.baseUrl.trim().replace(/\/+$/, "");
+  validateProviderBaseUrl(base);
   const withV1 = /\/v1$/i.test(base) ? base : `${base}/v1`;
   return {
     ...provider,
@@ -217,4 +239,86 @@ async function buildHttpError(action: string, response: Response): Promise<strin
   const text = await response.text();
   const snippet = text.slice(0, 400);
   return `${action} failed (${response.status} ${response.statusText}): ${snippet}`;
+}
+
+function validateProviderBaseUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid provider baseUrl: ${rawUrl}`);
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`Unsupported provider protocol: ${parsed.protocol}`);
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (!host) {
+    throw new Error("Provider baseUrl must include a hostname");
+  }
+
+  if (DISALLOWED_BASE_HOSTS.has(host)) {
+    throw new Error(`Provider host ${host} is blocked`);
+  }
+
+  if (host === "localhost" || host === "::1" || host === "127.0.0.1") {
+    return;
+  }
+
+  const ipVersion = isIP(host);
+  if (ipVersion === 4 && isPrivateOrReservedIpv4(host)) {
+    throw new Error(`Provider host ${host} is a private/reserved IPv4 address`);
+  }
+  if (ipVersion === 6 && isBlockedIpv6(host)) {
+    throw new Error(`Provider host ${host} is a private/reserved IPv6 address`);
+  }
+
+  if (host.endsWith(".local")) {
+    throw new Error(`Provider host ${host} is a local network domain`);
+  }
+}
+
+function isPrivateOrReservedIpv4(host: string): boolean {
+  const parts = host.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+    return true;
+  }
+
+  const a = parts[0] ?? -1;
+  const b = parts[1] ?? -1;
+  if (a === 10 || a === 127 || a === 0) {
+    return true;
+  }
+  if (a === 169 && b === 254) {
+    return true;
+  }
+  if (a === 192 && b === 168) {
+    return true;
+  }
+  if (a === 172 && b >= 16 && b <= 31) {
+    return true;
+  }
+  if (a >= 224) {
+    return true;
+  }
+  return false;
+}
+
+function isBlockedIpv6(host: string): boolean {
+  const lower = host.toLowerCase();
+  return (
+    lower === "::" ||
+    lower === "::1" ||
+    lower.startsWith("fc") ||
+    lower.startsWith("fd") ||
+    lower.startsWith("fe8") ||
+    lower.startsWith("fe9") ||
+    lower.startsWith("fea") ||
+    lower.startsWith("feb")
+  );
+}
+
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400;
 }

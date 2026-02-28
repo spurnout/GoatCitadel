@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { OrchestrationPlan, OrchestrationRun } from "@personal-ai/contracts";
+import type { OrchestrationPlan, OrchestrationRun } from "@goatcitadel/contracts";
 
 export interface OrchestrationCheckpoint {
   checkpointId: string;

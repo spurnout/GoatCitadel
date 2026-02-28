@@ -1,5 +1,5 @@
 {
-  "name": "@personal-ai/skills",
+  "name": "@goatcitadel/skills",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/skills/src/index.js",
@@ -11,7 +11,7 @@
     }
   },
   "dependencies": {
-    "@personal-ai/contracts": "workspace:*",
+    "@goatcitadel/contracts": "workspace:*",
     "yaml": "^2.8.1"
   },
   "scripts": {

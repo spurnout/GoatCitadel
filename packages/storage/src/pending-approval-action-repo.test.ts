@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function createRepo(): PendingApprovalActionRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-pending-approval-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-pending-approval-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new PendingApprovalActionRepository(db);

@@ -4,7 +4,7 @@ import type {
   ApprovalExplanationStatus,
   ApprovalRequest,
   ApprovalResolveInput,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 
@@ -54,6 +54,7 @@ export class ApprovalRepository {
         resolved_by = @resolvedBy,
         resolution_note = @resolutionNote
       WHERE approval_id = @approvalId
+        AND status = 'pending'
     `);
     this.markExplanationPendingStmt = db.prepare(`
       UPDATE approvals SET
@@ -113,9 +114,6 @@ export class ApprovalRepository {
 
   public resolve(approvalId: string, input: ApprovalResolveInput): ApprovalRequest {
     const current = this.get(approvalId);
-    if (current.status !== "pending") {
-      throw new Error(`Approval ${approvalId} is already resolved`);
-    }
 
     const status: ApprovalRequest["status"] =
       input.decision === "approve"
@@ -124,14 +122,18 @@ export class ApprovalRepository {
           ? "rejected"
           : "edited";
 
-    this.resolveStmt.run({
+    const changed = this.resolveStmt.run({
       approvalId,
       status,
       payloadJson: JSON.stringify(input.editedPayload ?? current.payload),
       resolvedAt: new Date().toISOString(),
       resolvedBy: input.resolvedBy,
       resolutionNote: input.resolutionNote ?? null,
-    });
+    }).changes;
+
+    if (changed < 1) {
+      throw new Error(`Approval ${approvalId} is already resolved`);
+    }
 
     return this.get(approvalId);
   }

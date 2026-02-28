@@ -35,7 +35,7 @@ const updateTaskSchema = z.object({
   description: z.string().optional(),
   status: statusSchema.optional(),
   priority: prioritySchema.optional(),
-  assignedAgentId: z.string().optional(),
+  assignedAgentId: z.string().min(1).nullable().optional(),
   dueAt: z.string().datetime().optional(),
 });
 
@@ -54,7 +54,7 @@ const createDeliverableSchema = z.object({
 });
 
 const createSubagentSchema = z.object({
-  openclawSessionId: z.string().min(1),
+  agentSessionId: z.string().min(1),
   agentName: z.string().min(1).optional(),
 });
 
@@ -71,7 +71,10 @@ export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const items = fastify.gateway.listTasks(parsed.data.limit, parsed.data.status, parsed.data.cursor);
-    const nextCursor = items.length === parsed.data.limit ? items[items.length - 1]?.updatedAt : undefined;
+    const last = items[items.length - 1];
+    const nextCursor = items.length === parsed.data.limit && last
+      ? `${last.updatedAt}|${last.taskId}`
+      : undefined;
     return reply.send({ items, nextCursor });
   });
 
@@ -187,15 +190,15 @@ export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
-  fastify.patch("/api/v1/subagents/:openclawSessionId", async (request, reply) => {
-    const openclawSessionId = (request.params as { openclawSessionId: string }).openclawSessionId;
+  fastify.patch("/api/v1/subagents/:agentSessionId", async (request, reply) => {
+    const agentSessionId = (request.params as { agentSessionId: string }).agentSessionId;
     const parsed = updateSubagentSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
 
     try {
-      return reply.send(fastify.gateway.updateTaskSubagent(openclawSessionId, parsed.data));
+      return reply.send(fastify.gateway.updateTaskSubagent(agentSessionId, parsed.data));
     } catch (error) {
       return sendTaskError(reply, error);
     }
@@ -210,5 +213,11 @@ function sendTaskError(reply: FastifyReply, error: unknown) {
   if (message.includes("Cannot mark task done")) {
     return reply.code(409).send({ error: message });
   }
-  return reply.code(400).send({ error: message });
+  requestLogTaskError(error);
+  return reply.code(400).send({ error: "Invalid task request" });
+}
+
+function requestLogTaskError(error: unknown): void {
+  // Keep full stack in server logs but avoid leaking internals to API clients.
+  console.error("[tasks] route error", error);
 }

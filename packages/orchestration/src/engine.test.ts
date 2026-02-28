@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OrchestrationPlan, OrchestrationRun } from "@personal-ai/contracts";
+import type { OrchestrationPlan, OrchestrationRun } from "@goatcitadel/contracts";
 import { OrchestrationEngine } from "./engine.js";
 
 const plan: OrchestrationPlan = {
@@ -56,6 +56,6 @@ describe("OrchestrationEngine", () => {
     expect(afterPhase1.currentPhaseId).toBe("phase-2");
 
     const afterPhase2 = engine.approvePhase(plan, afterPhase1, "phase-2");
-    expect(afterPhase2.status).toBe("stopped_by_limit");
+    expect(afterPhase2.status).toBe("completed");
   });
 });

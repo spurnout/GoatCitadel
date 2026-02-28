@@ -1,5 +1,5 @@
-import type { ApprovalExplanation, ApprovalRequest, ChatCompletionResponse } from "@personal-ai/contracts";
-import type { Storage } from "@personal-ai/storage";
+import type { ApprovalExplanation, ApprovalRequest, ChatCompletionResponse } from "@goatcitadel/contracts";
+import type { Storage } from "@goatcitadel/storage";
 import type { ApprovalExplainerConfig } from "../config.js";
 import { LlmService } from "./llm-service.js";
 

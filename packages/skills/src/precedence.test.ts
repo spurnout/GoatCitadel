@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LoadedSkill } from "@personal-ai/contracts";
+import type { LoadedSkill } from "@goatcitadel/contracts";
 import { resolveSkillPrecedence } from "./precedence.js";
 
 const skill = (name: string, source: LoadedSkill["source"], mtime: string): LoadedSkill => ({

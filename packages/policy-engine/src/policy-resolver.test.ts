@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ToolPolicyConfig } from "@personal-ai/contracts";
+import type { ToolPolicyConfig } from "@goatcitadel/contracts";
 import { isToolAllowed, resolveEffectivePolicy } from "./policy-resolver.js";
 
 const config: ToolPolicyConfig = {

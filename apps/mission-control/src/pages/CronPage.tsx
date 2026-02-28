@@ -15,12 +15,13 @@ export function CronPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return <p className="error">{error}</p>;
   }
   if (!data) {
-    return <p>Loading cron jobs...</p>;
+    return <p>Loading bell tower jobs...</p>;
   }
 
   return (
     <section>
-      <h2>Cron</h2>
+      <h2>Bell Tower</h2>
+      <p className="office-subtitle">Scheduled automations and recurring herd routines.</p>
       <table>
         <thead>
           <tr>

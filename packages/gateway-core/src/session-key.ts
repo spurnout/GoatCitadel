@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SessionKind, SessionRouteInput } from "@personal-ai/contracts";
+import type { SessionKind, SessionRouteInput } from "@goatcitadel/contracts";
 
 export interface SessionRouteResolution {
   kind: SessionKind;

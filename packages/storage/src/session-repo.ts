@@ -1,4 +1,4 @@
-import type { SessionMeta } from "@personal-ai/contracts";
+import type { SessionMeta } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 
 interface SessionRow {
@@ -75,8 +75,12 @@ export class SessionRepository {
     `);
     this.listStmt = db.prepare(`
       SELECT * FROM sessions
-      WHERE (@cursor IS NULL OR updated_at < @cursor)
-      ORDER BY updated_at DESC
+      WHERE (
+        @cursorUpdatedAt IS NULL
+        OR updated_at < @cursorUpdatedAt
+        OR (updated_at = @cursorUpdatedAt AND session_id < @cursorSessionId)
+      )
+      ORDER BY updated_at DESC, session_id DESC
       LIMIT @limit
     `);
   }
@@ -121,13 +125,42 @@ export class SessionRepository {
   }
 
   public list(limit: number, cursor?: string): SessionMeta[] {
+    const parsedCursor = parseCompositeCursor(cursor);
     const rows = this.listStmt.all({
       limit,
-      cursor: cursor ?? null,
+      cursorUpdatedAt: parsedCursor?.timestamp ?? null,
+      cursorSessionId: parsedCursor?.key ?? null,
     }) as unknown as SessionRow[];
 
     return rows.map(mapSessionRow);
   }
+}
+
+interface CompositeCursor {
+  timestamp: string;
+  key: string;
+}
+
+function parseCompositeCursor(cursor?: string): CompositeCursor | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+
+  const separator = cursor.lastIndexOf("|");
+  if (separator <= 0) {
+    return {
+      timestamp: cursor,
+      key: "",
+    };
+  }
+
+  const timestamp = cursor.slice(0, separator);
+  const key = cursor.slice(separator + 1);
+  if (!timestamp || !key) {
+    return undefined;
+  }
+
+  return { timestamp, key };
 }
 
 function mapSessionRow(row: SessionRow): SessionMeta {

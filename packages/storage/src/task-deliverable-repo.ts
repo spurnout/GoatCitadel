@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   TaskDeliverableCreateInput,
   TaskDeliverableRecord,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 
 interface TaskDeliverableRow {
   deliverable_id: string;

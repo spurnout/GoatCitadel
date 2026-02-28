@@ -3,10 +3,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { loadGatewayConfig } from "../config.js";
 import { GatewayService } from "../services/gateway-service.js";
+import type { GatewayRuntimeConfig } from "../config.js";
 
 declare module "fastify" {
   interface FastifyInstance {
     gateway: GatewayService;
+    gatewayConfig: GatewayRuntimeConfig;
   }
 }
 
@@ -17,13 +19,19 @@ export const gatewayPlugin = fp(async (fastify) => {
   await gateway.init();
 
   fastify.decorate("gateway", gateway);
+  fastify.decorate("gatewayConfig", config);
 
   fastify.addHook("onClose", async () => {
-    gateway.close();
+    await gateway.close();
   });
 });
 
 function detectRootDir(): string {
+  const envRoot = process.env.GOATCITADEL_ROOT_DIR?.trim();
+  if (envRoot) {
+    return path.resolve(envRoot);
+  }
+
   const candidates = [
     process.cwd(),
     path.resolve(process.cwd(), ".."),

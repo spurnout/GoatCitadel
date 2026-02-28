@@ -27,6 +27,8 @@ export class CostLedgerRepository {
   private readonly summaryBySessionStmt;
   private readonly summaryByAgentStmt;
   private readonly summaryByTaskStmt;
+  private readonly pruneStmt;
+  private insertCount = 0;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
@@ -90,6 +92,11 @@ export class CostLedgerRepository {
       GROUP BY task_id
       ORDER BY SUM(cost_usd) DESC
     `);
+
+    this.pruneStmt = db.prepare(`
+      DELETE FROM cost_ledger
+      WHERE created_at < @cutoff
+    `);
   }
 
   public insert(record: CostLedgerRecord): void {
@@ -100,6 +107,11 @@ export class CostLedgerRepository {
       agentId: record.agentId ?? null,
       taskId: record.taskId ?? null,
     });
+    this.insertCount += 1;
+    if (this.insertCount % 50 === 0) {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      this.pruneStmt.run({ cutoff });
+    }
   }
 
   public summary(scope: CostSummary["scope"], fromIso: string, toIso: string): CostSummary[] {

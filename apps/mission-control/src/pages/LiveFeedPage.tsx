@@ -22,6 +22,7 @@ export function LiveFeedPage() {
   return (
     <section>
       <h2>Live Feed</h2>
+      <p className="office-subtitle">Raw stream of realtime GoatCitadel events.</p>
       {error ? <p className="error">{error}</p> : null}
       <ul className="compact-list">
         {events.map((event) => (

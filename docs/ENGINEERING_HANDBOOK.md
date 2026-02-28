@@ -1,0 +1,620 @@
+# GoatCitadel Engineering Handbook
+
+This document is the deep technical documentation for GoatCitadel. It is intended for:
+
+- Engineers onboarding to the codebase.
+- External reviewers performing architecture and code quality audits.
+- Contributors implementing new features without breaking deterministic safety behavior.
+
+This handbook describes what is currently implemented in `F:\code\personal-ai` as of February 2026.
+
+## 1. Product Definition and System Goals
+
+GoatCitadel is a local-first, TypeScript monorepo for orchestrating personal AI agents with:
+
+- A gateway that owns session truth and accounting.
+- A strict policy and sandbox layer before tool capability.
+- Human-in-the-loop approval workflows with replayable audit.
+- A skills system based on `SKILL.md` frontmatter and deterministic precedence.
+- A Mission Control web application for operator visibility and intervention.
+- OpenAI-compatible model endpoint support using `chat/completions`.
+- Local, Docker-less execution with host filesystem controls and worktree-based isolation primitives.
+
+Primary implementation goals:
+
+- Safety before capability.
+- Deterministic routing, policy evaluation, and activation behavior.
+- API-first operations (user interface is a client, not a source of truth).
+- Replayability and auditability of high-risk actions.
+- Practical local operation without cloud lock-in.
+
+## 2. Monorepo Structure
+
+```text
+F:\code\personal-ai
+├─ apps
+│  ├─ gateway                  # Fastify backend, canonical control plane
+│  └─ mission-control          # React + Vite operator console
+├─ packages
+│  ├─ contracts                # Shared TypeScript contracts
+│  ├─ storage                  # SQLite repositories + JSONL logs
+│  ├─ gateway-core             # Session keying, event ingest, token ledger
+│  ├─ policy-engine            # Tool policy resolver + sandbox gates
+│  ├─ skills                   # SKILL.md loading, precedence, activation
+│  └─ orchestration            # Plan/wave/phase engine primitives
+├─ config
+│  ├─ assistant.config.json
+│  ├─ tool-policy.json
+│  ├─ budgets.json
+│  ├─ llm-providers.json
+│  └─ cron-jobs.json
+├─ data
+│  ├─ index.db                 # SQLite index and durable operational state
+│  ├─ transcripts\*.jsonl      # Append-only transcript events
+│  └─ audit\*.jsonl            # Append-only policy/tool/approval audit logs
+├─ skills
+│  └─ bundled\*\SKILL.md       # Built-in skill definitions
+└─ artifacts
+   ├─ screenshots              # Mission Control captures
+   └─ reviews                  # External review prompts and findings
+```
+
+## 3. Runtime Topology
+
+### 3.1 Gateway (`apps/gateway`)
+
+Gateway is the control plane and source of operational truth. It:
+
+- Accepts inbound events and maps them to deterministic sessions.
+- Writes transcript events to JSONL.
+- Maintains indexed state and aggregates in SQLite.
+- Executes tool requests through policy enforcement.
+- Generates and resolves approvals.
+- Streams realtime events via Server-Sent Events.
+- Persists runtime settings and model provider configuration.
+
+Boot sequence:
+
+1. `main.ts` starts Fastify on `127.0.0.1:8787` (default).
+2. `gatewayPlugin` resolves repository root and loads config.
+3. `GatewayService.init()` reloads skills and cron entries.
+4. Routes are registered after CORS, auth, and idempotency plugins.
+
+### 3.2 Mission Control (`apps/mission-control`)
+
+Mission Control is an API client, not a backend extension. It:
+
+- Calls gateway REST endpoints.
+- Uses Server-Sent Events (`/api/v1/events/stream`) for live updates.
+- Maintains local browser preferences for operator UX.
+- Never writes data directly to local storage files or SQLite.
+
+### 3.3 Shared Domain Packages
+
+- `@goatcitadel/contracts`: types shared across backend and frontend.
+- `@goatcitadel/storage`: all SQLite repository and JSONL append/read logic.
+- `@goatcitadel/gateway-core`: event ingest and deterministic session key logic.
+- `@goatcitadel/policy-engine`: policy resolution and enforcement gates.
+- `@goatcitadel/skills`: skill loading and activation.
+- `@goatcitadel/orchestration`: orchestration run state transitions.
+
+## 4. Canonical Workflows
+
+### 4.1 Session Event Ingest Flow
+
+Endpoint: `POST /api/v1/gateway/events`
+
+Execution order:
+
+1. `Idempotency-Key` validated by plugin.
+2. Input schema validated by route.
+3. `EventIngestService.ingest()` resolves deterministic session key:
+   - Direct message: `channel:account:peer`
+   - Group: `channel:account:room`
+   - Thread: `channel:account:room:threadId`
+4. Existing idempotency record check:
+   - If found: mark deduped, return existing session.
+5. If new:
+   - Insert pending idempotency row.
+   - Upsert session record in SQLite.
+   - Append transcript event to `data/transcripts/<sessionId>.jsonl`.
+   - Transactionally update session usage + cost ledger + idempotency status.
+6. Publish realtime `session_event`.
+
+Design properties:
+
+- Deterministic session mapping.
+- Append-only transcript logging.
+- Gateway-owned accounting.
+- Idempotent mutation semantics.
+
+### 4.2 Tool Invocation and Safety Gate Flow
+
+Endpoint: `POST /api/v1/tools/invoke`
+
+Execution order:
+
+1. Route schema validation.
+2. `ToolPolicyEngine.invoke()` resolves effective policy:
+   - profile allowlist
+   - global allow
+   - per-agent allow
+   - global deny
+   - per-agent deny
+   - deny wins
+3. Unknown or denied tool is blocked and audited.
+4. Safety gates:
+   - `fs.write`: jailed path check, then mandatory approval.
+   - `http.*`: host/domain allowlist check.
+   - `shell.exec`: risky pattern check, approval if risky and enabled.
+5. For approval-required actions:
+   - create approval
+   - store pending action payload
+   - append approval event
+   - return `approval_required`.
+6. For allowed actions:
+   - execute via `executeTool()`
+   - persist invocation audit
+   - return result payload.
+
+### 4.3 Approval Lifecycle with Async Layman Explainer
+
+Core endpoints:
+
+- `POST /api/v1/approvals`
+- `POST /api/v1/approvals/:approvalId/resolve`
+- `GET /api/v1/approvals/:approvalId/replay`
+
+Lifecycle:
+
+1. Approval created and stored.
+2. `approval_events` receives `created`.
+3. Async explainer may schedule if risk >= configured threshold.
+4. Explainer marks `explanation_status=pending`, emits `explanation_requested`.
+5. Explainer calls LLM chat-completions with redacted payload.
+6. On success:
+   - stores explanation JSON
+   - marks `completed`
+   - emits `explanation_generated`
+   - publishes realtime `approval_explained`.
+7. On failure:
+   - marks `failed`
+   - stores `explanation_error`
+   - emits `explanation_failed`.
+8. Resolve endpoint:
+   - updates approval state
+   - optionally executes pending action if approved
+   - emits replayable events.
+
+Guarantee: explainer is informational only; policy decisions do not depend on it.
+
+### 4.4 Channel Inbound Adapters
+
+Endpoint: `POST /api/v1/channels/:channel/inbound`
+
+Purpose: allows external channels (for example Discord or Slack connectors) to map into canonical gateway event ingestion without bypassing session routing or accounting.
+
+Behavior:
+
+- Normalizes channel payload into `GatewayEventInput`.
+- Enforces idempotency with header.
+- Reuses primary ingest pipeline.
+- Publishes channel ingestion realtime event.
+
+### 4.5 Orchestration Run Progression
+
+Core endpoints:
+
+- `POST /api/v1/orchestration/plans`
+- `POST /api/v1/orchestration/plans/:planId/run`
+- `POST /api/v1/orchestration/phases/:phaseId/approve`
+- `GET /api/v1/orchestration/runs/:runId`
+- `GET /api/v1/orchestration/runs/:runId/checkpoints`
+
+Behavior:
+
+- Plan validation via schema and ownership overlap checks.
+- Run creation with checkpoints and run events.
+- Start transitions to `running` or `paused` based on run mode.
+- Phase approval advances to next phase/wave and increments iteration/cost.
+- Hard limits (`maxIterations`, `maxRuntimeMinutes`, `maxCostUsd`) can terminate run with `stopped_by_limit`.
+
+Current scope:
+
+- State machine and checkpoints are implemented.
+- Worktree manager class exists, but full wave execution against isolated worktrees is not yet wired into runtime execution loops.
+
+## 5. Persistence Model
+
+### 5.1 On-Disk Files
+
+- SQLite index/state: `data/index.db`
+- Transcript logs: `data/transcripts/<sessionId>.jsonl`
+- Audit logs: `data/audit/tool_invocations.jsonl`, `policy_blocks.jsonl`, `approvals.jsonl`
+
+### 5.2 SQLite Tables
+
+The `packages/storage/src/sqlite.ts` migration creates and updates these tables:
+
+- `sessions`
+- `inbound_events`
+- `approvals`
+- `approval_events`
+- `pending_approval_actions`
+- `tool_invocations`
+- `policy_blocks`
+- `cost_ledger`
+- `tasks`
+- `task_activities`
+- `task_deliverables`
+- `task_subagent_sessions`
+- `realtime_events`
+- `cron_jobs`
+- `skills_index`
+- `orchestration_runs`
+- `orchestration_plans`
+- `orchestration_checkpoints`
+- `orchestration_events`
+- `integration_connections`
+
+Migration safeguards:
+
+- Approval explainer columns added idempotently if missing.
+- Legacy `openclaw_session_id` migrated to `agent_session_id` with fallback table rebuild.
+
+### 5.3 Source-of-Truth Clarification
+
+- Session/event flow truth is controlled by gateway APIs and event ingest logic.
+- Transcripts and audit streams are append-only operational event records.
+- SQLite stores indexed operational state and replay metadata used by APIs and Mission Control.
+- Skills are sourced from disk `SKILL.md`; database entries are cache/index.
+
+## 6. Security and Safety Model
+
+### 6.1 Authentication Modes
+
+Configured in `assistant.config.json`:
+
+- `none`: no auth checks.
+- `token`: bearer token/header/query validation.
+- `basic`: HTTP basic authentication.
+
+Features:
+
+- Optional loopback bypass for local trust.
+- Runtime updates through `PATCH /api/v1/auth/settings` and `PATCH /api/v1/settings`.
+- Client-side Mission Control stores auth credentials in browser local storage for API calls and event stream URL query auth.
+
+### 6.2 Idempotency Enforcement
+
+Mutating methods (`POST`, `PATCH`, `PUT`, `DELETE`) require `Idempotency-Key`.
+
+Rejected requests without this header receive `400`.
+
+### 6.3 Sandbox Controls
+
+Policy engine enforcement includes:
+
+- Path jail (`assertWritePathInJail`) for write scope.
+- Read allowlist combining write roots and read-only roots.
+- Existing-path realpath check to reduce symlink escape risks.
+- Network allowlist using wildcard host pattern matching.
+- Risky shell pattern classification and approval gate.
+
+### 6.4 Auditing
+
+Tool and policy decisions are written to both:
+
+- SQLite (`tool_invocations`, `policy_blocks`, approvals tables).
+- Append-only JSONL audit logs.
+
+## 7. Skills System
+
+Skill canonical format:
+
+- Folder containing `SKILL.md`.
+- YAML frontmatter at top of file.
+- Body instructions as skill content.
+
+Implemented frontmatter fields:
+
+- `name`
+- `description`
+- `metadata.version`
+- `metadata.tags`
+- `metadata.tools`
+- `metadata.requires`
+- `metadata.keywords`
+
+Load order and precedence:
+
+- Sources loaded: `extra`, `bundled`, `managed`, `workspace`.
+- Conflict resolution precedence: `workspace > managed > bundled > extra`.
+- Tie-breaker within same source: latest `mtime`.
+
+Activation behavior:
+
+- Explicit triggers (`@skill name`, `use name`).
+- Keyword matches against input text.
+- Dependency resolution with cycle and missing dependency blocking metadata.
+
+## 8. Model Provider and OpenAI-Compatible Support
+
+`LlmService` supports providers exposing:
+
+- `GET /models`
+- `POST /chat/completions`
+
+Supported API style:
+
+- `openai-chat-completions` only.
+
+Explicitly not supported:
+
+- Legacy `openai completions` (`/v1/completions`) path.
+
+Provider operations:
+
+- List providers and runtime configuration.
+- Update active provider/model.
+- Upsert provider records at runtime.
+- Persist to `config/llm-providers.json`.
+- Optional inline API key or environment variable sourced API key.
+
+## 9. Mission Control Feature Breakdown
+
+Navigation tabs currently implemented:
+
+- Summit (Dashboard): cross-domain KPI rollup.
+- Engine (System): host and process vitals.
+- Trail Files: workspace listing, preview, and file writing.
+- Memory Pasture: workspace area and `memory/*` breakdown.
+- Goat Crew (Agents): role roster with runtime overlays.
+- Herd HQ (Office): WebGL office with operator + radial goat stations.
+- Pulse (Activity): realtime event feed.
+- Bell Tower (Cron): scheduled jobs state.
+- Runs (Sessions): session health and spend totals.
+- Playbook Skills: loaded skill inventory.
+- Feed Ledger (Costs): cost summary and run leaner hints.
+- Forge (Settings): policy, auth, LLM, allowlist controls.
+- Gatehouse (Approvals): approval queue and replay.
+- Trailboard (Tasks): tasks, activities, deliverables, subagent sessions.
+- Connections: integration catalog and connection management.
+
+Office implementation details:
+
+- True WebGL scene via `@react-three/fiber`.
+- Repeated desk kit geometry for performance and visual consistency.
+- Neutral lighting and clear status glows.
+- Central operator model with presets and rename.
+- Goat stations with click-to-inspect details and thought/action overlays.
+- Procedural fallback when optional external models are unavailable.
+
+## 10. API Surface Reference
+
+All mutating endpoints require `Idempotency-Key`.
+
+### Health and Streams
+
+- `GET /health`
+- `GET /api/v1/events`
+- `GET /api/v1/events/stream`
+
+### Sessions and Gateway
+
+- `POST /api/v1/gateway/events`
+- `GET /api/v1/sessions`
+- `GET /api/v1/sessions/:sessionId`
+- `GET /api/v1/sessions/:sessionId/transcript`
+
+### Tools and Policy
+
+- `POST /api/v1/tools/invoke`
+
+### Approvals
+
+- `POST /api/v1/approvals`
+- `GET /api/v1/approvals`
+- `POST /api/v1/approvals/:approvalId/resolve`
+- `GET /api/v1/approvals/:approvalId/replay`
+
+### Costs
+
+- `GET /api/v1/costs/summary`
+- `POST /api/v1/costs/run-cheaper`
+
+### Skills
+
+- `GET /api/v1/skills`
+- `POST /api/v1/skills/reload`
+- `POST /api/v1/skills/resolve-activation`
+
+### Tasks and Subagents
+
+- `GET /api/v1/tasks`
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks/:taskId`
+- `PATCH /api/v1/tasks/:taskId`
+- `DELETE /api/v1/tasks/:taskId`
+- `GET /api/v1/tasks/:taskId/activities`
+- `POST /api/v1/tasks/:taskId/activities`
+- `GET /api/v1/tasks/:taskId/deliverables`
+- `POST /api/v1/tasks/:taskId/deliverables`
+- `GET /api/v1/tasks/:taskId/subagents`
+- `POST /api/v1/tasks/:taskId/subagents`
+- `PATCH /api/v1/subagents/:agentSessionId`
+
+### Dashboard and Ops
+
+- `GET /api/v1/dashboard/state`
+- `GET /api/v1/system/vitals`
+- `GET /api/v1/cron/jobs`
+- `GET /api/v1/operators`
+- `GET /api/v1/agents`
+- `GET /api/v1/memory/files`
+- `GET /api/v1/settings`
+- `PATCH /api/v1/settings`
+- `GET /api/v1/auth/settings`
+- `PATCH /api/v1/auth/settings`
+
+### Files
+
+- `GET /api/v1/files/list`
+- `POST /api/v1/files/upload`
+- `GET /api/v1/files/download`
+- `GET /api/v1/files/preview`
+
+### LLM
+
+- `GET /api/v1/llm/providers`
+- `GET /api/v1/llm/config`
+- `PATCH /api/v1/llm/config`
+- `GET /api/v1/llm/models`
+- `POST /api/v1/llm/chat-completions`
+
+### Integrations and Channels
+
+- `GET /api/v1/integrations/catalog`
+- `GET /api/v1/integrations/connections`
+- `POST /api/v1/integrations/connections`
+- `PATCH /api/v1/integrations/connections/:connectionId`
+- `DELETE /api/v1/integrations/connections/:connectionId`
+- `POST /api/v1/channels/:channel/inbound`
+
+### Orchestration
+
+- `POST /api/v1/orchestration/plans`
+- `POST /api/v1/orchestration/plans/:planId/run`
+- `POST /api/v1/orchestration/phases/:phaseId/approve`
+- `GET /api/v1/orchestration/runs/:runId`
+- `GET /api/v1/orchestration/runs/:runId/checkpoints`
+
+## 11. Configuration Reference
+
+### `config/assistant.config.json`
+
+Defines environment, directory roots, auth mode, and approval explainer defaults.
+
+Important fields:
+
+- `auth.mode`
+- `auth.allowLoopbackBypass`
+- `auth.token.queryParam`
+- `approvalExplainer.enabled`
+- `approvalExplainer.minRiskLevel`
+- `approvalExplainer.timeoutMs`
+- `approvalExplainer.maxPayloadChars`
+
+### `config/tool-policy.json`
+
+Defines:
+
+- tool profiles and tool lists.
+- global and per-agent allow/deny behavior.
+- jail roots, read-only roots, network allowlist, risky shell patterns.
+
+### `config/budgets.json`
+
+Defines token and cost warnings and hard caps by day/session.
+
+### `config/llm-providers.json`
+
+Defines model provider catalog, active provider, and default models.
+
+### `config/cron-jobs.json`
+
+Optional list of scheduled jobs loaded into SQLite for dashboard visibility.
+
+## 12. Development and Operations
+
+### 12.1 Local Setup
+
+Prerequisites:
+
+- Node.js 22 or newer.
+- pnpm 10 or newer.
+- Git on PATH.
+
+Commands:
+
+```bash
+pnpm install
+pnpm dev:gateway
+pnpm dev:ui
+```
+
+### 12.2 Quality Gates
+
+```bash
+pnpm -r typecheck
+pnpm -r test
+pnpm -r build
+```
+
+### 12.3 Backup and Recovery
+
+Minimum backup set:
+
+- `data/index.db`
+- `data/transcripts/*.jsonl`
+- `data/audit/*.jsonl`
+- `config/*.json`
+
+If `index.db` is lost but logs remain:
+
+- transcripts and audit logs still preserve historical event records.
+- a replay/import utility is recommended as a future enhancement.
+
+## 13. Test Coverage Inventory
+
+Current automated tests include:
+
+- Session key determinism (`packages/gateway-core/src/session-key.test.ts`).
+- Policy precedence and gate helpers (`packages/policy-engine/src/*.test.ts`).
+- Skills precedence/dependency (`packages/skills/src/*.test.ts`).
+- Storage repositories and migrations (`packages/storage/src/*.test.ts`).
+- Orchestration state transitions and ownership conflict checks (`packages/orchestration/src/*.test.ts`).
+- Approval explainer behavior (`apps/gateway/src/services/approval-explainer-service.test.ts`).
+
+## 14. Known Gaps and Risk Areas
+
+These are implementation realities to include in architectural/code review:
+
+- Worktree manager exists, but full orchestration-to-worktree execution is partial.
+- File writes in mission control files tab are direct content writes; no diff editor yet.
+- No multi-user authorization model; auth is gateway-level only.
+- No built-in secrets manager; provider keys can be runtime-persisted if provided inline.
+- No formal rate limiter for public-hosting scenarios.
+- Replay/import utilities for rebuilding SQLite from logs are not yet shipped.
+
+## 15. Suggested Review Tracks for Subagents
+
+Use separate reviewer tracks for:
+
+- Security hardening and threat model.
+- Data durability and migration correctness.
+- Performance and scaling under high event volume.
+- User experience and accessibility in Mission Control.
+- Orchestration correctness, especially limits and checkpoint semantics.
+- API contract consistency between frontend client and backend schemas.
+- Test coverage gaps and deterministic behavior checks.
+
+## 16. Reviewer Checklist
+
+Before approving production use:
+
+1. Verify every mutating route enforces idempotency.
+2. Verify deny-wins behavior under all policy combinations.
+3. Verify jail and allowlist gates cannot be bypassed with path traversal or host tricks.
+4. Verify approval resolution does not execute stale or malformed pending actions.
+5. Verify auth mode changes persist and are applied without restart regression.
+6. Verify chat-completion routing never falls back to legacy completions.
+7. Verify Mission Control never bypasses gateway APIs for state mutation.
+8. Verify all migrations are safe on existing databases.
+9. Verify orchestration limits halt execution deterministically.
+10. Verify JSONL append and replay paths are stable under duplicate event traffic.
+
+---
+
+For release-facing setup and screenshots, see repository `README.md`.
+

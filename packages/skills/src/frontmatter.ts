@@ -1,5 +1,5 @@
 import YAML from "yaml";
-import type { SkillFrontmatter } from "@personal-ai/contracts";
+import type { SkillFrontmatter } from "@goatcitadel/contracts";
 
 export interface ParsedSkillMarkdown {
   frontmatter: SkillFrontmatter;

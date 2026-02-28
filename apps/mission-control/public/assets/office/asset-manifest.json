@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "theme": "goatcitadel-office-v4",
+  "licensePolicy": "cc0-only",
+  "models": [
+    {
+      "id": "central-operator",
+      "label": "GoatHerder",
+      "path": "/assets/office/models/central-operator.glb",
+      "required": false,
+      "fallback": "procedural-human",
+      "sourceUrl": "",
+      "license": "CC0",
+      "includedInRepo": false
+    },
+    {
+      "id": "goat-subagent",
+      "label": "Goat Subagent",
+      "path": "/assets/office/models/goat-subagent.glb",
+      "required": false,
+      "fallback": "procedural-goat",
+      "sourceUrl": "",
+      "license": "CC0",
+      "includedInRepo": false
+    }
+  ],
+  "textures": [
+    {
+      "id": "office-floor",
+      "path": "/assets/office/textures/office-floor.png",
+      "required": false,
+      "license": "CC0",
+      "includedInRepo": false
+    }
+  ],
+  "notes": [
+    "All production assets must be CC0 and logged in ASSET_LICENSES.md.",
+    "If assets are missing, Office V4 falls back to procedural meshes."
+  ]
+}

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createDatabase } from "./sqlite.js";
 import { OrchestrationRepository } from "./orchestration-repo.js";
-import type { OrchestrationPlan, OrchestrationRun } from "@personal-ai/contracts";
+import type { OrchestrationPlan, OrchestrationRun } from "@goatcitadel/contracts";
 
 const createdFiles: string[] = [];
 
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function createRepo(): OrchestrationRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-orch-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-orch-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new OrchestrationRepository(db);

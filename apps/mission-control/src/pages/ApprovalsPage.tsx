@@ -23,6 +23,15 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }, [refreshKey]);
 
   const onResolve = async (approvalId: string, decision: "approve" | "reject") => {
+    const confirmed = window.confirm(
+      decision === "approve"
+        ? "Approve this action and execute it now?"
+        : "Reject this approval request?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
     try {
       const result = await resolveApproval(approvalId, decision);
       if (result.executedAction) {
@@ -48,12 +57,13 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   if (!data) {
-    return <p>Loading approvals...</p>;
+    return <p>Loading gatehouse queue...</p>;
   }
 
   return (
     <section>
-      <h2>Approvals Queue</h2>
+      <h2>Gatehouse Queue</h2>
+      <p className="office-subtitle">Human-in-the-loop decisions for risky goat actions.</p>
       {error ? <p className="error">{error}</p> : null}
       {data.items.length === 0 ? <p>No pending approvals.</p> : null}
       {data.items.map((approval) => {

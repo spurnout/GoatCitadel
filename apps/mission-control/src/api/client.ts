@@ -1,10 +1,25 @@
+import type {
+  AuthSettingsUpdateInput,
+  ApprovalReplayEvent,
+  ApprovalRequest,
+  OnboardingBootstrapInput,
+  OnboardingBootstrapResult,
+  OnboardingState,
+  PendingApprovalAction,
+  SessionMeta,
+  ToolInvokeResult,
+} from "@goatcitadel/contracts";
+
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const authHeaders = readGatewayAuthHeaders(path);
   const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
       ...(init?.method && init.method !== "GET" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
+      ...authHeaders,
       ...(init?.headers ?? {}),
     },
     ...init,
@@ -18,68 +33,59 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+function readGatewayAuthHeaders(path: string): Record<string, string> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as {
+      mode?: "none" | "token" | "basic";
+      token?: string;
+      username?: string;
+      password?: string;
+      tokenQueryParam?: string;
+    };
+
+    if (parsed.mode === "token" && parsed.token?.trim()) {
+      return {
+        Authorization: `Bearer ${parsed.token.trim()}`,
+      };
+    }
+    if (parsed.mode === "basic" && parsed.username && parsed.password) {
+      const encoded = btoa(`${parsed.username}:${parsed.password}`);
+      return {
+        Authorization: `Basic ${encoded}`,
+      };
+    }
+
+    if (parsed.token?.trim()) {
+      return {
+        Authorization: `Bearer ${parsed.token.trim()}`,
+      };
+    }
+  } catch {
+    // ignore auth parse errors
+  }
+  return {};
+}
+
 export interface SessionsResponse {
-  items: Array<{
-    sessionId: string;
-    sessionKey: string;
-    health: string;
-    updatedAt: string;
-    tokenTotal: number;
-    costUsdTotal: number;
-  }>;
+  items: SessionMeta[];
   nextCursor?: string;
 }
 
 export interface ApprovalsResponse {
-  items: Array<{
-    approvalId: string;
-    kind: string;
-    riskLevel: string;
-    status: string;
-    createdAt: string;
-    preview: Record<string, unknown>;
-    explanationStatus: "not_requested" | "pending" | "completed" | "failed";
-    explanation?: {
-      summary: string;
-      riskExplanation: string;
-      saferAlternative?: string;
-      generatedAt: string;
-      providerId?: string;
-      model?: string;
-    };
-    explanationError?: string;
-  }>;
+  items: ApprovalRequest[];
 }
 
 export interface ApprovalReplayResponse {
-  approval: {
-    approvalId: string;
-    kind: string;
-    riskLevel: string;
-    status: string;
-    explanationStatus: "not_requested" | "pending" | "completed" | "failed";
-    explanation?: {
-      summary: string;
-      riskExplanation: string;
-      saferAlternative?: string;
-      generatedAt: string;
-      providerId?: string;
-      model?: string;
-    };
-    explanationError?: string;
-  };
-  events: Array<{
-    eventId: string;
-    eventType: string;
-    actorId: string;
-    timestamp: string;
-    payload: Record<string, unknown>;
-  }>;
-  pendingAction?: {
-    resolutionStatus?: string;
-    request: Record<string, unknown>;
-    result?: Record<string, unknown>;
-  };
+  approval: ApprovalRequest;
+  events: ApprovalReplayEvent[];
+  pendingAction?: PendingApprovalAction;
 }
 
 export interface CostSummaryResponse {
@@ -132,7 +138,7 @@ export interface TaskDeliverableRecord {
 export interface TaskSubagentSession {
   subagentSessionId: string;
   taskId: string;
-  openclawSessionId: string;
+  agentSessionId: string;
   agentName?: string;
   status: "active" | "completed" | "failed" | "killed";
   createdAt: string;
@@ -206,7 +212,7 @@ export interface AgentsResponse {
 export interface RuntimeSettingsResponse {
   environment: string;
   defaultToolProfile: string;
-  budgetMode: string;
+  budgetMode: "saver" | "balanced" | "power";
   workspaceDir: string;
   writeJailRoots: string[];
   readOnlyRoots: string[];
@@ -219,6 +225,12 @@ export interface RuntimeSettingsResponse {
     model?: string;
     timeoutMs: number;
     maxPayloadChars: number;
+  };
+  auth: {
+    mode: "none" | "token" | "basic";
+    allowLoopbackBypass: boolean;
+    tokenConfigured: boolean;
+    basicConfigured: boolean;
   };
   llm: {
     activeProviderId: string;
@@ -233,6 +245,46 @@ export interface RuntimeSettingsResponse {
       apiKeySource: "inline" | "env" | "none";
     }>;
   };
+  mesh: {
+    enabled: boolean;
+    mode: "lan" | "wan" | "tailnet";
+    nodeId: string;
+    mdns: boolean;
+    staticPeers: string[];
+    requireMtls: boolean;
+    tailnetEnabled: boolean;
+  };
+}
+
+export interface OnboardingCompleteResponse {
+  state: OnboardingState;
+}
+
+export interface IntegrationCatalogEntry {
+  catalogId: string;
+  kind: "channel" | "model_provider" | "productivity" | "automation" | "platform";
+  key: string;
+  label: string;
+  description: string;
+  maturity: "native" | "beta" | "planned";
+  authMethods: string[];
+  capabilities: string[];
+  docsUrl?: string;
+}
+
+export interface IntegrationConnection {
+  connectionId: string;
+  catalogId: string;
+  kind: "channel" | "model_provider" | "productivity" | "automation" | "platform";
+  key: string;
+  label: string;
+  enabled: boolean;
+  status: "connected" | "disconnected" | "error" | "paused";
+  config: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastSyncAt?: string;
+  lastError?: string;
 }
 
 export interface LlmChatCompletionResponse {
@@ -251,6 +303,51 @@ export interface LlmChatCompletionResponse {
   [key: string]: unknown;
 }
 
+export interface MeshStatusResponse {
+  enabled: boolean;
+  mode: "lan" | "wan" | "tailnet";
+  localNodeId: string;
+  tailnetEnabled: boolean;
+  nodesOnline: number;
+  activeLeases: number;
+  ownedSessions: number;
+}
+
+export interface MeshNodeRecord {
+  nodeId: string;
+  label?: string;
+  advertiseAddress?: string;
+  transport: "lan" | "wan" | "tailnet";
+  status: "online" | "suspect" | "offline";
+  capabilities: string[];
+  tlsFingerprint?: string;
+  joinedAt: string;
+  lastSeenAt: string;
+}
+
+export interface MeshLeaseRecord {
+  leaseKey: string;
+  holderNodeId: string;
+  fencingToken: number;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+export interface MeshSessionOwnerRecord {
+  sessionId: string;
+  ownerNodeId: string;
+  epoch: number;
+  claimedAt: string;
+  updatedAt: string;
+}
+
+export interface MeshReplicationOffsetRecord {
+  consumerNodeId: string;
+  sourceNodeId: string;
+  lastReplicationId?: string;
+  updatedAt: string;
+}
+
 export async function fetchSessions(): Promise<SessionsResponse> {
   return request<SessionsResponse>("/api/v1/sessions?limit=50");
 }
@@ -262,7 +359,7 @@ export async function fetchApprovals(status = "pending"): Promise<ApprovalsRespo
 export async function resolveApproval(
   approvalId: string,
   decision: "approve" | "reject",
-): Promise<{ approval: unknown; executedAction?: { outcome: string; policyReason: string } }> {
+): Promise<{ approval: ApprovalRequest; executedAction?: ToolInvokeResult }> {
   return request(`/api/v1/approvals/${approvalId}/resolve`, {
     method: "POST",
     body: JSON.stringify({
@@ -305,7 +402,12 @@ export async function createTask(input: {
   });
 }
 
-export async function updateTask(taskId: string, input: Partial<Pick<TaskRecord, "status" | "priority" | "assignedAgentId" | "title" | "description" | "dueAt">>): Promise<TaskRecord> {
+export async function updateTask(
+  taskId: string,
+  input: Partial<Pick<TaskRecord, "status" | "priority" | "title" | "description" | "dueAt">> & {
+    assignedAgentId?: string | null;
+  },
+): Promise<TaskRecord> {
   return request<TaskRecord>(`/api/v1/tasks/${encodeURIComponent(taskId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
@@ -364,7 +466,7 @@ export async function fetchTaskSubagents(taskId: string): Promise<{ items: TaskS
 
 export async function registerTaskSubagent(
   taskId: string,
-  input: { openclawSessionId: string; agentName?: string },
+  input: { agentSessionId: string; agentName?: string },
 ): Promise<TaskSubagentSession> {
   return request<TaskSubagentSession>(`/api/v1/tasks/${encodeURIComponent(taskId)}/subagents`, {
     method: "POST",
@@ -373,10 +475,10 @@ export async function registerTaskSubagent(
 }
 
 export async function updateTaskSubagent(
-  openclawSessionId: string,
+  agentSessionId: string,
   input: { status?: TaskSubagentSession["status"]; endedAt?: string },
 ): Promise<TaskSubagentSession> {
-  return request<TaskSubagentSession>(`/api/v1/subagents/${encodeURIComponent(openclawSessionId)}`, {
+  return request<TaskSubagentSession>(`/api/v1/subagents/${encodeURIComponent(agentSessionId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -466,10 +568,31 @@ export async function fetchSettings(): Promise<RuntimeSettingsResponse> {
   return request<RuntimeSettingsResponse>("/api/v1/settings");
 }
 
+export async function fetchOnboardingState(): Promise<OnboardingState> {
+  return request<OnboardingState>("/api/v1/onboarding/state");
+}
+
+export async function bootstrapOnboarding(input: OnboardingBootstrapInput): Promise<OnboardingBootstrapResult> {
+  return request<OnboardingBootstrapResult>("/api/v1/onboarding/bootstrap", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function completeOnboarding(completedBy?: string): Promise<OnboardingCompleteResponse> {
+  return request<OnboardingCompleteResponse>("/api/v1/onboarding/complete", {
+    method: "POST",
+    body: JSON.stringify({
+      completedBy,
+    }),
+  });
+}
+
 export async function patchSettings(input: {
   defaultToolProfile?: string;
   budgetMode?: "saver" | "balanced" | "power";
   networkAllowlist?: string[];
+  auth?: AuthSettingsUpdateInput;
   llm?: {
     activeProviderId?: string;
     activeModel?: string;
@@ -483,10 +606,70 @@ export async function patchSettings(input: {
       headers?: Record<string, string>;
     };
   };
+  mesh?: {
+    enabled?: boolean;
+    mode?: "lan" | "wan" | "tailnet";
+    nodeId?: string;
+    mdns?: boolean;
+    staticPeers?: string[];
+    requireMtls?: boolean;
+    tailnetEnabled?: boolean;
+  };
 }): Promise<RuntimeSettingsResponse> {
   return request<RuntimeSettingsResponse>("/api/v1/settings", {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function fetchIntegrationCatalog(
+  kind?: IntegrationCatalogEntry["kind"],
+): Promise<{ items: IntegrationCatalogEntry[] }> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return request(`/api/v1/integrations/catalog${query}`);
+}
+
+export async function fetchIntegrationConnections(
+  kind?: IntegrationConnection["kind"],
+): Promise<{ items: IntegrationConnection[] }> {
+  const query = kind ? `?kind=${encodeURIComponent(kind)}&limit=300` : "?limit=300";
+  return request(`/api/v1/integrations/connections${query}`);
+}
+
+export async function createIntegrationConnection(input: {
+  catalogId: string;
+  label?: string;
+  enabled?: boolean;
+  status?: IntegrationConnection["status"];
+  config?: Record<string, unknown>;
+}): Promise<IntegrationConnection> {
+  return request("/api/v1/integrations/connections", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateIntegrationConnection(
+  connectionId: string,
+  input: {
+    label?: string;
+    enabled?: boolean;
+    status?: IntegrationConnection["status"];
+    config?: Record<string, unknown>;
+    lastSyncAt?: string;
+    lastError?: string;
+  },
+): Promise<IntegrationConnection> {
+  return request(`/api/v1/integrations/connections/${encodeURIComponent(connectionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteIntegrationConnection(connectionId: string): Promise<{ deleted: boolean }> {
+  return request(`/api/v1/integrations/connections/${encodeURIComponent(connectionId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
   });
 }
 
@@ -512,16 +695,158 @@ export async function createLlmChatCompletion(input: {
   });
 }
 
-export function connectEventStream(onEvent: (event: RealtimeEvent) => void): () => void {
-  const source = new EventSource(`${API_BASE}/api/v1/events/stream?replay=20`);
-  source.onmessage = (evt) => {
-    try {
-      onEvent(JSON.parse(evt.data) as RealtimeEvent);
-    } catch {
-      // ignore malformed
+export async function fetchMeshStatus(): Promise<MeshStatusResponse> {
+  return request<MeshStatusResponse>("/api/v1/mesh/status");
+}
+
+export async function fetchMeshNodes(limit = 200): Promise<{ items: MeshNodeRecord[] }> {
+  return request<{ items: MeshNodeRecord[] }>(`/api/v1/mesh/nodes?limit=${limit}`);
+}
+
+export async function fetchMeshLeases(limit = 200): Promise<{ items: MeshLeaseRecord[] }> {
+  return request<{ items: MeshLeaseRecord[] }>(`/api/v1/mesh/leases?limit=${limit}`);
+}
+
+export async function fetchMeshSessionOwners(limit = 500): Promise<{ items: MeshSessionOwnerRecord[] }> {
+  return request<{ items: MeshSessionOwnerRecord[] }>(`/api/v1/mesh/sessions/owners?limit=${limit}`);
+}
+
+export async function fetchMeshReplicationOffsets(limit = 500): Promise<{ items: MeshReplicationOffsetRecord[] }> {
+  return request<{ items: MeshReplicationOffsetRecord[] }>(`/api/v1/mesh/replication/offsets?limit=${limit}`);
+}
+
+export type EventStreamConnectionState = "connecting" | "open" | "error" | "closed";
+
+interface EventStreamSubscriber {
+  onEvent: (event: RealtimeEvent) => void;
+  onStateChange?: (state: EventStreamConnectionState) => void;
+}
+
+const eventStreamSubscribers = new Set<EventStreamSubscriber>();
+let sharedEventSource: EventSource | null = null;
+let eventReconnectTimer: number | null = null;
+let eventConnectionState: EventStreamConnectionState = "closed";
+
+export function connectEventStream(
+  onEvent: (event: RealtimeEvent) => void,
+  onStateChange?: (state: EventStreamConnectionState) => void,
+): () => void {
+  const subscriber: EventStreamSubscriber = { onEvent, onStateChange };
+  eventStreamSubscribers.add(subscriber);
+  notifyEventStreamState(subscriber, eventConnectionState);
+  ensureEventStreamConnected();
+
+  return () => {
+    eventStreamSubscribers.delete(subscriber);
+    if (eventStreamSubscribers.size === 0) {
+      closeSharedEventSource();
+      clearReconnectTimer();
+      setEventConnectionState("closed");
     }
   };
-  return () => {
-    source.close();
+}
+
+function buildEventStreamUrl(): string {
+  const url = new URL(`${API_BASE}/api/v1/events/stream`);
+  url.searchParams.set("replay", "20");
+
+  if (typeof window === "undefined") {
+    return url.toString();
+  }
+
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) {
+      return url.toString();
+    }
+    const parsed = JSON.parse(raw) as {
+      mode?: "none" | "token" | "basic";
+      token?: string;
+      username?: string;
+      password?: string;
+      tokenQueryParam?: string;
+    };
+    if (parsed.mode === "token" && parsed.token?.trim()) {
+      url.searchParams.set(parsed.tokenQueryParam?.trim() || "access_token", parsed.token.trim());
+    } else if (parsed.mode === "basic" && parsed.username && parsed.password) {
+      url.searchParams.set("basic_auth", btoa(`${parsed.username}:${parsed.password}`));
+    }
+  } catch {
+    // ignore auth parse errors
+  }
+
+  return url.toString();
+}
+
+function ensureEventStreamConnected(): void {
+  if (sharedEventSource || eventStreamSubscribers.size === 0 || typeof window === "undefined") {
+    return;
+  }
+
+  setEventConnectionState("connecting");
+  const source = new EventSource(buildEventStreamUrl());
+  sharedEventSource = source;
+
+  source.onopen = () => {
+    setEventConnectionState("open");
   };
+
+  source.onmessage = (evt) => {
+    try {
+      const event = JSON.parse(evt.data) as RealtimeEvent;
+      for (const subscriber of eventStreamSubscribers) {
+        subscriber.onEvent(event);
+      }
+    } catch {
+      // ignore malformed messages
+    }
+  };
+
+  source.onerror = () => {
+    closeSharedEventSource();
+    if (eventStreamSubscribers.size === 0) {
+      setEventConnectionState("closed");
+      return;
+    }
+    setEventConnectionState("error");
+    scheduleReconnect();
+  };
+}
+
+function scheduleReconnect(): void {
+  if (eventReconnectTimer !== null || typeof window === "undefined") {
+    return;
+  }
+
+  eventReconnectTimer = window.setTimeout(() => {
+    eventReconnectTimer = null;
+    ensureEventStreamConnected();
+  }, 2000);
+}
+
+function closeSharedEventSource(): void {
+  if (!sharedEventSource) {
+    return;
+  }
+  sharedEventSource.close();
+  sharedEventSource = null;
+}
+
+function clearReconnectTimer(): void {
+  if (eventReconnectTimer === null || typeof window === "undefined") {
+    return;
+  }
+  window.clearTimeout(eventReconnectTimer);
+  eventReconnectTimer = null;
+}
+
+function setEventConnectionState(state: EventStreamConnectionState): void {
+  eventConnectionState = state;
+  for (const subscriber of eventStreamSubscribers) {
+    notifyEventStreamState(subscriber, state);
+  }
+}
+
+function notifyEventStreamState(subscriber: EventStreamSubscriber, state: EventStreamConnectionState): void {
+  subscriber.onStateChange?.(state);
 }

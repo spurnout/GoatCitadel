@@ -29,12 +29,13 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   if (!data) {
-    return <p>Loading cost summary...</p>;
+    return <p>Loading feed ledger...</p>;
   }
 
   return (
     <section>
-      <h2>Token & Cost Console</h2>
+      <h2>Feed Ledger</h2>
+      <p className="office-subtitle">Token and cost burn-rate controls for herd operations.</p>
       <div className="controls-row">
         <label htmlFor="scope">Scope</label>
         <select
@@ -47,7 +48,7 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
           <option value="agent">agent</option>
           <option value="task">task</option>
         </select>
-        <button onClick={onRunCheaper}>Run Cheaper</button>
+        <button onClick={onRunCheaper}>Run Leaner</button>
       </div>
       {recommendation ? (
         <ul>

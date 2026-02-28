@@ -6,6 +6,134 @@ import {
   patchSettings,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
+
+const TOOL_PROFILE_OPTIONS: SelectOption[] = [
+  { value: "minimal", label: "minimal (safest)" },
+  { value: "standard", label: "standard" },
+  { value: "coding", label: "coding" },
+  { value: "ops", label: "ops" },
+  { value: "research", label: "research" },
+  { value: "danger", label: "danger (high risk)" },
+];
+
+const PROVIDER_TEMPLATES: Array<{
+  providerId: string;
+  label: string;
+  baseUrl: string;
+  defaultModel: string;
+}> = [
+  {
+    providerId: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4.1-mini",
+  },
+  {
+    providerId: "anthropic",
+    label: "Anthropic (compatible endpoint)",
+    baseUrl: "https://api.anthropic.com/v1",
+    defaultModel: "claude-3-7-sonnet-latest",
+  },
+  {
+    providerId: "google",
+    label: "Google (compatible endpoint)",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultModel: "gemini-2.0-flash",
+  },
+  {
+    providerId: "minimax",
+    label: "MiniMax (compatible endpoint)",
+    baseUrl: "https://api.minimax.chat/v1",
+    defaultModel: "MiniMax-Text-01",
+  },
+  {
+    providerId: "vercel",
+    label: "Vercel AI Gateway",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+    defaultModel: "openai/gpt-4.1-mini",
+  },
+  {
+    providerId: "lmstudio",
+    label: "LM Studio",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    defaultModel: "local-model",
+  },
+  {
+    providerId: "ollama",
+    label: "Ollama",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    defaultModel: "llama3.1",
+  },
+  {
+    providerId: "localai",
+    label: "LocalAI",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    defaultModel: "local-model",
+  },
+  {
+    providerId: "openrouter",
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModel: "openai/gpt-4.1-mini",
+  },
+  {
+    providerId: "mistral",
+    label: "Mistral",
+    baseUrl: "https://api.mistral.ai/v1",
+    defaultModel: "mistral-small-latest",
+  },
+  {
+    providerId: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+  },
+  {
+    providerId: "glm",
+    label: "GLM (compatible endpoint)",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    defaultModel: "glm-4",
+  },
+  {
+    providerId: "perplexity",
+    label: "Perplexity",
+    baseUrl: "https://api.perplexity.ai/v1",
+    defaultModel: "sonar",
+  },
+  {
+    providerId: "huggingface",
+    label: "HuggingFace Inference",
+    baseUrl: "https://router.huggingface.co/v1",
+    defaultModel: "openai/gpt-oss-120b",
+  },
+];
+
+const ALLOWLIST_PRESETS: Array<{ id: string; label: string; hosts: string[] }> = [
+  { id: "strict", label: "Strict (no outbound hosts)", hosts: [] },
+  { id: "local", label: "Local models only", hosts: ["127.0.0.1", "localhost"] },
+  {
+    id: "common-llm",
+    label: "Common providers + local",
+    hosts: ["127.0.0.1", "localhost", "api.openai.com", "openrouter.ai"],
+  },
+];
+
+const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> = [
+  { id: "hello", label: "Hello smoke test", prompt: "Say hello from OpenAI-compatible chat completions." },
+  {
+    id: "plan",
+    label: "Planning response",
+    prompt: "In 5 bullets, propose a safe implementation plan for a new feature.",
+  },
+  {
+    id: "safety",
+    label: "Safety check",
+    prompt: "Summarize one policy risk and one mitigation for executing a risky shell command.",
+  },
+];
+
+const GATEWAY_AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 
 export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
@@ -21,12 +149,54 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [providerDefaultModel, setProviderDefaultModel] = useState("local-model");
   const [providerApiKey, setProviderApiKey] = useState("");
   const [providerApiKeyEnv, setProviderApiKeyEnv] = useState("");
+  const [authMode, setAuthMode] = useState<"none" | "token" | "basic">("none");
+  const [allowLoopbackBypass, setAllowLoopbackBypass] = useState(false);
+  const [authToken, setAuthToken] = useState("");
+  const [basicUsername, setBasicUsername] = useState("");
+  const [basicPassword, setBasicPassword] = useState("");
   const [models, setModels] = useState<Array<{ id: string; ownedBy?: string; created?: number }>>([]);
   const [chatPrompt, setChatPrompt] = useState("Say hello from OpenAI-compatible chat completions.");
+  const [chatPromptPresetId, setChatPromptPresetId] = useState("hello");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [allowlistPreset, setAllowlistPreset] = useState("strict");
   const [chatResponse, setChatResponse] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const providerOptions = useMemo(() => settings?.llm.providers ?? [], [settings]);
+  const providerSelectOptions = useMemo<SelectOption[]>(() => {
+    const fromSettings = providerOptions.map((provider) => ({
+      value: provider.providerId,
+      label: `${provider.providerId} (${provider.baseUrl})`,
+    }));
+    const fromTemplates = PROVIDER_TEMPLATES.map((template) => ({
+      value: template.providerId,
+      label: `${template.providerId} (${template.baseUrl})`,
+    }));
+    return [...fromSettings, ...fromTemplates];
+  }, [providerOptions]);
+
+  const activeModelOptions = useMemo<SelectOption[]>(() => {
+    const items = [
+      ...models.map((model) => model.id),
+      ...providerOptions.map((provider) => provider.defaultModel),
+      providerDefaultModel,
+      activeModel,
+    ].filter(Boolean) as string[];
+
+    return [...new Set(items)].map((item) => ({ value: item, label: item }));
+  }, [activeModel, models, providerDefaultModel, providerOptions]);
+
+  const providerLabelOptions = useMemo<SelectOption[]>(() => {
+    const builtins = PROVIDER_TEMPLATES.map((template) => ({
+      value: template.label,
+      label: template.label,
+    }));
+    const existing = providerOptions.map((provider) => ({
+      value: provider.label,
+      label: provider.label,
+    }));
+    return [...builtins, ...existing];
+  }, [providerOptions]);
 
   const load = () => {
     void fetchSettings()
@@ -35,6 +205,9 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         setProfile(res.defaultToolProfile);
         setBudgetMode((res.budgetMode as "saver" | "balanced" | "power") || "balanced");
         setNetworkAllowlistText(res.networkAllowlist.join("\n"));
+        setAllowlistPreset(matchAllowlistPreset(res.networkAllowlist));
+        setAuthMode(res.auth.mode);
+        setAllowLoopbackBypass(res.auth.allowLoopbackBypass);
 
         setActiveProviderId(res.llm.activeProviderId);
         setActiveModel(res.llm.activeModel);
@@ -46,6 +219,9 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           setProviderBaseUrl(activeProvider.baseUrl);
           setProviderDefaultModel(activeProvider.defaultModel);
         }
+
+        setChatPromptPresetId("hello");
+        hydrateStoredAuthCredentials();
       })
       .catch((err: Error) => setError(err.message));
   };
@@ -71,12 +247,24 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
-  const onSaveLlm = async () => {
+  const onSaveActiveLlm = async () => {
     try {
       const next = await patchSettings({
         llm: {
           activeProviderId,
           activeModel,
+        },
+      });
+      setSettings(next);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onSaveProvider = async () => {
+    try {
+      const next = await patchSettings({
+        llm: {
           upsertProvider: {
             providerId,
             label: providerLabel || undefined,
@@ -120,13 +308,77 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
+  const hydrateStoredAuthCredentials = () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(GATEWAY_AUTH_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as {
+        token?: string;
+        username?: string;
+        password?: string;
+      };
+      setAuthToken(parsed.token ?? "");
+      setBasicUsername(parsed.username ?? "");
+      setBasicPassword(parsed.password ?? "");
+    } catch {
+      // ignore parse failures
+    }
+  };
+
+  const onSaveAuth = async () => {
+    try {
+      const next = await patchSettings({
+        auth: {
+          mode: authMode,
+          allowLoopbackBypass,
+          token: authToken,
+          basicUsername: basicUsername,
+          basicPassword: basicPassword,
+        },
+      });
+      setSettings(next);
+      persistGatewayAuthClient({
+        mode: authMode,
+        token: authToken,
+        username: basicUsername,
+        password: basicPassword,
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const applyProviderTemplate = (nextProviderId: string) => {
+    const current = providerOptions.find((provider) => provider.providerId === nextProviderId);
+    const template = PROVIDER_TEMPLATES.find((item) => item.providerId === nextProviderId);
+
+    if (current) {
+      setProviderLabel(current.label);
+      setProviderBaseUrl(current.baseUrl);
+      setProviderDefaultModel(current.defaultModel);
+      return;
+    }
+
+    if (template) {
+      setProviderLabel(template.label);
+      setProviderBaseUrl(template.baseUrl);
+      setProviderDefaultModel(template.defaultModel);
+    }
+  };
+
   if (!settings) {
-    return <p>Loading settings...</p>;
+    return <p>Loading forge settings...</p>;
   }
 
   return (
     <section>
-      <h2>Settings</h2>
+      <h2>Forge</h2>
+      <p className="office-subtitle">Tune policy, budgets, and model providers for GoatCitadel.</p>
       {error ? <p className="error">{error}</p> : null}
 
       <article className="card">
@@ -135,10 +387,79 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
 
       <article className="card">
+        <h3>Gateway Access Control</h3>
+        <p>Use auth modes for local/online hosting. Mission Control stores your client creds locally in this browser.</p>
+        <div className="controls-row">
+          <label htmlFor="authMode">Auth Mode</label>
+          <select
+            id="authMode"
+            value={authMode}
+            onChange={(event) => setAuthMode(event.target.value as "none" | "token" | "basic")}
+          >
+            <option value="none">none (local trusted)</option>
+            <option value="token">token</option>
+            <option value="basic">basic</option>
+          </select>
+        </div>
+        <div className="controls-row">
+          <label htmlFor="allowLoopbackBypass">Allow loopback bypass</label>
+          <input
+            id="allowLoopbackBypass"
+            type="checkbox"
+            checked={allowLoopbackBypass}
+            onChange={(event) => setAllowLoopbackBypass(event.target.checked)}
+          />
+        </div>
+        {authMode === "token" ? (
+          <div className="controls-row">
+            <label htmlFor="authToken">Gateway token</label>
+            <input
+              id="authToken"
+              type="password"
+              value={authToken}
+              onChange={(event) => setAuthToken(event.target.value)}
+            />
+          </div>
+        ) : null}
+        {authMode === "basic" ? (
+          <>
+            <div className="controls-row">
+              <label htmlFor="basicUsername">Username</label>
+              <input
+                id="basicUsername"
+                value={basicUsername}
+                onChange={(event) => setBasicUsername(event.target.value)}
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="basicPassword">Password</label>
+              <input
+                id="basicPassword"
+                type="password"
+                value={basicPassword}
+                onChange={(event) => setBasicPassword(event.target.value)}
+              />
+            </div>
+          </>
+        ) : null}
+        <p className="office-subtitle">
+          Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
+        </p>
+        <button onClick={onSaveAuth}>Save Access Control</button>
+      </article>
+
+      <article className="card">
         <h3>Runtime Controls</h3>
         <div className="controls-row">
           <label htmlFor="profile">Tool Profile</label>
-          <input id="profile" value={profile} onChange={(event) => setProfile(event.target.value)} />
+          <SelectOrCustom
+            id="profile"
+            value={profile}
+            onChange={setProfile}
+            options={TOOL_PROFILE_OPTIONS}
+            customPlaceholder="Custom tool profile"
+            customLabel="Custom profile"
+          />
         </div>
         <div className="controls-row">
           <label htmlFor="budgetMode">Budget Mode</label>
@@ -152,15 +473,43 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <option value="power">power</option>
           </select>
         </div>
-        <label htmlFor="allowlist">Network Allowlist (one host/pattern per line)</label>
-        <textarea
-          id="allowlist"
-          rows={6}
-          className="full-textarea"
-          value={networkAllowlistText}
-          onChange={(event) => setNetworkAllowlistText(event.target.value)}
-        />
-        <button onClick={onSaveRuntime}>Save Runtime Settings</button>
+        <details className="advanced-panel">
+          <summary>Advanced runtime options</summary>
+          <div className="controls-row">
+            <label htmlFor="allowlistPreset">Allowlist Preset</label>
+            <select
+              id="allowlistPreset"
+              value={allowlistPreset}
+              onChange={(event) => {
+                const nextPreset = event.target.value;
+                setAllowlistPreset(nextPreset);
+                const preset = ALLOWLIST_PRESETS.find((item) => item.id === nextPreset);
+                if (preset) {
+                  setNetworkAllowlistText(preset.hosts.join("\n"));
+                }
+              }}
+            >
+              {ALLOWLIST_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+              <option value="custom">custom</option>
+            </select>
+          </div>
+          <label htmlFor="allowlist">Network Allowlist (one host/pattern per line)</label>
+          <textarea
+            id="allowlist"
+            rows={6}
+            className="full-textarea"
+            value={networkAllowlistText}
+            onChange={(event) => {
+              setAllowlistPreset("custom");
+              setNetworkAllowlistText(event.target.value);
+            }}
+          />
+        </details>
+        <button onClick={onSaveRuntime}>Save Runtime Controls</button>
       </article>
 
       <article className="card">
@@ -169,22 +518,29 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
         <div className="controls-row">
           <label htmlFor="activeProvider">Active Provider</label>
-          <select
+          <SelectOrCustom
             id="activeProvider"
             value={activeProviderId}
-            onChange={(event) => setActiveProviderId(event.target.value)}
-          >
-            {providerOptions.map((provider) => (
-              <option key={provider.providerId} value={provider.providerId}>
-                {provider.providerId} ({provider.baseUrl})
-              </option>
-            ))}
-          </select>
+            onChange={(nextProviderId) => {
+              setActiveProviderId(nextProviderId);
+              applyProviderTemplate(nextProviderId);
+            }}
+            options={providerSelectOptions}
+            customPlaceholder="Custom provider id"
+            customLabel="Custom active provider"
+          />
         </div>
 
         <div className="controls-row">
           <label htmlFor="activeModel">Active Model</label>
-          <input id="activeModel" value={activeModel} onChange={(event) => setActiveModel(event.target.value)} />
+          <SelectOrCustom
+            id="activeModel"
+            value={activeModel}
+            onChange={setActiveModel}
+            options={activeModelOptions}
+            customPlaceholder="Custom model id"
+            customLabel="Custom active model"
+          />
           <button onClick={onLoadModels}>Load Models</button>
         </div>
         {models.length > 0 ? (
@@ -194,45 +550,116 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             ))}
           </ul>
         ) : null}
+        <button onClick={onSaveActiveLlm}>Save Active Provider/Model</button>
 
-        <h4>Add / Update Provider</h4>
-        <div className="controls-row">
-          <label htmlFor="providerId">Provider ID</label>
-          <input id="providerId" value={providerId} onChange={(event) => setProviderId(event.target.value)} />
-        </div>
-        <div className="controls-row">
-          <label htmlFor="providerLabel">Label</label>
-          <input id="providerLabel" value={providerLabel} onChange={(event) => setProviderLabel(event.target.value)} />
-        </div>
-        <div className="controls-row">
-          <label htmlFor="providerBaseUrl">Base URL</label>
-          <input id="providerBaseUrl" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} />
-        </div>
-        <div className="controls-row">
-          <label htmlFor="providerDefaultModel">Default Model</label>
-          <input
-            id="providerDefaultModel"
-            value={providerDefaultModel}
-            onChange={(event) => setProviderDefaultModel(event.target.value)}
-          />
-        </div>
-        <div className="controls-row">
-          <label htmlFor="providerApiKey">API Key (optional)</label>
-          <input id="providerApiKey" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} />
-        </div>
-        <div className="controls-row">
-          <label htmlFor="providerApiKeyEnv">API Key Env (optional)</label>
-          <input
-            id="providerApiKeyEnv"
-            value={providerApiKeyEnv}
-            onChange={(event) => setProviderApiKeyEnv(event.target.value)}
-          />
-        </div>
-        <button onClick={onSaveLlm}>Save LLM Provider Settings</button>
+        <button onClick={() => setShowAdvanced((current) => !current)}>
+          {showAdvanced ? "Hide advanced provider settings" : "Show advanced provider settings"}
+        </button>
+        {showAdvanced ? (
+          <div className="advanced-block">
+            <h4>Add / Update Provider</h4>
+            <div className="controls-row">
+              <label htmlFor="providerId">Provider ID</label>
+              <SelectOrCustom
+                id="providerId"
+                value={providerId}
+                onChange={(nextProviderId) => {
+                  setProviderId(nextProviderId);
+                  applyProviderTemplate(nextProviderId);
+                }}
+                options={providerSelectOptions}
+                customPlaceholder="e.g. corp-gateway"
+                customLabel="Custom provider id"
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="providerLabel">Label</label>
+              <SelectOrCustom
+                id="providerLabel"
+                value={providerLabel}
+                onChange={setProviderLabel}
+                options={providerLabelOptions}
+                customPlaceholder="Provider display label"
+                customLabel="Custom label"
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="providerBaseUrl">Base URL</label>
+              <SelectOrCustom
+                id="providerBaseUrl"
+                value={providerBaseUrl}
+                onChange={setProviderBaseUrl}
+                options={PROVIDER_TEMPLATES.map((template) => ({
+                  value: template.baseUrl,
+                  label: template.baseUrl,
+                }))}
+                customPlaceholder="https://host/v1"
+                customLabel="Custom base URL"
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="providerDefaultModel">Default Model</label>
+              <SelectOrCustom
+                id="providerDefaultModel"
+                value={providerDefaultModel}
+                onChange={setProviderDefaultModel}
+                options={activeModelOptions}
+                customPlaceholder="Default model id"
+                customLabel="Custom default model"
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="providerApiKey">API Key (optional)</label>
+              <input
+                id="providerApiKey"
+                type="password"
+                value={providerApiKey}
+                onChange={(event) => setProviderApiKey(event.target.value)}
+              />
+            </div>
+            <div className="controls-row">
+              <label htmlFor="providerApiKeyEnv">API Key Env (optional)</label>
+              <SelectOrCustom
+                id="providerApiKeyEnv"
+                value={providerApiKeyEnv}
+                onChange={setProviderApiKeyEnv}
+                options={[
+                  { value: "OPENAI_API_KEY", label: "OPENAI_API_KEY" },
+                  { value: "OPENROUTER_API_KEY", label: "OPENROUTER_API_KEY" },
+                ]}
+                customPlaceholder="Custom env var name"
+                customLabel="Custom env var"
+              />
+            </div>
+            <button onClick={onSaveProvider}>Save Provider Settings</button>
+          </div>
+        ) : null}
       </article>
 
       <article className="card">
         <h3>LLM Test (chat/completions)</h3>
+        <div className="controls-row">
+          <label htmlFor="chatPromptPreset">Prompt Preset</label>
+          <select
+            id="chatPromptPreset"
+            value={chatPromptPresetId}
+            onChange={(event) => {
+              const nextPreset = event.target.value;
+              setChatPromptPresetId(nextPreset);
+              const preset = CHAT_PROMPT_PRESETS.find((item) => item.id === nextPreset);
+              if (preset) {
+                setChatPrompt(preset.prompt);
+              }
+            }}
+          >
+            {CHAT_PROMPT_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+            <option value="custom">custom</option>
+          </select>
+        </div>
         <textarea
           rows={4}
           className="full-textarea"
@@ -246,4 +673,37 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
     </section>
   );
+}
+
+function matchAllowlistPreset(allowlist: string[]): string {
+  for (const preset of ALLOWLIST_PRESETS) {
+    if (preset.hosts.length !== allowlist.length) {
+      continue;
+    }
+    const left = [...preset.hosts].sort().join("|");
+    const right = [...allowlist].sort().join("|");
+    if (left === right) {
+      return preset.id;
+    }
+  }
+  return "custom";
+}
+
+function persistGatewayAuthClient(input: {
+  mode: "none" | "token" | "basic";
+  token?: string;
+  username?: string;
+  password?: string;
+}): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload = {
+    mode: input.mode,
+    token: input.token?.trim() || undefined,
+    username: input.username?.trim() || undefined,
+    password: input.password || undefined,
+    tokenQueryParam: "access_token",
+  };
+  window.localStorage.setItem(GATEWAY_AUTH_STORAGE_KEY, JSON.stringify(payload));
 }

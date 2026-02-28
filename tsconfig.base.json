@@ -5,12 +5,13 @@
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
-      "@personal-ai/contracts": ["packages/contracts/src/index.ts"],
-      "@personal-ai/storage": ["packages/storage/src/index.ts"],
-      "@personal-ai/gateway-core": ["packages/gateway-core/src/index.ts"],
-      "@personal-ai/policy-engine": ["packages/policy-engine/src/index.ts"],
-      "@personal-ai/skills": ["packages/skills/src/index.ts"],
-      "@personal-ai/orchestration": ["packages/orchestration/src/index.ts"]
+      "@goatcitadel/contracts": ["packages/contracts/src/index.ts"],
+      "@goatcitadel/storage": ["packages/storage/src/index.ts"],
+      "@goatcitadel/gateway-core": ["packages/gateway-core/src/index.ts"],
+      "@goatcitadel/policy-engine": ["packages/policy-engine/src/index.ts"],
+      "@goatcitadel/skills": ["packages/skills/src/index.ts"],
+      "@goatcitadel/orchestration": ["packages/orchestration/src/index.ts"],
+      "@goatcitadel/mesh-core": ["packages/mesh-core/src/index.ts"]
     },
     "lib": ["ES2022", "DOM"],
     "strict": true,

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchFilesList } from "../api/client";
+import { SelectOrCustom } from "../components/SelectOrCustom";
 
 interface WorkspaceFile {
   relativePath: string;
@@ -32,6 +33,11 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const areas = useMemo(() => summarizeAreas(files), [files]);
   const areaOptions = useMemo(() => ["all", ...areas.map((area) => area.area)], [areas]);
   const memoryAreas = useMemo(() => summarizeMemorySubspaces(files), [files]);
+  const searchOptions = useMemo(() => {
+    const defaults = ["memory/", "data/", "docs/", "skills/", "logs/"];
+    const discovered = files.slice(0, 120).map((file) => file.relativePath);
+    return [...new Set([...defaults, ...discovered])].map((value) => ({ value, label: value }));
+  }, [files]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -56,9 +62,9 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section className="memory-v2">
-      <h2>Memory</h2>
+      <h2>Memory Pasture</h2>
       <p className="office-subtitle">
-        Workspace-aware memory map with per-area drill-down.
+        Workspace-aware memory terrain with per-area drill-down.
       </p>
       {error ? <p className="error">{error}</p> : null}
 
@@ -98,10 +104,12 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
             </option>
           ))}
         </select>
-        <input
-          placeholder="Filter path..."
+        <SelectOrCustom
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={setSearch}
+          options={searchOptions}
+          customPlaceholder="Filter by path text"
+          customLabel="Path filter"
         />
       </div>
 

@@ -21,7 +21,8 @@ export function ActivityPage() {
 
   return (
     <section>
-      <h2>Activity</h2>
+      <h2>Pulse</h2>
+      <p className="office-subtitle">Live event stream across GoatCitadel systems, tools, and workflows.</p>
       {error ? <p className="error">{error}</p> : null}
       <ul className="compact-list">
         {events.map((event) => (

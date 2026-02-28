@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { gatewayPlugin } from "./plugins/sqlite.js";
+import { authPlugin } from "./plugins/auth.js";
 import { idempotencyHeaderPlugin } from "./plugins/idempotency.js";
 import { healthRoute } from "./routes/health.js";
 import { gatewayEventsRoute } from "./routes/gateway-events.js";
@@ -15,6 +16,9 @@ import { eventsRoutes } from "./routes/events.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { filesRoutes } from "./routes/files.js";
 import { llmRoutes } from "./routes/llm.js";
+import { integrationsRoutes } from "./routes/integrations.js";
+import { meshRoutes } from "./routes/mesh.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
@@ -24,6 +28,7 @@ export async function buildApp() {
   });
 
   await app.register(gatewayPlugin);
+  await app.register(authPlugin);
   await app.register(idempotencyHeaderPlugin);
 
   await app.register(healthRoute);
@@ -39,6 +44,9 @@ export async function buildApp() {
   await app.register(dashboardRoutes);
   await app.register(filesRoutes);
   await app.register(llmRoutes);
+  await app.register(integrationsRoutes);
+  await app.register(meshRoutes);
+  await app.register(onboardingRoutes);
 
   return app;
 }

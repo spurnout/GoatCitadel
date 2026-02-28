@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function createRepo(): RealtimeEventRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-events-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-events-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new RealtimeEventRepository(db);
@@ -41,5 +41,19 @@ describe("RealtimeEventRepository", () => {
     const paged = repo.list(10, second.timestamp);
     assert.equal(paged.length, 1);
     assert.equal(paged[0]?.eventId, first.eventId);
+  });
+
+  it("does not drop events sharing the same timestamp across cursor pages", () => {
+    const repo = createRepo();
+    repo.append("task_created", "tasks", { taskId: "a" }, "2026-02-27T12:00:00.000Z");
+    repo.append("task_updated", "tasks", { taskId: "b" }, "2026-02-27T12:00:00.000Z");
+    repo.append("task_updated", "tasks", { taskId: "c" }, "2026-02-27T11:59:00.000Z");
+
+    const firstPage = repo.list(1);
+    const cursor = `${firstPage[0]!.timestamp}|${firstPage[0]!.eventId}`;
+    const secondPage = repo.list(10, cursor);
+
+    assert.equal(secondPage.length, 2);
+    assert.equal(secondPage.some((event) => event.eventId === firstPage[0]?.eventId), false);
   });
 });

@@ -1,4 +1,4 @@
-import type { CronJobRecord } from "@personal-ai/contracts";
+import type { CronJobRecord } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 
 interface CronJobRow {

@@ -2,7 +2,7 @@ import type {
   LoadedSkill,
   SkillActivationDecision,
   SkillResolveInput,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 import { resolveDependencies } from "./deps.js";
 
 export function resolveSkillActivation(

@@ -2,11 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ToolInvokeRequest, ToolPolicyConfig } from "@personal-ai/contracts";
+import type { ToolInvokeRequest, ToolPolicyConfig } from "@goatcitadel/contracts";
 import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
 
 const execAsync = promisify(exec);
+const MAX_HTTP_REDIRECTS = 5;
 
 export async function executeTool(
   request: ToolInvokeRequest,
@@ -45,15 +46,12 @@ export async function executeTool(
     case "http.get": {
       const url = String(request.args.url ?? "");
       assertHostAllowed(url, config.sandbox.networkAllowlist);
-      const res = await fetch(url, {
-        method: "GET",
-        signal: AbortSignal.timeout(15000),
-      });
-      const text = await res.text();
+      const res = await fetchWithRedirectPolicy(url, config.sandbox.networkAllowlist);
+      const text = await res.response.text();
       return {
-        url,
-        status: res.status,
-        ok: res.ok,
+        url: res.finalUrl,
+        status: res.response.status,
+        ok: res.response.ok,
         bodySnippet: text.slice(0, 4000),
       };
     }
@@ -89,4 +87,37 @@ export async function executeTool(
         toolName: request.toolName,
       };
   }
+}
+
+async function fetchWithRedirectPolicy(
+  startUrl: string,
+  allowlist: string[],
+): Promise<{ response: Response; finalUrl: string }> {
+  let currentUrl = startUrl;
+
+  for (let hop = 0; hop <= MAX_HTTP_REDIRECTS; hop += 1) {
+    assertHostAllowed(currentUrl, allowlist);
+    const response = await fetch(currentUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(15000),
+      redirect: "manual",
+    });
+
+    if (!isRedirect(response.status)) {
+      return { response, finalUrl: currentUrl };
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new Error(`Redirect response missing location header for ${currentUrl}`);
+    }
+
+    currentUrl = new URL(location, currentUrl).toString();
+  }
+
+  throw new Error(`Too many redirects while requesting ${startUrl}`);
+}
+
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LoadedSkill } from "@personal-ai/contracts";
+import type { LoadedSkill } from "@goatcitadel/contracts";
 import { resolveDependencies } from "./deps.js";
 
 function makeSkill(name: string, requires: string[]): LoadedSkill {
@@ -32,5 +32,6 @@ describe("resolveDependencies", () => {
     const result = resolveDependencies([a], [a, b]);
 
     expect(result.blocked.length).toBeGreaterThan(0);
+    expect(result.ordered.map((s) => s.name)).toEqual([]);
   });
 });

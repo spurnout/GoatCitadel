@@ -14,7 +14,13 @@ import {
   inferRoleId,
   type AgentDirectoryRecord,
 } from "../data/agent-roster";
-import { OfficeCanvas } from "../components/OfficeCanvas";
+import {
+  OfficeCanvas,
+  type OfficeDeskAgent,
+  type OfficeOperatorModel,
+  type OperatorPreset,
+} from "../components/OfficeCanvas";
+import { SelectOrCustom } from "../components/SelectOrCustom";
 
 const INITIAL_EVENT_LIMIT = 300;
 const MAX_EVENTS = 500;
@@ -22,6 +28,13 @@ const SNAPSHOT_INTERVAL_MS = 20_000;
 const HOT_AGENT_WINDOW_MS = 2 * 60 * 1000;
 const WARM_AGENT_WINDOW_MS = 10 * 60 * 1000;
 const EVENTS_PER_MINUTE_WINDOW_MS = 5 * 60 * 1000;
+const OPERATOR_STORAGE_KEY = "goatcitadel.office.operator";
+const OPERATOR_NAME_OPTIONS = [
+  "GoatHerder",
+  "Lead Herder",
+  "Herd Captain",
+  "Trail Commander",
+].map((value) => ({ value, label: value }));
 
 type AgentRisk = "none" | "approval" | "blocked" | "error";
 
@@ -36,12 +49,26 @@ interface OfficeAgentModel extends AgentDirectoryRecord {
   eventTrail: RealtimeEvent[];
 }
 
+interface OperatorPreferences {
+  name: string;
+  preset: OperatorPreset;
+}
+
+interface OfficeAssetPack {
+  operatorModelPath?: string;
+  goatModelPath?: string;
+}
+
+type SelectedEntityId = "operator" | string;
+
 export function OfficePage(_props: { refreshKey?: number }) {
   const [directory, setDirectory] = useState<AgentDirectoryRecord[]>([]);
   const [operators, setOperators] = useState<OperatorsResponse["items"]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalsResponse["items"]>([]);
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
-  const [selectedRoleId, setSelectedRoleId] = useState<string>("");
+  const [selectedEntityId, setSelectedEntityId] = useState<SelectedEntityId>("operator");
+  const [operatorPrefs, setOperatorPrefs] = useState<OperatorPreferences>(readOperatorPreferences);
+  const [assetPack, setAssetPack] = useState<OfficeAssetPack>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -82,8 +109,17 @@ export function OfficePage(_props: { refreshKey?: number }) {
 
     void loadSnapshot(true);
     const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
       void loadSnapshot(false);
     }, SNAPSHOT_INTERVAL_MS);
+    const onVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void loadSnapshot(false);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     const close = connectEventStream((event) => {
       setEvents((prev) => sortEvents([event, ...prev]).slice(0, MAX_EVENTS));
@@ -92,26 +128,43 @@ export function OfficePage(_props: { refreshKey?: number }) {
     return () => {
       active = false;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
       close();
+    };
+  }, []);
+
+  useEffect(() => {
+    persistOperatorPreferences(operatorPrefs);
+  }, [operatorPrefs]);
+
+  useEffect(() => {
+    let active = true;
+    void loadOfficeAssetPack().then((pack) => {
+      if (active) {
+        setAssetPack(pack);
+      }
+    });
+    return () => {
+      active = false;
     };
   }, []);
 
   const sortedEvents = useMemo(() => sortEvents(events), [events]);
   const officeAgents = useMemo(() => deriveOfficeAgents(directory, sortedEvents), [directory, sortedEvents]);
   const selectedAgent = useMemo(
-    () => officeAgents.find((agent) => agent.roleId === selectedRoleId) ?? officeAgents[0],
-    [officeAgents, selectedRoleId],
+    () => officeAgents.find((agent) => agent.roleId === selectedEntityId),
+    [officeAgents, selectedEntityId],
   );
 
   useEffect(() => {
-    if (!selectedRoleId && officeAgents.length > 0) {
-      setSelectedRoleId(officeAgents[0]?.roleId ?? "");
+    if (selectedEntityId === "operator") {
+      return;
     }
-    const selectedExists = officeAgents.some((agent) => agent.roleId === selectedRoleId);
-    if (selectedRoleId && !selectedExists && officeAgents.length > 0) {
-      setSelectedRoleId(officeAgents[0]?.roleId ?? "");
+    const exists = officeAgents.some((agent) => agent.roleId === selectedEntityId);
+    if (!exists) {
+      setSelectedEntityId("operator");
     }
-  }, [officeAgents, selectedRoleId]);
+  }, [officeAgents, selectedEntityId]);
 
   const activeAgents = useMemo(
     () => officeAgents.filter((agent) => agent.status === "active").length,
@@ -130,37 +183,53 @@ export function OfficePage(_props: { refreshKey?: number }) {
     () => officeAgents.filter((agent) => classifyAgentHeat(agent.lastSeenAt) === "hot").length,
     [officeAgents],
   );
+  const blockedAgents = useMemo(
+    () => officeAgents.filter((agent) => agent.risk === "blocked" || agent.risk === "error").length,
+    [officeAgents],
+  );
+
+  const operatorModel: OfficeOperatorModel = useMemo(() => ({
+    operatorId: "operator",
+    name: operatorPrefs.name,
+    preset: operatorPrefs.preset,
+    currentThought: buildOperatorThought({
+      activeAgents,
+      blockedAgents,
+      pendingApprovals: pendingApprovals.length,
+      eventFlow,
+    }),
+  }), [activeAgents, blockedAgents, eventFlow, operatorPrefs.name, operatorPrefs.preset, pendingApprovals.length]);
 
   if (loading) {
-    return <p>Loading office floor...</p>;
+    return <p>Loading Herd HQ...</p>;
   }
 
   return (
     <section className="office-v3">
-      <h2>Office</h2>
+      <h2>Herd HQ</h2>
       <p className="office-subtitle">
-        Interactive office floor: click a desk to inspect what each agent is doing and thinking.
+        GoatCitadel command floor: one operator in the center, specialist goats around the ring.
       </p>
       {error ? <p className="error">{error}</p> : null}
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Active agents</p>
+          <p className="office-kpi-label">Goats in motion</p>
           <p className="office-kpi-value">{activeAgents}</p>
-          <p className="office-kpi-note">Executing right now</p>
+          <p className="office-kpi-note">Actively executing work</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Hot desks</p>
+          <p className="office-kpi-label">Hot hooves</p>
           <p className="office-kpi-value">{hotAgents}</p>
           <p className="office-kpi-note">Updated in last 2 minutes</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Ready specialists</p>
+          <p className="office-kpi-label">Ready reserves</p>
           <p className="office-kpi-value">{readyAgents}</p>
-          <p className="office-kpi-note">No active session yet</p>
+          <p className="office-kpi-note">Ready for assignment</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Event flow</p>
+          <p className="office-kpi-label">Event pace</p>
           <p className="office-kpi-value">{eventFlow.toFixed(1)}/min</p>
           <p className="office-kpi-note">{pendingApprovals.length} approvals pending</p>
         </article>
@@ -169,8 +238,10 @@ export function OfficePage(_props: { refreshKey?: number }) {
       <div className="office-v3-layout">
         <article className="card office-stage-card">
           <div className="office-stage-head">
-            <h3>Agent Floor (WebGL)</h3>
-            <p className="office-subtitle">Drag to orbit. Click a desk or avatar for details.</p>
+            <h3>GoatCitadel Floor (WebGL)</h3>
+            <p className="office-subtitle">
+              Drag to orbit. Select GoatHerder or any goat desk. Procedural fallback meshes are active.
+            </p>
           </div>
 
           {officeAgents.length === 0 ? (
@@ -178,16 +249,24 @@ export function OfficePage(_props: { refreshKey?: number }) {
           ) : (
             <>
               <OfficeCanvas
+                operator={operatorModel}
                 agents={officeAgents}
-                selectedRoleId={selectedAgent?.roleId}
-                onSelect={setSelectedRoleId}
+                selectedEntityId={selectedEntityId}
+                onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
+                assetPack={assetPack}
               />
               <div className="office-desk-list">
+                <button
+                  className={selectedEntityId === "operator" ? "active" : ""}
+                  onClick={() => setSelectedEntityId("operator")}
+                >
+                  {operatorPrefs.name}
+                </button>
                 {officeAgents.map((agent) => (
                   <button
                     key={agent.roleId}
-                    className={`${selectedAgent?.roleId === agent.roleId ? "active" : ""}`}
-                    onClick={() => setSelectedRoleId(agent.roleId)}
+                    className={selectedEntityId === agent.roleId ? "active" : ""}
+                    onClick={() => setSelectedEntityId(agent.roleId)}
                   >
                     {agent.name}
                   </button>
@@ -198,7 +277,70 @@ export function OfficePage(_props: { refreshKey?: number }) {
         </article>
 
         <aside className="card office-inspector">
-          {!selectedAgent ? <p>No agent selected.</p> : (
+          {selectedEntityId === "operator" ? (
+            <>
+              <header className="office-agent-header">
+                <div className="office-avatar office-avatar-hot">GH</div>
+                <div>
+                  <h3>{operatorPrefs.name}</h3>
+                  <p className="office-agent-id">Central Herd Operator</p>
+                </div>
+                <span className="office-pill office-pill-active">active</span>
+              </header>
+
+              <p>Coordinates specialized goats, arbitration gates, and live mission flow.</p>
+              <p><strong>Thinking:</strong> {operatorModel.currentThought}</p>
+
+              <dl className="office-meta-grid">
+                <div>
+                  <dt>Active goats</dt>
+                  <dd>{activeAgents}</dd>
+                </div>
+                <div>
+                  <dt>Pending approvals</dt>
+                  <dd>{pendingApprovals.length}</dd>
+                </div>
+                <div>
+                  <dt>Risked goats</dt>
+                  <dd>{blockedAgents}</dd>
+                </div>
+                <div>
+                  <dt>Event pace</dt>
+                  <dd>{eventFlow.toFixed(1)}/min</dd>
+                </div>
+              </dl>
+
+              <h4>Operator Customization</h4>
+              <div className="controls-row">
+                <label htmlFor="goatHerderName">Operator name</label>
+                <SelectOrCustom
+                  id="goatHerderName"
+                  value={operatorPrefs.name}
+                  onChange={(name) => setOperatorPrefs((prev) => ({ ...prev, name: name || "GoatHerder" }))}
+                  options={OPERATOR_NAME_OPTIONS}
+                  customPlaceholder="Custom operator name"
+                  customLabel="Operator name"
+                />
+              </div>
+              <div className="controls-row">
+                <label htmlFor="goatHerderPreset">Style preset</label>
+                <select
+                  id="goatHerderPreset"
+                  value={operatorPrefs.preset}
+                  onChange={(event) => setOperatorPrefs((prev) => ({
+                    ...prev,
+                    preset: event.target.value as OperatorPreset,
+                  }))}
+                >
+                  <option value="trailblazer">Trailblazer</option>
+                  <option value="strategist">Strategist</option>
+                  <option value="nightwatch">Nightwatch</option>
+                </select>
+              </div>
+            </>
+          ) : !selectedAgent ? (
+            <p>No goat selected.</p>
+          ) : (
             <>
               <header className="office-agent-header">
                 <div className={`office-avatar office-avatar-${classifyAgentHeat(selectedAgent.lastSeenAt)}`}>
@@ -313,13 +455,13 @@ function deriveOfficeAgents(
     byRole.set(agent.roleId, {
       ...agent,
       currentAction: agent.status === "active"
-        ? "Executing assigned work."
+        ? "Pushing current assignment forward."
         : agent.status === "idle"
-          ? "Idle with recent context."
-          : "Ready to be assigned.",
+          ? "Idle with warm context."
+          : "Waiting for first assignment.",
       currentThought: agent.status === "ready"
-        ? "Standing by for first assignment."
-        : "Awaiting the next event.",
+        ? "Standing by for orders from GoatHerder."
+        : "Monitoring the event rail.",
       lastSeenAt: agent.lastUpdatedAt,
       risk: "none",
       eventTrail: [],
@@ -388,7 +530,7 @@ function resolveEventRoleId(
     actorType === "agent" ? asString(payload.actorId) : undefined,
     asString(activity.agentId),
     asString(session.agentName),
-    asString(session.openclawSessionId),
+    asString(session.agentSessionId),
     asString(task.assignedAgentId),
   ].filter((item): item is string => Boolean(item));
 
@@ -455,8 +597,8 @@ function describeAgentEvent(event: RealtimeEvent): {
 
   if (event.eventType === "subagent_registered") {
     return {
-      action: "Opened a new sub-agent session.",
-      thought: "Bootstrapping context and workspace state.",
+      action: "Opened a new goat sub-agent session.",
+      thought: "Bootstrapping workspace and context.",
       taskId,
       sessionId,
       status: "active",
@@ -470,7 +612,7 @@ function describeAgentEvent(event: RealtimeEvent): {
     if (status === "completed") {
       return {
         action: "Completed current sub-agent run.",
-        thought: "Ready to handoff results.",
+        thought: "Ready to hand off results.",
         taskId,
         sessionId,
         status: "idle",
@@ -480,7 +622,7 @@ function describeAgentEvent(event: RealtimeEvent): {
     if (status === "failed" || status === "killed") {
       return {
         action: `Session ended (${status}).`,
-        thought: "Requires operator review before retry.",
+        thought: "Needs operator review before retry.",
         taskId,
         sessionId,
         status: "idle",
@@ -586,7 +728,7 @@ function extractSessionId(event: RealtimeEvent): string | undefined {
     return sessionId;
   }
   const session = asRecord(payload.session);
-  return asString(session.openclawSessionId);
+  return asString(session.agentSessionId);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -687,4 +829,111 @@ function truncate(value: string, max: number): string {
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function buildOperatorThought(input: {
+  activeAgents: number;
+  blockedAgents: number;
+  pendingApprovals: number;
+  eventFlow: number;
+}): string {
+  if (input.blockedAgents > 0) {
+    return `${input.blockedAgents} goats are blocked. Prioritize approvals and clear policy conflicts.`;
+  }
+  if (input.pendingApprovals > 0) {
+    return `${input.pendingApprovals} approvals pending while ${input.activeAgents} goats stay in motion.`;
+  }
+  if (input.activeAgents === 0) {
+    return "No goats are currently active. Ready to assign a fresh wave.";
+  }
+  return `${input.activeAgents} goats are running at ${input.eventFlow.toFixed(1)} events per minute.`;
+}
+
+async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
+  let manifest: {
+    models?: Array<{ id?: string; path?: string; includedInRepo?: boolean }>;
+  };
+
+  try {
+    const response = await fetch("/assets/office/asset-manifest.json");
+    if (!response.ok) {
+      return {};
+    }
+    manifest = await response.json() as { models?: Array<{ id?: string; path?: string; includedInRepo?: boolean }> };
+  } catch {
+    return {};
+  }
+
+  const models = manifest.models ?? [];
+  const operator = models.find((item) => item.id === "central-operator");
+  const goat = models.find((item) => item.id === "goat-subagent");
+
+  const pack: OfficeAssetPack = {};
+  if (operator?.path && operator.includedInRepo) {
+    const exists = await checkAssetExists(operator.path);
+    if (exists) {
+      pack.operatorModelPath = operator.path;
+    }
+  }
+
+  if (goat?.path && goat.includedInRepo) {
+    const exists = await checkAssetExists(goat.path);
+    if (exists) {
+      pack.goatModelPath = goat.path;
+    }
+  }
+
+  return pack;
+}
+
+async function checkAssetExists(path: string): Promise<boolean> {
+  try {
+    const response = await fetch(path, { method: "HEAD" });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function readOperatorPreferences(): OperatorPreferences {
+  if (typeof window === "undefined") {
+    return { name: "GoatHerder", preset: "trailblazer" };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
+    if (!raw) {
+      return { name: "GoatHerder", preset: "trailblazer" };
+    }
+    const parsed = JSON.parse(raw) as Partial<OperatorPreferences>;
+    return {
+      name: sanitizeName(parsed.name) || "GoatHerder",
+      preset: isPreset(parsed.preset) ? parsed.preset : "trailblazer",
+    };
+  } catch {
+    return { name: "GoatHerder", preset: "trailblazer" };
+  }
+}
+
+function persistOperatorPreferences(value: OperatorPreferences): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload: OperatorPreferences = {
+    name: sanitizeName(value.name) || "GoatHerder",
+    preset: value.preset,
+  };
+  window.localStorage.setItem(OPERATOR_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function sanitizeName(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim().slice(0, 40);
+  return trimmed || undefined;
+}
+
+function isPreset(value: unknown): value is OperatorPreset {
+  return value === "trailblazer" || value === "strategist" || value === "nightwatch";
 }

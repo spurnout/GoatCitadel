@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { connectEventStream } from "./api/client";
+import { connectEventStream, fetchOnboardingState, type EventStreamConnectionState } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SystemPage } from "./pages/SystemPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -13,6 +13,9 @@ import { CostConsolePage } from "./pages/CostConsolePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { TasksPage } from "./pages/TasksPage";
+import { IntegrationsPage } from "./pages/IntegrationsPage";
+import { MeshPage } from "./pages/MeshPage";
+import { OnboardingPage } from "./pages/OnboardingPage";
 
 const OfficePage = lazy(async () => {
   const module = await import("./pages/OfficePage");
@@ -20,6 +23,7 @@ const OfficePage = lazy(async () => {
 });
 
 type Tab =
+  | "onboarding"
   | "dashboard"
   | "system"
   | "files"
@@ -33,9 +37,12 @@ type Tab =
   | "costs"
   | "settings"
   | "approvals"
-  | "tasks";
+  | "tasks"
+  | "integrations"
+  | "mesh";
 
 const allTabs: Tab[] = [
+  "onboarding",
   "dashboard",
   "system",
   "files",
@@ -50,23 +57,28 @@ const allTabs: Tab[] = [
   "settings",
   "approvals",
   "tasks",
+  "integrations",
+  "mesh",
 ];
 
 const navItems: Array<{ id: Tab; label: string; code: string }> = [
-  { id: "dashboard", label: "Dashboard", code: "DB" },
-  { id: "system", label: "System", code: "SYS" },
-  { id: "files", label: "Files", code: "FS" },
-  { id: "memory", label: "Memory", code: "MEM" },
-  { id: "agents", label: "Agents", code: "AG" },
-  { id: "office", label: "Office", code: "HQ" },
-  { id: "activity", label: "Activity", code: "ACT" },
-  { id: "cron", label: "Cron", code: "CRN" },
-  { id: "sessions", label: "Sessions", code: "SES" },
-  { id: "skills", label: "Skills", code: "SKL" },
-  { id: "costs", label: "Costs", code: "USD" },
-  { id: "settings", label: "Settings", code: "CFG" },
-  { id: "approvals", label: "Approvals", code: "APR" },
-  { id: "tasks", label: "Tasks", code: "TSK" },
+  { id: "onboarding", label: "Launch Wizard", code: "NEW" },
+  { id: "dashboard", label: "Summit (Dashboard)", code: "SUM" },
+  { id: "system", label: "Engine (System)", code: "ENG" },
+  { id: "files", label: "Trail Files", code: "FS" },
+  { id: "memory", label: "Memory Pasture", code: "MEM" },
+  { id: "agents", label: "Goat Crew (Agents)", code: "HERD" },
+  { id: "office", label: "Herd HQ (Office)", code: "HQ" },
+  { id: "activity", label: "Pulse (Activity)", code: "ACT" },
+  { id: "cron", label: "Bell Tower (Cron)", code: "CRN" },
+  { id: "sessions", label: "Runs (Sessions)", code: "SES" },
+  { id: "skills", label: "Playbook (Skills)", code: "SKL" },
+  { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
+  { id: "settings", label: "Forge (Settings)", code: "CFG" },
+  { id: "approvals", label: "Gatehouse (Approvals)", code: "APR" },
+  { id: "tasks", label: "Trailboard (Tasks)", code: "TSK" },
+  { id: "integrations", label: "Connections", code: "CNX" },
+  { id: "mesh", label: "Mesh", code: "MSH" },
 ];
 
 function isTab(value: string | null): value is Tab {
@@ -101,14 +113,42 @@ export function App() {
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
   const [refreshKey, setRefreshKey] = useState(0);
   const [clock, setClock] = useState(() => new Date().toLocaleTimeString());
+  const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const close = connectEventStream(() => {
-      setRefreshKey((value) => value + 1);
-    });
+    const close = connectEventStream(
+      () => {
+        setRefreshKey((value) => value + 1);
+      },
+      setStreamState,
+    );
 
     return () => {
       close();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchOnboardingState()
+      .then((state) => {
+        if (cancelled) {
+          return;
+        }
+        setOnboardingComplete(state.completed);
+        if (!state.completed) {
+          setTab((current) => (current === "dashboard" ? "onboarding" : current));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOnboardingComplete(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -129,6 +169,9 @@ export function App() {
   }, []);
 
   const content = useMemo(() => {
+    if (tab === "onboarding") {
+      return <OnboardingPage onCompleted={() => setOnboardingComplete(true)} />;
+    }
     if (tab === "dashboard") {
       return <DashboardPage refreshKey={refreshKey} />;
     }
@@ -146,7 +189,7 @@ export function App() {
     }
     if (tab === "office") {
       return (
-        <Suspense fallback={<p>Loading WebGL office...</p>}>
+        <Suspense fallback={<p>Loading Herd HQ...</p>}>
           <OfficePage refreshKey={refreshKey} />
         </Suspense>
       );
@@ -172,14 +215,20 @@ export function App() {
     if (tab === "approvals") {
       return <ApprovalsPage refreshKey={refreshKey} />;
     }
-    return <TasksPage refreshKey={refreshKey} />;
+    if (tab === "tasks") {
+      return <TasksPage refreshKey={refreshKey} />;
+    }
+    if (tab === "mesh") {
+      return <MeshPage refreshKey={refreshKey} />;
+    }
+    return <IntegrationsPage refreshKey={refreshKey} />;
   }, [refreshKey, tab]);
 
   return (
     <div className="layout-shell">
       <aside className="sidebar">
-        <h1>Mission Control</h1>
-        <p className="sidebar-subtitle">Local Operator Console</p>
+        <h1>GoatCitadel</h1>
+        <p className="sidebar-subtitle">Herd-Orchestrated Mission Control</p>
         <nav>
           {navItems.map((item) => (
             <button
@@ -193,11 +242,20 @@ export function App() {
           ))}
         </nav>
         <footer className="sidebar-footer">
-          <p>Mode: local</p>
+          <p>Stream: {streamState}</p>
+          <p>Onboarding: {onboardingComplete === null ? "unknown" : onboardingComplete ? "complete" : "required"}</p>
+          <p>Mode: local herd</p>
           <p>{clock}</p>
         </footer>
       </aside>
-      <main className="content">{content}</main>
+      <main className="content">
+        {streamState !== "open" ? (
+          <div className="status-banner warning">
+            Live stream is {streamState}. Mission Control will reconnect automatically.
+          </div>
+        ) : null}
+        {content}
+      </main>
     </div>
   );
 }

@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { downloadFile, fetchFilesList, uploadFile } from "../api/client";
+import { SelectOrCustom } from "../components/SelectOrCustom";
+
+const UPLOAD_PATH_SUGGESTIONS = [
+  "notes/example.txt",
+  "memory/daily-log.md",
+  "docs/quick-notes.md",
+  "artifacts/output.txt",
+  "workspace/todo.md",
+].map((value) => ({ value, label: value }));
 
 export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [files, setFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
@@ -8,6 +17,7 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [selectedContent, setSelectedContent] = useState<string>("");
   const [uploadPath, setUploadPath] = useState("notes/example.txt");
   const [uploadContent, setUploadContent] = useState("");
+  const [showAdvancedUpload, setShowAdvancedUpload] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = () => {
@@ -46,6 +56,21 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
     [files, selectedPath],
   );
 
+  const uploadPathOptions = useMemo(() => {
+    const dynamic = files.slice(0, 100).map((file) => file.relativePath);
+    return [...new Set([...UPLOAD_PATH_SUGGESTIONS.map((item) => item.value), ...dynamic])]
+      .map((value) => ({ value, label: value }));
+  }, [files]);
+
+  const searchOptions = useMemo(() => {
+    const dynamic = files
+      .slice(0, 80)
+      .map((file) => file.relativePath.split(/[\\/]/)[0])
+      .filter((value): value is string => Boolean(value));
+    const defaults = ["memory/", "docs/", "src/", "artifacts/", "skills/"];
+    return [...new Set([...defaults, ...dynamic])].map((value) => ({ value, label: value }));
+  }, [files]);
+
   const onUpload = async () => {
     try {
       await uploadFile(uploadPath, uploadContent);
@@ -58,19 +83,21 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Files</h2>
-      <p className="office-subtitle">Browse and edit workspace files inside the write jail roots.</p>
+      <h2>Trail Files</h2>
+      <p className="office-subtitle">Browse and edit workspace artifacts inside GoatCitadel write-jail roots.</p>
       {error ? <p className="error">{error}</p> : null}
       <div className="controls-row">
-        <input
-          placeholder="Filter files..."
+        <SelectOrCustom
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={setSearch}
+          options={searchOptions}
+          customPlaceholder="Filter files by path text"
+          customLabel="File filter"
         />
       </div>
       <div className="split-grid">
         <article className="card">
-          <h3>Workspace Files</h3>
+          <h3>Workspace Trails</h3>
           <ul className="compact-list files-list">
             {filteredFiles.map((file) => (
               <li key={file.relativePath}>
@@ -85,7 +112,7 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
           </ul>
         </article>
         <article className="card">
-          <h3>Preview</h3>
+          <h3>Trail Preview</h3>
           <p>{selectedPath || "No file selected"}</p>
           {selectedMeta ? (
             <p className="office-subtitle">
@@ -97,11 +124,25 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </div>
 
       <article className="card">
-        <h3>Upload / Create File</h3>
+        <h3>Forge / Upload File</h3>
         <div className="controls-row">
-          <input value={uploadPath} onChange={(event) => setUploadPath(event.target.value)} />
+          <SelectOrCustom
+            value={uploadPath}
+            onChange={setUploadPath}
+            options={uploadPathOptions}
+            customPlaceholder="Custom workspace path"
+            customLabel="Upload path"
+          />
           <button onClick={onUpload}>Write File</button>
         </div>
+        <button onClick={() => setShowAdvancedUpload((current) => !current)}>
+          {showAdvancedUpload ? "Hide advanced upload details" : "Show advanced upload details"}
+        </button>
+        {showAdvancedUpload ? (
+          <p className="office-subtitle">
+            Advanced upload mode allows arbitrary file paths inside write-jail roots. Stay inside approved directories.
+          </p>
+        ) : null}
         <textarea
           value={uploadContent}
           onChange={(event) => setUploadContent(event.target.value)}

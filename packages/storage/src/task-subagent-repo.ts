@@ -4,12 +4,12 @@ import type {
   TaskSubagentCreateInput,
   TaskSubagentSession,
   TaskSubagentUpdateInput,
-} from "@personal-ai/contracts";
+} from "@goatcitadel/contracts";
 
 interface TaskSubagentRow {
   subagent_session_id: string;
   task_id: string;
-  openclaw_session_id: string;
+  agent_session_id: string;
   agent_name: string | null;
   status: TaskSubagentSession["status"];
   created_at: string;
@@ -21,17 +21,17 @@ export class TaskSubagentRepository {
   private readonly insertStmt;
   private readonly listByTaskStmt;
   private readonly listAllStmt;
-  private readonly getByOpenclawStmt;
-  private readonly updateByOpenclawStmt;
+  private readonly getByAgentSessionStmt;
+  private readonly updateByAgentSessionStmt;
   private readonly countActiveStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
       INSERT INTO task_subagent_sessions (
-        subagent_session_id, task_id, openclaw_session_id, agent_name,
+        subagent_session_id, task_id, agent_session_id, agent_name,
         status, created_at, updated_at, ended_at
       ) VALUES (
-        @subagentSessionId, @taskId, @openclawSessionId, @agentName,
+        @subagentSessionId, @taskId, @agentSessionId, @agentName,
         @status, @createdAt, @updatedAt, @endedAt
       )
     `);
@@ -49,17 +49,17 @@ export class TaskSubagentRepository {
       LIMIT ?
     `);
 
-    this.getByOpenclawStmt = db.prepare(
-      "SELECT * FROM task_subagent_sessions WHERE openclaw_session_id = ?",
+    this.getByAgentSessionStmt = db.prepare(
+      "SELECT * FROM task_subagent_sessions WHERE agent_session_id = ?",
     );
 
-    this.updateByOpenclawStmt = db.prepare(`
+    this.updateByAgentSessionStmt = db.prepare(`
       UPDATE task_subagent_sessions
       SET
         status = @status,
         ended_at = @endedAt,
         updated_at = @updatedAt
-      WHERE openclaw_session_id = @openclawSessionId
+      WHERE agent_session_id = @agentSessionId
     `);
 
     this.countActiveStmt = db.prepare(
@@ -72,7 +72,7 @@ export class TaskSubagentRepository {
     this.insertStmt.run({
       subagentSessionId,
       taskId,
-      openclawSessionId: input.openclawSessionId,
+      agentSessionId: input.agentSessionId,
       agentName: input.agentName ?? null,
       status: "active",
       createdAt: now,
@@ -80,19 +80,19 @@ export class TaskSubagentRepository {
       endedAt: null,
     });
 
-    return this.getByOpenclawSessionId(input.openclawSessionId);
+    return this.getByAgentSessionId(input.agentSessionId);
   }
 
-  public getByOpenclawSessionId(openclawSessionId: string): TaskSubagentSession {
-    const row = this.getByOpenclawStmt.get(openclawSessionId) as TaskSubagentRow | undefined;
+  public getByAgentSessionId(agentSessionId: string): TaskSubagentSession {
+    const row = this.getByAgentSessionStmt.get(agentSessionId) as TaskSubagentRow | undefined;
     if (!row) {
-      throw new Error(`Sub-agent session ${openclawSessionId} not found`);
+      throw new Error(`Sub-agent session ${agentSessionId} not found`);
     }
     return mapSubagentRow(row);
   }
 
-  public findByOpenclawSessionId(openclawSessionId: string): TaskSubagentSession | undefined {
-    const row = this.getByOpenclawStmt.get(openclawSessionId) as TaskSubagentRow | undefined;
+  public findByAgentSessionId(agentSessionId: string): TaskSubagentSession | undefined {
+    const row = this.getByAgentSessionStmt.get(agentSessionId) as TaskSubagentRow | undefined;
     if (!row) {
       return undefined;
     }
@@ -109,19 +109,19 @@ export class TaskSubagentRepository {
     return rows.map(mapSubagentRow);
   }
 
-  public updateByOpenclawSessionId(
-    openclawSessionId: string,
+  public updateByAgentSessionId(
+    agentSessionId: string,
     input: TaskSubagentUpdateInput,
     now = new Date().toISOString(),
   ): TaskSubagentSession {
-    const current = this.getByOpenclawSessionId(openclawSessionId);
-    this.updateByOpenclawStmt.run({
-      openclawSessionId,
+    const current = this.getByAgentSessionId(agentSessionId);
+    this.updateByAgentSessionStmt.run({
+      agentSessionId,
       status: input.status ?? current.status,
       endedAt: input.endedAt ?? current.endedAt ?? null,
       updatedAt: now,
     });
-    return this.getByOpenclawSessionId(openclawSessionId);
+    return this.getByAgentSessionId(agentSessionId);
   }
 
   public activeCount(): number {
@@ -134,7 +134,7 @@ function mapSubagentRow(row: TaskSubagentRow): TaskSubagentSession {
   return {
     subagentSessionId: row.subagent_session_id,
     taskId: row.task_id,
-    openclawSessionId: row.openclaw_session_id,
+    agentSessionId: row.agent_session_id,
     agentName: row.agent_name ?? undefined,
     status: row.status,
     createdAt: row.created_at,

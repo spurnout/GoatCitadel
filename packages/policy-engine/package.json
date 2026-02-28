@@ -1,5 +1,5 @@
 {
-  "name": "@personal-ai/policy-engine",
+  "name": "@goatcitadel/policy-engine",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/policy-engine/src/index.js",
@@ -11,8 +11,8 @@
     }
   },
   "dependencies": {
-    "@personal-ai/contracts": "workspace:*",
-    "@personal-ai/storage": "workspace:*"
+    "@goatcitadel/contracts": "workspace:*",
+    "@goatcitadel/storage": "workspace:*"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe("sqlite approvals migration", () => {
   it("adds explanation columns to legacy approvals table", () => {
-    const dbPath = path.join(os.tmpdir(), `personal-ai-legacy-approvals-${randomUUID()}.db`);
+    const dbPath = path.join(os.tmpdir(), `goatcitadel-legacy-approvals-${randomUUID()}.db`);
     createdFiles.push(dbPath);
 
     const legacy = new DatabaseSync(dbPath);

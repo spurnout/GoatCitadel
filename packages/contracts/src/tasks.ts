@@ -38,7 +38,7 @@ export interface TaskUpdateInput {
   description?: string;
   status?: TaskStatus;
   priority?: TaskPriority;
-  assignedAgentId?: string;
+  assignedAgentId?: string | null;
   dueAt?: string;
 }
 
@@ -91,7 +91,7 @@ export type SubagentSessionStatus = "active" | "completed" | "failed" | "killed"
 export interface TaskSubagentSession {
   subagentSessionId: string;
   taskId: string;
-  openclawSessionId: string;
+  agentSessionId: string;
   agentName?: string;
   status: SubagentSessionStatus;
   createdAt: string;
@@ -100,7 +100,7 @@ export interface TaskSubagentSession {
 }
 
 export interface TaskSubagentCreateInput {
-  openclawSessionId: string;
+  agentSessionId: string;
   agentName?: string;
 }
 

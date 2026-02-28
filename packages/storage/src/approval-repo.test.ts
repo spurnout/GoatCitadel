@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function createRepo(): ApprovalRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-approval-repo-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-approval-repo-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new ApprovalRepository(db);
@@ -76,5 +76,27 @@ describe("ApprovalRepository", () => {
     assert.equal(failed.explanationStatus, "failed");
     assert.equal(failed.explanationError, "provider timeout");
   });
-});
 
+  it("prevents double resolution of the same approval", () => {
+    const repo = createRepo();
+    const created = repo.create({
+      kind: "shell.exec",
+      riskLevel: "danger",
+      payload: { command: "dir" },
+      preview: { command: "dir" },
+    });
+
+    const resolved = repo.resolve(created.approvalId, {
+      decision: "approve",
+      resolvedBy: "operator",
+    });
+    assert.equal(resolved.status, "approved");
+
+    assert.throws(() => {
+      repo.resolve(created.approvalId, {
+        decision: "reject",
+        resolvedBy: "operator",
+      });
+    });
+  });
+});

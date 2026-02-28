@@ -37,25 +37,35 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
       .catch((err: Error) => setError(err.message));
   }, [refreshKey]);
 
+  if (error && (!state || !vitals || !cron || !operators)) {
+    return (
+      <section>
+        <h2>Summit</h2>
+        <p className="error">{error}</p>
+      </section>
+    );
+  }
+
   if (!state || !vitals || !cron || !operators) {
-    return <p>Loading dashboard...</p>;
+    return <p>Loading summit overview...</p>;
   }
 
   return (
     <section>
-      <h2>Dashboard</h2>
+      <h2>Summit</h2>
+      <p className="office-subtitle">GoatCitadel overview of herd activity, platform vitals, and workload pressure.</p>
       {error ? <p className="error">{error}</p> : null}
 
       <div className="metric-grid">
         <article className="card">
-          <h3>KPIs</h3>
+          <h3>Herd KPIs</h3>
           <p>Pending approvals: {state.pendingApprovals}</p>
           <p>Active sub-agents: {state.activeSubagents}</p>
           <p>Daily cost (USD): {state.dailyCostUsd.toFixed(4)}</p>
           <p>Sessions: {state.sessions.length}</p>
         </article>
         <article className="card">
-          <h3>System Vitals</h3>
+          <h3>Citadel Vitals</h3>
           <p>{vitals.hostname}</p>
           <p>{vitals.platform} {vitals.release}</p>
           <p>CPU cores: {vitals.cpuCount}</p>
@@ -66,7 +76,7 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       <div className="split-grid">
         <article className="card">
-          <h3>Task Status Counts</h3>
+          <h3>Trailboard Status Counts</h3>
           <ul className="compact-list">
             {state.taskStatusCounts.map((row) => (
               <li key={row.status}>{row.status}: {row.count}</li>
@@ -74,7 +84,7 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
           </ul>
         </article>
         <article className="card">
-          <h3>Cron Jobs</h3>
+          <h3>Bell Tower Jobs</h3>
           <ul className="compact-list">
             {cron.items.map((job) => (
               <li key={job.jobId}>

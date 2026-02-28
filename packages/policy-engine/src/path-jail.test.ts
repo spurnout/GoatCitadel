@@ -1,5 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { assertWritePathInJail } from "./sandbox/path-jail.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+});
 
 describe("assertWritePathInJail", () => {
   it("allows writes in jail", () => {
@@ -11,4 +26,54 @@ describe("assertWritePathInJail", () => {
     expect(() => assertWritePathInJail("./workspace/../secret.txt", ["./workspace"]))
       .toThrow(/outside write jail/i);
   });
+
+  it("blocks writes through symlink escape paths", () => {
+    const fixture = createSymlinkFixture();
+    if (!fixture) {
+      return;
+    }
+
+    const attemptedWritePath = path.join(fixture.jailRoot, "link-out", "pwned.txt");
+    expect(() => assertWritePathInJail(attemptedWritePath, [fixture.jailRoot]))
+      .toThrow(/outside write jail/i);
+  });
 });
+
+describe("assertReadPathAllowed", () => {
+  it("blocks reads through symlink escape paths", () => {
+    const fixture = createSymlinkFixture();
+    if (!fixture) {
+      return;
+    }
+
+    const escapedFile = path.join(fixture.jailRoot, "link-out", "secret.txt");
+    expect(() => assertReadPathAllowed(escapedFile, [fixture.jailRoot], []))
+      .toThrow(/outside read allowlist/i);
+  });
+});
+
+function createSymlinkFixture():
+  | { jailRoot: string }
+  | undefined {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "goatcitadel-path-jail-"));
+  tempDirs.push(root);
+
+  const jailRoot = path.join(root, "jail");
+  const outsideRoot = path.join(root, "outside");
+  fs.mkdirSync(jailRoot, { recursive: true });
+  fs.mkdirSync(outsideRoot, { recursive: true });
+  fs.writeFileSync(path.join(outsideRoot, "secret.txt"), "secret", "utf8");
+
+  const linkPath = path.join(jailRoot, "link-out");
+  try {
+    fs.symlinkSync(outsideRoot, linkPath, "junction");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP") {
+      return undefined;
+    }
+    throw error;
+  }
+
+  return { jailRoot };
+}

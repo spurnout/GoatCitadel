@@ -32,7 +32,7 @@ export interface AgentDirectoryRecord {
 export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   {
     roleId: "architect",
-    name: "Architect Agent",
+    name: "Architect Goat",
     title: "Systems Architect",
     summary: "Designs system boundaries, contracts, and sequencing decisions.",
     specialties: ["Architecture", "APIs", "Tradeoffs"],
@@ -42,7 +42,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "coder",
-    name: "Coder Agent",
+    name: "Coder Goat",
     title: "Implementation Engineer",
     summary: "Implements features, refactors safely, and keeps delivery moving.",
     specialties: ["TypeScript", "Refactors", "Integration"],
@@ -52,7 +52,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "qa",
-    name: "QA Agent",
+    name: "QA Goat",
     title: "Verification Lead",
     summary: "Finds regressions early, validates acceptance criteria, and hardens behavior.",
     specialties: ["Testing", "Edge cases", "Regression checks"],
@@ -62,7 +62,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "researcher",
-    name: "Researcher Agent",
+    name: "Researcher Goat",
     title: "Research Analyst",
     summary: "Gathers primary-source facts, compares options, and summarizes decisions.",
     specialties: ["Discovery", "Comparative analysis", "Sourcing"],
@@ -72,7 +72,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "assistant",
-    name: "Personal Assistant Agent",
+    name: "Personal Assistant Goat",
     title: "Operations Assistant",
     summary: "Handles routine organization, reminders, and operator-facing workflows.",
     specialties: ["Coordination", "Summaries", "Ops support"],
@@ -82,7 +82,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "product",
-    name: "Product Agent",
+    name: "Product Goat",
     title: "Product Strategist",
     summary: "Turns user goals into scoped deliverables and measurable milestones.",
     specialties: ["Scoping", "Prioritization", "Roadmaps"],
@@ -92,7 +92,7 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   },
   {
     roleId: "ops",
-    name: "Ops Agent",
+    name: "Ops Goat",
     title: "Runtime Operator",
     summary: "Monitors runtime health, safety posture, and operational constraints.",
     specialties: ["Reliability", "Safety", "Incident response"],

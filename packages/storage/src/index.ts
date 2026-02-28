@@ -14,6 +14,8 @@ import { TaskDeliverableRepository } from "./task-deliverable-repo.js";
 import { TaskSubagentRepository } from "./task-subagent-repo.js";
 import { RealtimeEventRepository } from "./realtime-event-repo.js";
 import { CronJobRepository } from "./cron-job-repo.js";
+import { IntegrationConnectionRepository } from "./integration-connection-repo.js";
+import { MeshRepository } from "./mesh-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -37,6 +39,8 @@ export class Storage {
   public readonly taskSubagents: TaskSubagentRepository;
   public readonly realtimeEvents: RealtimeEventRepository;
   public readonly cronJobs: CronJobRepository;
+  public readonly integrationConnections: IntegrationConnectionRepository;
+  public readonly mesh: MeshRepository;
 
   public constructor(options: StorageOptions) {
     this.db = createDatabase({ dbPath: options.dbPath });
@@ -55,6 +59,8 @@ export class Storage {
     this.taskSubagents = new TaskSubagentRepository(this.db);
     this.realtimeEvents = new RealtimeEventRepository(this.db);
     this.cronJobs = new CronJobRepository(this.db);
+    this.integrationConnections = new IntegrationConnectionRepository(this.db);
+    this.mesh = new MeshRepository(this.db);
   }
 
   public close(): void {
@@ -78,3 +84,5 @@ export * from "./task-deliverable-repo.js";
 export * from "./task-subagent-repo.js";
 export * from "./realtime-event-repo.js";
 export * from "./cron-job-repo.js";
+export * from "./integration-connection-repo.js";
+export * from "./mesh-repo.js";

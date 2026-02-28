@@ -1,288 +1,303 @@
-# Personal AI Assistant Mission Control (Local, TypeScript, OpenAI-Compatible)
+# GoatCitadel Mission Control
 
-Local-first personal AI assistant platform with:
+Local-first TypeScript platform for running and orchestrating personal AI agents with strict safety gates, deterministic session truth, and a goat-themed operator UI.
 
-- Fastify gateway as source-of-truth for sessions, tokens, and cost
-- policy-gated tools (directory jail + network allowlist + approval gates)
-- skills system (`SKILL.md` frontmatter)
-- Mission Control UI (including a real WebGL Office view)
-- orchestration skeleton (plans/waves/phases + checkpoints)
+## Deep Documentation
 
-No Docker required.
+For full engineering-level documentation (architecture, data model, API map, safety model, runbooks, known gaps, and review checklist), read:
+
+- [`docs/ENGINEERING_HANDBOOK.md`](./docs/ENGINEERING_HANDBOOK.md)
+
+For external review handoff artifacts, see:
+
+- [`artifacts/reviews/claude-code/README.md`](./artifacts/reviews/claude-code/README.md)
+
+## What GoatCitadel Includes
+
+- Fastify gateway as source of truth for sessions, transcripts, token usage, and cost accounting.
+- Tool policy engine with deny-wins enforcement, directory jailing, network allowlist, and HITL approval gates.
+- Agent skills system using `SKILL.md` + YAML frontmatter with deterministic precedence.
+- Mission Control UI with full API-first workflows and realtime event streaming.
+- Office V4 WebGL scene with a central human operator (`GoatHerder`, renameable) and goat subagents around a live command floor.
+- OpenAI-compatible provider routing using `/v1/chat/completions` (legacy `/v1/completions` intentionally not used).
+- Local execution with Git worktree support for orchestration isolation (no Docker).
 
 ## Screenshots
 
-### Dashboard
-![Dashboard](./artifacts/screenshots/mission-control/dashboard.png)
+### Summit
+![Summit](./artifacts/screenshots/mission-control/dashboard.png)
 
-### WebGL Office
-![Office](./artifacts/screenshots/mission-control/office.png)
+### Herd HQ (WebGL)
+![Herd HQ](./artifacts/screenshots/mission-control/office.png)
 
-### Agent Directory
-![Agents](./artifacts/screenshots/mission-control/agents.png)
+### Goat Crew
+![Goat Crew](./artifacts/screenshots/mission-control/agents.png)
 
-### Workspace Memory Breakdown
-![Memory](./artifacts/screenshots/mission-control/memory.png)
+### Memory Pasture
+![Memory Pasture](./artifacts/screenshots/mission-control/memory.png)
 
-### Tasks
-![Tasks](./artifacts/screenshots/mission-control/tasks.png)
+### Trailboard
+![Trailboard](./artifacts/screenshots/mission-control/tasks.png)
 
-### Approvals Queue
-![Approvals](./artifacts/screenshots/mission-control/approvals.png)
+### Gatehouse Queue
+![Gatehouse Queue](./artifacts/screenshots/mission-control/approvals.png)
 
-### Settings (OpenAI-Compatible Providers)
-![Settings](./artifacts/screenshots/mission-control/settings.png)
+### Forge (Providers + Runtime Controls)
+![Forge](./artifacts/screenshots/mission-control/settings.png)
 
-You can also open the local gallery page:
+Local gallery page:
 `artifacts/screenshots/mission-control/index.html`
 
-## What This Project Does
+## Runtime Architecture
 
-### 1) Gateway + Session Truth
-- Deterministic routing keys for DM/group/thread-style sessions
-- Append-only transcript events (`data/transcripts/*.jsonl`)
-- SQLite fast index/cache (`data/index.db`)
-- Gateway-owned token and cost accounting
-- idempotency enforcement for mutating requests
+- `apps/gateway`: API server (sessions, approvals, tools, costs, skills, orchestration APIs).
+- `apps/mission-control`: React + Vite operator console.
+- `packages/contracts`: shared API/domain types.
+- `packages/storage`: SQLite repositories + append-only JSONL transcript/audit logs.
+- `packages/gateway-core`: event ingest, deterministic session keys, token/cost ledger logic.
+- `packages/policy-engine`: policy resolver and local sandbox gates.
+- `packages/skills`: skills loader, precedence, activation resolution.
+- `packages/orchestration`: plans/waves/phases runtime logic and checkpoints.
 
-### 2) Tool Policy + Local Sandboxing
-- profile/allow/deny policy resolution with deny-wins semantics
-- per-agent policy overrides
-- write jail path checks
-- network allowlist checks
-- approval-required flow for risky actions
-- replayable audit events
+Data layout:
 
-### 3) Skills System
-- skill folders with `SKILL.md` + YAML frontmatter
-- deterministic load precedence
-- activation by explicit mention, keywords, and dependencies
+- SQLite index/cache: `data/index.db`
+- Session transcripts: `data/transcripts/<sessionId>.jsonl`
+- Audit streams: `data/audit/*.jsonl`
 
-### 4) Mission Control UI
-- Dashboard, System, Files, Memory, Agents, Office, Activity, Cron, Sessions, Skills, Costs, Settings, Approvals, Tasks
-- API-first behavior (no UI scraping)
-- realtime stream via SSE (`/api/v1/events/stream`)
-- WebGL Office: interactive 3D desks/avatars with click-to-inspect details
+## Safety Model
 
-### 5) Orchestration Skeleton
-- plans -> waves -> phases model
-- checkpoints and run events
-- hard-limit hooks and gating points
+- Mutating API requests require `Idempotency-Key`.
+- Policy model: `tools.profile + tools.allow + tools.deny + per-agent overrides`.
+- Deny always wins.
+- Directory jail path-prefix enforcement for write/read safety.
+- Network allowlist enforcement for outbound calls.
+- Risky actions produce approval requests and halt execution until resolved.
+- Approval explainer runs async and non-blocking for layman-readable context.
 
-## Tech Stack
+## OpenAI-Compatible Provider Support
 
-- **Runtime:** Node.js + TypeScript
-- **Monorepo:** pnpm workspaces
-- **Backend:** Fastify
-- **Frontend:** React + Vite
-- **3D UI:** Three.js + React Three Fiber + Drei
-- **Storage:** `node:sqlite` + append-only JSONL logs
+GoatCitadel supports any provider exposing OpenAI-compatible endpoints.
 
-## Repository Layout
+Examples:
 
-```text
-apps/
-  gateway/          # API server (session truth, policy, approvals, orchestration)
-  mission-control/  # React UI
-packages/
-  contracts/        # shared types/contracts
-  storage/          # sqlite + jsonl repositories
-  gateway-core/     # event ingest/session key/token ledger logic
-  policy-engine/    # tool policy + sandbox enforcement
-  skills/           # skill loader/resolver
-  orchestration/    # plan/run/checkpoint engine skeleton
-config/             # assistant/policy/budget/provider configs
-data/               # sqlite db + transcript and audit logs
-skills/             # bundled/workspace skills
-workspace/          # primary write-jail workspace
-```
+- OpenAI: `https://api.openai.com/v1`
+- LM Studio: `http://127.0.0.1:1234/v1`
+- Ollama-compatible bridges that implement OpenAI `chat/completions`
 
-## Prerequisites
+API style used by GoatCitadel:
 
-- Node.js 22+ (recommended)
-- pnpm 10+
-- Git (required for worktree/orchestration workflows)
-- Windows, macOS, or Linux (this project has been actively tested on Windows)
+- Supported: `/v1/chat/completions`
+- Not used: `/v1/completions`
+
+Configure providers in:
+
+- `config/llm-providers.json`
+- or the Mission Control `Forge` tab (`/api/v1/llm/config` under the hood)
 
 ## Installation
+
+### Prerequisites
+
+- Node.js 22+
+- Git
+- Internet access to GitHub
+
+### Quick Install (OpenClaw-style, GoatCitadel-branded)
+
+Windows:
+
+- PowerShell:
+```powershell
+iwr -useb https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.ps1 | iex
+```
+
+- CMD:
+```cmd
+curl -fsSL https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+Hackable (choose install method):
+```bash
+curl -fsSL https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.sh | bash -s -- --install-method git
+```
+
+macOS/Linux:
+
+- One-liner:
+```bash
+curl -fsSL https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.sh | bash
+```
+
+### npm Global CLI Option (GitHub source)
+
+```bash
+npm i -g github:spurnout/GoatCitadel
+```
+
+Then:
+
+```bash
+goatcitadel onboard
+```
+
+### Local Dev Install (manual)
 
 ```bash
 pnpm install
 ```
 
-## First Run (Local)
+## Run Locally
 
-### 1) Start gateway
+Start gateway:
+
 ```bash
 pnpm dev:gateway
 ```
-Gateway listens on:
-`http://127.0.0.1:8787`
 
-Health check:
-`GET http://127.0.0.1:8787/health`
+Start UI:
 
-### 2) Start Mission Control UI
 ```bash
 pnpm dev:ui
 ```
-UI listens on:
-`http://127.0.0.1:5173`
 
-### 3) Open the app
-Go to:
-`http://127.0.0.1:5173`
+Open:
 
-## Configuration
+- UI: `http://localhost:5173`
+- Gateway health: `http://127.0.0.1:8787/health`
 
-Core config files:
+If installed via installer/CLI:
+
+```bash
+goatcitadel onboard
+goatcitadel up
+```
+
+## Key Config Files
 
 - `config/assistant.config.json`
 - `config/tool-policy.json`
 - `config/budgets.json`
 - `config/llm-providers.json`
-
-Environment template:
-
 - `.env.example`
 
-### OpenAI-Compatible Provider Setup
+## Mission Control Areas
 
-The project uses **chat/completions** only (no legacy completions path).
+- `Summit`: top-level KPIs and health.
+- `Engine`: host/runtime vitals.
+- `Trail Files`: workspace file browser/editor within jail roots.
+- `Memory Pasture`: memory and workspace area breakdown.
+- `Goat Crew`: role roster and runtime overlays.
+- `Herd HQ`: WebGL command floor (GoatHerder + goat subagents).
+- `Pulse`: realtime events.
+- `Bell Tower`: cron/scheduled routines.
+- `Runs`: sessions, token totals, cost totals, health.
+- `Playbook Skills`: loaded skills and dependencies.
+- `Feed Ledger`: token and cost breakdowns with run-leaner hints.
+- `Forge`: runtime policy and provider controls.
+- `Gatehouse Queue`: approvals + replay + layman explanation status.
+- `Trailboard`: task, subagent session, activity, and deliverable tracking.
 
-Default providers include:
-- OpenAI (`https://api.openai.com/v1`)
-- LM Studio (`http://127.0.0.1:1234/v1`)
+## Core API Surface
 
-You can:
-- configure providers in `config/llm-providers.json`, or
-- use the **Settings** tab in Mission Control to add/update providers
+Gateway/session:
 
-Supported model routing endpoint:
-- `POST /api/v1/llm/chat-completions`
-
-## Security Model
-
-- strict idempotency requirement on mutating API requests (`Idempotency-Key`)
-- policy engine enforces tool profile + allow + deny (deny wins)
-- directory jail and read-only roots for local file constraints
-- network allowlist for outbound calls
-- approval queue for risky actions (HITL)
-- append-only audit trails for tool/policy/approval events
-
-## Data and Persistence
-
-- SQLite index/cache: `data/index.db`
-- session transcript truth: `data/transcripts/<sessionId>.jsonl`
-- audit streams: `data/audit/*.jsonl`
-
-Important: transcripts and audit files are append-only event streams.
-
-## Typical Operator Workflow
-
-1. Open **Dashboard** for health/KPI overview
-2. Open **Settings** and verify active LLM provider/model
-3. Use **Tasks** to create and track work
-4. Monitor **Office** (WebGL) for live agent state/thoughts
-5. Resolve blocked/risky actions in **Approvals**
-6. Track usage in **Costs** and **Sessions**
-7. Inspect artifacts in **Files** and **Memory**
-
-## Scripts
-
-Root:
-
-- `pnpm dev` - run gateway + mission control together
-- `pnpm dev:gateway`
-- `pnpm dev:ui`
-- `pnpm build`
-- `pnpm typecheck`
-- `pnpm test`
-- `pnpm lint`
-
-## API Surface (High-Level)
-
-### Core
 - `POST /api/v1/gateway/events`
 - `GET /api/v1/sessions`
 - `POST /api/v1/tools/invoke`
 
-### Approvals
+Approvals:
+
 - `POST /api/v1/approvals`
 - `GET /api/v1/approvals`
 - `POST /api/v1/approvals/:approvalId/resolve`
 - `GET /api/v1/approvals/:approvalId/replay`
 
-### Costs
+Costs:
+
 - `GET /api/v1/costs/summary`
 - `POST /api/v1/costs/run-cheaper`
 
-### Tasks
-- `GET/POST /api/v1/tasks`
-- `PATCH/DELETE /api/v1/tasks/:taskId`
-- activity, deliverable, subagent sub-routes
+LLM:
 
-### Realtime + Dashboard
-- `GET /api/v1/events`
-- `GET /api/v1/events/stream`
-- `GET /api/v1/dashboard/state`
-- `GET /api/v1/system/vitals`
-
-### LLM
 - `GET /api/v1/llm/providers`
-- `GET/PATCH /api/v1/llm/config`
+- `GET /api/v1/llm/config`
+- `PATCH /api/v1/llm/config`
 - `GET /api/v1/llm/models`
 - `POST /api/v1/llm/chat-completions`
 
-### Skills
+Tasks/subagents:
+
+- `GET/POST /api/v1/tasks`
+- `PATCH/DELETE /api/v1/tasks/:taskId`
+- `GET/POST /api/v1/tasks/:taskId/activities`
+- `GET/POST /api/v1/tasks/:taskId/deliverables`
+- `GET/POST /api/v1/tasks/:taskId/subagents`
+- `PATCH /api/v1/subagents/:agentSessionId`
+
+Skills:
+
 - `GET /api/v1/skills`
 - `POST /api/v1/skills/reload`
 - `POST /api/v1/skills/resolve-activation`
 
-### Orchestration
+Orchestration:
+
 - `POST /api/v1/orchestration/plans`
 - `POST /api/v1/orchestration/plans/:planId/run`
 - `POST /api/v1/orchestration/phases/:phaseId/approve`
 - `GET /api/v1/orchestration/runs/:runId`
 
-## Troubleshooting
+## Office V4 Customization
 
-### UI cannot reach gateway
-- Ensure gateway is running on `127.0.0.1:8787`
-- Set `VITE_GATEWAY_URL` if you run gateway on a different host/port
+The center operator is configurable from `Herd HQ`:
 
-### Requests fail with idempotency errors
-- Mutating routes require `Idempotency-Key`
-- Mission Control client auto-generates this header
+- Default name: `GoatHerder`
+- Renameable in the inspector
+- Presets: `Trailblazer`, `Strategist`, `Nightwatch`
+- Preferences persist in browser local storage
 
-### LLM models not loading
-- verify provider `baseUrl` and API key/env
-- check provider compatibility with OpenAI `/v1/chat/completions` and `/v1/models`
+## Asset Policy (CC0)
 
-### Tool blocked unexpectedly
-- inspect `config/tool-policy.json`
-- review `networkAllowlist`, jail roots, and deny rules
-- inspect Approvals and audit logs
+Asset pipeline paths:
 
-## GitHub: Create and Push a New Repo
+- `apps/mission-control/public/assets/office/models`
+- `apps/mission-control/public/assets/office/textures`
+- `apps/mission-control/public/assets/office/asset-manifest.json`
 
-From this project root:
+Tracking docs:
+
+- `ASSET_LICENSES.md`
+- `CREDITS.md`
+
+Current default behavior uses procedural WebGL meshes, with optional CC0 model drop-ins.
+
+## Validation Commands
+
+```bash
+pnpm -r typecheck
+pnpm -r test
+pnpm -r build
+```
+
+## Refresh Screenshot Pack
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-mission-control-screenshots.ps1
+```
+
+## Publish To GitHub (Initial Push)
 
 ```bash
 git init
 git add .
-git commit -m "feat: initial local-first personal AI assistant platform"
-```
-
-Create a repo on GitHub, then:
-
-```bash
-git remote add origin https://github.com/<your-user>/<your-repo>.git
+git commit -m "feat: GoatCitadel initial release"
+git remote add origin https://github.com/spurnout/GoatCitadel.git
 git branch -M main
 git push -u origin main
 ```
 
-## License
+## Notes
 
-No license file is currently included.
-Add one (MIT/Apache-2.0/etc.) before publishing publicly.
+- This repository currently has no license file. Add one before public distribution.
+- For legal certainty on naming and trademarks, do an official legal review before commercial launch.

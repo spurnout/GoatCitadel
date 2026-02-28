@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OrchestrationWave } from "@personal-ai/contracts";
+import type { OrchestrationWave } from "@goatcitadel/contracts";
 import { findOwnershipConflicts } from "./ownership-matrix.js";
 
 describe("findOwnershipConflicts", () => {

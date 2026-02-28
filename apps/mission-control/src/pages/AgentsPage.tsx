@@ -4,6 +4,7 @@ import {
   buildAgentDirectory,
   type AgentDirectoryRecord,
 } from "../data/agent-roster";
+import { SelectOrCustom } from "../components/SelectOrCustom";
 
 export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [agents, setAgents] = useState<AgentDirectoryRecord[]>([]);
@@ -41,18 +42,31 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const activeCount = useMemo(() => agents.filter((agent) => agent.status === "active").length, [agents]);
   const idleCount = useMemo(() => agents.filter((agent) => agent.status === "idle").length, [agents]);
 
+  const searchOptions = useMemo(() => {
+    const values = new Set<string>([
+      "architect",
+      "coder",
+      "qa",
+      "researcher",
+      "assistant",
+      "ops",
+      ...agents.flatMap((agent) => agent.specialties),
+    ]);
+    return [...values].filter(Boolean).map((value) => ({ value, label: value }));
+  }, [agents]);
+
   if (error) {
     return <p className="error">{error}</p>;
   }
   if (agents.length === 0) {
-    return <p>Loading agents...</p>;
+    return <p>Loading goat crew...</p>;
   }
 
   return (
     <section className="agents-v2">
-      <h2>Agents</h2>
+      <h2>Goat Crew</h2>
       <p className="office-subtitle">
-        Ready-to-go specialist roster with live runtime overlays.
+        Ready-to-run specialist roster with live runtime overlays.
       </p>
 
       <div className="office-kpi-grid">
@@ -79,10 +93,12 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </div>
 
       <div className="controls-row agents-controls">
-        <input
-          placeholder="Search role, specialty, summary..."
+        <SelectOrCustom
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={setSearch}
+          options={searchOptions}
+          customPlaceholder="Search role, specialty, summary"
+          customLabel="Search query"
         />
         <select
           value={statusFilter}

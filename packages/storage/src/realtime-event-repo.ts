@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { RealtimeEvent } from "@personal-ai/contracts";
+import type { RealtimeEvent } from "@goatcitadel/contracts";
 
 interface RealtimeEventRow {
   event_id: string;
@@ -13,6 +13,8 @@ interface RealtimeEventRow {
 export class RealtimeEventRepository {
   private readonly insertStmt;
   private readonly listStmt;
+  private readonly pruneStmt;
+  private appendCount = 0;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
@@ -25,9 +27,22 @@ export class RealtimeEventRepository {
 
     this.listStmt = db.prepare(`
       SELECT * FROM realtime_events
-      WHERE (@cursor IS NULL OR created_at < @cursor)
-      ORDER BY created_at DESC
+      WHERE (
+        @cursorCreatedAt IS NULL
+        OR created_at < @cursorCreatedAt
+        OR (created_at = @cursorCreatedAt AND event_id < @cursorEventId)
+      )
+      ORDER BY created_at DESC, event_id DESC
       LIMIT @limit
+    `);
+
+    this.pruneStmt = db.prepare(`
+      DELETE FROM realtime_events
+      WHERE event_id IN (
+        SELECT event_id FROM realtime_events
+        ORDER BY created_at DESC, event_id DESC
+        LIMIT -1 OFFSET @maxRows
+      )
     `);
   }
 
@@ -45,6 +60,10 @@ export class RealtimeEventRepository {
       payloadJson: JSON.stringify(payload),
       createdAt,
     });
+    this.appendCount += 1;
+    if (this.appendCount % 100 === 0) {
+      this.pruneStmt.run({ maxRows: 10000 });
+    }
 
     return {
       eventId,
@@ -56,9 +75,11 @@ export class RealtimeEventRepository {
   }
 
   public list(limit: number, cursor?: string): RealtimeEvent[] {
+    const parsedCursor = parseCompositeCursor(cursor);
     const rows = this.listStmt.all({
       limit,
-      cursor: cursor ?? null,
+      cursorCreatedAt: parsedCursor?.timestamp ?? null,
+      cursorEventId: parsedCursor?.key ?? null,
     }) as unknown as RealtimeEventRow[];
 
     return rows.map((row) => ({
@@ -69,4 +90,31 @@ export class RealtimeEventRepository {
       payload: JSON.parse(row.payload_json) as Record<string, unknown>,
     }));
   }
+}
+
+interface CompositeCursor {
+  timestamp: string;
+  key: string;
+}
+
+function parseCompositeCursor(cursor?: string): CompositeCursor | undefined {
+  if (!cursor) {
+    return undefined;
+  }
+
+  const separator = cursor.lastIndexOf("|");
+  if (separator <= 0) {
+    return {
+      timestamp: cursor,
+      key: "",
+    };
+  }
+
+  const timestamp = cursor.slice(0, separator);
+  const key = cursor.slice(separator + 1);
+  if (!timestamp || !key) {
+    return undefined;
+  }
+
+  return { timestamp, key };
 }

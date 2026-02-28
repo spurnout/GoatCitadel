@@ -1,5 +1,5 @@
 {
-  "name": "@personal-ai/orchestration",
+  "name": "@goatcitadel/orchestration",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/orchestration/src/index.js",
@@ -11,7 +11,7 @@
     }
   },
   "dependencies": {
-    "@personal-ai/contracts": "workspace:*",
+    "@goatcitadel/contracts": "workspace:*",
     "zod": "^3.24.1"
   },
   "scripts": {

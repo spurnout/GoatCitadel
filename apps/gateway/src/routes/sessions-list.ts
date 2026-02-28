@@ -14,7 +14,10 @@ export const sessionsListRoute: FastifyPluginAsync = async (fastify) => {
     }
 
     const items = fastify.gateway.listSessions(parsed.data.limit, parsed.data.cursor);
-    const nextCursor = items.length === parsed.data.limit ? items[items.length - 1]?.updatedAt : undefined;
+    const last = items[items.length - 1];
+    const nextCursor = items.length === parsed.data.limit && last
+      ? `${last.updatedAt}|${last.sessionId}`
+      : undefined;
 
     return reply.send({ items, nextCursor });
   });

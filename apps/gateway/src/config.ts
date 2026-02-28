@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import type { LlmConfigFile, ToolPolicyConfig } from "@personal-ai/contracts";
+import type { AuthMode, LlmConfigFile, ToolPolicyConfig } from "@goatcitadel/contracts";
 
 export interface AssistantConfig {
   environment: string;
@@ -10,11 +11,26 @@ export interface AssistantConfig {
   auditDir: string;
   workspaceDir: string;
   worktreesDir: string;
+  auth: AuthConfig;
   approvalExplainer: ApprovalExplainerConfig;
+  mesh: MeshConfig;
   budgets: {
     dailyUsdWarning: number;
     dailyUsdHardCap: number;
     sessionTokenHardCap: number;
+  };
+}
+
+export interface AuthConfig {
+  mode: AuthMode;
+  allowLoopbackBypass: boolean;
+  token: {
+    value?: string;
+    queryParam: string;
+  };
+  basic: {
+    username?: string;
+    password?: string;
   };
 }
 
@@ -26,6 +42,32 @@ export interface ApprovalExplainerConfig {
   model?: string;
   timeoutMs: number;
   maxPayloadChars: number;
+}
+
+export interface MeshConfig {
+  enabled: boolean;
+  mode: "lan" | "wan" | "tailnet";
+  nodeId: string;
+  label?: string;
+  advertiseAddress?: string;
+  discovery: {
+    mdns: boolean;
+    staticPeers: string[];
+  };
+  security: {
+    joinTokenEnv: string;
+    requireMtls: boolean;
+    tailnet: {
+      enabled: boolean;
+      expectedTailnet?: string;
+    };
+  };
+  leases: {
+    ttlSeconds: number;
+  };
+  replication: {
+    batchSize: number;
+  };
 }
 
 export interface BudgetConfig {
@@ -66,6 +108,8 @@ export async function loadGatewayConfig(rootDir: string): Promise<GatewayRuntime
   const budgets = JSON.parse(budgetsRaw) as BudgetConfig;
   const llm = JSON.parse(llmRaw) as LlmConfigFile;
 
+  applyEnvironmentOverrides(assistant);
+
   toolPolicy.sandbox.writeJailRoots = toolPolicy.sandbox.writeJailRoots.map((root) =>
     path.resolve(rootDir, root),
   );
@@ -83,6 +127,48 @@ export async function loadGatewayConfig(rootDir: string): Promise<GatewayRuntime
   };
 }
 
+function applyEnvironmentOverrides(assistant: AssistantConfig): void {
+  const mode = process.env.GOATCITADEL_AUTH_MODE;
+  if (mode === "none" || mode === "token" || mode === "basic") {
+    assistant.auth.mode = mode;
+  }
+
+  const token = process.env.GOATCITADEL_AUTH_TOKEN;
+  if (token) {
+    assistant.auth.token.value = token.trim();
+  }
+
+  const basicUsername = process.env.GOATCITADEL_AUTH_BASIC_USERNAME;
+  if (basicUsername) {
+    assistant.auth.basic.username = basicUsername.trim();
+  }
+
+  const basicPassword = process.env.GOATCITADEL_AUTH_BASIC_PASSWORD;
+  if (basicPassword) {
+    assistant.auth.basic.password = basicPassword;
+  }
+
+  const allowLoopbackBypass = process.env.GOATCITADEL_AUTH_ALLOW_LOOPBACK_BYPASS;
+  if (allowLoopbackBypass) {
+    assistant.auth.allowLoopbackBypass = allowLoopbackBypass === "1" || allowLoopbackBypass.toLowerCase() === "true";
+  }
+
+  const meshEnabled = process.env.GOATCITADEL_MESH_ENABLED;
+  if (meshEnabled) {
+    assistant.mesh.enabled = meshEnabled === "1" || meshEnabled.toLowerCase() === "true";
+  }
+
+  const meshMode = process.env.GOATCITADEL_MESH_MODE;
+  if (meshMode === "lan" || meshMode === "wan" || meshMode === "tailnet") {
+    assistant.mesh.mode = meshMode;
+  }
+
+  const meshNodeId = process.env.GOATCITADEL_MESH_NODE_ID;
+  if (meshNodeId?.trim()) {
+    assistant.mesh.nodeId = meshNodeId.trim();
+  }
+}
+
 function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig {
   const approvalExplainerDefaults: ApprovalExplainerConfig = {
     enabled: true,
@@ -92,6 +178,16 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
     maxPayloadChars: 4000,
   };
 
+  const authInput = (input.auth ?? {}) as Partial<AuthConfig>;
+  const tokenInput = (authInput.token ?? {}) as Partial<AuthConfig["token"]>;
+  const basicInput = (authInput.basic ?? {}) as Partial<AuthConfig["basic"]>;
+  const meshInput = (input.mesh ?? {}) as Partial<MeshConfig>;
+  const meshDiscovery = (meshInput.discovery ?? {}) as Partial<MeshConfig["discovery"]>;
+  const meshSecurity = (meshInput.security ?? {}) as Partial<MeshConfig["security"]>;
+  const meshTailnet = (meshSecurity.tailnet ?? {}) as Partial<MeshConfig["security"]["tailnet"]>;
+  const meshLeases = (meshInput.leases ?? {}) as Partial<MeshConfig["leases"]>;
+  const meshReplication = (meshInput.replication ?? {}) as Partial<MeshConfig["replication"]>;
+
   return {
     environment: input.environment ?? "local",
     defaultToolProfile: input.defaultToolProfile ?? "minimal",
@@ -100,9 +196,46 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
     auditDir: input.auditDir ?? "./data/audit",
     workspaceDir: input.workspaceDir ?? "./workspace",
     worktreesDir: input.worktreesDir ?? "./.worktrees",
+    auth: {
+      mode: authInput.mode ?? "none",
+      allowLoopbackBypass: authInput.allowLoopbackBypass ?? false,
+      token: {
+        value: tokenInput.value,
+        queryParam: tokenInput.queryParam ?? "access_token",
+      },
+      basic: {
+        username: basicInput.username,
+        password: basicInput.password,
+      },
+    },
     approvalExplainer: {
       ...approvalExplainerDefaults,
       ...(input.approvalExplainer ?? {}),
+    },
+    mesh: {
+      enabled: meshInput.enabled ?? false,
+      mode: meshInput.mode ?? "lan",
+      nodeId: meshInput.nodeId ?? `${os.hostname().toLowerCase()}-${process.pid}`,
+      label: meshInput.label,
+      advertiseAddress: meshInput.advertiseAddress,
+      discovery: {
+        mdns: meshDiscovery.mdns ?? true,
+        staticPeers: meshDiscovery.staticPeers ?? [],
+      },
+      security: {
+        joinTokenEnv: meshSecurity.joinTokenEnv ?? "GOATCITADEL_MESH_JOIN_TOKEN",
+        requireMtls: meshSecurity.requireMtls ?? true,
+        tailnet: {
+          enabled: meshTailnet.enabled ?? false,
+          expectedTailnet: meshTailnet.expectedTailnet,
+        },
+      },
+      leases: {
+        ttlSeconds: meshLeases.ttlSeconds ?? 30,
+      },
+      replication: {
+        batchSize: meshReplication.batchSize ?? 200,
+      },
     },
     budgets: {
       dailyUsdWarning: input.budgets?.dailyUsdWarning ?? 10,
@@ -132,8 +265,56 @@ function defaultLlmConfig(): string {
         label: "OpenAI",
         baseUrl: "https://api.openai.com/v1",
         apiStyle: "openai-chat-completions",
-        defaultModel: "gpt-4o-mini",
+        defaultModel: "gpt-4.1-mini",
         apiKeyEnv: "OPENAI_API_KEY",
+      },
+      {
+        providerId: "anthropic",
+        label: "Anthropic (compatible endpoint)",
+        baseUrl: "https://api.anthropic.com/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "claude-3-7-sonnet-latest",
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+      },
+      {
+        providerId: "google",
+        label: "Google (compatible endpoint)",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "gemini-2.0-flash",
+        apiKeyEnv: "GOOGLE_API_KEY",
+      },
+      {
+        providerId: "openrouter",
+        label: "OpenRouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "openai/gpt-4.1-mini",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+      },
+      {
+        providerId: "mistral",
+        label: "Mistral",
+        baseUrl: "https://api.mistral.ai/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "mistral-small-latest",
+        apiKeyEnv: "MISTRAL_API_KEY",
+      },
+      {
+        providerId: "deepseek",
+        label: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "deepseek-chat",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+      },
+      {
+        providerId: "perplexity",
+        label: "Perplexity",
+        baseUrl: "https://api.perplexity.ai/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "sonar",
+        apiKeyEnv: "PERPLEXITY_API_KEY",
       },
       {
         providerId: "lmstudio",

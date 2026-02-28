@@ -9,6 +9,7 @@ coverage
 artifacts/logs/
 artifacts/logs-v2/
 artifacts/screenshots/mission-control-gallery.zip
+artifacts/screenshots/mission-control/test-example.png
 data/index.db
 data/index.db-shm
 data/index.db-wal

@@ -15,6 +15,11 @@ const resolveSchema = z.object({
   resolvedBy: z.string().min(1),
 });
 
+const listQuerySchema = z.object({
+  status: z.enum(["pending", "approved", "rejected", "edited"]).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
 export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/api/v1/approvals", async (request, reply) => {
     const parsed = createSchema.safeParse(request.body);
@@ -27,9 +32,12 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get("/api/v1/approvals", async (request, reply) => {
-    const query = request.query as { status?: "pending" | "approved" | "rejected" | "edited"; limit?: string };
-    const limit = query.limit ? Math.min(Math.max(Number(query.limit), 1), 200) : 100;
-    const approvals = fastify.gateway.listApprovals(query.status, limit);
+    const parsed = listQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    const approvals = fastify.gateway.listApprovals(parsed.data.status, parsed.data.limit);
     return reply.send({ items: approvals });
   });
 
@@ -40,8 +48,16 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
 
-    const result = await fastify.gateway.resolveApproval(approvalId, parsed.data);
-    return reply.send(result);
+    try {
+      const result = await fastify.gateway.resolveApproval(approvalId, parsed.data);
+      return reply.send(result);
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message.includes("already resolved")) {
+        return reply.code(409).send({ error: message });
+      }
+      return reply.code(400).send({ error: message });
+    }
   });
 
   fastify.get("/api/v1/approvals/:approvalId/replay", async (request, reply) => {

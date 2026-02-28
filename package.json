@@ -1,14 +1,19 @@
 {
-  "name": "personal-ai",
+  "name": "goatcitadel",
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@10.29.3",
+  "bin": {
+    "goatcitadel": "./bin/goatcitadel.mjs"
+  },
   "scripts": {
-    "dev": "pnpm --parallel --filter @personal-ai/gateway --filter @personal-ai/mission-control dev",
-    "dev:gateway": "pnpm --filter @personal-ai/gateway dev",
-    "dev:ui": "pnpm --filter @personal-ai/mission-control dev",
+    "dev": "pnpm --parallel --filter @goatcitadel/gateway --filter @goatcitadel/mission-control dev",
+    "dev:gateway": "pnpm --filter @goatcitadel/gateway dev",
+    "dev:ui": "pnpm --filter @goatcitadel/mission-control dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "smoke": "pnpm --filter @goatcitadel/gateway smoke",
+    "onboarding:tui": "pnpm --filter @goatcitadel/gateway onboarding:tui",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },

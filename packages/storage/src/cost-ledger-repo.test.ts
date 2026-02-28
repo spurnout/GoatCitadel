@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function createRepo(): CostLedgerRepository {
-  const dbPath = path.join(os.tmpdir(), `personal-ai-cost-${randomUUID()}.db`);
+  const dbPath = path.join(os.tmpdir(), `goatcitadel-cost-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
   return new CostLedgerRepository(db);
