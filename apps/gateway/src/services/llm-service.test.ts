@@ -57,4 +57,42 @@ describe("LlmService", () => {
     const exported = service.exportConfigFile();
     expect(exported.providers[0]?.apiKey).toBeUndefined();
   });
+
+  it("keeps provider-specific versioned base paths (z.ai v4) intact", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "glm",
+      providers: [
+        {
+          providerId: "glm",
+          label: "GLM",
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "glm-5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config);
+    const provider = service.listProviders().find((item) => item.providerId === "glm");
+    expect(provider?.baseUrl).toBe("https://api.z.ai/api/paas/v4");
+  });
+
+  it("adds /v1 for bare OpenAI-style roots", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "custom",
+      providers: [
+        {
+          providerId: "custom",
+          label: "Custom",
+          baseUrl: "https://example.com",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "x",
+        },
+      ],
+    };
+
+    const service = new LlmService(config);
+    const provider = service.listProviders().find((item) => item.providerId === "custom");
+    expect(provider?.baseUrl).toBe("https://example.com/v1");
+  });
 });

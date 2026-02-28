@@ -445,6 +445,22 @@ function defaultLlmConfig(): string {
         apiKeyEnv: "DEEPSEEK_API_KEY",
       },
       {
+        providerId: "glm",
+        label: "GLM (compatible endpoint)",
+        baseUrl: "https://api.z.ai/api/paas/v4",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "glm-5",
+        apiKeyEnv: "GLM_API_KEY",
+      },
+      {
+        providerId: "moonshot",
+        label: "Moonshot (Kimi API)",
+        baseUrl: "https://api.moonshot.ai/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "kimi-k2.5",
+        apiKeyEnv: "MOONSHOT_API_KEY",
+      },
+      {
         providerId: "perplexity",
         label: "Perplexity",
         baseUrl: "https://api.perplexity.ai/v1",

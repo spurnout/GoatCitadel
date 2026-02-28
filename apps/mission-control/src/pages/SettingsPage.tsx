@@ -98,8 +98,14 @@ const PROVIDER_TEMPLATES: Array<{
   {
     providerId: "glm",
     label: "GLM (compatible endpoint)",
-    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-    defaultModel: "glm-4",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    defaultModel: "glm-5",
+  },
+  {
+    providerId: "moonshot",
+    label: "Moonshot (Kimi API)",
+    baseUrl: "https://api.moonshot.ai/v1",
+    defaultModel: "kimi-k2.5",
   },
   {
     providerId: "perplexity",

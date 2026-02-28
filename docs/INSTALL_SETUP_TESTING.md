@@ -2,6 +2,31 @@
 
 This is the easiest path from zero to running system.
 
+## Read This First
+
+This file is documentation, not a script.  
+Do **not** paste the whole document into PowerShell.
+
+Only run command lines shown inside fenced code blocks.
+
+If you want the shortest working path, run only this:
+
+```powershell
+cd F:\code\personal-ai
+corepack enable
+corepack prepare pnpm@10.29.3 --activate
+pnpm install
+Copy-Item .env.example .env -Force
+pnpm dev:gateway:watch
+```
+
+In a second terminal:
+
+```powershell
+cd F:\code\personal-ai
+pnpm dev:ui
+```
+
 Run all commands from:
 
 ```powershell
@@ -48,7 +73,12 @@ Open `.env` and set at least one API key if you plan to use cloud models:
 
 ```env
 OPENAI_API_KEY=your_key_here
+GLM_API_KEY=your_key_here
+MOONSHOT_API_KEY=your_key_here
 ```
+
+GoatCitadel now auto-loads `.env` on gateway startup.  
+No manual `Set-Item Env:...` step is required.
 
 You can skip this if using local OpenAI-compatible endpoints only.
 
@@ -88,6 +118,22 @@ Expected health response:
 3. Open `Forge` tab.
 4. Confirm active provider + model.
 5. Save runtime settings.
+
+### Quick provider presets (for your blocker)
+
+GLM (Z.AI):
+
+- Provider ID: `glm`
+- Base URL: `https://api.z.ai/api/paas/v4`
+- Model: `glm-5`
+- API key env: `GLM_API_KEY`
+
+Moonshot (Kimi API):
+
+- Provider ID: `moonshot`
+- Base URL: `https://api.moonshot.ai/v1`
+- Model: `kimi-k2.5` (or `kimi-k2-turbo-preview`)
+- API key env: `MOONSHOT_API_KEY`
 
 ## 6) Fast Verification Checklist
 
@@ -170,6 +216,19 @@ In each running terminal: `Ctrl + C`
 
 Stop existing process and restart.
 
+For gateway port `8787`:
+
+```powershell
+$pid = Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -First 1
+if ($pid) { Stop-Process -Id $pid -Force }
+```
+
+Then start gateway again:
+
+```powershell
+pnpm dev:gateway
+```
+
 ### UI opens but API calls fail
 
 1. Confirm gateway is running.
@@ -179,7 +238,7 @@ Stop existing process and restart.
 ### Provider works in config but chat fails
 
 1. Verify base URL is OpenAI-compatible.
-2. Verify endpoint supports `/v1/chat/completions`.
+2. Verify endpoint supports `chat/completions` for the base URL you configured.
 3. Verify key/env var is set in current shell.
 
 ### NPU sidecar starts but no acceleration

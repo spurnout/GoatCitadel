@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { loadLocalEnvFile } from "./env-file.js";
 import { gatewayPlugin } from "./plugins/sqlite.js";
 import { authPlugin } from "./plugins/auth.js";
 import { idempotencyHeaderPlugin } from "./plugins/idempotency.js";
@@ -21,6 +22,8 @@ import { meshRoutes } from "./routes/mesh.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { npuRoutes } from "./routes/npu.js";
+
+loadLocalEnvFile();
 
 export async function buildApp() {
   const app = Fastify({ logger: true });

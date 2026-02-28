@@ -4,6 +4,9 @@ import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { loadLocalEnvFile } from "./env-file.js";
+
+loadLocalEnvFile();
 
 const gatewayHost = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const gatewayPort = Number(process.env.GATEWAY_PORT ?? 8787);
@@ -20,12 +23,6 @@ const watchRoots = [
   path.join(repoRoot, "packages", "skills", "src"),
   path.join(repoRoot, "packages", "orchestration", "src"),
   path.join(repoRoot, "packages", "mesh-core", "src"),
-  path.join(repoRoot, "config", "assistant.config.json"),
-  path.join(repoRoot, "config", "tool-policy.json"),
-  path.join(repoRoot, "config", "budgets.json"),
-  path.join(repoRoot, "config", "llm-providers.json"),
-  path.join(repoRoot, "config", "cron-jobs.json"),
-  path.join(repoRoot, "config", "goatcitadel.json"),
 ];
 
 let child: ChildProcess | null = null;
@@ -85,8 +82,7 @@ async function restartGateway(reason: string): Promise<void> {
 }
 
 async function startChild(): Promise<void> {
-  const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const args = ["exec", "tsx", "src/main.ts"];
+  const { command, args } = buildGatewayStartCommand();
 
   child = spawn(command, args, {
     cwd: gatewayDir,
@@ -125,6 +121,22 @@ async function startChild(): Promise<void> {
   }
 
   console.log("[gateway-supervisor] gateway did not become healthy in time; waiting for next change");
+}
+
+function buildGatewayStartCommand(): { command: string; args: string[] } {
+  if (process.platform === "win32") {
+    // Node 24 on Windows can throw spawn EINVAL when launching *.cmd directly.
+    // Using cmd /c is stable and keeps behavior identical for local dev usage.
+    const comspec = process.env.ComSpec || "cmd.exe";
+    return {
+      command: comspec,
+      args: ["/d", "/s", "/c", "pnpm exec tsx src/main.ts"],
+    };
+  }
+  return {
+    command: "pnpm",
+    args: ["exec", "tsx", "src/main.ts"],
+  };
 }
 
 async function stopChild(reason: string): Promise<void> {

@@ -227,12 +227,34 @@ export class LlmService {
 function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
   const base = provider.baseUrl.trim().replace(/\/+$/, "");
   validateProviderBaseUrl(base);
-  const withV1 = /\/v1$/i.test(base) ? base : `${base}/v1`;
+  const withV1 = shouldAppendV1(base) ? `${base}/v1` : base;
   return {
     ...provider,
     baseUrl: withV1,
     apiStyle: "openai-chat-completions",
   };
+}
+
+function shouldAppendV1(baseUrl: string): boolean {
+  const parsed = new URL(baseUrl);
+  const path = parsed.pathname.replace(/\/+$/, "");
+
+  // No path segment -> default to OpenAI-style /v1.
+  if (!path || path === "/") {
+    return true;
+  }
+
+  // Already points at v1 explicitly.
+  if (/\/v1$/i.test(path)) {
+    return false;
+  }
+
+  // Keep provider-specific versioned paths (e.g. /api/paas/v4, /v1beta/openai).
+  if (/\/v\d+(?:\.\d+)?$/i.test(path) || /\/openai$/i.test(path)) {
+    return false;
+  }
+
+  return true;
 }
 
 async function buildHttpError(action: string, response: Response): Promise<string> {

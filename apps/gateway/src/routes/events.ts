@@ -32,11 +32,14 @@ export const eventsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const raw = reply.raw;
+    const requestOrigin = request.headers.origin;
     raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": requestOrigin || "*",
+      Vary: "Origin",
     });
     raw.flushHeaders?.();
     raw.write(": connected\n\n");

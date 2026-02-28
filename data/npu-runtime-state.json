@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "desiredState": "stopped",
+  "processState": "stopped",
+  "sidecarUrl": "http://127.0.0.1:11440",
+  "healthy": false,
+  "backend": "unknown",
+  "capability": {
+    "platform": "win32",
+    "arch": "x64",
+    "isWindowsArm64": false,
+    "onnxRuntimeAvailable": false,
+    "onnxRuntimeGenAiAvailable": false,
+    "qnnExecutionProviderAvailable": false,
+    "supported": false,
+    "details": [
+      "No sidecar capability report received yet."
+    ]
+  },
+  "updatedAt": "2026-02-28T17:38:56.436Z"
+}
