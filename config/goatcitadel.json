@@ -23,6 +23,37 @@
       "timeoutMs": 15000,
       "maxPayloadChars": 4000
     },
+    "memory": {
+      "enabled": true,
+      "qmd": {
+        "enabled": true,
+        "applyToChat": true,
+        "applyToOrchestration": true,
+        "minPromptChars": 48,
+        "maxContextTokens": 1400,
+        "headroomTokens": 600,
+        "maxTranscriptEvents": 80,
+        "maxMemoryFiles": 36,
+        "maxBytesPerFile": 64000,
+        "allowedExtensions": [
+          ".md",
+          ".txt",
+          ".json",
+          ".yaml",
+          ".yml",
+          ".log",
+          ".ts",
+          ".tsx",
+          ".js",
+          ".jsx"
+        ],
+        "cacheTtlSeconds": 300,
+        "distiller": {
+          "timeoutMs": 12000,
+          "fallbackCheapModel": "gpt-4.1-nano"
+        }
+      }
+    },
     "mesh": {
       "enabled": false,
       "mode": "lan",
@@ -43,6 +74,26 @@
       },
       "replication": {
         "batchSize": 200
+      }
+    },
+    "npu": {
+      "enabled": false,
+      "autoStart": false,
+      "sidecar": {
+        "baseUrl": "http://127.0.0.1:11440",
+        "command": "python",
+        "args": [
+          "apps/npu-sidecar/server.py"
+        ],
+        "healthPath": "/health",
+        "modelsPath": "/v1/models",
+        "startTimeoutMs": 20000,
+        "requestTimeoutMs": 12000,
+        "restartBudget": {
+          "windowMs": 60000,
+          "maxRestarts": 5,
+          "backoffMs": 2000
+        }
       }
     },
     "budgets": {
@@ -246,6 +297,13 @@
         "baseUrl": "http://127.0.0.1:1234/v1",
         "apiStyle": "openai-chat-completions",
         "defaultModel": "local-model"
+      },
+      {
+        "providerId": "npu-local",
+        "label": "NPU Local Sidecar",
+        "baseUrl": "http://127.0.0.1:11440/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "phi-3.5-mini-instruct"
       }
     ]
   },

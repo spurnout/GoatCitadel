@@ -16,6 +16,7 @@ import { TasksPage } from "./pages/TasksPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { NpuPage } from "./pages/NpuPage";
 
 const OfficePage = lazy(async () => {
   const module = await import("./pages/OfficePage");
@@ -39,7 +40,8 @@ type Tab =
   | "approvals"
   | "tasks"
   | "integrations"
-  | "mesh";
+  | "mesh"
+  | "npu";
 
 const allTabs: Tab[] = [
   "onboarding",
@@ -59,6 +61,7 @@ const allTabs: Tab[] = [
   "tasks",
   "integrations",
   "mesh",
+  "npu",
 ];
 
 const navItems: Array<{ id: Tab; label: string; code: string }> = [
@@ -79,6 +82,7 @@ const navItems: Array<{ id: Tab; label: string; code: string }> = [
   { id: "tasks", label: "Trailboard (Tasks)", code: "TSK" },
   { id: "integrations", label: "Connections", code: "CNX" },
   { id: "mesh", label: "Mesh", code: "MSH" },
+  { id: "npu", label: "NPU", code: "NPU" },
 ];
 
 function isTab(value: string | null): value is Tab {
@@ -220,6 +224,9 @@ export function App() {
     }
     if (tab === "mesh") {
       return <MeshPage refreshKey={refreshKey} />;
+    }
+    if (tab === "npu") {
+      return <NpuPage refreshKey={refreshKey} />;
     }
     return <IntegrationsPage refreshKey={refreshKey} />;
   }, [refreshKey, tab]);

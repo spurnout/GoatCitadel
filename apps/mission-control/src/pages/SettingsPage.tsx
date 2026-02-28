@@ -72,6 +72,12 @@ const PROVIDER_TEMPLATES: Array<{
     defaultModel: "local-model",
   },
   {
+    providerId: "npu-local",
+    label: "NPU Local Sidecar",
+    baseUrl: "http://127.0.0.1:11440/v1",
+    defaultModel: "phi-3.5-mini-instruct",
+  },
+  {
     providerId: "openrouter",
     label: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",

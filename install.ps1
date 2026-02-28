@@ -17,7 +17,7 @@ function Require-Command {
 }
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-  $BaseDir = Join-Path $HOME ".goatcitadel"
+  $BaseDir = Join-Path $HOME ".GoatCitadel"
 } else {
   $BaseDir = [System.IO.Path]::GetFullPath($InstallDir)
 }
@@ -86,7 +86,7 @@ if /I "%CMD%"=="smoke" (
   exit /b %ERRORLEVEL%
 )
 if /I "%CMD%"=="update" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "$($AppDir)\install.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "$($AppDir)\install.ps1" -InstallDir "$($BaseDir)"
   exit /b %ERRORLEVEL%
 )
 if /I "%CMD%"=="doctor" (

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/spurnout/GoatCitadel.git"
-BASE_DIR="${HOME}/.goatcitadel"
+BASE_DIR="${HOME}/.GoatCitadel"
 APP_DIR="${BASE_DIR}/app"
 BIN_DIR="${BASE_DIR}/bin"
 INSTALL_METHOD="git"
@@ -18,7 +18,7 @@ Usage:
 
 Options:
   --repo <url>              Repository URL (default: https://github.com/spurnout/GoatCitadel.git)
-  --install-dir <path>      Base install directory (default: ~/.goatcitadel)
+  --install-dir <path>      Base install directory (default: ~/.GoatCitadel)
   --install-method <name>   Install method (supported: git)
   --no-path-update          Do not modify shell profile PATH
   --help                    Show this help
@@ -126,7 +126,7 @@ case "\${cmd}" in
     exec pnpm --dir "\${APP_DIR}" smoke "\$@"
     ;;
   update)
-    exec bash "\${APP_DIR}/install.sh"
+    exec bash "\${APP_DIR}/install.sh" --install-dir "${BASE_DIR}"
     ;;
   doctor)
     echo "GoatCitadel doctor"

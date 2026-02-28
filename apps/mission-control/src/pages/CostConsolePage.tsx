@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchCostSummary, runCheaper, type CostSummaryResponse } from "../api/client";
+import { fetchCostSummary, fetchMemoryQmdStats, runCheaper, type CostSummaryResponse } from "../api/client";
 
 type CostScope = "day" | "session" | "agent" | "task";
 
@@ -7,6 +7,12 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [scope, setScope] = useState<CostScope>("day");
   const [data, setData] = useState<CostSummaryResponse | null>(null);
   const [recommendation, setRecommendation] = useState<string[] | null>(null);
+  const [qmdSavings, setQmdSavings] = useState<{
+    totalRuns: number;
+    savingsPercent: number;
+    originalTokenEstimate: number;
+    distilledTokenEstimate: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -14,6 +20,19 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
       .then(setData)
       .catch((err: Error) => setError(err.message));
   }, [scope, refreshKey]);
+
+  useEffect(() => {
+    void fetchMemoryQmdStats()
+      .then((stats) => {
+        setQmdSavings({
+          totalRuns: stats.totalRuns,
+          savingsPercent: stats.savingsPercent,
+          originalTokenEstimate: stats.originalTokenEstimate,
+          distilledTokenEstimate: stats.distilledTokenEstimate,
+        });
+      })
+      .catch((err: Error) => setError(err.message));
+  }, [refreshKey]);
 
   const onRunCheaper = async () => {
     try {
@@ -57,6 +76,18 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
           ))}
         </ul>
       ) : null}
+
+      <article className="card">
+        <h3>QMD Impact (24h)</h3>
+        {qmdSavings ? (
+          <p>
+            {qmdSavings.totalRuns} runs, estimated token reduction {qmdSavings.savingsPercent.toFixed(1)}%
+            {" "}({qmdSavings.originalTokenEstimate} {"->"} {qmdSavings.distilledTokenEstimate}).
+          </p>
+        ) : (
+          <p>No QMD metrics yet.</p>
+        )}
+      </article>
 
       <table>
         <thead>

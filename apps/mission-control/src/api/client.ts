@@ -2,6 +2,10 @@ import type {
   AuthSettingsUpdateInput,
   ApprovalReplayEvent,
   ApprovalRequest,
+  MemoryContextPack,
+  MemoryQmdStatsResponse,
+  NpuModelManifest,
+  NpuRuntimeStatus,
   OnboardingBootstrapInput,
   OnboardingBootstrapResult,
   OnboardingState,
@@ -226,6 +230,19 @@ export interface RuntimeSettingsResponse {
     timeoutMs: number;
     maxPayloadChars: number;
   };
+  memory: {
+    enabled: boolean;
+    qmd: {
+      enabled: boolean;
+      applyToChat: boolean;
+      applyToOrchestration: boolean;
+      minPromptChars: number;
+      maxContextTokens: number;
+      cacheTtlSeconds: number;
+      distillerProviderId?: string;
+      distillerModel?: string;
+    };
+  };
   auth: {
     mode: "none" | "token" | "basic";
     allowLoopbackBypass: boolean;
@@ -253,6 +270,12 @@ export interface RuntimeSettingsResponse {
     staticPeers: string[];
     requireMtls: boolean;
     tailnetEnabled: boolean;
+  };
+  npu: {
+    enabled: boolean;
+    autoStart: boolean;
+    sidecarUrl: string;
+    status: NpuRuntimeStatus;
   };
 }
 
@@ -606,6 +629,17 @@ export async function patchSettings(input: {
       headers?: Record<string, string>;
     };
   };
+  memory?: {
+    enabled?: boolean;
+    qmdEnabled?: boolean;
+    qmdApplyToChat?: boolean;
+    qmdApplyToOrchestration?: boolean;
+    qmdMaxContextTokens?: number;
+    qmdMinPromptChars?: number;
+    qmdCacheTtlSeconds?: number;
+    qmdDistillerProviderId?: string;
+    qmdDistillerModel?: string;
+  };
   mesh?: {
     enabled?: boolean;
     mode?: "lan" | "wan" | "tailnet";
@@ -615,11 +649,53 @@ export async function patchSettings(input: {
     requireMtls?: boolean;
     tailnetEnabled?: boolean;
   };
+  npu?: {
+    enabled?: boolean;
+    autoStart?: boolean;
+    sidecarUrl?: string;
+  };
 }): Promise<RuntimeSettingsResponse> {
   return request<RuntimeSettingsResponse>("/api/v1/settings", {
     method: "PATCH",
     body: JSON.stringify(input),
   });
+}
+
+export async function composeMemoryContext(input: {
+  scope: "chat" | "orchestration";
+  prompt: string;
+  sessionId?: string;
+  taskId?: string;
+  runId?: string;
+  phaseId?: string;
+  workspace?: string;
+  maxContextTokens?: number;
+  forceRefresh?: boolean;
+}): Promise<MemoryContextPack> {
+  return request<MemoryContextPack>("/api/v1/memory/context/compose", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchMemoryContext(contextId: string): Promise<MemoryContextPack> {
+  return request<MemoryContextPack>(`/api/v1/memory/context/${encodeURIComponent(contextId)}`);
+}
+
+export async function fetchMemoryQmdStats(from?: string, to?: string, limit = 60): Promise<MemoryQmdStatsResponse & { recent: MemoryContextPack[] }> {
+  const search = new URLSearchParams();
+  if (from) search.set("from", from);
+  if (to) search.set("to", to);
+  search.set("limit", String(limit));
+  return request<MemoryQmdStatsResponse & { recent: MemoryContextPack[] }>(
+    `/api/v1/memory/qmd/stats?${search.toString()}`,
+  );
+}
+
+export async function fetchOrchestrationRunContext(runId: string): Promise<{ items: MemoryContextPack[] }> {
+  return request<{ items: MemoryContextPack[] }>(
+    `/api/v1/orchestration/runs/${encodeURIComponent(runId)}/context`,
+  );
 }
 
 export async function fetchIntegrationCatalog(
@@ -686,6 +762,15 @@ export async function createLlmChatCompletion(input: {
   providerId?: string;
   model?: string;
   messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>;
+  memory?: {
+    enabled?: boolean;
+    mode?: "qmd" | "off";
+    sessionId?: string;
+    taskId?: string;
+    workspace?: string;
+    maxContextTokens?: number;
+    forceRefresh?: boolean;
+  };
   temperature?: number;
   max_tokens?: number;
 }): Promise<LlmChatCompletionResponse> {
@@ -713,6 +798,35 @@ export async function fetchMeshSessionOwners(limit = 500): Promise<{ items: Mesh
 
 export async function fetchMeshReplicationOffsets(limit = 500): Promise<{ items: MeshReplicationOffsetRecord[] }> {
   return request<{ items: MeshReplicationOffsetRecord[] }>(`/api/v1/mesh/replication/offsets?limit=${limit}`);
+}
+
+export async function fetchNpuStatus(): Promise<NpuRuntimeStatus> {
+  return request<NpuRuntimeStatus>("/api/v1/npu/status");
+}
+
+export async function fetchNpuModels(): Promise<{ items: NpuModelManifest[] }> {
+  return request<{ items: NpuModelManifest[] }>("/api/v1/npu/models");
+}
+
+export async function startNpuRuntime(): Promise<NpuRuntimeStatus> {
+  return request<NpuRuntimeStatus>("/api/v1/npu/start", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopNpuRuntime(): Promise<NpuRuntimeStatus> {
+  return request<NpuRuntimeStatus>("/api/v1/npu/stop", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function refreshNpuRuntime(): Promise<NpuRuntimeStatus> {
+  return request<NpuRuntimeStatus>("/api/v1/npu/refresh", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export type EventStreamConnectionState = "connecting" | "open" | "error" | "closed";

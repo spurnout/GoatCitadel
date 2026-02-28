@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchFilesList } from "../api/client";
+import { fetchFilesList, fetchMemoryQmdStats } from "../api/client";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 
 interface WorkspaceFile {
@@ -17,6 +17,17 @@ interface WorkspaceAreaSummary {
 
 export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [qmdStats, setQmdStats] = useState<{
+    totalRuns: number;
+    generatedRuns: number;
+    cacheHitRuns: number;
+    fallbackRuns: number;
+    failedRuns: number;
+    originalTokenEstimate: number;
+    distilledTokenEstimate: number;
+    savingsPercent: number;
+    recent: Array<{ contextId: string; scope: string; createdAt: string; quality: { status: string } }>;
+  } | null>(null);
   const [selectedArea, setSelectedArea] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +37,22 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
       .then((res) => {
         setFiles(res.items);
         setError(null);
+      })
+      .catch((err: Error) => setError(err.message));
+  }, [refreshKey]);
+
+  useEffect(() => {
+    void fetchMemoryQmdStats()
+      .then((stats) => {
+        setQmdStats({
+          ...stats,
+          recent: stats.recent.map((item) => ({
+            contextId: item.contextId,
+            scope: item.scope,
+            createdAt: item.createdAt,
+            quality: { status: item.quality.status },
+          })),
+        });
       })
       .catch((err: Error) => setError(err.message));
   }, [refreshKey]);
@@ -89,6 +116,20 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <p className="office-kpi-value">{hottestArea?.area ?? "-"}</p>
           <p className="office-kpi-note">
             {hottestArea ? `${formatBytes(hottestArea.totalBytes)} total` : "No files indexed"}
+          </p>
+        </article>
+        <article className="office-kpi-card">
+          <p className="office-kpi-label">QMD Runs (24h)</p>
+          <p className="office-kpi-value">{qmdStats?.totalRuns ?? 0}</p>
+          <p className="office-kpi-note">Generated {qmdStats?.generatedRuns ?? 0} / cache hits {qmdStats?.cacheHitRuns ?? 0}</p>
+        </article>
+        <article className="office-kpi-card">
+          <p className="office-kpi-label">QMD Savings</p>
+          <p className="office-kpi-value">{qmdStats ? `${qmdStats.savingsPercent.toFixed(1)}%` : "-"}</p>
+          <p className="office-kpi-note">
+            {qmdStats
+              ? `${qmdStats.originalTokenEstimate} -> ${qmdStats.distilledTokenEstimate} estimated tokens`
+              : "No QMD samples yet"}
           </p>
         </article>
       </div>
@@ -182,6 +223,34 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <td>{area.files.length}</td>
                 <td>{formatBytes(area.totalBytes)}</td>
                 <td>{area.latestModifiedAt ? new Date(area.latestModifiedAt).toLocaleString() : "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </article>
+
+      <article className="card">
+        <h3>Recent Distilled Context Packs</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Context ID</th>
+              <th>Scope</th>
+              <th>Status</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!qmdStats || qmdStats.recent.length === 0 ? (
+              <tr>
+                <td colSpan={4}>No QMD contexts generated yet.</td>
+              </tr>
+            ) : qmdStats.recent.slice(0, 20).map((item) => (
+              <tr key={item.contextId}>
+                <td>{item.contextId}</td>
+                <td>{item.scope}</td>
+                <td>{item.quality.status}</td>
+                <td>{new Date(item.createdAt).toLocaleString()}</td>
               </tr>
             ))}
           </tbody>

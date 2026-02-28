@@ -32,6 +32,7 @@ async function run(): Promise<void> {
       await smokeApprovals(app);
       await smokeIntegrations(app);
       await smokeMesh(app);
+      await smokeNpu(app);
       await smokeOnboarding(app);
       console.log("Smoke tests passed.");
     } finally {
@@ -190,6 +191,22 @@ async function smokeMesh(app: Awaited<ReturnType<typeof buildApp>>): Promise<voi
   assert.equal(nodesRes.statusCode, 200);
   const nodes = JSON.parse(nodesRes.body) as { items: Array<{ nodeId: string }> };
   assert.equal(nodes.items.length >= 1, true);
+}
+
+async function smokeNpu(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const statusRes = await app.inject({
+    method: "GET",
+    url: "/api/v1/npu/status",
+  });
+  assert.equal(statusRes.statusCode, 200);
+  const status = JSON.parse(statusRes.body) as {
+    enabled: boolean;
+    sidecarUrl: string;
+    processState: string;
+  };
+  assert.equal(typeof status.enabled, "boolean");
+  assert.equal(typeof status.sidecarUrl, "string");
+  assert.equal(typeof status.processState, "string");
 }
 
 async function smokeOnboarding(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

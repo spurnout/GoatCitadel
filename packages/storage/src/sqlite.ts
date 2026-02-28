@@ -92,6 +92,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "mesh_schema",
     up: createMeshSchema,
   },
+  {
+    version: 6,
+    name: "memory_qmd_schema",
+    up: createMemoryQmdSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -441,6 +446,65 @@ function createMeshSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_mesh_join_tokens_expires_at
       ON mesh_join_tokens(expires_at);
+  `);
+}
+
+function createMemoryQmdSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_context_packs (
+      context_id TEXT PRIMARY KEY,
+      cache_key TEXT NOT NULL UNIQUE,
+      scope TEXT NOT NULL,
+      session_id TEXT,
+      task_id TEXT,
+      run_id TEXT,
+      phase_id TEXT,
+      query_hash TEXT NOT NULL,
+      sources_hash TEXT NOT NULL,
+      context_text TEXT NOT NULL,
+      citations_json TEXT NOT NULL,
+      quality_json TEXT NOT NULL,
+      original_token_estimate INTEGER NOT NULL,
+      distilled_token_estimate INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_context_packs_session
+      ON memory_context_packs(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_context_packs_run_phase
+      ON memory_context_packs(run_id, phase_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_context_packs_created_at
+      ON memory_context_packs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_qmd_runs (
+      run_event_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      session_id TEXT,
+      task_id TEXT,
+      run_id TEXT,
+      phase_id TEXT,
+      status TEXT NOT NULL,
+      provider_id TEXT,
+      model TEXT,
+      duration_ms INTEGER NOT NULL,
+      candidate_count INTEGER NOT NULL,
+      citations_count INTEGER NOT NULL,
+      original_token_estimate INTEGER NOT NULL,
+      distilled_token_estimate INTEGER NOT NULL,
+      savings_percent REAL NOT NULL,
+      error_text TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_qmd_runs_created_at
+      ON memory_qmd_runs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_qmd_runs_scope
+      ON memory_qmd_runs(scope, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_qmd_runs_session
+      ON memory_qmd_runs(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_qmd_runs_run_phase
+      ON memory_qmd_runs(run_id, phase_id, created_at DESC);
   `);
 }
 

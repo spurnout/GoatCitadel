@@ -81,4 +81,9 @@ export const orchestrationRoutes: FastifyPluginAsync = async (fastify) => {
     const runId = (request.params as { runId: string }).runId;
     return reply.send({ items: fastify.gateway.listRunCheckpoints(runId) });
   });
+
+  fastify.get("/api/v1/orchestration/runs/:runId/context", async (request, reply) => {
+    const runId = (request.params as { runId: string }).runId;
+    return reply.send({ items: fastify.gateway.listRunContexts(runId) });
+  });
 };

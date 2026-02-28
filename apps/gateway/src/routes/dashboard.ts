@@ -31,6 +31,17 @@ const updateSettingsSchema = z.object({
       headers: z.record(z.string()).optional(),
     }).optional(),
   }).optional(),
+  memory: z.object({
+    enabled: z.boolean().optional(),
+    qmdEnabled: z.boolean().optional(),
+    qmdApplyToChat: z.boolean().optional(),
+    qmdApplyToOrchestration: z.boolean().optional(),
+    qmdMaxContextTokens: z.number().int().positive().optional(),
+    qmdMinPromptChars: z.number().int().nonnegative().optional(),
+    qmdCacheTtlSeconds: z.number().int().positive().optional(),
+    qmdDistillerProviderId: z.string().optional(),
+    qmdDistillerModel: z.string().optional(),
+  }).optional(),
   mesh: z.object({
     enabled: z.boolean().optional(),
     mode: z.enum(["lan", "wan", "tailnet"]).optional(),
@@ -39,6 +50,11 @@ const updateSettingsSchema = z.object({
     staticPeers: z.array(z.string().min(1)).optional(),
     requireMtls: z.boolean().optional(),
     tailnetEnabled: z.boolean().optional(),
+  }).optional(),
+  npu: z.object({
+    enabled: z.boolean().optional(),
+    autoStart: z.boolean().optional(),
+    sidecarUrl: z.string().url().optional(),
   }).optional(),
 });
 

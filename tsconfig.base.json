@@ -11,7 +11,8 @@
       "@goatcitadel/policy-engine": ["packages/policy-engine/src/index.ts"],
       "@goatcitadel/skills": ["packages/skills/src/index.ts"],
       "@goatcitadel/orchestration": ["packages/orchestration/src/index.ts"],
-      "@goatcitadel/mesh-core": ["packages/mesh-core/src/index.ts"]
+      "@goatcitadel/mesh-core": ["packages/mesh-core/src/index.ts"],
+      "@goatcitadel/memory-core": ["packages/memory-core/src/index.ts"]
     },
     "lib": ["ES2022", "DOM"],
     "strict": true,

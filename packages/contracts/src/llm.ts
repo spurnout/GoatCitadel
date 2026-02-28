@@ -49,6 +49,15 @@ export interface ChatCompletionRequest {
   providerId?: string;
   model?: string;
   messages: ChatCompletionMessage[];
+  memory?: {
+    enabled?: boolean;
+    mode?: "qmd" | "off";
+    sessionId?: string;
+    taskId?: string;
+    workspace?: string;
+    maxContextTokens?: number;
+    forceRefresh?: boolean;
+  };
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
@@ -73,5 +82,13 @@ export interface ChatCompletionResponse {
   model?: string;
   choices?: ChatCompletionResponseChoice[];
   usage?: Record<string, unknown>;
+  memoryContext?: {
+    contextId: string;
+    cacheHit: boolean;
+    originalTokenEstimate: number;
+    distilledTokenEstimate: number;
+    savingsPercent: number;
+    citationsCount: number;
+  };
   [key: string]: unknown;
 }

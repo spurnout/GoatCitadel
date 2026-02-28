@@ -27,6 +27,7 @@ export const INTEGRATION_CATALOG: IntegrationCatalogEntry[] = [
   entry("model_provider", "perplexity", "Perplexity", "Perplexity provider route.", "planned", ["api-key"], ["chat-completions"]),
   entry("model_provider", "huggingface", "HuggingFace", "HuggingFace inference route.", "planned", ["api-key"], ["chat-completions"]),
   entry("model_provider", "local-models", "Local Models", "Local model backends (LM Studio/Ollama/LocalAI).", "native", ["local"], ["chat-completions"]),
+  entry("model_provider", "npu-local", "NPU Local Sidecar", "Local ONNX Runtime GenAI sidecar for Windows ARM64 Snapdragon NPU acceleration.", "beta", ["local"], ["chat-completions", "npu"]),
 
   // Productivity
   entry("productivity", "apple-notes", "Apple Notes", "Sync or publish notes to Apple Notes.", "planned", ["local-agent"], ["read", "write"]),

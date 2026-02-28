@@ -15,6 +15,7 @@
     "test": "pnpm -r test",
     "smoke": "pnpm --filter @goatcitadel/gateway smoke",
     "onboarding:tui": "pnpm --filter @goatcitadel/gateway onboarding:tui",
+    "tui": "pnpm --filter @goatcitadel/gateway tui",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"

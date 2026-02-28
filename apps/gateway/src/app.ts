@@ -19,6 +19,8 @@ import { llmRoutes } from "./routes/llm.js";
 import { integrationsRoutes } from "./routes/integrations.js";
 import { meshRoutes } from "./routes/mesh.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
+import { memoryRoutes } from "./routes/memory.js";
+import { npuRoutes } from "./routes/npu.js";
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
@@ -47,6 +49,8 @@ export async function buildApp() {
   await app.register(integrationsRoutes);
   await app.register(meshRoutes);
   await app.register(onboardingRoutes);
+  await app.register(memoryRoutes);
+  await app.register(npuRoutes);
 
   return app;
 }

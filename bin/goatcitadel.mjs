@@ -5,7 +5,12 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 
 const repoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/spurnout/GoatCitadel.git";
-const baseDir = process.env.GOATCITADEL_HOME || path.join(os.homedir(), ".goatcitadel");
+const preferredBaseDir = path.join(os.homedir(), ".GoatCitadel");
+const legacyBaseDir = path.join(os.homedir(), ".goatcitadel");
+const baseDir = process.env.GOATCITADEL_HOME
+  || (fs.existsSync(path.join(preferredBaseDir, "app")) ? preferredBaseDir
+    : fs.existsSync(path.join(legacyBaseDir, "app")) ? legacyBaseDir
+      : preferredBaseDir);
 const appDir = path.join(baseDir, "app");
 const pnpmVersion = "10.29.3";
 
@@ -45,8 +50,16 @@ async function main() {
     run("pnpm", ["--dir", appDir, "onboarding:tui", ...rest]);
     return;
   }
+  if (command === "tui") {
+    run("pnpm", ["--dir", appDir, "tui", ...rest]);
+    return;
+  }
   if (command === "smoke") {
     run("pnpm", ["--dir", appDir, "smoke", ...rest]);
+    return;
+  }
+  if (command === "npu" || command === "npu-sidecar") {
+    run("python", [path.join(appDir, "apps", "npu-sidecar", "server.py"), ...rest]);
     return;
   }
   if (command === "doctor") {
@@ -139,7 +152,9 @@ Commands:
   gateway    Start gateway only
   ui         Start mission control UI only
   onboard    Run TUI onboarding wizard
+  tui        Run terminal Mission Control
   smoke      Run smoke tests
+  npu        Run local NPU sidecar (Python)
   doctor     Show environment diagnostics
   help       Show this help
 `);

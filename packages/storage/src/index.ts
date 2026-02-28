@@ -16,6 +16,8 @@ import { RealtimeEventRepository } from "./realtime-event-repo.js";
 import { CronJobRepository } from "./cron-job-repo.js";
 import { IntegrationConnectionRepository } from "./integration-connection-repo.js";
 import { MeshRepository } from "./mesh-repo.js";
+import { MemoryContextRepository } from "./memory-context-repo.js";
+import { MemoryQmdRunRepository } from "./memory-qmd-run-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -41,6 +43,8 @@ export class Storage {
   public readonly cronJobs: CronJobRepository;
   public readonly integrationConnections: IntegrationConnectionRepository;
   public readonly mesh: MeshRepository;
+  public readonly memoryContexts: MemoryContextRepository;
+  public readonly memoryQmdRuns: MemoryQmdRunRepository;
 
   public constructor(options: StorageOptions) {
     this.db = createDatabase({ dbPath: options.dbPath });
@@ -61,6 +65,8 @@ export class Storage {
     this.cronJobs = new CronJobRepository(this.db);
     this.integrationConnections = new IntegrationConnectionRepository(this.db);
     this.mesh = new MeshRepository(this.db);
+    this.memoryContexts = new MemoryContextRepository(this.db);
+    this.memoryQmdRuns = new MemoryQmdRunRepository(this.db);
   }
 
   public close(): void {
@@ -86,3 +92,5 @@ export * from "./realtime-event-repo.js";
 export * from "./cron-job-repo.js";
 export * from "./integration-connection-repo.js";
 export * from "./mesh-repo.js";
+export * from "./memory-context-repo.js";
+export * from "./memory-qmd-run-repo.js";

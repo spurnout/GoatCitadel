@@ -18,6 +18,9 @@ import type {
   ApprovalRequest,
   ApprovalResolveInput,
   ChannelInboundMessageInput,
+  MemoryContextComposeRequest,
+  MemoryContextPack,
+  MemoryQmdStatsResponse,
   CronJobRecord,
   DashboardState,
   ChatCompletionRequest,
@@ -48,6 +51,8 @@ import type {
   MeshSessionOwnerRecord,
   MeshStatus,
   MeshReplicationOffset,
+  NpuModelManifest,
+  NpuRuntimeStatus,
   OperatorSummary,
   OrchestrationPlan,
   OrchestrationRun,
@@ -74,6 +79,8 @@ import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
 import { INTEGRATION_CATALOG } from "./integration-catalog.js";
+import { MemoryContextService } from "./memory-context-service.js";
+import { NpuSidecarService } from "./npu-sidecar-service.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -134,6 +141,19 @@ export interface RuntimeSettings {
     timeoutMs: number;
     maxPayloadChars: number;
   };
+  memory: {
+    enabled: boolean;
+    qmd: {
+      enabled: boolean;
+      applyToChat: boolean;
+      applyToOrchestration: boolean;
+      minPromptChars: number;
+      maxContextTokens: number;
+      cacheTtlSeconds: number;
+      distillerProviderId?: string;
+      distillerModel?: string;
+    };
+  };
   auth: AuthRuntimeSettings;
   llm: LlmRuntimeConfig;
   mesh: {
@@ -144,6 +164,12 @@ export interface RuntimeSettings {
     staticPeers: string[];
     requireMtls: boolean;
     tailnetEnabled: boolean;
+  };
+  npu: {
+    enabled: boolean;
+    autoStart: boolean;
+    sidecarUrl: string;
+    status: NpuRuntimeStatus;
   };
 }
 
@@ -158,7 +184,9 @@ export class GatewayService {
   private readonly skillsService: SkillsService;
   private readonly orchestrationEngine: OrchestrationEngine;
   private readonly llmService: LlmService;
+  private readonly memoryContextService: MemoryContextService;
   private readonly meshService: MeshService;
+  private readonly npuSidecar: NpuSidecarService;
   private readonly approvalExplainer: ApprovalExplainerService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
@@ -188,6 +216,14 @@ export class GatewayService {
     ]);
     this.orchestrationEngine = new OrchestrationEngine();
     this.llmService = new LlmService(config.llm);
+    this.memoryContextService = new MemoryContextService(
+      this.storage,
+      this.llmService,
+      config,
+      (eventType, payload) => {
+        this.publishRealtime(eventType, "memory", payload);
+      },
+    );
     this.meshService = new MeshService(this.storage, {
       enabled: config.assistant.mesh.enabled,
       mode: config.assistant.mesh.mode,
@@ -198,6 +234,13 @@ export class GatewayService {
       tailnetEnabled: config.assistant.mesh.security.tailnet.enabled,
       joinToken: process.env[config.assistant.mesh.security.joinTokenEnv],
       defaultLeaseTtlSeconds: config.assistant.mesh.leases.ttlSeconds,
+    });
+    this.npuSidecar = new NpuSidecarService({
+      rootDir: config.rootDir,
+      config: config.assistant.npu,
+      onEvent: (eventType, payload) => {
+        this.publishRealtime(eventType, "npu", payload);
+      },
     });
     this.approvalExplainer = new ApprovalExplainerService(
       this.storage,
@@ -214,6 +257,7 @@ export class GatewayService {
     await this.skillsService.reload();
     await this.loadCronJobsFromConfig();
     this.meshService.init();
+    await this.npuSidecar.init();
     // Enforce env-only secret persistence policy on startup.
     this.persistLlmConfig();
     this.persistAssistantConfig();
@@ -719,6 +763,26 @@ export class GatewayService {
     return out;
   }
 
+  public async composeMemoryContext(input: MemoryContextComposeRequest): Promise<MemoryContextPack> {
+    return this.memoryContextService.compose(input);
+  }
+
+  public getMemoryContext(contextId: string): MemoryContextPack {
+    return this.memoryContextService.get(contextId);
+  }
+
+  public listRunContexts(runId: string): MemoryContextPack[] {
+    return this.memoryContextService.listByRun(runId);
+  }
+
+  public listRecentMemoryContexts(limit = 60): MemoryContextPack[] {
+    return this.memoryContextService.listRecent(limit);
+  }
+
+  public getMemoryQmdStats(from: string, to: string): MemoryQmdStatsResponse {
+    return this.memoryContextService.stats(from, to);
+  }
+
   public listAgents(limit = 500): AgentSummary[] {
     const sessions = this.storage.taskSubagents.listAll(limit);
     const byAgent = new Map<string, AgentSummary>();
@@ -765,6 +829,19 @@ export class GatewayService {
       readOnlyRoots: this.config.toolPolicy.sandbox.readOnlyRoots,
       networkAllowlist: this.config.toolPolicy.sandbox.networkAllowlist,
       approvalExplainer: this.config.assistant.approvalExplainer,
+      memory: {
+        enabled: this.config.assistant.memory.enabled,
+        qmd: {
+          enabled: this.config.assistant.memory.qmd.enabled,
+          applyToChat: this.config.assistant.memory.qmd.applyToChat,
+          applyToOrchestration: this.config.assistant.memory.qmd.applyToOrchestration,
+          minPromptChars: this.config.assistant.memory.qmd.minPromptChars,
+          maxContextTokens: this.config.assistant.memory.qmd.maxContextTokens,
+          cacheTtlSeconds: this.config.assistant.memory.qmd.cacheTtlSeconds,
+          distillerProviderId: this.config.assistant.memory.qmd.distiller.providerId,
+          distillerModel: this.config.assistant.memory.qmd.distiller.model,
+        },
+      },
       auth: this.getAuthRuntimeSettings(),
       llm: this.llmService.getRuntimeConfig(),
       mesh: {
@@ -775,6 +852,12 @@ export class GatewayService {
         staticPeers: this.config.assistant.mesh.discovery.staticPeers,
         requireMtls: this.config.assistant.mesh.security.requireMtls,
         tailnetEnabled: this.config.assistant.mesh.security.tailnet.enabled,
+      },
+      npu: {
+        enabled: this.config.assistant.npu.enabled,
+        autoStart: this.config.assistant.npu.autoStart,
+        sidecarUrl: this.config.assistant.npu.sidecar.baseUrl,
+        status: this.npuSidecar.getStatus(),
       },
     };
   }
@@ -909,6 +992,17 @@ export class GatewayService {
         headers?: Record<string, string>;
       };
     };
+    memory?: {
+      enabled?: boolean;
+      qmdEnabled?: boolean;
+      qmdApplyToChat?: boolean;
+      qmdApplyToOrchestration?: boolean;
+      qmdMaxContextTokens?: number;
+      qmdMinPromptChars?: number;
+      qmdCacheTtlSeconds?: number;
+      qmdDistillerProviderId?: string;
+      qmdDistillerModel?: string;
+    };
     mesh?: {
       enabled?: boolean;
       mode?: "lan" | "wan" | "tailnet";
@@ -917,6 +1011,11 @@ export class GatewayService {
       staticPeers?: string[];
       requireMtls?: boolean;
       tailnetEnabled?: boolean;
+    };
+    npu?: {
+      enabled?: boolean;
+      autoStart?: boolean;
+      sidecarUrl?: string;
     };
   }): RuntimeSettings {
     let persistAssistant = false;
@@ -947,6 +1046,37 @@ export class GatewayService {
 
     if (input.auth) {
       this.updateAuthSettings(input.auth);
+      persistAssistant = true;
+    }
+
+    if (input.memory) {
+      if (input.memory.enabled !== undefined) {
+        this.config.assistant.memory.enabled = input.memory.enabled;
+      }
+      if (input.memory.qmdEnabled !== undefined) {
+        this.config.assistant.memory.qmd.enabled = input.memory.qmdEnabled;
+      }
+      if (input.memory.qmdApplyToChat !== undefined) {
+        this.config.assistant.memory.qmd.applyToChat = input.memory.qmdApplyToChat;
+      }
+      if (input.memory.qmdApplyToOrchestration !== undefined) {
+        this.config.assistant.memory.qmd.applyToOrchestration = input.memory.qmdApplyToOrchestration;
+      }
+      if (input.memory.qmdMaxContextTokens !== undefined) {
+        this.config.assistant.memory.qmd.maxContextTokens = Math.max(100, input.memory.qmdMaxContextTokens);
+      }
+      if (input.memory.qmdMinPromptChars !== undefined) {
+        this.config.assistant.memory.qmd.minPromptChars = Math.max(0, input.memory.qmdMinPromptChars);
+      }
+      if (input.memory.qmdCacheTtlSeconds !== undefined) {
+        this.config.assistant.memory.qmd.cacheTtlSeconds = Math.max(10, input.memory.qmdCacheTtlSeconds);
+      }
+      if (input.memory.qmdDistillerProviderId !== undefined) {
+        this.config.assistant.memory.qmd.distiller.providerId = input.memory.qmdDistillerProviderId.trim() || undefined;
+      }
+      if (input.memory.qmdDistillerModel !== undefined) {
+        this.config.assistant.memory.qmd.distiller.model = input.memory.qmdDistillerModel.trim() || undefined;
+      }
       persistAssistant = true;
     }
 
@@ -990,6 +1120,32 @@ export class GatewayService {
         joinToken: process.env[this.config.assistant.mesh.security.joinTokenEnv],
         defaultLeaseTtlSeconds: this.config.assistant.mesh.leases.ttlSeconds,
       });
+      persistAssistant = true;
+    }
+
+    if (input.npu) {
+      if (input.npu.enabled !== undefined) {
+        this.config.assistant.npu.enabled = input.npu.enabled;
+      }
+      if (input.npu.autoStart !== undefined) {
+        this.config.assistant.npu.autoStart = input.npu.autoStart;
+      }
+      if (input.npu.sidecarUrl !== undefined) {
+        const trimmed = input.npu.sidecarUrl.trim();
+        if (!trimmed) {
+          throw new Error("npu.sidecarUrl cannot be empty");
+        }
+        this.config.assistant.npu.sidecar.baseUrl = trimmed;
+      }
+
+      this.npuSidecar.updateConfig(this.config.assistant.npu);
+      if (!this.config.assistant.npu.enabled) {
+        void this.npuSidecar.stop("disabled");
+      } else if (this.config.assistant.npu.autoStart) {
+        void this.npuSidecar.start("config_autostart").catch(() => {
+          // surfaced via status + realtime events
+        });
+      }
       persistAssistant = true;
     }
 
@@ -1268,8 +1424,82 @@ export class GatewayService {
     return this.llmService.listModels(providerId);
   }
 
+  public getNpuStatus(): NpuRuntimeStatus {
+    return this.npuSidecar.getStatus();
+  }
+
+  public async startNpuRuntime(): Promise<NpuRuntimeStatus> {
+    const status = await this.npuSidecar.start("api");
+    this.publishRealtime("system", "npu", {
+      type: "npu_started",
+      status,
+    });
+    return status;
+  }
+
+  public async stopNpuRuntime(): Promise<NpuRuntimeStatus> {
+    const status = await this.npuSidecar.stop("api");
+    this.publishRealtime("system", "npu", {
+      type: "npu_stopped",
+      status,
+    });
+    return status;
+  }
+
+  public async refreshNpuRuntime(): Promise<NpuRuntimeStatus> {
+    const status = await this.npuSidecar.refresh();
+    this.publishRealtime("system", "npu", {
+      type: "npu_refreshed",
+      status,
+    });
+    return status;
+  }
+
+  public async listNpuModels(): Promise<NpuModelManifest[]> {
+    return this.npuSidecar.listModels();
+  }
+
   public async createChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const response = await this.llmService.chatCompletions(request);
+    let response: ChatCompletionResponse;
+    let memoryContext: MemoryContextPack | undefined;
+    const memoryInput = request.memory;
+    const useQmd = (
+      this.config.assistant.memory.enabled
+      && this.config.assistant.memory.qmd.enabled
+      && this.config.assistant.memory.qmd.applyToChat
+      && memoryInput?.mode !== "off"
+      && (memoryInput?.enabled ?? true)
+    );
+
+    if (useQmd) {
+      const prompt = extractPromptFromMessages(request.messages);
+      if (prompt.trim()) {
+        memoryContext = await this.memoryContextService.compose({
+          scope: "chat",
+          prompt,
+          sessionId: memoryInput?.sessionId,
+          taskId: memoryInput?.taskId,
+          workspace: memoryInput?.workspace,
+          maxContextTokens: memoryInput?.maxContextTokens,
+          forceRefresh: memoryInput?.forceRefresh,
+        });
+      }
+    }
+
+    const withContext = memoryContext
+      ? {
+        ...request,
+        messages: [
+          {
+            role: "system" as const,
+            content: buildMemoryContextSystemMessage(memoryContext),
+          },
+          ...request.messages,
+        ],
+      }
+      : request;
+
+    response = await this.llmService.chatCompletions(withContext);
     const runtime = this.llmService.getRuntimeConfig();
     this.publishRealtime("system", "llm", {
       type: "chat_completion",
@@ -1277,7 +1507,23 @@ export class GatewayService {
       model: request.model ?? runtime.activeModel,
       messageCount: request.messages.length,
       stream: request.stream ?? false,
+      memoryContextId: memoryContext?.contextId,
+      memoryQmdStatus: memoryContext?.quality.status,
     });
+
+    if (memoryContext) {
+      response.memoryContext = {
+        contextId: memoryContext.contextId,
+        cacheHit: memoryContext.quality.status === "cache_hit",
+        originalTokenEstimate: memoryContext.originalTokenEstimate,
+        distilledTokenEstimate: memoryContext.distilledTokenEstimate,
+        savingsPercent: calculateSavings(
+          memoryContext.originalTokenEstimate,
+          memoryContext.distilledTokenEstimate,
+        ),
+        citationsCount: memoryContext.citations.length,
+      };
+    }
     return response;
   }
 
@@ -1343,6 +1589,10 @@ export class GatewayService {
       waveId: persisted.currentWaveId,
       phaseId: persisted.currentPhaseId,
     });
+
+    if (this.config.assistant.memory.enabled && this.config.assistant.memory.qmd.applyToOrchestration) {
+      this.scheduleOrchestrationMemoryContext(plan, persisted);
+    }
 
     return persisted;
   }
@@ -1436,6 +1686,10 @@ export class GatewayService {
       currentPhaseId: persisted.currentPhaseId,
     });
 
+    if (this.config.assistant.memory.enabled && this.config.assistant.memory.qmd.applyToOrchestration) {
+      this.scheduleOrchestrationMemoryContext(plan, persisted);
+    }
+
     return {
       run: persisted,
       checkpoints: this.storage.orchestration.listCheckpoints(runId),
@@ -1457,6 +1711,7 @@ export class GatewayService {
       this.backgroundTasks.clear();
       await Promise.allSettled(tasks);
     }
+    await this.npuSidecar.close();
     this.storage.close();
   }
 
@@ -1508,6 +1763,52 @@ export class GatewayService {
       return;
     }
     this.scheduleApprovalExplanation(approval);
+  }
+
+  private scheduleOrchestrationMemoryContext(plan: OrchestrationPlan, run: OrchestrationRun): void {
+    if (this.closing || !run.currentPhaseId) {
+      return;
+    }
+    const phase = findPlanPhase(plan, run.currentPhaseId);
+    if (!phase) {
+      return;
+    }
+
+    const task = this.memoryContextService.compose({
+      scope: "orchestration",
+      prompt: [
+        `Plan goal: ${plan.goal}`,
+        `Wave: ${run.currentWaveId ?? "(none)"}`,
+        `Phase: ${phase.phaseId}`,
+        `Owner: ${phase.ownerAgentId}`,
+        `Spec path: ${phase.specPath}`,
+        `Loop mode: ${phase.loopMode}`,
+      ].join("\n"),
+      runId: run.runId,
+      phaseId: phase.phaseId,
+      workspace: "memory",
+    })
+      .then((pack) => {
+        this.publishRealtime("memory_qmd_generated", "orchestration", {
+          runId: run.runId,
+          phaseId: phase.phaseId,
+          contextId: pack.contextId,
+          status: pack.quality.status,
+        });
+      })
+      .catch((error) => {
+        this.publishRealtime("memory_qmd_failed", "orchestration", {
+          runId: run.runId,
+          phaseId: phase.phaseId,
+          error: (error as Error).message,
+        });
+      })
+      .finally(() => {
+        this.backgroundTasks.delete(task);
+      });
+
+    this.backgroundTasks.add(task);
+    void task;
   }
 
   private getGitHead(): string | undefined {
@@ -1653,7 +1954,9 @@ export class GatewayService {
         basic: {},
       },
       approvalExplainer: this.config.assistant.approvalExplainer,
+      memory: this.config.assistant.memory,
       mesh: this.config.assistant.mesh,
+      npu: this.config.assistant.npu,
       budgets: this.config.assistant.budgets,
     };
     fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -1673,6 +1976,58 @@ export class GatewayService {
     }
     return fullPath.replaceAll("\\", "/");
   }
+}
+
+function extractPromptFromMessages(messages: ChatCompletionRequest["messages"]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "user") {
+      continue;
+    }
+    if (typeof message.content === "string") {
+      return message.content;
+    }
+    if (Array.isArray(message.content)) {
+      const text = message.content
+        .map((part) => {
+          const maybeText = (part as Record<string, unknown>).text;
+          return typeof maybeText === "string" ? maybeText : "";
+        })
+        .join("\n")
+        .trim();
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return "";
+}
+
+function buildMemoryContextSystemMessage(pack: MemoryContextPack): string {
+  return [
+    "Distilled context from GoatCitadel memory:",
+    pack.contextText,
+    "",
+    `ContextId: ${pack.contextId}`,
+    `Citations: ${pack.citations.length}`,
+  ].join("\n");
+}
+
+function calculateSavings(originalTokens: number, distilledTokens: number): number {
+  if (originalTokens <= 0) {
+    return 0;
+  }
+  return Number((((originalTokens - distilledTokens) / originalTokens) * 100).toFixed(2));
+}
+
+function findPlanPhase(plan: OrchestrationPlan, phaseId: string) {
+  for (const wave of plan.waves) {
+    const phase = wave.phases.find((item) => item.phaseId === phaseId);
+    if (phase) {
+      return phase;
+    }
+  }
+  return undefined;
 }
 
 function detectMimeType(filePath: string): string {

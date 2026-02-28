@@ -4,15 +4,19 @@
   "type": "module",
   "main": "./dist/apps/gateway/src/main.js",
   "dependencies": {
+    "@inquirer/prompts": "^7.8.4",
     "@fastify/cors": "^10.0.1",
     "@goatcitadel/contracts": "workspace:*",
     "@goatcitadel/gateway-core": "workspace:*",
     "@goatcitadel/mesh-core": "workspace:*",
+    "@goatcitadel/memory-core": "workspace:*",
     "@goatcitadel/policy-engine": "workspace:*",
     "@goatcitadel/skills": "workspace:*",
     "@goatcitadel/storage": "workspace:*",
+    "chalk": "^5.6.2",
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.0.1",
+    "ora": "^9.0.0",
     "zod": "^3.24.1"
   },
   "scripts": {
@@ -24,6 +28,7 @@
     "test": "vitest run --passWithNoTests",
     "smoke": "tsx src/smoke.ts",
     "onboarding:tui": "tsx src/onboarding-tui.ts",
+    "tui": "tsx src/tui/main.ts",
     "config:sync": "tsx src/config-sync.ts",
     "lint": "tsc -p tsconfig.json --noEmit"
   }

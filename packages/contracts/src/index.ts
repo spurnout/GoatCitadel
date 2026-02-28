@@ -9,3 +9,5 @@ export * from "./llm.js";
 export * from "./integrations.js";
 export * from "./mesh.js";
 export * from "./onboarding.js";
+export * from "./memory.js";
+export * from "./npu.js";

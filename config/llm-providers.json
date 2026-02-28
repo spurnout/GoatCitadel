@@ -110,6 +110,13 @@
       "baseUrl": "http://127.0.0.1:1234/v1",
       "apiStyle": "openai-chat-completions",
       "defaultModel": "local-model"
+    },
+    {
+      "providerId": "npu-local",
+      "label": "NPU Local Sidecar",
+      "baseUrl": "http://127.0.0.1:11440/v1",
+      "apiStyle": "openai-chat-completions",
+      "defaultModel": "phi-3.5-mini-instruct"
     }
   ]
 }

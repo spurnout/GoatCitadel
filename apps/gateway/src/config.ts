@@ -14,11 +14,36 @@ export interface AssistantConfig {
   worktreesDir: string;
   auth: AuthConfig;
   approvalExplainer: ApprovalExplainerConfig;
+  memory: MemoryConfig;
   mesh: MeshConfig;
+  npu: NpuConfig;
   budgets: {
     dailyUsdWarning: number;
     dailyUsdHardCap: number;
     sessionTokenHardCap: number;
+  };
+}
+
+export interface MemoryConfig {
+  enabled: boolean;
+  qmd: {
+    enabled: boolean;
+    applyToChat: boolean;
+    applyToOrchestration: boolean;
+    minPromptChars: number;
+    maxContextTokens: number;
+    headroomTokens: number;
+    maxTranscriptEvents: number;
+    maxMemoryFiles: number;
+    maxBytesPerFile: number;
+    allowedExtensions: string[];
+    cacheTtlSeconds: number;
+    distiller: {
+      providerId?: string;
+      model?: string;
+      timeoutMs: number;
+      fallbackCheapModel: string;
+    };
   };
 }
 
@@ -68,6 +93,25 @@ export interface MeshConfig {
   };
   replication: {
     batchSize: number;
+  };
+}
+
+export interface NpuConfig {
+  enabled: boolean;
+  autoStart: boolean;
+  sidecar: {
+    baseUrl: string;
+    command: string;
+    args: string[];
+    healthPath: string;
+    modelsPath: string;
+    startTimeoutMs: number;
+    requestTimeoutMs: number;
+    restartBudget: {
+      windowMs: number;
+      maxRestarts: number;
+      backoffMs: number;
+    };
   };
 }
 
@@ -177,6 +221,31 @@ function applyEnvironmentOverrides(assistant: AssistantConfig): void {
   if (meshNodeId?.trim()) {
     assistant.mesh.nodeId = meshNodeId.trim();
   }
+
+  const npuEnabled = process.env.GOATCITADEL_NPU_ENABLED;
+  if (npuEnabled) {
+    assistant.npu.enabled = npuEnabled === "1" || npuEnabled.toLowerCase() === "true";
+  }
+
+  const npuAutoStart = process.env.GOATCITADEL_NPU_AUTOSTART;
+  if (npuAutoStart) {
+    assistant.npu.autoStart = npuAutoStart === "1" || npuAutoStart.toLowerCase() === "true";
+  }
+
+  const npuBaseUrl = process.env.GOATCITADEL_NPU_SIDECAR_URL;
+  if (npuBaseUrl?.trim()) {
+    assistant.npu.sidecar.baseUrl = npuBaseUrl.trim();
+  }
+
+  const memoryEnabled = process.env.GOATCITADEL_MEMORY_ENABLED;
+  if (memoryEnabled) {
+    assistant.memory.enabled = memoryEnabled === "1" || memoryEnabled.toLowerCase() === "true";
+  }
+
+  const qmdEnabled = process.env.GOATCITADEL_MEMORY_QMD_ENABLED;
+  if (qmdEnabled) {
+    assistant.memory.qmd.enabled = qmdEnabled === "1" || qmdEnabled.toLowerCase() === "true";
+  }
 }
 
 function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig {
@@ -197,6 +266,12 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
   const meshTailnet = (meshSecurity.tailnet ?? {}) as Partial<MeshConfig["security"]["tailnet"]>;
   const meshLeases = (meshInput.leases ?? {}) as Partial<MeshConfig["leases"]>;
   const meshReplication = (meshInput.replication ?? {}) as Partial<MeshConfig["replication"]>;
+  const npuInput = (input.npu ?? {}) as Partial<NpuConfig>;
+  const npuSidecar = (npuInput.sidecar ?? {}) as Partial<NpuConfig["sidecar"]>;
+  const npuRestart = (npuSidecar.restartBudget ?? {}) as Partial<NpuConfig["sidecar"]["restartBudget"]>;
+  const memoryInput = (input.memory ?? {}) as Partial<MemoryConfig>;
+  const qmdInput = (memoryInput.qmd ?? {}) as Partial<MemoryConfig["qmd"]>;
+  const distillerInput = (qmdInput.distiller ?? {}) as Partial<MemoryConfig["qmd"]["distiller"]>;
 
   return {
     environment: input.environment ?? "local",
@@ -222,6 +297,39 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
       ...approvalExplainerDefaults,
       ...(input.approvalExplainer ?? {}),
     },
+    memory: {
+      enabled: memoryInput.enabled ?? true,
+      qmd: {
+        enabled: qmdInput.enabled ?? true,
+        applyToChat: qmdInput.applyToChat ?? true,
+        applyToOrchestration: qmdInput.applyToOrchestration ?? true,
+        minPromptChars: qmdInput.minPromptChars ?? 48,
+        maxContextTokens: qmdInput.maxContextTokens ?? 1400,
+        headroomTokens: qmdInput.headroomTokens ?? 600,
+        maxTranscriptEvents: qmdInput.maxTranscriptEvents ?? 80,
+        maxMemoryFiles: qmdInput.maxMemoryFiles ?? 36,
+        maxBytesPerFile: qmdInput.maxBytesPerFile ?? 64_000,
+        allowedExtensions: qmdInput.allowedExtensions ?? [
+          ".md",
+          ".txt",
+          ".json",
+          ".yaml",
+          ".yml",
+          ".log",
+          ".ts",
+          ".tsx",
+          ".js",
+          ".jsx",
+        ],
+        cacheTtlSeconds: qmdInput.cacheTtlSeconds ?? 300,
+        distiller: {
+          providerId: distillerInput.providerId,
+          model: distillerInput.model,
+          timeoutMs: distillerInput.timeoutMs ?? 12_000,
+          fallbackCheapModel: distillerInput.fallbackCheapModel ?? "gpt-4.1-nano",
+        },
+      },
+    },
     mesh: {
       enabled: meshInput.enabled ?? false,
       mode: meshInput.mode ?? "lan",
@@ -245,6 +353,24 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
       },
       replication: {
         batchSize: meshReplication.batchSize ?? 200,
+      },
+    },
+    npu: {
+      enabled: npuInput.enabled ?? false,
+      autoStart: npuInput.autoStart ?? false,
+      sidecar: {
+        baseUrl: npuSidecar.baseUrl ?? "http://127.0.0.1:11440",
+        command: npuSidecar.command ?? "python",
+        args: npuSidecar.args ?? ["apps/npu-sidecar/server.py"],
+        healthPath: npuSidecar.healthPath ?? "/health",
+        modelsPath: npuSidecar.modelsPath ?? "/v1/models",
+        startTimeoutMs: npuSidecar.startTimeoutMs ?? 20_000,
+        requestTimeoutMs: npuSidecar.requestTimeoutMs ?? 12_000,
+        restartBudget: {
+          windowMs: npuRestart.windowMs ?? 60_000,
+          maxRestarts: npuRestart.maxRestarts ?? 5,
+          backoffMs: npuRestart.backoffMs ?? 2_000,
+        },
       },
     },
     budgets: {
@@ -333,6 +459,13 @@ function defaultLlmConfig(): string {
         apiStyle: "openai-chat-completions",
         defaultModel: "local-model",
         apiKey: "lm-studio",
+      },
+      {
+        providerId: "npu-local",
+        label: "NPU Local Sidecar",
+        baseUrl: "http://127.0.0.1:11440/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "phi-3.5-mini-instruct",
       },
     ],
   });

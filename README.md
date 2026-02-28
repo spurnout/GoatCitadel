@@ -7,6 +7,7 @@ Local-first TypeScript platform for running and orchestrating personal AI agents
 For full engineering-level documentation (architecture, data model, API map, safety model, runbooks, known gaps, and review checklist), read:
 
 - [`docs/ENGINEERING_HANDBOOK.md`](./docs/ENGINEERING_HANDBOOK.md)
+- [`docs/INSTALL_SETUP_TESTING.md`](./docs/INSTALL_SETUP_TESTING.md)
 
 ## What GoatCitadel Includes
 
@@ -93,6 +94,10 @@ Configure providers in:
 - or the Mission Control `Forge` tab (`/api/v1/llm/config` under the hood)
 
 ## Installation
+
+Default install home used by the installer/CLI:
+
+- `~/.GoatCitadel` (override with `GOATCITADEL_HOME` or installer `--install-dir`)
 
 ### Prerequisites
 
