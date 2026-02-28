@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@personal-ai/contracts": ["packages/contracts/src/index.ts"],
+      "@personal-ai/storage": ["packages/storage/src/index.ts"],
+      "@personal-ai/gateway-core": ["packages/gateway-core/src/index.ts"],
+      "@personal-ai/policy-engine": ["packages/policy-engine/src/index.ts"],
+      "@personal-ai/skills": ["packages/skills/src/index.ts"],
+      "@personal-ai/orchestration": ["packages/orchestration/src/index.ts"]
+    },
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true
+  }
+}

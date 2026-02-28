@@ -1,0 +1,16 @@
+{
+  "jobs": [
+    {
+      "jobId": "memory-flush-daily",
+      "name": "Memory Flush",
+      "schedule": "0 3 * * *",
+      "enabled": true
+    },
+    {
+      "jobId": "cost-report-hourly",
+      "name": "Cost Report",
+      "schedule": "0 * * * *",
+      "enabled": true
+    }
+  ]
+}

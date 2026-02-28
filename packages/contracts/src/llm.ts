@@ -1,0 +1,77 @@
+export type LlmApiStyle = "openai-chat-completions";
+
+export interface LlmProviderConfig {
+  providerId: string;
+  label: string;
+  baseUrl: string;
+  apiStyle: LlmApiStyle;
+  defaultModel: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  headers?: Record<string, string>;
+}
+
+export interface LlmConfigFile {
+  activeProviderId: string;
+  providers: LlmProviderConfig[];
+}
+
+export interface LlmProviderSummary {
+  providerId: string;
+  label: string;
+  baseUrl: string;
+  apiStyle: LlmApiStyle;
+  defaultModel: string;
+  hasApiKey: boolean;
+  apiKeySource: "inline" | "env" | "none";
+}
+
+export interface LlmRuntimeConfig {
+  activeProviderId: string;
+  activeModel: string;
+  providers: LlmProviderSummary[];
+}
+
+export interface LlmModelRecord {
+  id: string;
+  ownedBy?: string;
+  created?: number;
+}
+
+export interface ChatCompletionMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | Array<Record<string, unknown>>;
+  name?: string;
+  tool_call_id?: string;
+}
+
+export interface ChatCompletionRequest {
+  providerId?: string;
+  model?: string;
+  messages: ChatCompletionMessage[];
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  stream?: boolean;
+  tools?: Array<Record<string, unknown>>;
+  tool_choice?: string | Record<string, unknown>;
+  stop?: string | string[];
+  response_format?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ChatCompletionResponseChoice {
+  index: number;
+  message?: Record<string, unknown>;
+  finish_reason?: string | null;
+}
+
+export interface ChatCompletionResponse {
+  id?: string;
+  object?: string;
+  created?: number;
+  model?: string;
+  choices?: ChatCompletionResponseChoice[];
+  usage?: Record<string, unknown>;
+  [key: string]: unknown;
+}

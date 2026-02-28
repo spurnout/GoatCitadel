@@ -1,0 +1,23 @@
+{
+  "profiles": {
+    "minimal": ["session.status", "memory.read"],
+    "standard": ["session.status", "memory.read", "http.get", "fs.read", "fs.write"],
+    "coding": ["session.status", "memory.read", "fs.read", "fs.write", "shell.exec", "git.exec"],
+    "ops": ["session.status", "memory.read", "http.get", "http.post", "process.control", "logs.read"],
+    "research": ["session.status", "memory.read", "browser.search", "http.get", "citations.build"],
+    "danger": ["*"]
+  },
+  "tools": {
+    "profile": "minimal",
+    "allow": [],
+    "deny": []
+  },
+  "agents": {},
+  "sandbox": {
+    "writeJailRoots": ["./workspace", "./data"],
+    "readOnlyRoots": ["./skills", "./config"],
+    "networkAllowlist": [],
+    "riskyShellPatterns": ["rm", "rmdir", "del", "format", "shutdown", "reboot", "git push", "git reset --hard"],
+    "requireApprovalForRiskyShell": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@personal-ai/policy-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/policy-engine/src/index.js",
+  "types": "./dist/policy-engine/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/policy-engine/src/index.d.ts",
+      "default": "./dist/policy-engine/src/index.js"
+    }
+  },
+  "dependencies": {
+    "@personal-ai/contracts": "workspace:*",
+    "@personal-ai/storage": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  }
+}

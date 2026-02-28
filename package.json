@@ -1,0 +1,21 @@
+{
+  "name": "personal-ai",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.29.3",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @personal-ai/gateway --filter @personal-ai/mission-control dev",
+    "dev:gateway": "pnpm --filter @personal-ai/gateway dev",
+    "dev:ui": "pnpm --filter @personal-ai/mission-control dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.9"
+  }
+}

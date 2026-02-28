@@ -1,0 +1,74 @@
+import type { InboundEventIndexRow } from "@personal-ai/contracts";
+import type { DatabaseSync } from "node:sqlite";
+
+interface InboundEventRow {
+  endpoint: string;
+  idempotency_key: string;
+  event_id: string;
+  session_key: string;
+  payload_hash: string;
+  received_at: string;
+  processed_at: string | null;
+  status: InboundEventIndexRow["status"];
+}
+
+export class IdempotencyRepository {
+  private readonly findStmt;
+  private readonly insertStmt;
+  private readonly markProcessedStmt;
+
+  public constructor(private readonly db: DatabaseSync) {
+    this.findStmt = db.prepare(
+      "SELECT * FROM inbound_events WHERE endpoint = ? AND idempotency_key = ?",
+    );
+    this.insertStmt = db.prepare(`
+      INSERT INTO inbound_events (
+        endpoint, idempotency_key, event_id, session_key, payload_hash, received_at, status
+      ) VALUES (@endpoint, @idempotencyKey, @eventId, @sessionKey, @payloadHash, @receivedAt, @status)
+    `);
+    this.markProcessedStmt = db.prepare(`
+      UPDATE inbound_events
+      SET processed_at = @processedAt, status = @status
+      WHERE endpoint = @endpoint AND idempotency_key = @idempotencyKey
+    `);
+  }
+
+  public find(endpoint: string, idempotencyKey: string): InboundEventIndexRow | undefined {
+    const row = this.findStmt.get(endpoint, idempotencyKey) as InboundEventRow | undefined;
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      endpoint: row.endpoint,
+      idempotencyKey: row.idempotency_key,
+      eventId: row.event_id,
+      sessionKey: row.session_key,
+      payloadHash: row.payload_hash,
+      receivedAt: row.received_at,
+      processedAt: row.processed_at ?? undefined,
+      status: row.status,
+    };
+  }
+
+  public insertPending(row: InboundEventIndexRow): void {
+    this.insertStmt.run({
+      endpoint: row.endpoint,
+      idempotencyKey: row.idempotencyKey,
+      eventId: row.eventId,
+      sessionKey: row.sessionKey,
+      payloadHash: row.payloadHash,
+      receivedAt: row.receivedAt,
+      status: row.status,
+    });
+  }
+
+  public markProcessed(endpoint: string, idempotencyKey: string, status: InboundEventIndexRow["status"], processedAt: string): void {
+    this.markProcessedStmt.run({
+      endpoint,
+      idempotencyKey,
+      status,
+      processedAt,
+    });
+  }
+}

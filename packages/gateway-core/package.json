@@ -1,0 +1,24 @@
+{
+  "name": "@personal-ai/gateway-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/gateway-core/src/index.js",
+  "types": "./dist/gateway-core/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/gateway-core/src/index.d.ts",
+      "default": "./dist/gateway-core/src/index.js"
+    }
+  },
+  "dependencies": {
+    "@personal-ai/contracts": "workspace:*",
+    "@personal-ai/storage": "workspace:*",
+    "nanoid": "^5.1.5"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  }
+}

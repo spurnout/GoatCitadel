@@ -1,0 +1,85 @@
+export type SessionKind = "dm" | "group" | "thread";
+export type SessionHealth = "healthy" | "degraded" | "blocked";
+export type BudgetState = "ok" | "warning" | "hard_cap";
+
+export interface SessionRouteInput {
+  channel: string;
+  account: string;
+  peer?: string;
+  room?: string;
+  threadId?: string;
+}
+
+export interface SessionMeta {
+  sessionId: string;
+  sessionKey: string;
+  kind: SessionKind;
+  channel: string;
+  account: string;
+  displayName?: string;
+  routingHints?: Record<string, string>;
+  lastActivityAt: string;
+  updatedAt: string;
+  health: SessionHealth;
+  tokenInput: number;
+  tokenOutput: number;
+  tokenCachedInput: number;
+  tokenTotal: number;
+  costUsdTotal: number;
+  budgetState: BudgetState;
+}
+
+export interface TranscriptEvent {
+  eventId: string;
+  actionId: string;
+  idempotencyKey: string;
+  sessionId: string;
+  sessionKey: string;
+  timestamp: string;
+  type:
+    | "message.user"
+    | "message.assistant"
+    | "tool.request"
+    | "tool.result"
+    | "approval.required"
+    | "approval.resolved"
+    | "orchestration.phase";
+  actorType: "user" | "agent" | "system";
+  actorId: string;
+  payload: Record<string, unknown>;
+  tokenInput?: number;
+  tokenOutput?: number;
+  costUsd?: number;
+}
+
+export interface InboundEventIndexRow {
+  endpoint: string;
+  idempotencyKey: string;
+  eventId: string;
+  sessionKey: string;
+  payloadHash: string;
+  receivedAt: string;
+  processedAt?: string;
+  status: "accepted" | "deduped" | "failed";
+}
+
+export interface GatewayEventInput {
+  eventId: string;
+  route: SessionRouteInput;
+  actor: { type: "user" | "agent" | "system"; id: string };
+  message: { role: "user" | "assistant"; content: string };
+  taskId?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    costUsd?: number;
+  };
+}
+
+export interface GatewayEventResult {
+  accepted: boolean;
+  deduped: boolean;
+  session: SessionMeta;
+  transcriptOffset: number;
+}

@@ -1,0 +1,14 @@
+{
+  "mode": "balanced",
+  "daily": {
+    "tokensWarning": 300000,
+    "tokensHardCap": 1000000,
+    "usdWarning": 10,
+    "usdHardCap": 50
+  },
+  "session": {
+    "tokensHardCap": 120000,
+    "turnMaxInputTokens": 32000,
+    "turnMaxOutputTokens": 4096
+  }
+}

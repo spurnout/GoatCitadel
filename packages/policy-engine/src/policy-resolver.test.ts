@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+import type { ToolPolicyConfig } from "@personal-ai/contracts";
+import { isToolAllowed, resolveEffectivePolicy } from "./policy-resolver.js";
+
+const config: ToolPolicyConfig = {
+  profiles: {
+    minimal: ["session.status"],
+    coding: ["session.status", "fs.read", "fs.write"],
+  },
+  tools: {
+    profile: "coding",
+    allow: ["http.get"],
+    deny: ["fs.write"],
+  },
+  agents: {
+    agentA: {
+      tools: {
+        allow: ["shell.exec"],
+        deny: ["http.get"],
+      },
+    },
+  },
+  sandbox: {
+    writeJailRoots: ["./workspace"],
+    readOnlyRoots: [],
+    networkAllowlist: [],
+    riskyShellPatterns: [],
+    requireApprovalForRiskyShell: true,
+  },
+};
+
+describe("resolveEffectivePolicy", () => {
+  it("applies deny-wins across base and agent overrides", () => {
+    const policy = resolveEffectivePolicy(config, "agentA");
+
+    expect(isToolAllowed(policy, "fs.read")).toBe(true);
+    expect(isToolAllowed(policy, "fs.write")).toBe(false);
+    expect(isToolAllowed(policy, "http.get")).toBe(false);
+    expect(isToolAllowed(policy, "shell.exec")).toBe(true);
+  });
+});

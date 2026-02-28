@@ -1,0 +1,21 @@
+{
+  "environment": "local",
+  "defaultToolProfile": "minimal",
+  "dataDir": "./data",
+  "transcriptsDir": "./data/transcripts",
+  "auditDir": "./data/audit",
+  "workspaceDir": "./workspace",
+  "worktreesDir": "./.worktrees",
+  "approvalExplainer": {
+    "enabled": true,
+    "mode": "async",
+    "minRiskLevel": "caution",
+    "timeoutMs": 15000,
+    "maxPayloadChars": 4000
+  },
+  "budgets": {
+    "dailyUsdWarning": 10,
+    "dailyUsdHardCap": 50,
+    "sessionTokenHardCap": 120000
+  }
+}
