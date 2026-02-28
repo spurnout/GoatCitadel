@@ -20,6 +20,7 @@ import {
   type OfficeOperatorModel,
   type OperatorPreset,
 } from "../components/OfficeCanvas";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 
 const INITIAL_EVENT_LIMIT = 300;
@@ -210,6 +211,19 @@ export function OfficePage(_props: { refreshKey?: number }) {
       <p className="office-subtitle">
         GoatCitadel command floor: one operator in the center, specialist goats around the ring.
       </p>
+      <PageGuideCard
+        what="Herd HQ is the live WebGL operations floor showing what each agent is doing and thinking."
+        when="Use this for real-time observability, quick triage, and role-by-role inspection."
+        actions={[
+          "Select the GoatHerder or any goat desk in the 3D office.",
+          "Read doing/thinking state and recent signals in the inspector.",
+          "Adjust operator name and preset to personalize your command center.",
+        ]}
+        terms={[
+          { term: "GoatHerder", meaning: "Central operator role coordinating specialist goats." },
+          { term: "Signal", meaning: "Realtime event tied to tool, task, approval, or orchestration activity." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
 
       <div className="office-kpi-grid">

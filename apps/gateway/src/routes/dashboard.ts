@@ -75,10 +75,6 @@ export const dashboardRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ items: fastify.gateway.listOperators() });
   });
 
-  fastify.get("/api/v1/agents", async (_request, reply) => {
-    return reply.send({ items: fastify.gateway.listAgents() });
-  });
-
   fastify.get("/api/v1/memory/files", async (request, reply) => {
     const parsed = memoryQuerySchema.safeParse(request.query);
     if (!parsed.success) {

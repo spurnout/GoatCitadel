@@ -757,3 +757,43 @@ pre {
   background: color-mix(in srgb, #f1a744 14%, var(--panel) 86%);
   color: #fff3df;
 }
+
+.page-guide-card ol,
+.page-guide-card ul {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+
+.page-guide-card li {
+  margin-bottom: 4px;
+}
+
+.change-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  font-size: 0.76rem;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.change-badge.safe {
+  border-color: #6ecf95;
+  color: #a4f0bf;
+}
+
+.change-badge.warning {
+  border-color: #e9bb57;
+  color: #ffe3a2;
+}
+
+.change-badge.critical {
+  border-color: #ee7d72;
+  color: #ffc6c1;
+}
+
+.change-review-panel h4 {
+  margin-bottom: 8px;
+}

@@ -10,6 +10,7 @@ import {
   type OperatorsResponse,
   type SystemVitalsResponse,
 } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [state, setState] = useState<DashboardStateResponse | null>(null);
@@ -54,6 +55,19 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
     <section>
       <h2>Summit</h2>
       <p className="office-subtitle">GoatCitadel overview of herd activity, platform vitals, and workload pressure.</p>
+      <PageGuideCard
+        what="Summit is your high-level operations overview for health, workload, approvals, and cost pressure."
+        when="Open this first to see whether the system is healthy before drilling into other tabs."
+        actions={[
+          "Check pending approvals and daily cost trend.",
+          "Scan task status counts and bell tower jobs.",
+          "Jump into the specific tab that needs action.",
+        ]}
+        terms={[
+          { term: "Pending approvals", meaning: "Risky actions waiting for human confirmation." },
+          { term: "Task status counts", meaning: "How many tasks are in each lifecycle state." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
 
       <div className="metric-grid">

@@ -30,6 +30,7 @@ async function run(): Promise<void> {
       await smokeSessions(app);
       await smokeTools(app);
       await smokeApprovals(app);
+      await smokeAgents(app);
       await smokeIntegrations(app);
       await smokeMesh(app);
       await smokeNpu(app);
@@ -172,6 +173,102 @@ async function smokeIntegrations(app: Awaited<ReturnType<typeof buildApp>>): Pro
     },
   );
   assert.equal(created.statusCode, 201);
+}
+
+async function smokeAgents(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const initial = await app.inject({
+    method: "GET",
+    url: "/api/v1/agents?view=active&limit=100",
+  });
+  assert.equal(initial.statusCode, 200);
+  const initialBody = JSON.parse(initial.body) as {
+    items: Array<{ agentId: string; roleId: string; isBuiltin: boolean }>;
+  };
+  assert.equal(initialBody.items.length >= 1, true);
+
+  const builtIn = initialBody.items.find((item) => item.roleId === "architect");
+  assert.ok(builtIn, "architect builtin should be seeded");
+
+  const created = await postJson<{ agentId: string; roleId: string; lifecycleStatus: string }>(
+    app,
+    "/api/v1/agents",
+    {
+      roleId: "smoke-custom",
+      name: "Smoke Custom Goat",
+      title: "Smoke Specialist",
+      summary: "Created by smoke test",
+      specialties: ["Smoke"],
+      aliases: ["smoke"],
+      defaultTools: ["memory.read"],
+    },
+    {
+      "Idempotency-Key": "smoke-agent-create-1",
+    },
+  );
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.body.roleId, "smoke-custom");
+  const customAgentId = created.body.agentId;
+
+  const updated = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/agents/${customAgentId}`,
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "smoke-agent-update-1",
+    },
+    payload: JSON.stringify({
+      title: "Smoke Specialist Updated",
+      summary: "Updated by smoke test",
+    }),
+  });
+  assert.equal(updated.statusCode, 200);
+
+  const archived = await app.inject({
+    method: "POST",
+    url: `/api/v1/agents/${customAgentId}/archive`,
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "smoke-agent-archive-1",
+    },
+    payload: JSON.stringify({
+      archivedBy: "smoke",
+      archiveReason: "smoke coverage",
+    }),
+  });
+  assert.equal(archived.statusCode, 200);
+
+  const restore = await app.inject({
+    method: "POST",
+    url: `/api/v1/agents/${customAgentId}/restore`,
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "smoke-agent-restore-1",
+    },
+    payload: JSON.stringify({}),
+  });
+  assert.equal(restore.statusCode, 200);
+
+  const builtInDeleteAttempt = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/agents/${builtIn.agentId}?mode=hard`,
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "smoke-agent-delete-built-in-1",
+    },
+    payload: JSON.stringify({}),
+  });
+  assert.equal(builtInDeleteAttempt.statusCode, 409);
+
+  const deleted = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/agents/${customAgentId}?mode=hard`,
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "smoke-agent-delete-custom-1",
+    },
+    payload: JSON.stringify({}),
+  });
+  assert.equal(deleted.statusCode, 200);
 }
 
 async function smokeMesh(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

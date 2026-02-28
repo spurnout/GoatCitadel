@@ -16,6 +16,9 @@ interface TaskRow {
   assigned_agent_id: string | null;
   created_by: string | null;
   due_at: string | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
+  delete_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -24,6 +27,7 @@ export interface TaskListQuery {
   status?: TaskStatus;
   limit: number;
   cursor?: string;
+  view?: "active" | "trash" | "all";
 }
 
 export interface TaskStatusCount {
@@ -36,7 +40,9 @@ export class TaskRepository {
   private readonly getStmt;
   private readonly listStmt;
   private readonly updateStmt;
-  private readonly deleteStmt;
+  private readonly hardDeleteStmt;
+  private readonly softDeleteStmt;
+  private readonly restoreStmt;
   private readonly statusCountsStmt;
 
   public constructor(private readonly db: DatabaseSync) {
@@ -56,6 +62,11 @@ export class TaskRepository {
       SELECT * FROM tasks
       WHERE (@status IS NULL OR status = @status)
         AND (
+          @view = 'all'
+          OR (@view = 'active' AND deleted_at IS NULL)
+          OR (@view = 'trash' AND deleted_at IS NOT NULL)
+        )
+        AND (
           @cursorUpdatedAt IS NULL
           OR updated_at < @cursorUpdatedAt
           OR (updated_at = @cursorUpdatedAt AND task_id < @cursorTaskId)
@@ -73,14 +84,36 @@ export class TaskRepository {
         priority = @priority,
         assigned_agent_id = @assignedAgentId,
         due_at = @dueAt,
+        deleted_at = @deletedAt,
+        deleted_by = @deletedBy,
+        delete_reason = @deleteReason,
         updated_at = @updatedAt
       WHERE task_id = @taskId
     `);
 
-    this.deleteStmt = db.prepare("DELETE FROM tasks WHERE task_id = ?");
+    this.hardDeleteStmt = db.prepare("DELETE FROM tasks WHERE task_id = ?");
+    this.softDeleteStmt = db.prepare(`
+      UPDATE tasks
+      SET
+        deleted_at = @deletedAt,
+        deleted_by = @deletedBy,
+        delete_reason = @deleteReason,
+        updated_at = @updatedAt
+      WHERE task_id = @taskId
+    `);
+    this.restoreStmt = db.prepare(`
+      UPDATE tasks
+      SET
+        deleted_at = NULL,
+        deleted_by = NULL,
+        delete_reason = NULL,
+        updated_at = @updatedAt
+      WHERE task_id = @taskId
+    `);
     this.statusCountsStmt = db.prepare(`
       SELECT status, COUNT(*) AS count
       FROM tasks
+      WHERE deleted_at IS NULL
       GROUP BY status
       ORDER BY status ASC
     `);
@@ -124,6 +157,7 @@ export class TaskRepository {
     const parsedCursor = parseCompositeCursor(query.cursor);
     const rows = this.listStmt.all({
       status: query.status ?? null,
+      view: query.view ?? "active",
       cursorUpdatedAt: parsedCursor?.timestamp ?? null,
       cursorTaskId: parsedCursor?.key ?? null,
       limit: query.limit,
@@ -145,17 +179,47 @@ export class TaskRepository {
       priority: input.priority ?? current.priority,
       assignedAgentId: nextAssignedAgentId,
       dueAt: input.dueAt ?? current.dueAt ?? null,
+      deletedAt: current.deletedAt ?? null,
+      deletedBy: current.deletedBy ?? null,
+      deleteReason: current.deleteReason ?? null,
       updatedAt: now,
     });
     return this.get(taskId);
   }
 
-  public delete(taskId: string): boolean {
+  public softDelete(taskId: string, deletedBy?: string, deleteReason?: string, now = new Date().toISOString()): boolean {
+    const before = this.find(taskId);
+    if (!before || before.deletedAt) {
+      return false;
+    }
+    this.softDeleteStmt.run({
+      taskId,
+      deletedAt: now,
+      deletedBy: deletedBy ?? null,
+      deleteReason: deleteReason ?? null,
+      updatedAt: now,
+    });
+    return true;
+  }
+
+  public restore(taskId: string, now = new Date().toISOString()): boolean {
+    const before = this.find(taskId);
+    if (!before || !before.deletedAt) {
+      return false;
+    }
+    this.restoreStmt.run({
+      taskId,
+      updatedAt: now,
+    });
+    return true;
+  }
+
+  public hardDelete(taskId: string): boolean {
     const before = this.find(taskId);
     if (!before) {
       return false;
     }
-    this.deleteStmt.run(taskId);
+    this.hardDeleteStmt.run(taskId);
     return true;
   }
 
@@ -178,6 +242,9 @@ function mapTaskRow(row: TaskRow): TaskRecord {
     assignedAgentId: row.assigned_agent_id ?? undefined,
     createdBy: row.created_by ?? undefined,
     dueAt: row.due_at ?? undefined,
+    deletedAt: row.deleted_at ?? undefined,
+    deletedBy: row.deleted_by ?? undefined,
+    deleteReason: row.delete_reason ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { connectEventStream, fetchRealtimeEvents, type RealtimeEvent } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function LiveFeedPage() {
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
@@ -23,6 +24,15 @@ export function LiveFeedPage() {
     <section>
       <h2>Live Feed</h2>
       <p className="office-subtitle">Raw stream of realtime GoatCitadel events.</p>
+      <PageGuideCard
+        what="Shows the raw unfiltered realtime event stream."
+        when="Use this for deep debugging when you need exact event payloads."
+        actions={[
+          "Keep this open while testing a workflow.",
+          "Inspect payload JSON for state transitions.",
+          "Correlate event timestamps with logs.",
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
       <ul className="compact-list">
         {events.map((event) => (

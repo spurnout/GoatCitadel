@@ -18,6 +18,7 @@ import { IntegrationConnectionRepository } from "./integration-connection-repo.j
 import { MeshRepository } from "./mesh-repo.js";
 import { MemoryContextRepository } from "./memory-context-repo.js";
 import { MemoryQmdRunRepository } from "./memory-qmd-run-repo.js";
+import { AgentProfileRepository } from "./agent-profile-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -42,6 +43,7 @@ export class Storage {
   public readonly realtimeEvents: RealtimeEventRepository;
   public readonly cronJobs: CronJobRepository;
   public readonly integrationConnections: IntegrationConnectionRepository;
+  public readonly agentProfiles: AgentProfileRepository;
   public readonly mesh: MeshRepository;
   public readonly memoryContexts: MemoryContextRepository;
   public readonly memoryQmdRuns: MemoryQmdRunRepository;
@@ -64,6 +66,7 @@ export class Storage {
     this.realtimeEvents = new RealtimeEventRepository(this.db);
     this.cronJobs = new CronJobRepository(this.db);
     this.integrationConnections = new IntegrationConnectionRepository(this.db);
+    this.agentProfiles = new AgentProfileRepository(this.db);
     this.mesh = new MeshRepository(this.db);
     this.memoryContexts = new MemoryContextRepository(this.db);
     this.memoryQmdRuns = new MemoryQmdRunRepository(this.db);
@@ -91,6 +94,7 @@ export * from "./task-subagent-repo.js";
 export * from "./realtime-event-repo.js";
 export * from "./cron-job-repo.js";
 export * from "./integration-connection-repo.js";
+export * from "./agent-profile-repo.js";
 export * from "./mesh-repo.js";
 export * from "./memory-context-repo.js";
 export * from "./memory-qmd-run-repo.js";

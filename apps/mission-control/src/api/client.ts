@@ -1,7 +1,12 @@
 import type {
+  AgentProfileArchiveInput,
+  AgentProfileCreateInput,
+  AgentProfileRecord,
+  AgentProfileUpdateInput,
   AuthSettingsUpdateInput,
   ApprovalReplayEvent,
   ApprovalRequest,
+  ChangeRiskEvaluationResponse,
   MemoryContextPack,
   MemoryQmdStatsResponse,
   NpuModelManifest,
@@ -115,6 +120,9 @@ export interface TaskRecord {
   assignedAgentId?: string;
   createdBy?: string;
   dueAt?: string;
+  deletedAt?: string;
+  deletedBy?: string;
+  deleteReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -203,14 +211,8 @@ export interface OperatorsResponse {
 }
 
 export interface AgentsResponse {
-  items: Array<{
-    agentId: string;
-    name: string;
-    status: "active" | "idle";
-    sessionCount: number;
-    activeSessions: number;
-    lastUpdatedAt?: string;
-  }>;
+  items: AgentProfileRecord[];
+  view?: "active" | "archived" | "all";
 }
 
 export interface RuntimeSettingsResponse {
@@ -410,8 +412,21 @@ export async function runCheaper(): Promise<{ mode: string; actions: string[] }>
 }
 
 export async function fetchTasks(status?: TaskRecord["status"]): Promise<{ items: TaskRecord[]; nextCursor?: string }> {
-  const query = status ? `?status=${encodeURIComponent(status)}&limit=100` : "?limit=100";
+  const query = status ? `?status=${encodeURIComponent(status)}&limit=100&view=active` : "?limit=100&view=active";
   return request<{ items: TaskRecord[]; nextCursor?: string }>(`/api/v1/tasks${query}`);
+}
+
+export async function fetchTasksByView(
+  view: "active" | "trash" | "all",
+  status?: TaskRecord["status"],
+): Promise<{ items: TaskRecord[]; nextCursor?: string; view: "active" | "trash" | "all" }> {
+  const query = new URLSearchParams({ limit: "100", view });
+  if (status) {
+    query.set("status", status);
+  }
+  return request<{ items: TaskRecord[]; nextCursor?: string; view: "active" | "trash" | "all" }>(
+    `/api/v1/tasks?${query.toString()}`,
+  );
 }
 
 export async function createTask(input: {
@@ -434,6 +449,32 @@ export async function updateTask(
   return request<TaskRecord>(`/api/v1/tasks/${encodeURIComponent(taskId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function deleteTask(
+  taskId: string,
+  input?: { mode?: "soft" | "hard"; deletedBy?: string; deleteReason?: string; confirmToken?: string },
+): Promise<{ deleted: boolean; taskId: string; mode: "soft" | "hard" }> {
+  const mode = input?.mode ?? "soft";
+  return request<{ deleted: boolean; taskId: string; mode: "soft" | "hard" }>(
+    `/api/v1/tasks/${encodeURIComponent(taskId)}?mode=${mode}`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({
+        mode,
+        deletedBy: input?.deletedBy,
+        deleteReason: input?.deleteReason,
+        confirmToken: input?.confirmToken,
+      }),
+    },
+  );
+}
+
+export async function restoreTask(taskId: string): Promise<{ restored: boolean; taskId: string }> {
+  return request<{ restored: boolean; taskId: string }>(`/api/v1/tasks/${encodeURIComponent(taskId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 
@@ -533,8 +574,59 @@ export async function fetchMemoryFiles(dir = "memory"): Promise<{ items: Array<{
   );
 }
 
-export async function fetchAgents(): Promise<AgentsResponse> {
-  return request<AgentsResponse>("/api/v1/agents");
+export async function fetchAgents(
+  view: "active" | "archived" | "all" = "active",
+  limit = 300,
+): Promise<AgentsResponse> {
+  return request<AgentsResponse>(`/api/v1/agents?view=${encodeURIComponent(view)}&limit=${limit}`);
+}
+
+export async function fetchAgent(agentId: string): Promise<AgentProfileRecord> {
+  return request<AgentProfileRecord>(`/api/v1/agents/${encodeURIComponent(agentId)}`);
+}
+
+export async function createAgentProfile(input: AgentProfileCreateInput): Promise<AgentProfileRecord> {
+  return request<AgentProfileRecord>("/api/v1/agents", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAgentProfile(
+  agentId: string,
+  input: AgentProfileUpdateInput,
+): Promise<AgentProfileRecord> {
+  return request<AgentProfileRecord>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function archiveAgentProfile(
+  agentId: string,
+  input?: AgentProfileArchiveInput,
+): Promise<AgentProfileRecord> {
+  return request<AgentProfileRecord>(`/api/v1/agents/${encodeURIComponent(agentId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function restoreAgentProfile(agentId: string): Promise<AgentProfileRecord> {
+  return request<AgentProfileRecord>(`/api/v1/agents/${encodeURIComponent(agentId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function hardDeleteAgentProfile(agentId: string): Promise<{ deleted: boolean; agentId: string; mode: "hard" }> {
+  return request<{ deleted: boolean; agentId: string; mode: "hard" }>(
+    `/api/v1/agents/${encodeURIComponent(agentId)}?mode=hard`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({}),
+    },
+  );
 }
 
 export async function fetchFilesList(
@@ -543,6 +635,31 @@ export async function fetchFilesList(
 ): Promise<{ items: Array<{ relativePath: string; size: number; modifiedAt: string }> }> {
   return request<{ items: Array<{ relativePath: string; size: number; modifiedAt: string }> }>(
     `/api/v1/files/list?dir=${encodeURIComponent(dir)}&limit=${limit}`,
+  );
+}
+
+export interface FileTemplate {
+  templateId: string;
+  title: string;
+  description: string;
+  defaultPath: string;
+  body: string;
+}
+
+export async function fetchFileTemplates(): Promise<{ items: FileTemplate[] }> {
+  return request<{ items: FileTemplate[] }>("/api/v1/files/templates");
+}
+
+export async function createFileFromTemplate(
+  templateId: string,
+  targetPath?: string,
+): Promise<{ relativePath: string; fullPath: string; bytes: number }> {
+  return request<{ relativePath: string; fullPath: string; bytes: number }>(
+    `/api/v1/files/templates/${encodeURIComponent(templateId)}/create`,
+    {
+      method: "POST",
+      body: JSON.stringify({ targetPath }),
+    },
   );
 }
 
@@ -826,6 +943,16 @@ export async function refreshNpuRuntime(): Promise<NpuRuntimeStatus> {
   return request<NpuRuntimeStatus>("/api/v1/npu/refresh", {
     method: "POST",
     body: JSON.stringify({}),
+  });
+}
+
+export async function evaluateUiChangeRisk(input: {
+  pageId: string;
+  changes: Array<{ field: string; from: unknown; to: unknown }>;
+}): Promise<ChangeRiskEvaluationResponse> {
+  return request<ChangeRiskEvaluationResponse>("/api/v1/ui/change-risk/evaluate", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

@@ -208,6 +208,7 @@ pnpm config:sync
 - `Summit`: top-level KPIs and health.
 - `Engine`: host/runtime vitals.
 - `Trail Files`: workspace file browser/editor within jail roots.
+  - Includes beginner artifact templates, path autopopulate, and save-risk review.
 - `Memory Pasture`: memory and workspace area breakdown.
 - `Goat Crew`: role roster and runtime overlays.
 - `Herd HQ`: WebGL command floor (GoatHerder + goat subagents).
@@ -217,8 +218,10 @@ pnpm config:sync
 - `Playbook Skills`: loaded skills and dependencies.
 - `Feed Ledger`: token and cost breakdowns with run-leaner hints.
 - `Forge`: runtime policy and provider controls.
+  - Includes page-wide change review and critical-change confirmation gates.
 - `Gatehouse Queue`: approvals + replay + layman explanation status.
 - `Trailboard`: task, subagent session, activity, and deliverable tracking.
+  - Includes `Active/Trash/All` views plus soft delete, restore, and permanent delete.
 
 ## Core API Surface
 
@@ -252,10 +255,20 @@ Tasks/subagents:
 
 - `GET/POST /api/v1/tasks`
 - `PATCH/DELETE /api/v1/tasks/:taskId`
+- `POST /api/v1/tasks/:taskId/restore`
 - `GET/POST /api/v1/tasks/:taskId/activities`
 - `GET/POST /api/v1/tasks/:taskId/deliverables`
 - `GET/POST /api/v1/tasks/:taskId/subagents`
 - `PATCH /api/v1/subagents/:agentSessionId`
+
+Files:
+
+- `GET /api/v1/files/templates`
+- `POST /api/v1/files/templates/:templateId/create`
+
+UX risk preflight:
+
+- `POST /api/v1/ui/change-risk/evaluate`
 
 Skills:
 

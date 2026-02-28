@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { downloadFile, fetchFilesList, uploadFile } from "../api/client";
+import {
+  createFileFromTemplate,
+  downloadFile,
+  evaluateUiChangeRisk,
+  fetchFilesList,
+  fetchFileTemplates,
+  uploadFile,
+  type FileTemplate,
+} from "../api/client";
+import { ChangeBadge, type UiRiskLevel } from "../components/ChangeBadge";
+import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 
 const UPLOAD_PATH_SUGGESTIONS = [
@@ -12,19 +23,33 @@ const UPLOAD_PATH_SUGGESTIONS = [
 
 export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [files, setFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
+  const [templates, setTemplates] = useState<FileTemplate[]>([]);
   const [search, setSearch] = useState("");
   const [selectedPath, setSelectedPath] = useState<string>("");
   const [selectedContent, setSelectedContent] = useState<string>("");
   const [uploadPath, setUploadPath] = useState("notes/example.txt");
   const [uploadContent, setUploadContent] = useState("");
+  const [autoPopulatedPath, setAutoPopulatedPath] = useState<string | null>(null);
+  const [pathRisk, setPathRisk] = useState<{
+    overall: UiRiskLevel;
+    items: Array<{ field: string; level: UiRiskLevel; hint?: string }>;
+  }>({
+    overall: "safe",
+    items: [],
+  });
   const [showAdvancedUpload, setShowAdvancedUpload] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   const load = () => {
-    void fetchFilesList(".", 500)
-      .then((res) => {
-        setFiles(res.items);
-        setSelectedPath((current) => current || res.items[0]?.relativePath || "");
+    void Promise.all([
+      fetchFilesList(".", 500),
+      fetchFileTemplates(),
+    ])
+      .then(([filesRes, templatesRes]) => {
+        setFiles(filesRes.items);
+        setTemplates(templatesRes.items);
+        setSelectedPath((current) => current || filesRes.items[0]?.relativePath || "");
       })
       .catch((err: Error) => setError(err.message));
   };
@@ -39,9 +64,49 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
       return;
     }
     void downloadFile(selectedPath)
-      .then((res) => setSelectedContent(res.content))
+      .then((res) => {
+        if (typeof res.content === "string") {
+          setSelectedContent(res.content);
+        } else {
+          setSelectedContent("[binary file]");
+        }
+      })
       .catch((err: Error) => setError(err.message));
   }, [selectedPath]);
+
+  useEffect(() => {
+    const from = autoPopulatedPath ?? uploadPath;
+    void evaluateUiChangeRisk({
+      pageId: "files",
+      changes: [
+        {
+          field: "uploadPath",
+          from,
+          to: uploadPath,
+        },
+      ],
+    })
+      .then((res) => {
+        setPathRisk({
+          overall: res.overall,
+          items: res.items.map((item) => ({
+            field: item.field,
+            level: item.level,
+            hint: item.hint,
+          })),
+        });
+      })
+      .catch(() => {
+        setPathRisk({
+          overall: "warning",
+          items: [{
+            field: "uploadPath",
+            level: "warning",
+            hint: "Risk preflight unavailable; local validation only.",
+          }],
+        });
+      });
+  }, [autoPopulatedPath, uploadPath]);
 
   const filteredFiles = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -71,21 +136,88 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return [...new Set([...defaults, ...dynamic])].map((value) => ({ value, label: value }));
   }, [files]);
 
-  const onUpload = async () => {
+  const onSaveFile = async () => {
     try {
-      await uploadFile(uploadPath, uploadContent);
+      const saved = await uploadFile(uploadPath, uploadContent);
       setUploadContent("");
+      setInfo(`Saved file: ${saved.relativePath}`);
       load();
     } catch (err) {
       setError((err as Error).message);
     }
   };
 
+  const onCreateTemplate = async (templateId: string, targetPath?: string) => {
+    try {
+      const created = await createFileFromTemplate(templateId, targetPath);
+      setInfo(`Created template file: ${created.relativePath}`);
+      setSelectedPath(created.relativePath);
+      setUploadPath(created.relativePath);
+      setAutoPopulatedPath(created.relativePath);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onUseSelectedPath = () => {
+    if (!selectedPath) {
+      return;
+    }
+    setUploadPath(selectedPath);
+    setAutoPopulatedPath(selectedPath);
+    setInfo(`Auto-populated save path from selection: ${selectedPath}`);
+  };
+
+  const onEditSelectedFile = () => {
+    if (!selectedPath) {
+      return;
+    }
+    setUploadPath(selectedPath);
+    setAutoPopulatedPath(selectedPath);
+    setUploadContent(selectedContent);
+    setInfo("Loaded selected file content into editor.");
+  };
+
+  const autoPathEdited = Boolean(autoPopulatedPath && autoPopulatedPath !== uploadPath);
+
   return (
     <section>
       <h2>Trail Files</h2>
       <p className="office-subtitle">Browse and edit workspace artifacts inside GoatCitadel write-jail roots.</p>
+      <PageGuideCard
+        what="Trail Files is where you inspect, create, and edit files in your workspace safely."
+        when="Use this for documentation, artifacts, quick notes, and direct file edits."
+        actions={[
+          "Pick an existing file to preview it.",
+          "Use a template to create a beginner-friendly artifact.",
+          "Edit content and click Save File.",
+        ]}
+        terms={[
+          {
+            term: "Artifact",
+            meaning: "A concrete output file produced by work, like a report, bug summary, or release note.",
+          },
+        ]}
+      />
+
       {error ? <p className="error">{error}</p> : null}
+      {info ? <p className="office-subtitle">{info}</p> : null}
+
+      <article className="card">
+        <h3>Create Example Artifact</h3>
+        <p className="office-subtitle">
+          Start with a template if you are unsure where artifacts should go.
+        </p>
+        <div className="actions">
+          {templates.map((template) => (
+            <button key={template.templateId} onClick={() => void onCreateTemplate(template.templateId)}>
+              {template.title}
+            </button>
+          ))}
+        </div>
+      </article>
+
       <div className="controls-row">
         <SelectOrCustom
           value={search}
@@ -119,28 +251,36 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
               {selectedMeta.size} bytes | modified {new Date(selectedMeta.modifiedAt).toLocaleString()}
             </p>
           ) : null}
+          <div className="actions">
+            <button onClick={onUseSelectedPath} disabled={!selectedPath}>Use Selected Path</button>
+            <button onClick={onEditSelectedFile} disabled={!selectedPath}>Edit Selected File</button>
+          </div>
           <pre className="file-preview">{selectedContent}</pre>
         </article>
       </div>
 
       <article className="card">
-        <h3>Forge / Upload File</h3>
+        <h3>Save / Upload File</h3>
         <div className="controls-row">
           <SelectOrCustom
             value={uploadPath}
             onChange={setUploadPath}
             options={uploadPathOptions}
             customPlaceholder="Custom workspace path"
-            customLabel="Upload path"
+            customLabel="Save path"
           />
-          <button onClick={onUpload}>Write File</button>
+          <button onClick={() => void onSaveFile()}>Save File</button>
+        </div>
+        <div className="controls-row">
+          <ChangeBadge level={pathRisk.overall} />
+          {autoPathEdited ? <span className="office-subtitle">Path edited after auto-populate.</span> : null}
         </div>
         <button onClick={() => setShowAdvancedUpload((current) => !current)}>
-          {showAdvancedUpload ? "Hide advanced upload details" : "Show advanced upload details"}
+          {showAdvancedUpload ? "Hide advanced save details" : "Show advanced save details"}
         </button>
         {showAdvancedUpload ? (
           <p className="office-subtitle">
-            Advanced upload mode allows arbitrary file paths inside write-jail roots. Stay inside approved directories.
+            Advanced mode allows arbitrary file paths inside write-jail roots. Stay in approved directories.
           </p>
         ) : null}
         <textarea
@@ -150,7 +290,13 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
           className="full-textarea"
           placeholder="File content"
         />
+        <ChangeReviewPanel
+          title="Path Change Review"
+          overall={pathRisk.overall}
+          items={pathRisk.items}
+        />
       </article>
     </section>
   );
 }
+

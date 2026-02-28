@@ -1,6 +1,4 @@
-import { useMemo } from "react";
-
-const CUSTOM_SENTINEL = "__custom__";
+import { useEffect, useMemo, useState } from "react";
 
 export interface SelectOption {
   value: string;
@@ -17,41 +15,87 @@ interface SelectOrCustomProps {
   customOptionLabel?: string;
   inputType?: "text" | "password";
   disabled?: boolean;
+  allowCustom?: boolean;
+  autoSelectFirstOption?: boolean;
+  onCustomModeChange?: (customMode: boolean) => void;
 }
 
 export function SelectOrCustom(props: SelectOrCustomProps) {
   const dedupedOptions = useMemo(() => dedupeOptions(props.options), [props.options]);
   const isKnownValue = dedupedOptions.some((option) => option.value === props.value);
-  const selectValue = isKnownValue ? props.value : CUSTOM_SENTINEL;
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(Boolean(props.value && !isKnownValue));
+  const allowCustom = props.allowCustom ?? true;
+  const autoSelectFirstOption = props.autoSelectFirstOption ?? false;
+
+  const selectValue = isKnownValue
+    ? props.value
+    : autoSelectFirstOption
+      ? dedupedOptions[0]?.value ?? ""
+      : "";
+
+  useEffect(() => {
+    if (!allowCustom && isCustomMode) {
+      setIsCustomMode(false);
+      props.onCustomModeChange?.(false);
+      return;
+    }
+
+    if (!props.value.trim() && isCustomMode) {
+      setIsCustomMode(false);
+      props.onCustomModeChange?.(false);
+      return;
+    }
+
+    if (props.value && !isKnownValue && allowCustom && !isCustomMode) {
+      setIsCustomMode(true);
+      props.onCustomModeChange?.(true);
+      return;
+    }
+
+  }, [allowCustom, isCustomMode, isKnownValue, props.onCustomModeChange, props.value]);
 
   return (
     <div className="select-or-custom">
       <select
         id={props.id}
-        value={selectValue}
+        value={isCustomMode ? (isKnownValue ? props.value : dedupedOptions[0]?.value ?? "") : selectValue}
         disabled={props.disabled}
         onChange={(event) => {
-          const next = event.target.value;
-          if (next === CUSTOM_SENTINEL) {
-            if (isKnownValue) {
-              props.onChange("");
-            }
-            return;
-          }
-          props.onChange(next);
+          setIsCustomMode(false);
+          props.onCustomModeChange?.(false);
+          props.onChange(event.target.value);
         }}
       >
+        {!isKnownValue ? (
+          <option value="">{props.customPlaceholder ?? "Select value"}</option>
+        ) : null}
         {dedupedOptions.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
-        <option value={CUSTOM_SENTINEL}>
-          {props.customOptionLabel ?? "Custom value..."}
-        </option>
       </select>
 
-      {selectValue === CUSTOM_SENTINEL ? (
+      {allowCustom ? (
+        <div className="controls-row">
+          <button
+            type="button"
+            onClick={() => {
+              const nextMode = !isCustomMode;
+              setIsCustomMode(nextMode);
+              props.onCustomModeChange?.(nextMode);
+              if (!nextMode && autoSelectFirstOption && !isKnownValue && dedupedOptions[0]) {
+                props.onChange(dedupedOptions[0].value);
+              }
+            }}
+            disabled={props.disabled}
+          >
+            {isCustomMode ? "Use suggested values" : (props.customOptionLabel ?? "Use custom value")}
+          </button>
+        </div>
+      ) : null}
+
+      {isCustomMode ? (
         <div className="controls-row select-custom-input">
           {props.customLabel ? <label>{props.customLabel}</label> : null}
           <input

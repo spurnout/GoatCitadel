@@ -3,12 +3,15 @@ import {
   addTaskActivity,
   addTaskDeliverable,
   createTask,
+  deleteTask,
+  fetchAgents,
   fetchSessions,
   fetchTaskActivities,
   fetchTaskDeliverables,
-  fetchTasks,
+  fetchTasksByView,
   fetchTaskSubagents,
   registerTaskSubagent,
+  restoreTask,
   updateTask,
   updateTaskSubagent,
   type TaskActivityRecord,
@@ -16,6 +19,7 @@ import {
   type TaskRecord,
   type TaskSubagentSession,
 } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 
@@ -67,15 +71,19 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [activities, setActivities] = useState<TaskActivityRecord[]>([]);
   const [deliverables, setDeliverables] = useState<TaskDeliverableRecord[]>([]);
   const [subagents, setSubagents] = useState<TaskSubagentSession[]>([]);
+  const [viewFilter, setViewFilter] = useState<"active" | "trash" | "all">("active");
   const [createTitle, setCreateTitle] = useState("");
   const [activityMessage, setActivityMessage] = useState("");
   const [deliverableTitle, setDeliverableTitle] = useState("");
   const [deliverablePath, setDeliverablePath] = useState("");
   const [subagentSessionId, setSubagentSessionId] = useState("");
-  const [subagentName, setSubagentName] = useState("");
+  const [subagentRoleId, setSubagentRoleId] = useState(BUILTIN_AGENT_ROSTER[0]?.roleId ?? "");
+  const [subagentName, setSubagentName] = useState(BUILTIN_AGENT_ROSTER[0]?.name ?? "");
+  const [agentProfiles, setAgentProfiles] = useState<Array<{ roleId: string; name: string; title: string }>>([]);
   const [sessionHints, setSessionHints] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const detailRequestSeq = useRef(0);
 
   const selectedTask = useMemo(
@@ -83,11 +91,18 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
     [selectedTaskId, tasks],
   );
 
+  const isSelectedTaskDeleted = Boolean(selectedTask?.deletedAt);
+
   const loadTasks = () => {
-    void fetchTasks()
+    void fetchTasksByView(viewFilter)
       .then((res) => {
         setTasks(res.items);
-        setSelectedTaskId((current) => current ?? res.items[0]?.taskId);
+        setSelectedTaskId((current) => {
+          if (current && res.items.some((item) => item.taskId === current)) {
+            return current;
+          }
+          return res.items[0]?.taskId;
+        });
       })
       .catch((err: Error) => setError(err.message));
   };
@@ -112,12 +127,26 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     loadTasks();
-  }, [refreshKey]);
+  }, [refreshKey, viewFilter]);
 
   useEffect(() => {
     void fetchSessions()
       .then((res) => setSessionHints(res.items.map((item) => item.sessionId)))
       .catch((err: Error) => setError(err.message));
+  }, [refreshKey]);
+
+  useEffect(() => {
+    void fetchAgents("active", 500)
+      .then((res) => {
+        setAgentProfiles(res.items.map((agent) => ({
+          roleId: agent.roleId,
+          name: agent.name,
+          title: agent.title,
+        })));
+      })
+      .catch(() => {
+        // keep builtin fallback
+      });
   }, [refreshKey]);
 
   useEffect(() => {
@@ -135,6 +164,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await createTask({ title: createTitle.trim() });
       setCreateTitle("");
+      setInfo("Task created.");
       loadTasks();
     } catch (err) {
       setError((err as Error).message);
@@ -142,12 +172,13 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onStatusChange = async (status: TaskRecord["status"]) => {
-    if (!selectedTask) {
+    if (!selectedTask || isSelectedTaskDeleted) {
       return;
     }
 
     try {
       await updateTask(selectedTask.taskId, { status });
+      setInfo(`Task moved to ${status}.`);
       loadTasks();
       loadTaskDetail(selectedTask.taskId);
     } catch (err) {
@@ -156,7 +187,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onAddActivity = async () => {
-    if (!selectedTask || !activityMessage.trim()) {
+    if (!selectedTask || !activityMessage.trim() || isSelectedTaskDeleted) {
       return;
     }
     try {
@@ -165,6 +196,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
         message: activityMessage.trim(),
       });
       setActivityMessage("");
+      setInfo("Activity added.");
       loadTaskDetail(selectedTask.taskId);
     } catch (err) {
       setError((err as Error).message);
@@ -172,7 +204,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onAddDeliverable = async () => {
-    if (!selectedTask || !deliverableTitle.trim()) {
+    if (!selectedTask || !deliverableTitle.trim() || isSelectedTaskDeleted) {
       return;
     }
 
@@ -184,14 +216,15 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
       });
       setDeliverableTitle("");
       setDeliverablePath("");
+      setInfo("Deliverable added.");
       loadTaskDetail(selectedTask.taskId);
     } catch (err) {
       setError((err as Error).message);
     }
   };
 
-  const onRegisterSubagent = async () => {
-    if (!selectedTask || !subagentSessionId.trim()) {
+  const onAddSubagent = async () => {
+    if (!selectedTask || !subagentSessionId.trim() || isSelectedTaskDeleted) {
       return;
     }
 
@@ -201,7 +234,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
         agentName: subagentName.trim() || undefined,
       });
       setSubagentSessionId("");
-      setSubagentName("");
+      setInfo("Subagent linked to task.");
       loadTaskDetail(selectedTask.taskId);
     } catch (err) {
       setError((err as Error).message);
@@ -209,14 +242,60 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onCompleteSubagent = async (sessionId: string) => {
-    if (!selectedTask) {
+    if (!selectedTask || isSelectedTaskDeleted) {
       return;
     }
     try {
       await updateTaskSubagent(sessionId, {
         status: "completed",
       });
+      setInfo("Subagent marked completed.");
       loadTaskDetail(selectedTask.taskId);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onMoveToTrash = async (task: TaskRecord) => {
+    const confirmed = window.confirm(`Move "${task.title}" to Trash?`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteTask(task.taskId, {
+        mode: "soft",
+        deletedBy: "mission-control",
+        deleteReason: "Operator requested cleanup",
+      });
+      setInfo("Task moved to Trash.");
+      loadTasks();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onRestore = async (task: TaskRecord) => {
+    try {
+      await restoreTask(task.taskId);
+      setInfo("Task restored.");
+      loadTasks();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onPermanentDelete = async (task: TaskRecord) => {
+    const confirmed = window.confirm(`Permanently delete "${task.title}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await deleteTask(task.taskId, {
+        mode: "hard",
+        confirmToken: "PERMANENT_DELETE",
+      });
+      setInfo("Task permanently deleted.");
+      loadTasks();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -230,19 +309,57 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return [...values].filter(Boolean).map((value) => ({ value, label: value }));
   }, [sessionHints, subagents]);
 
+  const subagentRoleOptions = useMemo(
+    () => {
+      if (agentProfiles.length > 0) {
+        return agentProfiles.map((agent) => ({ value: agent.roleId, label: `${agent.name} (${agent.title})` }));
+      }
+      return BUILTIN_AGENT_ROSTER.map((agent) => ({ value: agent.roleId, label: `${agent.name} (${agent.title})` }));
+    },
+    [agentProfiles],
+  );
+
   const subagentNameOptions = useMemo(() => {
     const values = new Set<string>([
-      ...BUILTIN_AGENT_ROSTER.map((agent) => agent.name),
+      ...(agentProfiles.length > 0 ? agentProfiles.map((agent) => agent.name) : BUILTIN_AGENT_ROSTER.map((agent) => agent.name)),
       ...subagents.map((session) => session.agentName).filter(Boolean) as string[],
     ]);
     return [...values].map((value) => ({ value, label: value }));
-  }, [subagents]);
+  }, [agentProfiles, subagents]);
 
   return (
     <section>
       <h2>Trailboard</h2>
       <p className="office-subtitle">Plan and track work packets across the goat sub-agent roster.</p>
+      <PageGuideCard
+        what="Trailboard is your task hub for planning, tracking progress, deliverables, and subagent work."
+        when="Use this when you want structured execution instead of ad-hoc chat prompts."
+        actions={[
+          "Create a task with a clear title.",
+          "Update status as work moves through implementation/testing/review.",
+          "Attach deliverables and subagent sessions for traceability.",
+        ]}
+        terms={[
+          { term: "Subagent session", meaning: "A linked agent conversation/session performing part of the task." },
+          { term: "Deliverable", meaning: "A concrete output like a file, report, or artifact." },
+          { term: "Trash", meaning: "Soft-deleted tasks you can restore later." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
+      {info ? <p className="office-subtitle">{info}</p> : null}
+
+      <div className="controls-row">
+        <label htmlFor="taskView">View</label>
+        <select
+          id="taskView"
+          value={viewFilter}
+          onChange={(event) => setViewFilter(event.target.value as "active" | "trash" | "all")}
+        >
+          <option value="active">Active</option>
+          <option value="trash">Trash</option>
+          <option value="all">All</option>
+        </select>
+      </div>
 
       <div className="controls-row">
         <SelectOrCustom
@@ -264,6 +381,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <th>Status</th>
                 <th>Priority</th>
                 <th>Updated</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -271,12 +389,24 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <tr
                   key={task.taskId}
                   className={task.taskId === selectedTaskId ? "row-selected" : ""}
-                  onClick={() => setSelectedTaskId(task.taskId)}
                 >
-                  <td>{task.title}</td>
-                  <td>{task.status}</td>
-                  <td>{task.priority}</td>
-                  <td>{new Date(task.updatedAt).toLocaleString()}</td>
+                  <td onClick={() => setSelectedTaskId(task.taskId)}>
+                    {task.title}
+                    {task.deletedAt ? <span className="office-subtitle"> (trashed)</span> : null}
+                  </td>
+                  <td onClick={() => setSelectedTaskId(task.taskId)}>{task.status}</td>
+                  <td onClick={() => setSelectedTaskId(task.taskId)}>{task.priority}</td>
+                  <td onClick={() => setSelectedTaskId(task.taskId)}>{new Date(task.updatedAt).toLocaleString()}</td>
+                  <td className="actions">
+                    {!task.deletedAt ? (
+                      <button onClick={() => void onMoveToTrash(task)}>Move to Trash</button>
+                    ) : (
+                      <button onClick={() => void onRestore(task)}>Restore</button>
+                    )}
+                    <button className="danger" onClick={() => void onPermanentDelete(task)}>
+                      Delete Permanently
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -288,7 +418,13 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
           {selectedTask ? (
             <article className="card">
               <h3>{selectedTask.title}</h3>
-              <p>{selectedTask.description || "No description."}</p>
+              <p>{selectedTask.description || "No description yet."}</p>
+              {selectedTask.deletedAt ? (
+                <p className="office-subtitle">
+                  In Trash since {new Date(selectedTask.deletedAt).toLocaleString()}
+                  {selectedTask.deleteReason ? ` (${selectedTask.deleteReason})` : ""}
+                </p>
+              ) : null}
 
               <div className="controls-row">
                 <span>Status:</span>
@@ -296,7 +432,8 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <button
                     key={status}
                     className={selectedTask.status === status ? "active" : ""}
-                    onClick={() => onStatusChange(status)}
+                    disabled={isSelectedTaskDeleted}
+                    onClick={() => void onStatusChange(status)}
                   >
                     {status}
                   </button>
@@ -312,7 +449,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   customPlaceholder="Custom activity message"
                   customLabel="Activity message"
                 />
-                <button onClick={onAddActivity}>Add</button>
+                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddActivity()}>Add Activity</button>
               </div>
               <ul className="compact-list">
                 {activities.map((activity) => (
@@ -339,7 +476,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   customPlaceholder="Optional custom path"
                   customLabel="Deliverable path"
                 />
-                <button onClick={onAddDeliverable}>Add</button>
+                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddDeliverable()}>Add Deliverable</button>
               </div>
               <ul className="compact-list">
                 {deliverables.map((deliverable) => (
@@ -350,7 +487,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 ))}
               </ul>
 
-              <h4>Goat Sub-Agent Sessions</h4>
+              <h4>Goat Subagent Sessions</h4>
               <div className="controls-row">
                 <SelectOrCustom
                   value={subagentSessionId}
@@ -360,20 +497,37 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   customLabel="Session id"
                 />
                 <SelectOrCustom
+                  value={subagentRoleId}
+                  onChange={(nextRoleId) => {
+                    setSubagentRoleId(nextRoleId);
+                    const role = (
+                      agentProfiles.length > 0
+                        ? agentProfiles.find((item) => item.roleId === nextRoleId)
+                        : BUILTIN_AGENT_ROSTER.find((item) => item.roleId === nextRoleId)
+                    );
+                    if (role) {
+                      setSubagentName(role.name);
+                    }
+                  }}
+                  options={subagentRoleOptions}
+                  customPlaceholder="Optional role id"
+                  customLabel="Role id"
+                />
+                <SelectOrCustom
                   value={subagentName}
                   onChange={setSubagentName}
                   options={subagentNameOptions}
                   customPlaceholder="Optional agent name"
                   customLabel="Agent name"
                 />
-                <button onClick={onRegisterSubagent}>Register</button>
+                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddSubagent()}>Add Subagent</button>
               </div>
               <button onClick={() => setShowAdvanced((current) => !current)}>
-                {showAdvanced ? "Hide advanced sub-agent details" : "Show advanced sub-agent details"}
+                {showAdvanced ? "Hide advanced subagent details" : "Show advanced subagent details"}
               </button>
               {showAdvanced ? (
                 <p className="office-subtitle">
-                  Advanced mode lets you provide arbitrary session IDs and agent names. Use this for external sessions.
+                  Advanced mode lets you provide arbitrary session IDs and custom names for external sessions.
                 </p>
               ) : null}
               <ul className="compact-list">
@@ -381,7 +535,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <li key={session.subagentSessionId}>
                     <strong>{session.agentName ?? session.agentSessionId}</strong> - {session.status}
                     {session.status === "active" ? (
-                      <button onClick={() => onCompleteSubagent(session.agentSessionId)}>Mark complete</button>
+                      <button disabled={isSelectedTaskDeleted} onClick={() => void onCompleteSubagent(session.agentSessionId)}>Mark Completed</button>
                     ) : null}
                   </li>
                 ))}

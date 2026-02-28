@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  evaluateUiChangeRisk,
   fetchNpuModels,
   fetchNpuStatus,
   fetchSettings,
@@ -9,6 +10,8 @@ import {
   stopNpuRuntime,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 interface NpuPageProps {
   refreshKey?: number;
@@ -21,6 +24,15 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
   const [npuEnabled, setNpuEnabled] = useState(settings?.npu.enabled ?? false);
   const [autoStart, setAutoStart] = useState(settings?.npu.autoStart ?? false);
   const [sidecarUrl, setSidecarUrl] = useState(settings?.npu.sidecarUrl ?? "http://127.0.0.1:11440");
+  const [baseline, setBaseline] = useState<{ enabled: boolean; autoStart: boolean; sidecarUrl: string } | null>(null);
+  const [criticalConfirmed, setCriticalConfirmed] = useState(false);
+  const [changeReview, setChangeReview] = useState<{
+    overall: "safe" | "warning" | "critical";
+    items: Array<{ field: string; level: "safe" | "warning" | "critical"; hint?: string }>;
+  }>({
+    overall: "safe",
+    items: [],
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,6 +46,11 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
         setNpuEnabled(settingsRes.npu.enabled);
         setAutoStart(settingsRes.npu.autoStart);
         setSidecarUrl(settingsRes.npu.sidecarUrl);
+        setBaseline({
+          enabled: settingsRes.npu.enabled,
+          autoStart: settingsRes.npu.autoStart,
+          sidecarUrl: settingsRes.npu.sidecarUrl,
+        });
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
@@ -42,6 +59,40 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
   useEffect(() => {
     load();
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (!baseline) {
+      return;
+    }
+    void evaluateUiChangeRisk({
+      pageId: "npu",
+      changes: [
+        { field: "npu.enabled", from: baseline.enabled, to: npuEnabled },
+        { field: "npu.autoStart", from: baseline.autoStart, to: autoStart },
+        { field: "npu.sidecarUrl", from: baseline.sidecarUrl, to: sidecarUrl },
+      ],
+    })
+      .then((result) => {
+        setChangeReview({
+          overall: result.overall,
+          items: result.items.map((item) => ({
+            field: item.field,
+            level: item.level,
+            hint: item.hint,
+          })),
+        });
+      })
+      .catch(() => {
+        setChangeReview({
+          overall: "warning",
+          items: [{
+            field: "npu",
+            level: "warning",
+            hint: "Unable to fetch risk hints from gateway.",
+          }],
+        });
+      });
+  }, [baseline, npuEnabled, autoStart, sidecarUrl]);
 
   const onStart = async () => {
     setLoading(true);
@@ -87,6 +138,10 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
   };
 
   const onSaveConfig = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before saving NPU configuration.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -100,6 +155,11 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
       setNpuEnabled(next.npu.enabled);
       setAutoStart(next.npu.autoStart);
       setSidecarUrl(next.npu.sidecarUrl);
+      setBaseline({
+        enabled: next.npu.enabled,
+        autoStart: next.npu.autoStart,
+        sidecarUrl: next.npu.sidecarUrl,
+      });
       const refreshed = await fetchNpuStatus();
       setStatus(refreshed);
     } catch (err) {
@@ -109,13 +169,36 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     }
   };
 
+  const blockConfigSave = changeReview.overall === "critical" && !criticalConfirmed;
+
   return (
     <section>
       <h2>NPU Runtime</h2>
       <p className="office-subtitle">
         Manage the local Snapdragon-ready NPU sidecar exposed as an OpenAI-compatible endpoint.
       </p>
+      <PageGuideCard
+        what="NPU Runtime configures and controls the local sidecar for Snapdragon-class acceleration."
+        when="Use this when enabling local inference, checking sidecar health, or validating capability probes."
+        actions={[
+          "Set enabled/auto-start and confirm sidecar URL.",
+          "Save config, then start or refresh the runtime.",
+          "Verify capabilities and model list before selecting npu-local in Forge.",
+        ]}
+        terms={[
+          { term: "Sidecar", meaning: "Separate local process exposing OpenAI-compatible APIs." },
+          { term: "QNN", meaning: "Qualcomm acceleration path used for NPU execution." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
+      <ChangeReviewPanel
+        title="NPU Configuration Risk"
+        overall={changeReview.overall}
+        items={changeReview.items}
+        requireCriticalConfirm
+        criticalConfirmed={criticalConfirmed}
+        onCriticalConfirmChange={setCriticalConfirmed}
+      />
 
       <article className="card">
         <h3>Configuration</h3>
@@ -143,7 +226,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
             onChange={(event) => setSidecarUrl(event.target.value)}
           />
         </div>
-        <button onClick={onSaveConfig} disabled={loading}>Save NPU Config</button>
+        <button onClick={onSaveConfig} disabled={loading || blockConfigSave}>Save NPU Config</button>
       </article>
 
       <article className="card">

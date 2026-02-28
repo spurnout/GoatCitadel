@@ -19,6 +19,9 @@ export interface TaskRecord {
   assignedAgentId?: string;
   createdBy?: string;
   dueAt?: string;
+  deletedAt?: string;
+  deletedBy?: string;
+  deleteReason?: string;
   createdAt: string;
   updatedAt: string;
 }

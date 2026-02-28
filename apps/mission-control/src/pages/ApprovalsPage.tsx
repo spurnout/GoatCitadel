@@ -6,6 +6,7 @@ import {
   type ApprovalReplayResponse,
   type ApprovalsResponse,
 } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
@@ -64,6 +65,19 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     <section>
       <h2>Gatehouse Queue</h2>
       <p className="office-subtitle">Human-in-the-loop decisions for risky goat actions.</p>
+      <PageGuideCard
+        what="Gatehouse is where you review and resolve risky actions before they execute."
+        when="Use this when tools are blocked for approval or you want an audit-friendly replay trail."
+        actions={[
+          "Open a pending request and read the plain-English explanation.",
+          "Approve to allow execution or reject to stop it.",
+          "Use replay to inspect the full event trail.",
+        ]}
+        terms={[
+          { term: "Replay trail", meaning: "Ordered audit events for the full approval lifecycle." },
+          { term: "Risk level", meaning: "Safety severity assigned before execution." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
       {data.items.length === 0 ? <p>No pending approvals.</p> : null}
       {data.items.map((approval) => {

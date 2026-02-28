@@ -11,6 +11,10 @@ import { ToolPolicyEngine, assertExistingPathRealpathAllowed, assertWritePathInJ
 import { SkillsService } from "@goatcitadel/skills";
 import { Storage } from "@goatcitadel/storage";
 import type {
+  AgentProfileArchiveInput,
+  AgentProfileCreateInput,
+  AgentProfileRecord,
+  AgentProfileUpdateInput,
   AuthRuntimeSettings,
   AuthSettingsUpdateInput,
   ApprovalCreateInput,
@@ -74,6 +78,7 @@ import type {
   ToolInvokeRequest,
   ToolInvokeResult,
 } from "@goatcitadel/contracts";
+import { BUILTIN_AGENT_PROFILES } from "@goatcitadel/contracts";
 import type { GatewayRuntimeConfig } from "../config.js";
 import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
@@ -109,19 +114,18 @@ export interface FileDownloadResult {
   content: string | Buffer;
 }
 
+export interface FileTemplateRecord {
+  templateId: string;
+  title: string;
+  description: string;
+  defaultPath: string;
+  body: string;
+}
+
 export interface MemoryFileEntry {
   relativePath: string;
   size: number;
   modifiedAt: string;
-}
-
-export interface AgentSummary {
-  agentId: string;
-  name: string;
-  status: "active" | "idle";
-  sessionCount: number;
-  activeSessions: number;
-  lastUpdatedAt?: string;
 }
 
 export interface RuntimeSettings {
@@ -254,6 +258,7 @@ export class GatewayService {
 
   public async init(): Promise<void> {
     await this.loadOnboardingMarker();
+    this.storage.agentProfiles.seedBuiltins(BUILTIN_AGENT_PROFILES);
     await this.skillsService.reload();
     await this.loadCronJobsFromConfig();
     this.meshService.init();
@@ -474,11 +479,17 @@ export class GatewayService {
     return this.skillsService.resolveActivation(input);
   }
 
-  public listTasks(limit: number, status?: TaskStatus, cursor?: string): TaskRecord[] {
+  public listTasks(
+    limit: number,
+    status?: TaskStatus,
+    cursor?: string,
+    view: "active" | "trash" | "all" = "active",
+  ): TaskRecord[] {
     return this.storage.tasks.list({
       status,
       limit,
       cursor,
+      view,
     });
   }
 
@@ -509,10 +520,26 @@ export class GatewayService {
     return updated;
   }
 
-  public deleteTask(taskId: string): boolean {
-    const deleted = this.storage.tasks.delete(taskId);
+  public softDeleteTask(taskId: string, deletedBy?: string, deleteReason?: string): boolean {
+    const deleted = this.storage.tasks.softDelete(taskId, deletedBy, deleteReason);
     if (deleted) {
-      this.publishRealtime("task_deleted", "tasks", { taskId });
+      this.publishRealtime("task_deleted", "tasks", { taskId, mode: "soft" });
+    }
+    return deleted;
+  }
+
+  public restoreTask(taskId: string): boolean {
+    const restored = this.storage.tasks.restore(taskId);
+    if (restored) {
+      this.publishRealtime("task_restored", "tasks", { taskId });
+    }
+    return restored;
+  }
+
+  public hardDeleteTask(taskId: string): boolean {
+    const deleted = this.storage.tasks.hardDelete(taskId);
+    if (deleted) {
+      this.publishRealtime("task_deleted", "tasks", { taskId, mode: "hard" });
     }
     return deleted;
   }
@@ -676,6 +703,25 @@ export class GatewayService {
     return result;
   }
 
+  public listFileTemplates(): FileTemplateRecord[] {
+    const today = new Date().toISOString().slice(0, 10);
+    return FILE_TEMPLATES.map((template) => ({
+      ...template,
+      defaultPath: template.defaultPath.replaceAll("{date}", today),
+    }));
+  }
+
+  public async createWorkspaceFileFromTemplate(templateId: string, targetPath?: string): Promise<FileUploadResult> {
+    const template = FILE_TEMPLATES.find((item) => item.templateId === templateId);
+    if (!template) {
+      throw new Error(`Unknown file template: ${templateId}`);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const resolvedPath = (targetPath && targetPath.trim()) || template.defaultPath.replaceAll("{date}", today);
+    const content = template.body.replaceAll("{date}", today);
+    return this.uploadWorkspaceFile(resolvedPath, content);
+  }
+
   public async downloadWorkspaceFile(relativePath: string): Promise<FileDownloadResult> {
     const normalized = this.normalizeRelativePath(relativePath);
     const fullPath = path.resolve(this.config.rootDir, this.config.assistant.workspaceDir, normalized);
@@ -783,40 +829,110 @@ export class GatewayService {
     return this.memoryContextService.stats(from, to);
   }
 
-  public listAgents(limit = 500): AgentSummary[] {
-    const sessions = this.storage.taskSubagents.listAll(limit);
-    const byAgent = new Map<string, AgentSummary>();
+  public listAgents(view: "active" | "archived" | "all" = "active", limit = 500): AgentProfileRecord[] {
+    const profiles = this.storage.agentProfiles.list(view, limit);
+    const runtime = this.buildAgentRuntimeRollups(profiles);
 
-    for (const session of sessions) {
-      const agentId = session.agentName?.trim() || session.agentSessionId;
-      const current = byAgent.get(agentId) ?? {
-        agentId,
-        name: session.agentName?.trim() || session.agentSessionId,
-        status: "idle",
-        sessionCount: 0,
-        activeSessions: 0,
-        lastUpdatedAt: undefined,
-      };
-
-      current.sessionCount += 1;
-      if (session.status === "active") {
-        current.activeSessions += 1;
-      }
-
-      current.status = current.activeSessions > 0 ? "active" : "idle";
-
-      if (!current.lastUpdatedAt || Date.parse(session.updatedAt) > Date.parse(current.lastUpdatedAt)) {
-        current.lastUpdatedAt = session.updatedAt;
-      }
-
-      byAgent.set(agentId, current);
-    }
-
-    return Array.from(byAgent.values()).sort((a, b) => {
-      const left = Date.parse(a.lastUpdatedAt ?? "1970-01-01T00:00:00.000Z");
-      const right = Date.parse(b.lastUpdatedAt ?? "1970-01-01T00:00:00.000Z");
-      return right - left;
+    const merged = profiles.map((profile) => {
+      const runtimeStats = runtime.get(profile.roleId);
+      const activeSessions = runtimeStats?.activeSessions ?? 0;
+      const sessionCount = runtimeStats?.sessionCount ?? 0;
+      const lastUpdatedAt = runtimeStats?.lastUpdatedAt;
+      return {
+        ...profile,
+        status: activeSessions > 0 ? "active" : "idle",
+        sessionCount,
+        activeSessions,
+        lastUpdatedAt,
+      } satisfies AgentProfileRecord;
     });
+
+    return merged.sort((left, right) => {
+      if (left.status !== right.status) {
+        return left.status === "active" ? -1 : 1;
+      }
+      if (left.isBuiltin !== right.isBuiltin) {
+        return left.isBuiltin ? -1 : 1;
+      }
+      const leftUpdated = Date.parse(left.lastUpdatedAt ?? left.updatedAt);
+      const rightUpdated = Date.parse(right.lastUpdatedAt ?? right.updatedAt);
+      if (leftUpdated !== rightUpdated) {
+        return rightUpdated - leftUpdated;
+      }
+      return left.name.localeCompare(right.name);
+    });
+  }
+
+  public getAgent(agentId: string): AgentProfileRecord {
+    const profile = this.storage.agentProfiles.get(agentId);
+    const runtime = this.buildAgentRuntimeRollups([profile]).get(profile.roleId);
+    const activeSessions = runtime?.activeSessions ?? 0;
+    return {
+      ...profile,
+      status: activeSessions > 0 ? "active" : "idle",
+      sessionCount: runtime?.sessionCount ?? 0,
+      activeSessions,
+      lastUpdatedAt: runtime?.lastUpdatedAt,
+    };
+  }
+
+  public createAgentProfile(input: AgentProfileCreateInput): AgentProfileRecord {
+    const created = this.storage.agentProfiles.create(input);
+    const agent = this.getAgent(created.agentId);
+    this.publishRealtime("system", "agents", {
+      type: "agent_profile_created",
+      agentId: agent.agentId,
+      roleId: agent.roleId,
+      name: agent.name,
+      isBuiltin: agent.isBuiltin,
+    });
+    return agent;
+  }
+
+  public updateAgentProfile(agentId: string, input: AgentProfileUpdateInput): AgentProfileRecord {
+    const updated = this.storage.agentProfiles.update(agentId, input);
+    const agent = this.getAgent(updated.agentId);
+    this.publishRealtime("system", "agents", {
+      type: "agent_profile_updated",
+      agentId: agent.agentId,
+      roleId: agent.roleId,
+      name: agent.name,
+    });
+    return agent;
+  }
+
+  public archiveAgentProfile(agentId: string, input: AgentProfileArchiveInput): AgentProfileRecord {
+    const archived = this.storage.agentProfiles.archive(agentId, input);
+    const agent = this.getAgent(archived.agentId);
+    this.publishRealtime("system", "agents", {
+      type: "agent_profile_archived",
+      agentId: agent.agentId,
+      roleId: agent.roleId,
+      archivedBy: input.archivedBy,
+    });
+    return agent;
+  }
+
+  public restoreAgentProfile(agentId: string): AgentProfileRecord {
+    const restored = this.storage.agentProfiles.restore(agentId);
+    const agent = this.getAgent(restored.agentId);
+    this.publishRealtime("system", "agents", {
+      type: "agent_profile_restored",
+      agentId: agent.agentId,
+      roleId: agent.roleId,
+    });
+    return agent;
+  }
+
+  public hardDeleteAgentProfile(agentId: string): boolean {
+    const deleted = this.storage.agentProfiles.hardDelete(agentId);
+    if (deleted) {
+      this.publishRealtime("system", "agents", {
+        type: "agent_profile_deleted",
+        agentId,
+      });
+    }
+    return deleted;
   }
 
   public getSettings(): RuntimeSettings {
@@ -1822,6 +1938,88 @@ export class GatewayService {
     }
   }
 
+  private buildAgentRuntimeRollups(
+    profiles: Pick<AgentProfileRecord, "roleId" | "name" | "aliases">[],
+  ): Map<string, { sessionCount: number; activeSessions: number; lastUpdatedAt?: string }> {
+    const byRoleId = new Map<string, { sessionCount: number; activeSessions: number; lastUpdatedAt?: string }>();
+    const lookup = new Map<string, string>();
+
+    for (const profile of profiles) {
+      const roleKey = this.normalizeLookupValue(profile.roleId);
+      if (roleKey) {
+        lookup.set(roleKey, profile.roleId);
+      }
+      const nameKey = this.normalizeLookupValue(profile.name);
+      if (nameKey) {
+        lookup.set(nameKey, profile.roleId);
+      }
+      for (const alias of profile.aliases) {
+        const aliasKey = this.normalizeLookupValue(alias);
+        if (aliasKey) {
+          lookup.set(aliasKey, profile.roleId);
+        }
+      }
+    }
+
+    const sessions = this.storage.taskSubagents.listAll(5000);
+    for (const session of sessions) {
+      const roleId = this.inferSessionRoleId(session.agentName, session.agentSessionId, lookup);
+      if (!roleId) {
+        continue;
+      }
+
+      const current = byRoleId.get(roleId) ?? {
+        sessionCount: 0,
+        activeSessions: 0,
+        lastUpdatedAt: undefined as string | undefined,
+      };
+      current.sessionCount += 1;
+      if (session.status === "active") {
+        current.activeSessions += 1;
+      }
+      if (!current.lastUpdatedAt || Date.parse(session.updatedAt) > Date.parse(current.lastUpdatedAt)) {
+        current.lastUpdatedAt = session.updatedAt;
+      }
+      byRoleId.set(roleId, current);
+    }
+
+    return byRoleId;
+  }
+
+  private inferSessionRoleId(
+    agentName: string | undefined,
+    agentSessionId: string,
+    lookup: Map<string, string>,
+  ): string | undefined {
+    const directCandidates = [agentName, agentSessionId];
+    for (const candidate of directCandidates) {
+      if (!candidate) {
+        continue;
+      }
+      const found = lookup.get(this.normalizeLookupValue(candidate));
+      if (found) {
+        return found;
+      }
+    }
+
+    const normalizedName = this.normalizeLookupValue(agentName ?? "");
+    const normalizedSessionId = this.normalizeLookupValue(agentSessionId);
+    for (const [key, roleId] of lookup.entries()) {
+      if (!key) {
+        continue;
+      }
+      if (normalizedName.includes(key) || normalizedSessionId.includes(key)) {
+        return roleId;
+      }
+    }
+
+    return undefined;
+  }
+
+  private normalizeLookupValue(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
   private normalizeRelativePath(inputPath: string): string {
     const normalized = path.normalize(inputPath).replaceAll("\\", "/");
     if (
@@ -2076,6 +2274,113 @@ function isTextContentType(contentType: string): boolean {
     contentType === "text/markdown"
   );
 }
+
+const FILE_TEMPLATES: FileTemplateRecord[] = [
+  {
+    templateId: "artifact-report",
+    title: "Artifact Report",
+    description: "Structured report artifact with purpose, evidence, and next actions.",
+    defaultPath: "artifacts/artifact-report-{date}.md",
+    body: [
+      "# Artifact Report ({date})",
+      "",
+      "## What this is",
+      "- Brief description of the artifact and why it exists.",
+      "",
+      "## Inputs",
+      "- Source files:",
+      "- Data references:",
+      "",
+      "## Output",
+      "- Result summary:",
+      "",
+      "## Verification",
+      "- Checks performed:",
+      "- Remaining risk:",
+      "",
+      "## Next actions",
+      "- [ ] Follow-up item 1",
+      "- [ ] Follow-up item 2",
+      "",
+    ].join("\n"),
+  },
+  {
+    templateId: "research-brief",
+    title: "Research Brief",
+    description: "Quick research summary with findings and citations.",
+    defaultPath: "docs/research-brief-{date}.md",
+    body: [
+      "# Research Brief ({date})",
+      "",
+      "## Question",
+      "- What are we trying to answer?",
+      "",
+      "## Findings",
+      "1. Finding one",
+      "2. Finding two",
+      "",
+      "## Sources",
+      "- Source 1:",
+      "- Source 2:",
+      "",
+      "## Recommendation",
+      "- Proposed decision and tradeoff.",
+      "",
+    ].join("\n"),
+  },
+  {
+    templateId: "release-note",
+    title: "Release Note",
+    description: "Release note draft with highlights, fixes, and known issues.",
+    defaultPath: "docs/release-notes-{date}.md",
+    body: [
+      "# Release Notes ({date})",
+      "",
+      "## Highlights",
+      "- Feature 1",
+      "- Feature 2",
+      "",
+      "## Fixes",
+      "- Fix 1",
+      "- Fix 2",
+      "",
+      "## Known Issues",
+      "- Issue 1",
+      "",
+      "## Upgrade Notes",
+      "- Migration/compatibility guidance.",
+      "",
+    ].join("\n"),
+  },
+  {
+    templateId: "bug-report",
+    title: "Bug Report",
+    description: "Bug template for reproducible issue reports.",
+    defaultPath: "artifacts/bug-report-{date}.md",
+    body: [
+      "# Bug Report ({date})",
+      "",
+      "## Summary",
+      "- One-line description.",
+      "",
+      "## Repro Steps",
+      "1. Step one",
+      "2. Step two",
+      "",
+      "## Expected",
+      "- What should happen.",
+      "",
+      "## Actual",
+      "- What happened instead.",
+      "",
+      "## Environment",
+      "- OS:",
+      "- Branch/commit:",
+      "- Config context:",
+      "",
+    ].join("\n"),
+  },
+];
 
 async function walkFiles(
   rootDir: string,

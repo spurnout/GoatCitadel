@@ -1,158 +1,533 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchAgents } from "../api/client";
 import {
-  buildAgentDirectory,
-  type AgentDirectoryRecord,
-} from "../data/agent-roster";
+  archiveAgentProfile,
+  createAgentProfile,
+  evaluateUiChangeRisk,
+  fetchAgents,
+  hardDeleteAgentProfile,
+  restoreAgentProfile,
+  updateAgentProfile,
+  type AgentsResponse,
+} from "../api/client";
+import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { buildAgentDirectory, BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
+
+type AgentView = "active" | "archived" | "all";
+
+interface AgentFormState {
+  roleId: string;
+  name: string;
+  title: string;
+  summary: string;
+  specialtiesText: string;
+  defaultToolsText: string;
+  aliasesText: string;
+}
+
+const BUILTIN_ROLE_OPTIONS = BUILTIN_AGENT_ROSTER.map((item) => ({
+  value: item.roleId,
+  label: `${item.name} (${item.title})`,
+}));
+
+const TITLE_OPTIONS = [
+  "Systems Architect",
+  "Implementation Engineer",
+  "Verification Lead",
+  "Research Analyst",
+  "Operations Assistant",
+  "Runtime Operator",
+].map((value) => ({ value, label: value }));
 
 export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [agents, setAgents] = useState<AgentDirectoryRecord[]>([]);
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "idle" | "ready">("all");
-  const [search, setSearch] = useState("");
+  const [agentsResponse, setAgentsResponse] = useState<AgentsResponse>({ items: [], view: "active" });
+  const [view, setView] = useState<AgentView>("active");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState<AgentFormState>(emptyForm());
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [criticalConfirmed, setCriticalConfirmed] = useState(false);
+  const [risk, setRisk] = useState<{
+    overall: "safe" | "warning" | "critical";
+    items: Array<{ field: string; level: "safe" | "warning" | "critical"; hint?: string }>;
+  }>({
+    overall: "safe",
+    items: [],
+  });
+
+  const selected = useMemo(
+    () => agentsResponse.items.find((agent) => agent.agentId === selectedAgentId),
+    [agentsResponse.items, selectedAgentId],
+  );
+
+  const directory = useMemo(() => buildAgentDirectory(agentsResponse.items), [agentsResponse.items]);
+
+  const roleOptions = useMemo(() => {
+    const dynamic = agentsResponse.items.map((agent) => ({
+      value: agent.roleId,
+      label: `${agent.name} (${agent.roleId})`,
+    }));
+    const map = new Map<string, { value: string; label: string }>();
+    for (const option of [...dynamic, ...BUILTIN_ROLE_OPTIONS]) {
+      if (!map.has(option.value)) {
+        map.set(option.value, option);
+      }
+    }
+    return [...map.values()];
+  }, [agentsResponse.items]);
+
+  const load = () => {
+    void fetchAgents(view, 500)
+      .then((res) => {
+        setAgentsResponse(res);
+        setSelectedAgentId((current) => {
+          if (creating) {
+            return current;
+          }
+          if (current && res.items.some((item) => item.agentId === current)) {
+            return current;
+          }
+          return res.items[0]?.agentId ?? null;
+        });
+        setError(null);
+      })
+      .catch((err: Error) => setError(err.message));
+  };
 
   useEffect(() => {
-    void fetchAgents()
-      .then((res) => setAgents(buildAgentDirectory(res.items)))
-      .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+    load();
+  }, [refreshKey, view]);
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return agents.filter((agent) => {
-      if (statusFilter !== "all" && agent.status !== statusFilter) {
-        return false;
+  useEffect(() => {
+    if (!creating && selected) {
+      setForm(formFromAgent(selected));
+      setCriticalConfirmed(false);
+    }
+    if (!creating && !selected) {
+      setForm(emptyForm());
+      setCriticalConfirmed(false);
+    }
+  }, [creating, selected]);
+
+  useEffect(() => {
+    const baseline = creating
+      ? emptyForm()
+      : selected
+        ? formFromAgent(selected)
+        : emptyForm();
+
+    const changes = buildFormChanges(form, baseline);
+    if (changes.length === 0) {
+      setRisk({ overall: "safe", items: [] });
+      return;
+    }
+
+    void evaluateUiChangeRisk({
+      pageId: "agents",
+      changes,
+    })
+      .then((res) => {
+        setRisk({
+          overall: res.overall,
+          items: res.items.map((item) => ({
+            field: item.field,
+            level: item.level,
+            hint: item.hint,
+          })),
+        });
+      })
+      .catch(() => {
+        setRisk({ overall: "warning", items: [] });
+      });
+  }, [creating, form, selected]);
+
+  const onNew = () => {
+    setCreating(true);
+    setSelectedAgentId(null);
+    setForm(emptyForm());
+    setInfo("Creating a new custom goat agent profile.");
+    setError(null);
+    setCriticalConfirmed(false);
+  };
+
+  const onCancelNew = () => {
+    setCreating(false);
+    setForm(selected ? formFromAgent(selected) : emptyForm());
+    setInfo(null);
+    setError(null);
+  };
+
+  const onSave = async () => {
+    if (saving) {
+      return;
+    }
+    if (risk.overall === "critical" && !criticalConfirmed) {
+      setError("Critical change requires confirmation before saving.");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setInfo(null);
+
+    try {
+      if (creating) {
+        const created = await createAgentProfile({
+          roleId: form.roleId,
+          name: form.name,
+          title: form.title,
+          summary: form.summary,
+          specialties: splitMultiline(form.specialtiesText),
+          defaultTools: splitMultiline(form.defaultToolsText),
+          aliases: splitMultiline(form.aliasesText),
+        });
+        setCreating(false);
+        setSelectedAgentId(created.agentId);
+        setInfo(`Created agent "${created.name}".`);
+      } else if (selected) {
+        const updated = await updateAgentProfile(selected.agentId, {
+          name: form.name,
+          title: form.title,
+          summary: form.summary,
+          specialties: splitMultiline(form.specialtiesText),
+          defaultTools: splitMultiline(form.defaultToolsText),
+          aliases: splitMultiline(form.aliasesText),
+        });
+        setInfo(`Updated agent "${updated.name}".`);
       }
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
-      if (!query) {
-        return true;
-      }
+  const onArchive = async () => {
+    if (!selected) {
+      return;
+    }
+    const confirmed = window.confirm(`Archive agent "${selected.name}"?`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const archived = await archiveAgentProfile(selected.agentId, {
+        archivedBy: "mission-control",
+        archiveReason: "Operator archived from Goat Crew.",
+      });
+      setInfo(`Archived "${archived.name}".`);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
-      return (
-        agent.name.toLowerCase().includes(query) ||
-        agent.title.toLowerCase().includes(query) ||
-        agent.summary.toLowerCase().includes(query) ||
-        agent.specialties.some((item) => item.toLowerCase().includes(query))
-      );
-    });
-  }, [agents, search, statusFilter]);
+  const onRestore = async () => {
+    if (!selected) {
+      return;
+    }
+    try {
+      const restored = await restoreAgentProfile(selected.agentId);
+      setInfo(`Restored "${restored.name}".`);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
-  const readyCount = useMemo(() => agents.filter((agent) => agent.status === "ready").length, [agents]);
-  const activeCount = useMemo(() => agents.filter((agent) => agent.status === "active").length, [agents]);
-  const idleCount = useMemo(() => agents.filter((agent) => agent.status === "idle").length, [agents]);
-
-  const searchOptions = useMemo(() => {
-    const values = new Set<string>([
-      "architect",
-      "coder",
-      "qa",
-      "researcher",
-      "assistant",
-      "ops",
-      ...agents.flatMap((agent) => agent.specialties),
-    ]);
-    return [...values].filter(Boolean).map((value) => ({ value, label: value }));
-  }, [agents]);
-
-  if (error) {
-    return <p className="error">{error}</p>;
-  }
-  if (agents.length === 0) {
-    return <p>Loading goat crew...</p>;
-  }
+  const onHardDelete = async () => {
+    if (!selected || selected.isBuiltin) {
+      return;
+    }
+    const confirmed = window.confirm(`Permanently delete "${selected.name}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await hardDeleteAgentProfile(selected.agentId);
+      setInfo(`Deleted "${selected.name}".`);
+      setSelectedAgentId(null);
+      setCreating(false);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   return (
     <section className="agents-v2">
       <h2>Goat Crew</h2>
       <p className="office-subtitle">
-        Ready-to-run specialist roster with live runtime overlays.
+        Manage persistent agent profiles, built-ins, and custom specialist goats.
       </p>
+      <PageGuideCard
+        what="Goat Crew lets you define your long-lived agent roster that Mission Control uses everywhere."
+        when="Use this when adding a new specialist, editing role descriptions, or archiving unused agents."
+        actions={[
+          "Create custom agents with role, specialties, and tools.",
+          "Edit built-in display fields while keeping identity keys stable.",
+          "Archive or restore agents, and hard-delete custom agents if needed.",
+        ]}
+        terms={[
+          { term: "Role ID", meaning: "Stable identity key for an agent role. Built-in role IDs are immutable." },
+          { term: "Archived", meaning: "Hidden from active views, but restorable." },
+          { term: "Hard delete", meaning: "Permanent removal (custom agents only)." },
+        ]}
+      />
+
+      {error ? <p className="error">{error}</p> : null}
+      {info ? <p className="office-subtitle">{info}</p> : null}
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Active</p>
-          <p className="office-kpi-value">{activeCount}</p>
-          <p className="office-kpi-note">Currently executing</p>
+          <p className="office-kpi-label">Active roles</p>
+          <p className="office-kpi-value">{agentsResponse.items.filter((item) => item.lifecycleStatus === "active").length}</p>
+          <p className="office-kpi-note">Ready for assignments</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Idle</p>
-          <p className="office-kpi-value">{idleCount}</p>
-          <p className="office-kpi-note">Available with context</p>
+          <p className="office-kpi-label">Archived roles</p>
+          <p className="office-kpi-value">{agentsResponse.items.filter((item) => item.lifecycleStatus === "archived").length}</p>
+          <p className="office-kpi-note">Disabled but recoverable</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Ready</p>
-          <p className="office-kpi-value">{readyCount}</p>
-          <p className="office-kpi-note">Role staged, no session yet</p>
+          <p className="office-kpi-label">Built-ins</p>
+          <p className="office-kpi-value">{agentsResponse.items.filter((item) => item.isBuiltin).length}</p>
+          <p className="office-kpi-note">Core roster</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">Total</p>
-          <p className="office-kpi-value">{agents.length}</p>
-          <p className="office-kpi-note">Built-in + runtime</p>
+          <p className="office-kpi-label">Custom</p>
+          <p className="office-kpi-value">{agentsResponse.items.filter((item) => !item.isBuiltin).length}</p>
+          <p className="office-kpi-note">User-defined roles</p>
         </article>
       </div>
 
-      <div className="controls-row agents-controls">
-        <SelectOrCustom
-          value={search}
-          onChange={setSearch}
-          options={searchOptions}
-          customPlaceholder="Search role, specialty, summary"
-          customLabel="Search query"
-        />
+      <div className="controls-row">
+        <label htmlFor="agentView">View</label>
         <select
-          value={statusFilter}
-          onChange={(event) => setStatusFilter(event.target.value as "all" | "active" | "idle" | "ready")}
+          id="agentView"
+          value={view}
+          onChange={(event) => setView(event.target.value as AgentView)}
         >
-          <option value="all">all statuses</option>
-          <option value="active">active</option>
-          <option value="idle">idle</option>
-          <option value="ready">ready</option>
+          <option value="active">Active</option>
+          <option value="archived">Archived</option>
+          <option value="all">All</option>
         </select>
+        <button onClick={onNew}>Create Custom Agent</button>
+        {creating ? <button onClick={onCancelNew}>Cancel New</button> : null}
       </div>
 
-      <div className="agent-directory-grid">
-        {filtered.map((agent) => (
-          <article key={agent.roleId} className={`agent-directory-card status-${agent.status}`}>
-            <header className="agent-directory-header">
-              <div>
-                <h3>{agent.name}</h3>
-                <p>{agent.title}</p>
-              </div>
-              <span className={`office-pill office-pill-${agent.status === "ready" ? "idle" : agent.status}`}>
-                {agent.status}
-              </span>
-            </header>
+      <div className="split-grid">
+        <div>
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role ID</th>
+                <th>Lifecycle</th>
+                <th>Runtime</th>
+                <th>Sessions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {directory
+                .filter((item) => {
+                  if (view === "all") {
+                    return true;
+                  }
+                  return view === "active" ? item.lifecycleStatus === "active" : item.lifecycleStatus === "archived";
+                })
+                .map((agent) => (
+                  <tr
+                    key={agent.agentId}
+                    className={agent.agentId === selectedAgentId && !creating ? "row-selected" : ""}
+                    onClick={() => {
+                      setCreating(false);
+                      setSelectedAgentId(agent.agentId);
+                    }}
+                  >
+                    <td>{agent.name}</td>
+                    <td>{agent.roleId}</td>
+                    <td>{agent.lifecycleStatus}</td>
+                    <td>{agent.status}</td>
+                    <td>{agent.activeSessions}/{agent.sessionCount}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
 
-            <p>{agent.summary}</p>
+        <article className="card">
+          <h3>{creating ? "Create Custom Agent" : selected ? `Edit ${selected.name}` : "Select an agent"}</h3>
+          {creating || selected ? (
+            <>
+              <div className="controls-row">
+                <label htmlFor="agentRoleId">Role ID</label>
+                <SelectOrCustom
+                  id="agentRoleId"
+                  value={form.roleId}
+                  onChange={(value) => setForm((prev) => ({ ...prev, roleId: value }))}
+                  options={roleOptions}
+                  customPlaceholder="agent-role-id"
+                  customLabel="Role ID"
+                  allowCustom={creating}
+                  disabled={!creating}
+                />
+              </div>
 
-            <dl className="office-meta-grid">
-              <div>
-                <dt>Sessions</dt>
-                <dd>{agent.sessionCount}</dd>
+              <div className="controls-row">
+                <label htmlFor="agentName">Name</label>
+                <input
+                  id="agentName"
+                  value={form.name}
+                  onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                  placeholder="Agent display name"
+                />
               </div>
-              <div>
-                <dt>Active</dt>
-                <dd>{agent.activeSessions}</dd>
-              </div>
-              <div>
-                <dt>Runtime ID</dt>
-                <dd>{agent.runtimeAgentId ?? "-"}</dd>
-              </div>
-              <div>
-                <dt>Last update</dt>
-                <dd>{agent.lastUpdatedAt ? new Date(agent.lastUpdatedAt).toLocaleString() : "-"}</dd>
-              </div>
-            </dl>
 
-            <div className="token-row">
-              {agent.specialties.map((specialty) => (
-                <span key={specialty} className="token-chip">{specialty}</span>
-              ))}
-            </div>
-          </article>
-        ))}
+              <div className="controls-row">
+                <label htmlFor="agentTitle">Title</label>
+                <SelectOrCustom
+                  id="agentTitle"
+                  value={form.title}
+                  onChange={(value) => setForm((prev) => ({ ...prev, title: value }))}
+                  options={TITLE_OPTIONS}
+                  customPlaceholder="Custom title"
+                  customLabel="Title"
+                />
+              </div>
+
+              <div className="controls-row">
+                <label htmlFor="agentSummary">Summary</label>
+                <textarea
+                  id="agentSummary"
+                  value={form.summary}
+                  onChange={(event) => setForm((prev) => ({ ...prev, summary: event.target.value }))}
+                  placeholder="What this agent does"
+                  rows={3}
+                />
+              </div>
+
+              <div className="controls-row">
+                <label htmlFor="agentSpecialties">Specialties (one per line)</label>
+                <textarea
+                  id="agentSpecialties"
+                  value={form.specialtiesText}
+                  onChange={(event) => setForm((prev) => ({ ...prev, specialtiesText: event.target.value }))}
+                  rows={3}
+                />
+              </div>
+
+              <div className="controls-row">
+                <label htmlFor="agentDefaultTools">Default tools (one per line)</label>
+                <textarea
+                  id="agentDefaultTools"
+                  value={form.defaultToolsText}
+                  onChange={(event) => setForm((prev) => ({ ...prev, defaultToolsText: event.target.value }))}
+                  rows={3}
+                />
+              </div>
+
+              <div className="controls-row">
+                <label htmlFor="agentAliases">Aliases (one per line)</label>
+                <textarea
+                  id="agentAliases"
+                  value={form.aliasesText}
+                  onChange={(event) => setForm((prev) => ({ ...prev, aliasesText: event.target.value }))}
+                  rows={3}
+                />
+              </div>
+
+              <ChangeReviewPanel
+                title="Agent Change Review"
+                overall={risk.overall}
+                items={risk.items}
+                requireCriticalConfirm
+                criticalConfirmed={criticalConfirmed}
+                onCriticalConfirmChange={setCriticalConfirmed}
+              />
+
+              <div className="controls-row">
+                <button onClick={() => void onSave()} disabled={saving}>
+                  {saving ? "Saving..." : creating ? "Create Agent" : "Save Changes"}
+                </button>
+                {!creating && selected && selected.lifecycleStatus === "active" ? (
+                  <button onClick={() => void onArchive()}>Archive</button>
+                ) : null}
+                {!creating && selected && selected.lifecycleStatus === "archived" ? (
+                  <button onClick={() => void onRestore()}>Restore</button>
+                ) : null}
+                {!creating && selected && !selected.isBuiltin ? (
+                  <button className="danger" onClick={() => void onHardDelete()}>Delete Permanently</button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <p>Select a goat profile from the table or create a new custom role.</p>
+          )}
+        </article>
       </div>
     </section>
   );
+}
+
+function emptyForm(): AgentFormState {
+  return {
+    roleId: "",
+    name: "",
+    title: "",
+    summary: "",
+    specialtiesText: "",
+    defaultToolsText: "",
+    aliasesText: "",
+  };
+}
+
+function formFromAgent(agent: AgentsResponse["items"][number]): AgentFormState {
+  return {
+    roleId: agent.roleId,
+    name: agent.name,
+    title: agent.title,
+    summary: agent.summary,
+    specialtiesText: agent.specialties.join("\n"),
+    defaultToolsText: agent.defaultTools.join("\n"),
+    aliasesText: agent.aliases.join("\n"),
+  };
+}
+
+function splitMultiline(value: string): string[] {
+  return [...new Set(
+    value
+      .split(/\r?\n/g)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )];
+}
+
+function buildFormChanges(current: AgentFormState, baseline: AgentFormState): Array<{ field: string; from: unknown; to: unknown }> {
+  const entries: Array<{ field: keyof AgentFormState; label: string }> = [
+    { field: "roleId", label: "roleId" },
+    { field: "name", label: "name" },
+    { field: "title", label: "title" },
+    { field: "summary", label: "summary" },
+    { field: "specialtiesText", label: "specialties" },
+    { field: "defaultToolsText", label: "defaultTools" },
+    { field: "aliasesText", label: "aliases" },
+  ];
+
+  const changes: Array<{ field: string; from: unknown; to: unknown }> = [];
+  for (const entry of entries) {
+    if (current[entry.field] === baseline[entry.field]) {
+      continue;
+    }
+    changes.push({
+      field: entry.label,
+      from: baseline[entry.field],
+      to: current[entry.field],
+    });
+  }
+  return changes;
 }

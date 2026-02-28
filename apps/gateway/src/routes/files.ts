@@ -20,7 +20,41 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(5000).default(1000),
 });
 
+const createTemplateParamsSchema = z.object({
+  templateId: z.string().min(1),
+});
+
+const createTemplateBodySchema = z.object({
+  targetPath: z.string().min(1).optional(),
+});
+
 export const filesRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/api/v1/files/templates", async (_request, reply) => {
+    return reply.send({ items: fastify.gateway.listFileTemplates() });
+  });
+
+  fastify.post("/api/v1/files/templates/:templateId/create", async (request, reply) => {
+    const params = createTemplateParamsSchema.safeParse(request.params);
+    const body = createTemplateBodySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      const created = await fastify.gateway.createWorkspaceFileFromTemplate(
+        params.data.templateId,
+        body.data.targetPath,
+      );
+      return reply.code(201).send(created);
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.get("/api/v1/files/list", async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
     if (!parsed.success) {

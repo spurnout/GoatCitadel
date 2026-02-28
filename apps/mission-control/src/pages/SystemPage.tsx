@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchSystemVitals, type SystemVitalsResponse } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [vitals, setVitals] = useState<SystemVitalsResponse | null>(null);
@@ -23,6 +24,15 @@ export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
     <section>
       <h2>Engine</h2>
       <p className="office-subtitle">Runtime health for the local GoatCitadel node.</p>
+      <PageGuideCard
+        what="Shows host and process vitals for the running gateway node."
+        when="Use this when performance is slow, memory usage spikes, or services feel unstable."
+        actions={[
+          "Check memory and process RSS for pressure.",
+          "Verify uptime and load before running heavy jobs.",
+          "Use this with Pulse to triage incidents.",
+        ]}
+      />
       <article className="card">
         <p>Hostname: {vitals.hostname}</p>
         <p>Platform: {vitals.platform} {vitals.release}</p>

@@ -2,10 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   bootstrapOnboarding,
   completeOnboarding,
+  evaluateUiChangeRisk,
   fetchOnboardingState,
   type OnboardingCompleteResponse,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
@@ -86,6 +89,15 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   const [meshTailnetEnabled, setMeshTailnetEnabled] = useState(false);
 
   const [markComplete, setMarkComplete] = useState(true);
+  const [applyMessage, setApplyMessage] = useState<string | null>(null);
+  const [criticalConfirmed, setCriticalConfirmed] = useState(false);
+  const [changeReview, setChangeReview] = useState<{
+    overall: "safe" | "warning" | "critical";
+    items: Array<{ field: string; level: "safe" | "warning" | "critical"; hint?: string }>;
+  }>({
+    overall: "safe",
+    items: [],
+  });
 
   const providerOptions = useMemo<SelectOption[]>(() => {
     const fromState = (state?.settings.llm.providers ?? []).map((provider) => ({
@@ -121,6 +133,38 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    void evaluateUiChangeRisk({
+      pageId: "onboarding",
+      changes: [
+        { field: "authMode", from: state?.settings.auth.mode ?? "none", to: authMode },
+        { field: "defaultToolProfile", from: state?.settings.defaultToolProfile ?? "minimal", to: defaultToolProfile },
+        { field: "providerBaseUrl", from: state?.settings.llm.providers.find((p) => p.providerId === activeProviderId)?.baseUrl ?? "", to: providerBaseUrl },
+        { field: "networkAllowlist", from: state?.settings.networkAllowlist.join("\n") ?? "", to: networkAllowlistText },
+      ],
+    })
+      .then((res) => {
+        setChangeReview({
+          overall: res.overall,
+          items: res.items.map((item) => ({
+            field: item.field,
+            level: item.level,
+            hint: item.hint,
+          })),
+        });
+      })
+      .catch(() => {
+        setChangeReview({
+          overall: "warning",
+          items: [{
+            field: "onboarding",
+            level: "warning",
+            hint: "Risk preflight unavailable.",
+          }],
+        });
+      });
+  }, [state, authMode, defaultToolProfile, activeProviderId, providerBaseUrl, networkAllowlistText]);
 
   const load = async () => {
     setLoading(true);
@@ -186,6 +230,10 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   };
 
   const submit = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before applying onboarding.");
+      return;
+    }
     setApplying(true);
     setError(null);
     try {
@@ -227,6 +275,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
 
       setState(bootstrap.state);
       hydrateFromState(bootstrap.state);
+      setApplyMessage("Apply complete. Use sidebar to continue.");
       if (bootstrap.state.completed) {
         onCompleted?.();
       }
@@ -252,7 +301,17 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     <section>
       <h2>Launch Wizard</h2>
       <p className="office-subtitle">Guided first-time setup for auth, models, runtime defaults, and optional mesh.</p>
+      <PageGuideCard
+        what="Launch Wizard guides first-time setup with safe defaults."
+        when="Use this after installation or when resetting environment defaults."
+        actions={[
+          "Step through auth, provider, runtime, and optional mesh settings.",
+          "Review risk and apply changes.",
+          "After apply, continue in Dashboard and Forge for normal operations.",
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
+      {applyMessage ? <p className="office-subtitle">{applyMessage}</p> : null}
 
       <article className="card">
         <div className="controls-row">
@@ -552,6 +611,14 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
         <article className="card">
           <h3>Step 5: Review & Apply</h3>
           <p>Ready to apply this onboarding configuration through the gateway API.</p>
+          <ChangeReviewPanel
+            title="Onboarding Change Risk"
+            overall={changeReview.overall}
+            items={changeReview.items}
+            requireCriticalConfirm
+            criticalConfirmed={criticalConfirmed}
+            onCriticalConfirmChange={setCriticalConfirmed}
+          />
           <div className="controls-row">
             <label htmlFor="wizard-mark-complete">Mark onboarding complete</label>
             <input
@@ -581,6 +648,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
           <button onClick={() => void submit()} disabled={applying}>
             {applying ? "Applying..." : "Apply onboarding"}
           </button>
+          <p className="office-subtitle">After apply, use sidebar navigation to continue setup and testing.</p>
         </article>
       ) : null}
 

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { connectEventStream, fetchOnboardingState, type EventStreamConnectionState } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SystemPage } from "./pages/SystemPage";
@@ -120,6 +120,12 @@ export function App() {
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
 
+  const handleOnboardingCompleted = useCallback(() => {
+    setOnboardingComplete(true);
+    setRefreshKey((value) => value + 1);
+    setTab("dashboard");
+  }, []);
+
   useEffect(() => {
     const close = connectEventStream(
       () => {
@@ -174,7 +180,7 @@ export function App() {
 
   const content = useMemo(() => {
     if (tab === "onboarding") {
-      return <OnboardingPage onCompleted={() => setOnboardingComplete(true)} />;
+      return <OnboardingPage onCompleted={handleOnboardingCompleted} />;
     }
     if (tab === "dashboard") {
       return <DashboardPage refreshKey={refreshKey} />;
@@ -229,7 +235,7 @@ export function App() {
       return <NpuPage refreshKey={refreshKey} />;
     }
     return <IntegrationsPage refreshKey={refreshKey} />;
-  }, [refreshKey, tab]);
+  }, [refreshKey, tab, handleOnboardingCompleted]);
 
   return (
     <div className="layout-shell">

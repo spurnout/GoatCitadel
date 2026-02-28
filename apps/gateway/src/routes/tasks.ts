@@ -18,6 +18,8 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50),
   cursor: z.string().optional(),
   status: statusSchema.optional(),
+  view: z.enum(["active", "trash", "all"]).optional(),
+  includeDeleted: z.coerce.boolean().optional(),
 });
 
 const createTaskSchema = z.object({
@@ -63,6 +65,17 @@ const updateSubagentSchema = z.object({
   endedAt: z.string().datetime().optional(),
 });
 
+const deleteTaskQuerySchema = z.object({
+  mode: z.enum(["soft", "hard"]).default("soft"),
+});
+
+const deleteTaskBodySchema = z.object({
+  mode: z.enum(["soft", "hard"]).optional(),
+  deletedBy: z.string().min(1).optional(),
+  deleteReason: z.string().min(1).max(400).optional(),
+  confirmToken: z.string().optional(),
+}).optional();
+
 export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/tasks", async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
@@ -70,12 +83,13 @@ export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
 
-    const items = fastify.gateway.listTasks(parsed.data.limit, parsed.data.status, parsed.data.cursor);
+    const view = parsed.data.view ?? (parsed.data.includeDeleted ? "all" : "active");
+    const items = fastify.gateway.listTasks(parsed.data.limit, parsed.data.status, parsed.data.cursor, view);
     const last = items[items.length - 1];
     const nextCursor = items.length === parsed.data.limit && last
       ? `${last.updatedAt}|${last.taskId}`
       : undefined;
-    return reply.send({ items, nextCursor });
+    return reply.send({ items, nextCursor, view });
   });
 
   fastify.post("/api/v1/tasks", async (request, reply) => {
@@ -114,11 +128,45 @@ export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.delete("/api/v1/tasks/:taskId", async (request, reply) => {
     const taskId = (request.params as { taskId: string }).taskId;
-    const deleted = fastify.gateway.deleteTask(taskId);
+    const queryParsed = deleteTaskQuerySchema.safeParse(request.query);
+    const bodyParsed = deleteTaskBodySchema.safeParse(request.body);
+    if (!queryParsed.success || !bodyParsed.success) {
+      return reply.code(400).send({
+        error: {
+          query: queryParsed.success ? undefined : queryParsed.error.flatten(),
+          body: bodyParsed.success ? undefined : bodyParsed.error.flatten(),
+        },
+      });
+    }
+
+    const mode = bodyParsed.data?.mode ?? queryParsed.data.mode;
+    const deletedBy = bodyParsed.data?.deletedBy;
+    const deleteReason = bodyParsed.data?.deleteReason;
+    const confirmToken = bodyParsed.data?.confirmToken;
+
+    let deleted = false;
+    if (mode === "hard") {
+      if (confirmToken !== "PERMANENT_DELETE") {
+        return reply.code(400).send({ error: "Hard delete requires confirmToken=PERMANENT_DELETE" });
+      }
+      deleted = fastify.gateway.hardDeleteTask(taskId);
+    } else {
+      deleted = fastify.gateway.softDeleteTask(taskId, deletedBy, deleteReason);
+    }
+
     if (!deleted) {
       return reply.code(404).send({ error: `Task ${taskId} not found` });
     }
-    return reply.send({ deleted: true, taskId });
+    return reply.send({ deleted: true, taskId, mode });
+  });
+
+  fastify.post("/api/v1/tasks/:taskId/restore", async (request, reply) => {
+    const taskId = (request.params as { taskId: string }).taskId;
+    const restored = fastify.gateway.restoreTask(taskId);
+    if (!restored) {
+      return reply.code(404).send({ error: `Task ${taskId} not found or not deleted` });
+    }
+    return reply.send({ restored: true, taskId });
   });
 
   fastify.get("/api/v1/tasks/:taskId/activities", async (request, reply) => {

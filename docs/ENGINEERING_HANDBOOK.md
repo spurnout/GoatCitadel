@@ -376,6 +376,7 @@ Navigation tabs currently implemented:
 - Summit (Dashboard): cross-domain KPI rollup.
 - Engine (System): host and process vitals.
 - Trail Files: workspace listing, preview, and file writing.
+  - Includes beginner artifact templates and template-to-file creation helpers.
 - Memory Pasture: workspace area and `memory/*` breakdown.
 - Goat Crew (Agents): role roster with runtime overlays.
 - Herd HQ (Office): WebGL office with operator + radial goat stations.
@@ -387,7 +388,10 @@ Navigation tabs currently implemented:
 - Forge (Settings): policy, auth, LLM, allowlist controls.
 - Gatehouse (Approvals): approval queue and replay.
 - Trailboard (Tasks): tasks, activities, deliverables, subagent sessions.
+  - Includes task trash lifecycle (`active|trash|all`, soft delete, restore, hard delete).
 - Connections: integration catalog and connection management.
+- Every tab now includes a `PageGuideCard` with plain-English "what/when/actions/terms".
+- Editable tabs use shared change-awareness components with goat-themed risk badges.
 
 Office implementation details:
 
@@ -440,10 +444,13 @@ All mutating endpoints require `Idempotency-Key`.
 ### Tasks and Subagents
 
 - `GET /api/v1/tasks`
+  - Supports `view=active|trash|all` and `includeDeleted` compatibility alias.
 - `POST /api/v1/tasks`
 - `GET /api/v1/tasks/:taskId`
 - `PATCH /api/v1/tasks/:taskId`
 - `DELETE /api/v1/tasks/:taskId`
+  - Supports `mode=soft|hard` via query/body.
+- `POST /api/v1/tasks/:taskId/restore`
 - `GET /api/v1/tasks/:taskId/activities`
 - `POST /api/v1/tasks/:taskId/activities`
 - `GET /api/v1/tasks/:taskId/deliverables`
@@ -467,10 +474,16 @@ All mutating endpoints require `Idempotency-Key`.
 
 ### Files
 
+- `GET /api/v1/files/templates`
+- `POST /api/v1/files/templates/:templateId/create`
 - `GET /api/v1/files/list`
 - `POST /api/v1/files/upload`
 - `GET /api/v1/files/download`
 - `GET /api/v1/files/preview`
+
+### UI Change Risk
+
+- `POST /api/v1/ui/change-risk/evaluate`
 
 ### LLM
 

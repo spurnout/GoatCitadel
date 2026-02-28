@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSessions, type SessionsResponse } from "../api/client";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<SessionsResponse | null>(null);
@@ -55,6 +56,19 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     <section>
       <h2>Runs</h2>
       <p className="office-subtitle">Live session health, token usage, and feed-cost visibility.</p>
+      <PageGuideCard
+        what="Summarizes session health and usage across current runs."
+        when="Use this to monitor operational health, not detailed chat history."
+        actions={[
+          "Filter by health to find blocked or degraded sessions.",
+          "Use token/cost totals to identify expensive runs.",
+          "Use session keys to map channels and routes.",
+        ]}
+        terms={[
+          { term: "Session", meaning: "A routed conversation context keyed by channel/account/peer or room/thread." },
+          { term: "Health", meaning: "High-level status for whether a session is operating normally." },
+        ]}
+      />
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">

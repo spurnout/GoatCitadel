@@ -97,6 +97,16 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "memory_qmd_schema",
     up: createMemoryQmdSchema,
   },
+  {
+    version: 7,
+    name: "task_soft_delete_columns",
+    up: migrateTaskSoftDeleteColumns,
+  },
+  {
+    version: 8,
+    name: "agent_profiles_schema",
+    up: createAgentProfilesSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -222,6 +232,9 @@ function createBaseSchema(db: DatabaseSync): void {
       assigned_agent_id TEXT,
       created_by TEXT,
       due_at TEXT,
+      deleted_at TEXT,
+      deleted_by TEXT,
+      delete_reason TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -572,5 +585,47 @@ function migrateTaskSubagentSessionColumns(db: DatabaseSync): void {
       ON task_subagent_sessions(task_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_task_subagent_sessions_status
       ON task_subagent_sessions(status, updated_at DESC);
+  `);
+}
+
+function migrateTaskSoftDeleteColumns(db: DatabaseSync): void {
+  const rows = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+  const columns = new Set(rows.map((row) => row.name));
+
+  if (!columns.has("deleted_at")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN deleted_at TEXT");
+  }
+  if (!columns.has("deleted_by")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN deleted_by TEXT");
+  }
+  if (!columns.has("delete_reason")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN delete_reason TEXT");
+  }
+}
+
+function createAgentProfilesSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_profiles (
+      agent_id TEXT PRIMARY KEY,
+      role_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      specialties_json TEXT NOT NULL,
+      default_tools_json TEXT NOT NULL,
+      aliases_json TEXT NOT NULL,
+      is_builtin INTEGER NOT NULL,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      archived_by TEXT,
+      archive_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_profiles_lifecycle_status
+      ON agent_profiles(lifecycle_status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_profiles_role_id
+      ON agent_profiles(role_id);
   `);
 }

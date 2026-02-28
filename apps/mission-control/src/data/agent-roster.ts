@@ -1,7 +1,7 @@
-import type { AgentsResponse } from "../api/client";
+import type { AgentProfileRecord } from "@goatcitadel/contracts";
 
-export type RuntimeAgent = AgentsResponse["items"][number];
-export type AgentDirectoryStatus = RuntimeAgent["status"] | "ready";
+export type RuntimeAgent = AgentProfileRecord;
+export type AgentDirectoryStatus = "active" | "idle" | "ready";
 
 export interface AgentRoleTemplate {
   roleId: string;
@@ -10,24 +10,39 @@ export interface AgentRoleTemplate {
   summary: string;
   specialties: string[];
   defaultTools: string[];
-  priority: number;
   aliases: string[];
+  priority: number;
 }
 
 export interface AgentDirectoryRecord {
+  agentId: string;
   roleId: string;
   name: string;
   title: string;
   summary: string;
   specialties: string[];
   defaultTools: string[];
+  aliases: string[];
   status: AgentDirectoryStatus;
   sessionCount: number;
   activeSessions: number;
   lastUpdatedAt?: string;
   runtimeAgentId?: string;
   runtimeName?: string;
+  isBuiltin: boolean;
+  editable: boolean;
+  lifecycleStatus: "active" | "archived";
 }
+
+const BUILTIN_PRIORITY = {
+  architect: 10,
+  coder: 20,
+  qa: 30,
+  researcher: 40,
+  assistant: 50,
+  product: 60,
+  ops: 70,
+} as const;
 
 export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
   {
@@ -37,8 +52,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Designs system boundaries, contracts, and sequencing decisions.",
     specialties: ["Architecture", "APIs", "Tradeoffs"],
     defaultTools: ["session.status", "memory.read", "fs.read", "browser.search"],
-    priority: 10,
     aliases: ["architect", "system architect", "staff engineer"],
+    priority: BUILTIN_PRIORITY.architect,
   },
   {
     roleId: "coder",
@@ -47,8 +62,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Implements features, refactors safely, and keeps delivery moving.",
     specialties: ["TypeScript", "Refactors", "Integration"],
     defaultTools: ["fs.read", "fs.write", "shell.exec", "git.exec"],
-    priority: 20,
     aliases: ["coder", "developer", "implementation", "engineer"],
+    priority: BUILTIN_PRIORITY.coder,
   },
   {
     roleId: "qa",
@@ -57,8 +72,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Finds regressions early, validates acceptance criteria, and hardens behavior.",
     specialties: ["Testing", "Edge cases", "Regression checks"],
     defaultTools: ["shell.exec", "fs.read", "memory.read"],
-    priority: 30,
     aliases: ["qa", "quality", "tester", "verification"],
+    priority: BUILTIN_PRIORITY.qa,
   },
   {
     roleId: "researcher",
@@ -67,8 +82,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Gathers primary-source facts, compares options, and summarizes decisions.",
     specialties: ["Discovery", "Comparative analysis", "Sourcing"],
     defaultTools: ["browser.search", "http.get", "citations.build"],
-    priority: 40,
     aliases: ["researcher", "research", "analyst"],
+    priority: BUILTIN_PRIORITY.researcher,
   },
   {
     roleId: "assistant",
@@ -77,8 +92,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Handles routine organization, reminders, and operator-facing workflows.",
     specialties: ["Coordination", "Summaries", "Ops support"],
     defaultTools: ["session.status", "memory.read", "http.get"],
-    priority: 50,
     aliases: ["assistant", "personal assistant", "pa", "operator assistant"],
+    priority: BUILTIN_PRIORITY.assistant,
   },
   {
     roleId: "product",
@@ -87,8 +102,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Turns user goals into scoped deliverables and measurable milestones.",
     specialties: ["Scoping", "Prioritization", "Roadmaps"],
     defaultTools: ["memory.read", "browser.search"],
-    priority: 60,
     aliases: ["product", "pm", "product manager", "planner"],
+    priority: BUILTIN_PRIORITY.product,
   },
   {
     roleId: "ops",
@@ -97,8 +112,8 @@ export const BUILTIN_AGENT_ROSTER: AgentRoleTemplate[] = [
     summary: "Monitors runtime health, safety posture, and operational constraints.",
     specialties: ["Reliability", "Safety", "Incident response"],
     defaultTools: ["session.status", "http.get", "shell.exec"],
-    priority: 70,
     aliases: ["ops", "sre", "operations", "infra"],
+    priority: BUILTIN_PRIORITY.ops,
   },
 ];
 
@@ -124,7 +139,8 @@ export function inferRoleId(input?: string): string | undefined {
     }
 
     for (const alias of role.aliases) {
-      if (normalized.includes(normalize(alias))) {
+      const aliasKey = normalize(alias);
+      if (normalized === aliasKey || normalized.includes(aliasKey)) {
         return role.roleId;
       }
     }
@@ -134,62 +150,59 @@ export function inferRoleId(input?: string): string | undefined {
 }
 
 export function buildAgentDirectory(runtimeAgents: RuntimeAgent[]): AgentDirectoryRecord[] {
-  const runtimeByRole = new Map<string, RuntimeAggregate>();
-  const unmatchedRuntime: RuntimeAgent[] = [];
-
-  for (const runtime of runtimeAgents) {
-    const roleId = inferRoleId(runtime.name) ?? inferRoleId(runtime.agentId);
-    if (!roleId || !ROLE_INDEX.has(roleId)) {
-      unmatchedRuntime.push(runtime);
-      continue;
-    }
-
-    const current = runtimeByRole.get(roleId) ?? createEmptyAggregate();
-    current.sessionCount += runtime.sessionCount;
-    current.activeSessions += runtime.activeSessions;
-    current.status = chooseStatus(current.status, runtime.status);
-    current.runtimeAgentId = current.runtimeAgentId ?? runtime.agentId;
-    current.runtimeName = current.runtimeName ?? runtime.name;
-    current.lastUpdatedAt = pickLatestTimestamp(current.lastUpdatedAt, runtime.lastUpdatedAt);
-    runtimeByRole.set(roleId, current);
+  if (runtimeAgents.length === 0) {
+    return BUILTIN_AGENT_ROSTER.map((builtin) => ({
+      agentId: `fallback:${builtin.roleId}`,
+      roleId: builtin.roleId,
+      name: builtin.name,
+      title: builtin.title,
+      summary: builtin.summary,
+      specialties: builtin.specialties,
+      defaultTools: builtin.defaultTools,
+      aliases: builtin.aliases,
+      status: "ready",
+      sessionCount: 0,
+      activeSessions: 0,
+      lastUpdatedAt: undefined,
+      runtimeAgentId: undefined,
+      runtimeName: undefined,
+      isBuiltin: true,
+      editable: true,
+      lifecycleStatus: "active",
+    }));
   }
 
-  const directory: AgentDirectoryRecord[] = BUILTIN_AGENT_ROSTER.map((template) => {
-    const runtime = runtimeByRole.get(template.roleId);
-    return {
-      roleId: template.roleId,
-      name: template.name,
-      title: template.title,
-      summary: template.summary,
-      specialties: template.specialties,
-      defaultTools: template.defaultTools,
-      status: runtime?.status ?? "ready",
-      sessionCount: runtime?.sessionCount ?? 0,
-      activeSessions: runtime?.activeSessions ?? 0,
-      lastUpdatedAt: runtime?.lastUpdatedAt,
-      runtimeAgentId: runtime?.runtimeAgentId,
-      runtimeName: runtime?.runtimeName,
-    };
-  });
+  const byRoleId = new Map<string, AgentDirectoryRecord>();
 
-  for (const runtime of unmatchedRuntime) {
-    directory.push({
-      roleId: `custom:${runtime.agentId}`,
-      name: runtime.name,
-      title: "Custom Agent",
-      summary: "Runtime-discovered agent outside the default roster.",
-      specialties: ["Runtime", "Custom workflow"],
-      defaultTools: [],
-      status: runtime.status,
-      sessionCount: runtime.sessionCount,
-      activeSessions: runtime.activeSessions,
-      lastUpdatedAt: runtime.lastUpdatedAt,
-      runtimeAgentId: runtime.agentId,
-      runtimeName: runtime.name,
+  for (const agent of runtimeAgents) {
+    const status: AgentDirectoryStatus = agent.status === "active"
+      ? "active"
+      : agent.sessionCount > 0
+        ? "idle"
+        : "ready";
+
+    byRoleId.set(agent.roleId, {
+      agentId: agent.agentId,
+      roleId: agent.roleId,
+      name: agent.name,
+      title: agent.title,
+      summary: agent.summary,
+      specialties: agent.specialties,
+      defaultTools: agent.defaultTools,
+      aliases: agent.aliases,
+      status,
+      sessionCount: agent.sessionCount,
+      activeSessions: agent.activeSessions,
+      lastUpdatedAt: agent.lastUpdatedAt,
+      runtimeAgentId: agent.activeSessions > 0 ? agent.agentId : undefined,
+      runtimeName: agent.name,
+      isBuiltin: agent.isBuiltin,
+      editable: agent.editable,
+      lifecycleStatus: agent.lifecycleStatus,
     });
   }
 
-  directory.sort((left, right) => {
+  return [...byRoleId.values()].sort((left, right) => {
     const statusDelta = ACTIVE_STATUS_SCORE[right.status] - ACTIVE_STATUS_SCORE[left.status];
     if (statusDelta !== 0) {
       return statusDelta;
@@ -203,47 +216,8 @@ export function buildAgentDirectory(runtimeAgents: RuntimeAgent[]): AgentDirecto
 
     return left.name.localeCompare(right.name);
   });
-
-  return directory;
-}
-
-function createEmptyAggregate(): RuntimeAggregate {
-  return {
-    status: "idle",
-    sessionCount: 0,
-    activeSessions: 0,
-  };
-}
-
-function chooseStatus(
-  current: AgentDirectoryStatus,
-  incoming: RuntimeAgent["status"],
-): AgentDirectoryStatus {
-  if (current === "active" || incoming === "active") {
-    return "active";
-  }
-  return "idle";
-}
-
-function pickLatestTimestamp(current?: string, incoming?: string): string | undefined {
-  if (!current) {
-    return incoming;
-  }
-  if (!incoming) {
-    return current;
-  }
-  return Date.parse(incoming) >= Date.parse(current) ? incoming : current;
 }
 
 function normalize(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-interface RuntimeAggregate {
-  status: AgentDirectoryStatus;
-  sessionCount: number;
-  activeSessions: number;
-  lastUpdatedAt?: string;
-  runtimeAgentId?: string;
-  runtimeName?: string;
 }

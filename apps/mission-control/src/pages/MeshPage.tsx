@@ -11,6 +11,7 @@ import {
   type MeshSessionOwnerRecord,
   type MeshStatusResponse,
 } from "../api/client";
+import { PageGuideCard } from "../components/PageGuideCard";
 
 export function MeshPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [status, setStatus] = useState<MeshStatusResponse | null>(null);
@@ -49,6 +50,19 @@ export function MeshPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <p className="office-subtitle">
         LAN-first node federation with lease fencing, session ownership, replication offsets, and tailnet readiness.
       </p>
+      <PageGuideCard
+        what="Mesh shows distributed node coordination, leadership leases, and session ownership."
+        when="Use this when running GoatCitadel across multiple machines or validating failover behavior."
+        actions={[
+          "Check cluster status and online node count.",
+          "Inspect lease fencing tokens and expiry windows.",
+          "Verify session ownership and replication offsets.",
+        ]}
+        terms={[
+          { term: "Lease fencing", meaning: "Monotonic token system that prevents stale leaders from writing." },
+          { term: "Session ownership", meaning: "Single-writer lock for a session across nodes." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
 
       <div className="metric-grid">

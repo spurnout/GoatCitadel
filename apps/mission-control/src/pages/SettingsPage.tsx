@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   createLlmChatCompletion,
+  evaluateUiChangeRisk,
   fetchLlmModels,
   fetchSettings,
   patchSettings,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
@@ -169,9 +172,18 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [models, setModels] = useState<Array<{ id: string; ownedBy?: string; created?: number }>>([]);
   const [chatPrompt, setChatPrompt] = useState("Say hello from OpenAI-compatible chat completions.");
   const [chatPromptPresetId, setChatPromptPresetId] = useState("hello");
+  const [chatUseMemory, setChatUseMemory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [allowlistPreset, setAllowlistPreset] = useState("strict");
   const [chatResponse, setChatResponse] = useState("");
+  const [criticalConfirmed, setCriticalConfirmed] = useState(false);
+  const [changeReview, setChangeReview] = useState<{
+    overall: "safe" | "warning" | "critical";
+    items: Array<{ field: string; level: "safe" | "warning" | "critical"; hint?: string }>;
+  }>({
+    overall: "safe",
+    items: [],
+  });
   const [error, setError] = useState<string | null>(null);
 
   const providerOptions = useMemo(() => settings?.llm.providers ?? [], [settings]);
@@ -242,7 +254,48 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     load();
   }, [refreshKey]);
 
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+    const changes = [
+      { field: "defaultToolProfile", from: settings.defaultToolProfile, to: profile },
+      { field: "budgetMode", from: settings.budgetMode, to: budgetMode },
+      { field: "networkAllowlist", from: settings.networkAllowlist.join("\n"), to: networkAllowlistText },
+      { field: "authMode", from: settings.auth.mode, to: authMode },
+      { field: "providerBaseUrl", from: settings.llm.providers.find((p) => p.providerId === providerId)?.baseUrl ?? "", to: providerBaseUrl },
+    ];
+    void evaluateUiChangeRisk({
+      pageId: "settings",
+      changes,
+    })
+      .then((res) => {
+        setChangeReview({
+          overall: res.overall,
+          items: res.items.map((item) => ({
+            field: item.field,
+            level: item.level,
+            hint: item.hint,
+          })),
+        });
+      })
+      .catch(() => {
+        setChangeReview({
+          overall: "warning",
+          items: [{
+            field: "settings",
+            level: "warning",
+            hint: "Unable to load server risk hints.",
+          }],
+        });
+      });
+  }, [settings, profile, budgetMode, networkAllowlistText, authMode, providerId, providerBaseUrl]);
+
   const onSaveRuntime = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before saving.");
+      return;
+    }
     try {
       const allowlist = networkAllowlistText
         .split("\n")
@@ -260,6 +313,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onSaveActiveLlm = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before saving.");
+      return;
+    }
     try {
       const next = await patchSettings({
         llm: {
@@ -274,6 +331,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onSaveProvider = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before saving.");
+      return;
+    }
     try {
       const next = await patchSettings({
         llm: {
@@ -308,6 +369,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         providerId: activeProviderId || undefined,
         model: activeModel || undefined,
         messages: [{ role: "user", content: chatPrompt }],
+        memory: chatUseMemory ? { mode: "qmd", enabled: true } : { mode: "off", enabled: false },
       });
       const text = res.choices?.[0]?.message?.content;
       if (typeof text === "string") {
@@ -343,6 +405,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onSaveAuth = async () => {
+    if (changeReview.overall === "critical" && !criticalConfirmed) {
+      setError("Confirm critical changes before saving.");
+      return;
+    }
     try {
       const next = await patchSettings({
         auth: {
@@ -387,11 +453,34 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return <p>Loading forge settings...</p>;
   }
 
+  const blockSaves = changeReview.overall === "critical" && !criticalConfirmed;
+
   return (
     <section>
       <h2>Forge</h2>
       <p className="office-subtitle">Tune policy, budgets, and model providers for GoatCitadel.</p>
+      <PageGuideCard
+        what="Forge controls runtime safety, budgets, auth, and model-provider setup."
+        when="Use this for initial setup and whenever you need to adjust operating posture."
+        actions={[
+          "Set auth mode and confirm client credentials.",
+          "Adjust tool profile/budget/allowlist for safety and cost.",
+          "Configure active provider and run a test prompt.",
+        ]}
+        terms={[
+          { term: "Tool profile", meaning: "Predefined tool capability tier from minimal to danger." },
+          { term: "Allowlist", meaning: "Hosts permitted for outbound tool and provider calls." },
+        ]}
+      />
       {error ? <p className="error">{error}</p> : null}
+      <ChangeReviewPanel
+        title="Pending Configuration Risk"
+        overall={changeReview.overall}
+        items={changeReview.items}
+        requireCriticalConfirm
+        criticalConfirmed={criticalConfirmed}
+        onCriticalConfirmChange={setCriticalConfirmed}
+      />
 
       <article className="card">
         <p>Environment: {settings.environment}</p>
@@ -457,7 +546,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <p className="office-subtitle">
           Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
         </p>
-        <button onClick={onSaveAuth}>Save Access Control</button>
+        <button onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
       </article>
 
       <article className="card">
@@ -521,7 +610,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             }}
           />
         </details>
-        <button onClick={onSaveRuntime}>Save Runtime Controls</button>
+        <button onClick={onSaveRuntime} disabled={blockSaves}>Save Runtime Controls</button>
       </article>
 
       <article className="card">
@@ -562,7 +651,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             ))}
           </ul>
         ) : null}
-        <button onClick={onSaveActiveLlm}>Save Active Provider/Model</button>
+        <button onClick={onSaveActiveLlm} disabled={blockSaves}>Save Active Provider/Model</button>
 
         <button onClick={() => setShowAdvanced((current) => !current)}>
           {showAdvanced ? "Hide advanced provider settings" : "Show advanced provider settings"}
@@ -643,13 +732,16 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 customLabel="Custom env var"
               />
             </div>
-            <button onClick={onSaveProvider}>Save Provider Settings</button>
+            <button onClick={onSaveProvider} disabled={blockSaves}>Save Provider Settings</button>
           </div>
         ) : null}
       </article>
 
       <article className="card">
         <h3>LLM Test (chat/completions)</h3>
+        <p className="office-subtitle">
+          Test prompts default to direct model behavior without QMD memory context.
+        </p>
         <div className="controls-row">
           <label htmlFor="chatPromptPreset">Prompt Preset</label>
           <select
@@ -678,6 +770,15 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           value={chatPrompt}
           onChange={(event) => setChatPrompt(event.target.value)}
         />
+        <div className="controls-row">
+          <label htmlFor="chatUseMemory">Include memory context (QMD)</label>
+          <input
+            id="chatUseMemory"
+            type="checkbox"
+            checked={chatUseMemory}
+            onChange={(event) => setChatUseMemory(event.target.checked)}
+          />
+        </div>
         <div className="controls-row">
           <button onClick={onTestChat}>Run Test Prompt</button>
         </div>

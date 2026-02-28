@@ -22,6 +22,8 @@ import { meshRoutes } from "./routes/mesh.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { npuRoutes } from "./routes/npu.js";
+import { uiChangeRiskRoutes } from "./routes/ui-change-risk.js";
+import { agentsRoutes } from "./routes/agents.js";
 
 loadLocalEnvFile();
 
@@ -54,6 +56,8 @@ export async function buildApp() {
   await app.register(onboardingRoutes);
   await app.register(memoryRoutes);
   await app.register(npuRoutes);
+  await app.register(uiChangeRiskRoutes);
+  await app.register(agentsRoutes);
 
   return app;
 }

@@ -93,4 +93,27 @@ describe("task repositories", () => {
     const cleared = repos.tasks.update(first.taskId, { assignedAgentId: null });
     assert.equal(cleared.assignedAgentId, undefined);
   });
+
+  it("supports soft delete, trash view, restore, and hard delete", () => {
+    const repos = createRepos();
+    const task = repos.tasks.create({ title: "Delete flow test" });
+
+    const softDeleted = repos.tasks.softDelete(task.taskId, "tester", "cleanup");
+    assert.equal(softDeleted, true);
+
+    const active = repos.tasks.list({ limit: 20, view: "active" });
+    assert.equal(active.find((item) => item.taskId === task.taskId), undefined);
+
+    const trash = repos.tasks.list({ limit: 20, view: "trash" });
+    assert.equal(trash.find((item) => item.taskId === task.taskId)?.deletedBy, "tester");
+
+    const restored = repos.tasks.restore(task.taskId);
+    assert.equal(restored, true);
+    const restoredTask = repos.tasks.get(task.taskId);
+    assert.equal(restoredTask.deletedAt, undefined);
+
+    const hardDeleted = repos.tasks.hardDelete(task.taskId);
+    assert.equal(hardDeleted, true);
+    assert.equal(repos.tasks.find(task.taskId), undefined);
+  });
 });
