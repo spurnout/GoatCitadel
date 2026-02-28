@@ -43,6 +43,7 @@ F:\code\personal-ai
 │  ├─ skills                   # SKILL.md loading, precedence, activation
 │  └─ orchestration            # Plan/wave/phase engine primitives
 ├─ config
+│  ├─ goatcitadel.json
 │  ├─ assistant.config.json
 │  ├─ tool-policy.json
 │  ├─ budgets.json
@@ -54,9 +55,8 @@ F:\code\personal-ai
 │  └─ audit\*.jsonl            # Append-only policy/tool/approval audit logs
 ├─ skills
 │  └─ bundled\*\SKILL.md       # Built-in skill definitions
-└─ artifacts
-   ├─ screenshots              # Mission Control captures
-   └─ reviews                  # External review prompts and findings
+└─ docs
+   └─ screenshots              # Mission Control captures
 ```
 
 ## 3. Runtime Topology
@@ -75,10 +75,18 @@ Gateway is the control plane and source of operational truth. It:
 
 Boot sequence:
 
-1. `main.ts` starts Fastify on `127.0.0.1:8787` (default).
-2. `gatewayPlugin` resolves repository root and loads config.
-3. `GatewayService.init()` reloads skills and cron entries.
-4. Routes are registered after CORS, auth, and idempotency plugins.
+1. `loadGatewayConfig()` runs unified config sync (`config/goatcitadel.json` -> split config files).
+2. `main.ts` starts Fastify on `127.0.0.1:8787` (default).
+3. Signal handlers (`SIGINT`/`SIGTERM`) perform graceful shutdown via `app.close()`.
+4. `gatewayPlugin` resolves repository root and loads config.
+5. `GatewayService.init()` reloads skills and cron entries.
+6. Routes are registered after CORS, auth, and idempotency plugins.
+
+Development runtime:
+
+- `pnpm dev:gateway` uses `apps/gateway/src/dev-supervisor.ts`.
+- Supervisor behavior: restart-on-change with explicit child process tree shutdown, port release wait, and health check before returning to ready state.
+- `pnpm dev:gateway:watch` is available as direct `tsx watch` fallback.
 
 ### 3.2 Mission Control (`apps/mission-control`)
 
@@ -491,6 +499,27 @@ All mutating endpoints require `Idempotency-Key`.
 
 ## 11. Configuration Reference
 
+### `config/goatcitadel.json`
+
+Canonical unified configuration file. On gateway startup:
+
+1. If `goatcitadel.json` exists, its sections are synced to split config files.
+2. If missing, it is created from the current split files.
+
+Supported top-level sections:
+
+- `assistant`
+- `toolPolicy`
+- `budgets`
+- `llm`
+- `cronJobs`
+
+Manual sync command:
+
+```bash
+pnpm config:sync
+```
+
 ### `config/assistant.config.json`
 
 Defines environment, directory roots, auth mode, and approval explainer defaults.
@@ -540,7 +569,9 @@ Commands:
 ```bash
 pnpm install
 pnpm dev:gateway
+pnpm dev:gateway:watch
 pnpm dev:ui
+pnpm config:sync
 ```
 
 ### 12.2 Quality Gates
@@ -617,4 +648,3 @@ Before approving production use:
 ---
 
 For release-facing setup and screenshots, see repository `README.md`.
-

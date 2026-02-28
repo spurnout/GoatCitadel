@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "assistant": {
+    "environment": "local",
+    "defaultToolProfile": "minimal",
+    "dataDir": "./data",
+    "transcriptsDir": "./data/transcripts",
+    "auditDir": "./data/audit",
+    "workspaceDir": "./workspace",
+    "worktreesDir": "./.worktrees",
+    "auth": {
+      "mode": "none",
+      "allowLoopbackBypass": false,
+      "token": {
+        "queryParam": "access_token"
+      },
+      "basic": {}
+    },
+    "approvalExplainer": {
+      "enabled": true,
+      "mode": "async",
+      "minRiskLevel": "caution",
+      "timeoutMs": 15000,
+      "maxPayloadChars": 4000
+    },
+    "mesh": {
+      "enabled": false,
+      "mode": "lan",
+      "nodeId": "bld-258388",
+      "discovery": {
+        "mdns": true,
+        "staticPeers": []
+      },
+      "security": {
+        "joinTokenEnv": "GOATCITADEL_MESH_JOIN_TOKEN",
+        "requireMtls": true,
+        "tailnet": {
+          "enabled": false
+        }
+      },
+      "leases": {
+        "ttlSeconds": 30
+      },
+      "replication": {
+        "batchSize": 200
+      }
+    },
+    "budgets": {
+      "dailyUsdWarning": 10,
+      "dailyUsdHardCap": 50,
+      "sessionTokenHardCap": 120000
+    }
+  },
+  "toolPolicy": {
+    "profiles": {
+      "minimal": [
+        "session.status",
+        "memory.read"
+      ],
+      "standard": [
+        "session.status",
+        "memory.read",
+        "http.get",
+        "fs.read",
+        "fs.write"
+      ],
+      "coding": [
+        "session.status",
+        "memory.read",
+        "fs.read",
+        "fs.write",
+        "shell.exec",
+        "git.exec"
+      ],
+      "ops": [
+        "session.status",
+        "memory.read",
+        "http.get",
+        "http.post",
+        "process.control",
+        "logs.read"
+      ],
+      "research": [
+        "session.status",
+        "memory.read",
+        "browser.search",
+        "http.get",
+        "citations.build"
+      ],
+      "danger": [
+        "*"
+      ]
+    },
+    "tools": {
+      "profile": "minimal",
+      "allow": [],
+      "deny": []
+    },
+    "agents": {},
+    "sandbox": {
+      "writeJailRoots": [
+        "./workspace",
+        "./data"
+      ],
+      "readOnlyRoots": [
+        "./skills",
+        "./config"
+      ],
+      "networkAllowlist": [],
+      "riskyShellPatterns": [
+        "rm",
+        "rmdir",
+        "del",
+        "format",
+        "shutdown",
+        "reboot",
+        "git push",
+        "git reset --hard"
+      ],
+      "requireApprovalForRiskyShell": true
+    }
+  },
+  "budgets": {
+    "mode": "balanced",
+    "daily": {
+      "tokensWarning": 300000,
+      "tokensHardCap": 1000000,
+      "usdWarning": 10,
+      "usdHardCap": 50
+    },
+    "session": {
+      "tokensHardCap": 120000,
+      "turnMaxInputTokens": 32000,
+      "turnMaxOutputTokens": 4096
+    }
+  },
+  "llm": {
+    "activeProviderId": "openai",
+    "providers": [
+      {
+        "providerId": "openai",
+        "label": "OpenAI",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "gpt-4.1-mini",
+        "apiKeyEnv": "OPENAI_API_KEY"
+      },
+      {
+        "providerId": "anthropic",
+        "label": "Anthropic (compatible endpoint)",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "claude-3-7-sonnet-latest",
+        "apiKeyEnv": "ANTHROPIC_API_KEY"
+      },
+      {
+        "providerId": "google",
+        "label": "Google (compatible endpoint)",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "gemini-2.0-flash",
+        "apiKeyEnv": "GOOGLE_API_KEY"
+      },
+      {
+        "providerId": "minimax",
+        "label": "MiniMax (compatible endpoint)",
+        "baseUrl": "https://api.minimax.chat/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "MiniMax-Text-01",
+        "apiKeyEnv": "MINIMAX_API_KEY"
+      },
+      {
+        "providerId": "vercel",
+        "label": "Vercel AI Gateway",
+        "baseUrl": "https://ai-gateway.vercel.sh/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "openai/gpt-4.1-mini",
+        "apiKeyEnv": "VERCEL_AI_GATEWAY_API_KEY"
+      },
+      {
+        "providerId": "openrouter",
+        "label": "OpenRouter",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "openai/gpt-4.1-mini",
+        "apiKeyEnv": "OPENROUTER_API_KEY"
+      },
+      {
+        "providerId": "mistral",
+        "label": "Mistral",
+        "baseUrl": "https://api.mistral.ai/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "mistral-small-latest",
+        "apiKeyEnv": "MISTRAL_API_KEY"
+      },
+      {
+        "providerId": "deepseek",
+        "label": "DeepSeek",
+        "baseUrl": "https://api.deepseek.com/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "deepseek-chat",
+        "apiKeyEnv": "DEEPSEEK_API_KEY"
+      },
+      {
+        "providerId": "glm",
+        "label": "GLM (compatible endpoint)",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "glm-4",
+        "apiKeyEnv": "GLM_API_KEY"
+      },
+      {
+        "providerId": "perplexity",
+        "label": "Perplexity",
+        "baseUrl": "https://api.perplexity.ai/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "sonar",
+        "apiKeyEnv": "PERPLEXITY_API_KEY"
+      },
+      {
+        "providerId": "huggingface",
+        "label": "HuggingFace Inference",
+        "baseUrl": "https://router.huggingface.co/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "openai/gpt-oss-120b",
+        "apiKeyEnv": "HUGGINGFACE_API_KEY"
+      },
+      {
+        "providerId": "localai",
+        "label": "LocalAI",
+        "baseUrl": "http://127.0.0.1:8080/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "local-model",
+        "apiKeyEnv": "LOCALAI_API_KEY"
+      },
+      {
+        "providerId": "ollama",
+        "label": "Ollama",
+        "baseUrl": "http://127.0.0.1:11434/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "llama3.1"
+      },
+      {
+        "providerId": "lmstudio",
+        "label": "LM Studio",
+        "baseUrl": "http://127.0.0.1:1234/v1",
+        "apiStyle": "openai-chat-completions",
+        "defaultModel": "local-model"
+      }
+    ]
+  },
+  "cronJobs": {
+    "jobs": [
+      {
+        "jobId": "memory-flush-daily",
+        "name": "Memory Flush",
+        "schedule": "0 3 * * *",
+        "enabled": true
+      },
+      {
+        "jobId": "cost-report-hourly",
+        "name": "Cost Report",
+        "schedule": "0 * * * *",
+        "enabled": true
+      }
+    ]
+  }
+}

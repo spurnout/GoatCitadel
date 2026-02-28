@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AuthMode, LlmConfigFile, ToolPolicyConfig } from "@goatcitadel/contracts";
+import { syncUnifiedConfig } from "./config-sync-lib.js";
 
 export interface AssistantConfig {
   environment: string;
@@ -95,6 +96,15 @@ export interface GatewayRuntimeConfig {
 }
 
 export async function loadGatewayConfig(rootDir: string): Promise<GatewayRuntimeConfig> {
+  const syncResult = await syncUnifiedConfig(rootDir, { createUnifiedIfMissing: true });
+  if (syncResult.createdUnified || syncResult.syncedSections.length > 0) {
+    const changes = [
+      syncResult.createdUnified ? "created config/goatcitadel.json" : undefined,
+      ...syncResult.syncedSections.map((name) => `synced ${name}`),
+    ].filter(Boolean);
+    console.info(`[goatcitadel:config] ${changes.join(", ")}`);
+  }
+
   const configDir = path.join(rootDir, "config");
   const [assistantRaw, toolPolicyRaw, budgetsRaw, llmRaw] = await Promise.all([
     fs.readFile(path.join(configDir, "assistant.config.json"), "utf8"),

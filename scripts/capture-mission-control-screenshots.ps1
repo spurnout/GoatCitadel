@@ -1,12 +1,15 @@
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path ".").Path
-$gatewayOutLog = Join-Path $root "artifacts/screenshots/gateway-dev.out.log"
-$gatewayErrLog = Join-Path $root "artifacts/screenshots/gateway-dev.err.log"
-$uiOutLog = Join-Path $root "artifacts/screenshots/ui-dev.out.log"
-$uiErrLog = Join-Path $root "artifacts/screenshots/ui-dev.err.log"
+$tmpDir = Join-Path $root ".tmp/screenshots"
+$outputDir = Join-Path $root "docs/screenshots/mission-control"
+$gatewayOutLog = Join-Path $tmpDir "gateway-dev.out.log"
+$gatewayErrLog = Join-Path $tmpDir "gateway-dev.err.log"
+$uiOutLog = Join-Path $tmpDir "ui-dev.out.log"
+$uiErrLog = Join-Path $tmpDir "ui-dev.err.log"
 
-New-Item -ItemType Directory -Force -Path (Join-Path $root "artifacts/screenshots/mission-control") | Out-Null
+New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 $gateway = Start-Process -FilePath "pnpm.cmd" -ArgumentList "dev:gateway" -WorkingDirectory $root -PassThru -RedirectStandardOutput $gatewayOutLog -RedirectStandardError $gatewayErrLog
 $ui = Start-Process -FilePath "pnpm.cmd" -ArgumentList "dev:ui" -WorkingDirectory $root -PassThru -RedirectStandardOutput $uiOutLog -RedirectStandardError $uiErrLog
@@ -60,7 +63,7 @@ try {
 
   foreach ($target in $targets) {
     $url = "http://localhost:5173/?tab=$($target.tab)"
-    $out = Join-Path $root "artifacts/screenshots/mission-control/$($target.file)"
+    $out = Join-Path $outputDir $target.file
     npx playwright screenshot --wait-for-timeout $target.wait --full-page $url $out | Out-Null
   }
 }

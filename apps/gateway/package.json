@@ -16,12 +16,15 @@
     "zod": "^3.24.1"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "tsx src/dev-supervisor.ts",
+    "dev:watch": "tsx watch src/main.ts",
+    "dev:supervisor": "tsx src/dev-supervisor.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "smoke": "tsx src/smoke.ts",
     "onboarding:tui": "tsx src/onboarding-tui.ts",
+    "config:sync": "tsx src/config-sync.ts",
     "lint": "tsc -p tsconfig.json --noEmit"
   }
 }

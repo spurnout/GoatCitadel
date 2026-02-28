@@ -9,11 +9,13 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @goatcitadel/gateway --filter @goatcitadel/mission-control dev",
     "dev:gateway": "pnpm --filter @goatcitadel/gateway dev",
+    "dev:gateway:watch": "pnpm --filter @goatcitadel/gateway dev:watch",
     "dev:ui": "pnpm --filter @goatcitadel/mission-control dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "smoke": "pnpm --filter @goatcitadel/gateway smoke",
     "onboarding:tui": "pnpm --filter @goatcitadel/gateway onboarding:tui",
+    "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },

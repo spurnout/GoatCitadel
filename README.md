@@ -8,10 +8,6 @@ For full engineering-level documentation (architecture, data model, API map, saf
 
 - [`docs/ENGINEERING_HANDBOOK.md`](./docs/ENGINEERING_HANDBOOK.md)
 
-For external review handoff artifacts, see:
-
-- [`artifacts/reviews/claude-code/README.md`](./artifacts/reviews/claude-code/README.md)
-
 ## What GoatCitadel Includes
 
 - Fastify gateway as source of truth for sessions, transcripts, token usage, and cost accounting.
@@ -20,33 +16,34 @@ For external review handoff artifacts, see:
 - Mission Control UI with full API-first workflows and realtime event streaming.
 - Office V4 WebGL scene with a central human operator (`GoatHerder`, renameable) and goat subagents around a live command floor.
 - OpenAI-compatible provider routing using `/v1/chat/completions` (legacy `/v1/completions` intentionally not used).
+- Bulletproof gateway dev hot reload supervisor (process-tree kill, port release checks, health-checked restart).
 - Local execution with Git worktree support for orchestration isolation (no Docker).
 
 ## Screenshots
 
 ### Summit
-![Summit](./artifacts/screenshots/mission-control/dashboard.png)
+![Summit](./docs/screenshots/mission-control/dashboard.png)
 
 ### Herd HQ (WebGL)
-![Herd HQ](./artifacts/screenshots/mission-control/office.png)
+![Herd HQ](./docs/screenshots/mission-control/office.png)
 
 ### Goat Crew
-![Goat Crew](./artifacts/screenshots/mission-control/agents.png)
+![Goat Crew](./docs/screenshots/mission-control/agents.png)
 
 ### Memory Pasture
-![Memory Pasture](./artifacts/screenshots/mission-control/memory.png)
+![Memory Pasture](./docs/screenshots/mission-control/memory.png)
 
 ### Trailboard
-![Trailboard](./artifacts/screenshots/mission-control/tasks.png)
+![Trailboard](./docs/screenshots/mission-control/tasks.png)
 
 ### Gatehouse Queue
-![Gatehouse Queue](./artifacts/screenshots/mission-control/approvals.png)
+![Gatehouse Queue](./docs/screenshots/mission-control/approvals.png)
 
 ### Forge (Providers + Runtime Controls)
-![Forge](./artifacts/screenshots/mission-control/settings.png)
+![Forge](./docs/screenshots/mission-control/settings.png)
 
 Local gallery page:
-`artifacts/screenshots/mission-control/index.html`
+`docs/screenshots/mission-control/index.html`
 
 ## Runtime Architecture
 
@@ -155,6 +152,13 @@ Start gateway:
 pnpm dev:gateway
 ```
 
+`pnpm dev:gateway` runs the gateway supervisor for reliable restart-on-change.
+Direct watch-only mode is still available:
+
+```bash
+pnpm dev:gateway:watch
+```
+
 Start UI:
 
 ```bash
@@ -175,11 +179,24 @@ goatcitadel up
 
 ## Key Config Files
 
+Canonical unified config:
+
+- `config/goatcitadel.json`
+
+Derived split configs (auto-synced from `goatcitadel.json` at startup):
+
 - `config/assistant.config.json`
 - `config/tool-policy.json`
 - `config/budgets.json`
 - `config/llm-providers.json`
+- `config/cron-jobs.json`
 - `.env.example`
+
+Manual sync command:
+
+```bash
+pnpm config:sync
+```
 
 ## Mission Control Areas
 
@@ -279,6 +296,10 @@ pnpm -r typecheck
 pnpm -r test
 pnpm -r build
 ```
+
+## Changelog
+
+- [`CHANGELOG.md`](./CHANGELOG.md)
 
 ## Refresh Screenshot Pack
 
