@@ -206,6 +206,7 @@ export function App() {
   }, []);
 
   const navById = useMemo(() => new Map(navItems.map((item) => [item.id, item])), []);
+  const activeNav = navById.get(tab);
   const commandItems = useMemo(
     () =>
       navItems.map((item) => ({
@@ -363,6 +364,16 @@ export function App() {
         </footer>
       </aside>
       <main className="content">
+        <header className="app-topbar card">
+          <div>
+            <h3>{activeNav?.label ?? "Mission Control"}</h3>
+            <p className="office-subtitle">{nextStepByTab[tab]}</p>
+          </div>
+          <div className="app-topbar-actions">
+            <span className={`stream-pill ${streamStatus.state}`}>{streamStatus.state}</span>
+            <button type="button" onClick={() => setPaletteOpen(true)}>Quick Actions</button>
+          </div>
+        </header>
         {streamState !== "open" ? (
           <div className="status-banner warning">
             {appCopy.streamBanner.replace("{state}", streamState)}

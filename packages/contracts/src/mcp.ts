@@ -1,5 +1,24 @@
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerStatus = "disconnected" | "connecting" | "connected" | "error";
+export type McpServerCategory =
+  | "development"
+  | "browser"
+  | "automation"
+  | "research"
+  | "data"
+  | "creative"
+  | "orchestration"
+  | "other";
+export type McpTrustTier = "trusted" | "restricted" | "quarantined";
+export type McpCostTier = "free" | "mixed" | "paid" | "unknown";
+
+export interface McpServerPolicy {
+  requireFirstToolApproval: boolean;
+  redactionMode: "off" | "basic" | "strict";
+  allowedToolPatterns: string[];
+  blockedToolPatterns: string[];
+  notes?: string;
+}
 
 export interface McpServerRecord {
   serverId: string;
@@ -11,6 +30,11 @@ export interface McpServerRecord {
   authType: "none" | "token" | "oauth2";
   enabled: boolean;
   status: McpServerStatus;
+  category: McpServerCategory;
+  trustTier: McpTrustTier;
+  costTier: McpCostTier;
+  policy: McpServerPolicy;
+  verifiedAt?: string;
   lastError?: string;
   lastConnectedAt?: string;
   createdAt: string;
@@ -34,6 +58,11 @@ export interface McpServerCreateInput {
   url?: string;
   authType?: "none" | "token" | "oauth2";
   enabled?: boolean;
+  category?: McpServerCategory;
+  trustTier?: McpTrustTier;
+  costTier?: McpCostTier;
+  policy?: Partial<McpServerPolicy>;
+  verifiedAt?: string;
 }
 
 export interface McpServerUpdateInput {
@@ -43,6 +72,11 @@ export interface McpServerUpdateInput {
   url?: string;
   authType?: "none" | "token" | "oauth2";
   enabled?: boolean;
+  category?: McpServerCategory;
+  trustTier?: McpTrustTier;
+  costTier?: McpCostTier;
+  policy?: Partial<McpServerPolicy>;
+  verifiedAt?: string;
 }
 
 export interface McpOAuthStartResponse {

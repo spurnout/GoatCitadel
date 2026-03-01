@@ -8,6 +8,7 @@ import {
   fetchMcpTools,
   invokeMcpTool,
   startMcpOAuth,
+  updateMcpServerPolicy,
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
@@ -16,6 +17,9 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 
 type Transport = "stdio" | "http" | "sse";
+type McpCategory = "development" | "browser" | "automation" | "research" | "data" | "creative" | "orchestration" | "other";
+type McpTrustTier = "trusted" | "restricted" | "quarantined";
+type McpCostTier = "free" | "mixed" | "paid" | "unknown";
 
 export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [servers, setServers] = useState<Array<{
@@ -24,9 +28,20 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     transport: Transport;
     status: "disconnected" | "connecting" | "connected" | "error";
     enabled: boolean;
+    category: McpCategory;
+    trustTier: McpTrustTier;
+    costTier: McpCostTier;
+    policy: {
+      requireFirstToolApproval: boolean;
+      redactionMode: "off" | "basic" | "strict";
+      allowedToolPatterns: string[];
+      blockedToolPatterns: string[];
+      notes?: string;
+    };
     command?: string;
     url?: string;
     authType: "none" | "token" | "oauth2";
+    verifiedAt?: string;
     lastError?: string;
   }>>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
@@ -44,6 +59,14 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [command, setCommand] = useState("");
   const [url, setUrl] = useState("");
   const [authType, setAuthType] = useState<"none" | "token" | "oauth2">("none");
+  const [category, setCategory] = useState<McpCategory>("development");
+  const [trustTier, setTrustTier] = useState<McpTrustTier>("restricted");
+  const [costTier, setCostTier] = useState<McpCostTier>("unknown");
+  const [policyRequireFirst, setPolicyRequireFirst] = useState(false);
+  const [policyRedaction, setPolicyRedaction] = useState<"off" | "basic" | "strict">("basic");
+  const [policyAllowed, setPolicyAllowed] = useState("");
+  const [policyBlocked, setPolicyBlocked] = useState("");
+  const [policyNotes, setPolicyNotes] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string>("");
@@ -99,6 +122,17 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     [selectedServerId, servers],
   );
 
+  useEffect(() => {
+    if (!selected) {
+      return;
+    }
+    setPolicyRequireFirst(selected.policy.requireFirstToolApproval);
+    setPolicyRedaction(selected.policy.redactionMode);
+    setPolicyAllowed(selected.policy.allowedToolPatterns.join(", "));
+    setPolicyBlocked(selected.policy.blockedToolPatterns.join(", "));
+    setPolicyNotes(selected.policy.notes ?? "");
+  }, [selected]);
+
   const handleCreateServer = useCallback(async () => {
     if (!label.trim()) {
       return;
@@ -111,6 +145,9 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
         command: transport === "stdio" ? command.trim() || undefined : undefined,
         url: transport !== "stdio" ? url.trim() || undefined : undefined,
         authType,
+        category,
+        trustTier,
+        costTier,
       });
       setLabel("");
       await loadServers();
@@ -120,7 +157,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } finally {
       setBusy(false);
     }
-  }, [authType, command, label, loadServers, transport, url]);
+  }, [authType, category, command, costTier, label, loadServers, transport, trustTier, url]);
 
   if (loading) {
     return (
@@ -164,6 +201,32 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
               <option value="oauth2">oauth2</option>
             </select>
           </div>
+          <div className="controls-row">
+            <label htmlFor="mcpCategory">Category</label>
+            <select id="mcpCategory" value={category} onChange={(event) => setCategory(event.target.value as McpCategory)}>
+              <option value="development">development</option>
+              <option value="browser">browser</option>
+              <option value="automation">automation</option>
+              <option value="research">research</option>
+              <option value="data">data</option>
+              <option value="creative">creative</option>
+              <option value="orchestration">orchestration</option>
+              <option value="other">other</option>
+            </select>
+            <label htmlFor="mcpTrustTier">Trust</label>
+            <select id="mcpTrustTier" value={trustTier} onChange={(event) => setTrustTier(event.target.value as McpTrustTier)}>
+              <option value="trusted">trusted</option>
+              <option value="restricted">restricted</option>
+              <option value="quarantined">quarantined</option>
+            </select>
+            <label htmlFor="mcpCostTier">Cost</label>
+            <select id="mcpCostTier" value={costTier} onChange={(event) => setCostTier(event.target.value as McpCostTier)}>
+              <option value="free">free</option>
+              <option value="mixed">mixed</option>
+              <option value="paid">paid</option>
+              <option value="unknown">unknown</option>
+            </select>
+          </div>
           {transport === "stdio" ? (
             <div className="controls-row">
               <label htmlFor="mcpCommand">Command <HelpHint label="stdio command help" text="Absolute path or command on PATH used to start the local MCP process." /></label>
@@ -191,45 +254,29 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   {server.label}
                 </button>
                 <p className="chat-item-meta">
-                  {server.transport} | {server.status}
+                  {server.transport} | {server.status} | {server.trustTier} | {server.costTier}
                 </p>
               </li>
             ))}
           </ul>
           {selected ? (
-            <div className="actions">
-              <ActionButton
-                label={selected.status === "connected" ? "Disconnect" : "Connect"}
-                pending={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    if (selected.status === "connected") {
-                      await disconnectMcpServer(selected.serverId);
-                    } else {
-                      await connectMcpServer(selected.serverId);
-                    }
-                    await loadServers();
-                    if (selectedServerId) {
-                      await loadTools(selectedServerId);
-                    }
-                    setError(null);
-                  } catch (err) {
-                    setError((err as Error).message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              />
-              {selected.authType === "oauth2" ? (
+            <div className="stack-md">
+              <div className="actions">
                 <ActionButton
-                  label="Start OAuth"
+                  label={selected.status === "connected" ? "Disconnect" : "Connect"}
                   pending={busy}
                   onClick={async () => {
                     setBusy(true);
                     try {
-                      const oauth = await startMcpOAuth(selected.serverId);
-                      setResult(`Open OAuth URL: ${oauth.authorizeUrl}`);
+                      if (selected.status === "connected") {
+                        await disconnectMcpServer(selected.serverId);
+                      } else {
+                        await connectMcpServer(selected.serverId);
+                      }
+                      await loadServers();
+                      if (selectedServerId) {
+                        await loadTools(selectedServerId);
+                      }
                       setError(null);
                     } catch (err) {
                       setError((err as Error).message);
@@ -238,24 +285,114 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     }
                   }}
                 />
-              ) : null}
-              <ActionButton
-                label="Delete"
-                pending={busy}
-                danger
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await deleteMcpServer(selected.serverId);
-                    await loadServers();
-                    setError(null);
-                  } catch (err) {
-                    setError((err as Error).message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              />
+                {selected.authType === "oauth2" ? (
+                  <ActionButton
+                    label="Start OAuth"
+                    pending={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        const oauth = await startMcpOAuth(selected.serverId);
+                        setResult(`Open OAuth URL: ${oauth.authorizeUrl}`);
+                        setError(null);
+                      } catch (err) {
+                        setError((err as Error).message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  />
+                ) : null}
+                <ActionButton
+                  label="Delete"
+                  pending={busy}
+                  danger
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await deleteMcpServer(selected.serverId);
+                      await loadServers();
+                      setError(null);
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+              </div>
+              <div className="controls-row">
+                <label className="checkbox-inline">
+                  <input
+                    type="checkbox"
+                    checked={policyRequireFirst}
+                    onChange={(event) => setPolicyRequireFirst(event.target.checked)}
+                  />
+                  Require first-use approval
+                </label>
+                <label htmlFor="mcpPolicyRedaction">Redaction mode</label>
+                <select
+                  id="mcpPolicyRedaction"
+                  value={policyRedaction}
+                  onChange={(event) => setPolicyRedaction(event.target.value as "off" | "basic" | "strict")}
+                >
+                  <option value="off">off</option>
+                  <option value="basic">basic</option>
+                  <option value="strict">strict</option>
+                </select>
+              </div>
+              <div className="controls-row">
+                <label htmlFor="mcpAllowedPatterns">Allow patterns</label>
+                <input
+                  id="mcpAllowedPatterns"
+                  placeholder="search.*, fetch"
+                  value={policyAllowed}
+                  onChange={(event) => setPolicyAllowed(event.target.value)}
+                />
+              </div>
+              <div className="controls-row">
+                <label htmlFor="mcpBlockedPatterns">Block patterns</label>
+                <input
+                  id="mcpBlockedPatterns"
+                  placeholder="admin.*, shell.*"
+                  value={policyBlocked}
+                  onChange={(event) => setPolicyBlocked(event.target.value)}
+                />
+              </div>
+              <div className="controls-row">
+                <label htmlFor="mcpPolicyNotes">Notes</label>
+                <input
+                  id="mcpPolicyNotes"
+                  placeholder="Optional policy note"
+                  value={policyNotes}
+                  onChange={(event) => setPolicyNotes(event.target.value)}
+                />
+                <ActionButton
+                  label="Save Policy"
+                  pending={busy}
+                  onClick={async () => {
+                    if (!selected) {
+                      return;
+                    }
+                    setBusy(true);
+                    try {
+                      await updateMcpServerPolicy(selected.serverId, {
+                        requireFirstToolApproval: policyRequireFirst,
+                        redactionMode: policyRedaction,
+                        allowedToolPatterns: policyAllowed.split(",").map((item) => item.trim()).filter(Boolean),
+                        blockedToolPatterns: policyBlocked.split(",").map((item) => item.trim()).filter(Boolean),
+                        notes: policyNotes.trim() || undefined,
+                      });
+                      await loadServers();
+                      setError(null);
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+              </div>
             </div>
           ) : null}
         </article>

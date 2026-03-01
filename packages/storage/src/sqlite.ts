@@ -138,6 +138,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "prompt_pack_readiness_schema",
     up: createPromptPackReadinessSchema,
   },
+  {
+    version: 15,
+    name: "skill_runtime_state_schema",
+    up: createSkillRuntimeStateSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1187,6 +1192,32 @@ function createPromptPackReadinessSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_prompt_pack_scores_pack_test
       ON prompt_pack_scores(pack_id, test_id, created_at DESC);
+  `);
+}
+
+function createSkillRuntimeStateSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skill_state (
+      skill_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL DEFAULT 'enabled',
+      note TEXT,
+      updated_at TEXT NOT NULL,
+      first_auto_approved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_state_state_updated
+      ON skill_state(state, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS skill_activation_events (
+      event_id TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_activation_events_skill
+      ON skill_activation_events(skill_id, created_at DESC);
   `);
 }
 

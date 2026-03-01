@@ -22,10 +22,43 @@ export interface LoadedSkill {
   mtime: string;
 }
 
+export type SkillRuntimeState = "enabled" | "sleep" | "disabled";
+
+export interface SkillStateRecord {
+  skillId: string;
+  state: SkillRuntimeState;
+  note?: string;
+  updatedAt: string;
+  firstAutoApprovedAt?: string;
+}
+
+export interface SkillActivationPolicy {
+  guardedAutoThreshold: number;
+  requireFirstUseConfirmation: boolean;
+}
+
+export interface SkillListItem extends LoadedSkill {
+  state: SkillRuntimeState;
+  note?: string;
+  stateUpdatedAt?: string;
+}
+
 export interface SkillActivationDecision {
-  selected: LoadedSkill[];
+  selected: Array<
+    LoadedSkill & {
+      state: SkillRuntimeState;
+      confidence: number;
+      requiresConfirmation: boolean;
+    }
+  >;
   reasons: Record<string, string[]>;
   blocked: Array<{ skill: string; reason: string }>;
+  suppressed: Array<{
+    skill: string;
+    state: SkillRuntimeState;
+    confidence: number;
+    reason: string;
+  }>;
 }
 
 export interface SkillResolveInput {

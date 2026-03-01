@@ -78,6 +78,10 @@ import type {
   PromptPackRunRecord,
   PromptPackScoreRecord,
   PromptPackReportRecord,
+  SkillActivationPolicy,
+  SkillListItem,
+  SkillStateRecord,
+  SkillRuntimeState,
 } from "@goatcitadel/contracts";
 
 export type { SessionSummary, SessionTimelineItem };
@@ -1546,25 +1550,48 @@ export async function downloadFile(relativePath: string): Promise<{
   return request(`/api/v1/files/download?relativePath=${encodeURIComponent(relativePath)}`);
 }
 
-export async function fetchSkills(): Promise<{
-  items: Array<{
-    skillId: string;
-    name: string;
-    source: string;
-    dir: string;
-    declaredTools: string[];
-    requires: string[];
-    keywords: string[];
-    mtime: string;
-  }>;
-}> {
+export async function fetchSkills(): Promise<{ items: SkillListItem[] }> {
   return request("/api/v1/skills");
 }
 
-export async function reloadSkills(): Promise<{ items: unknown[] }> {
+export async function reloadSkills(): Promise<{ items: SkillListItem[] }> {
   return request("/api/v1/skills/reload", {
     method: "POST",
     body: JSON.stringify({}),
+  });
+}
+
+export async function updateSkillState(
+  skillId: string,
+  input: { state: SkillRuntimeState; note?: string },
+): Promise<SkillStateRecord> {
+  return request<SkillStateRecord>(`/api/v1/skills/${encodeURIComponent(skillId)}/state`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function bulkUpdateSkillState(input: {
+  skillIds: string[];
+  state: SkillRuntimeState;
+  note?: string;
+}): Promise<{ items: SkillStateRecord[] }> {
+  return request<{ items: SkillStateRecord[] }>("/api/v1/skills/bulk-state", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchSkillActivationPolicies(): Promise<SkillActivationPolicy> {
+  return request<SkillActivationPolicy>("/api/v1/skills/activation-policies");
+}
+
+export async function patchSkillActivationPolicies(
+  input: Partial<SkillActivationPolicy>,
+): Promise<SkillActivationPolicy> {
+  return request<SkillActivationPolicy>("/api/v1/skills/activation-policies", {
+    method: "PATCH",
+    body: JSON.stringify(input),
   });
 }
 
@@ -1880,6 +1907,11 @@ export async function createMcpServer(input: {
   url?: string;
   authType?: "none" | "token" | "oauth2";
   enabled?: boolean;
+  category?: McpServerRecord["category"];
+  trustTier?: McpServerRecord["trustTier"];
+  costTier?: McpServerRecord["costTier"];
+  policy?: Partial<McpServerRecord["policy"]>;
+  verifiedAt?: string;
 }): Promise<McpServerRecord> {
   return request<McpServerRecord>("/api/v1/mcp/servers", {
     method: "POST",
@@ -1896,11 +1928,26 @@ export async function updateMcpServer(
     url?: string;
     authType?: "none" | "token" | "oauth2";
     enabled?: boolean;
+    category?: McpServerRecord["category"];
+    trustTier?: McpServerRecord["trustTier"];
+    costTier?: McpServerRecord["costTier"];
+    policy?: Partial<McpServerRecord["policy"]>;
+    verifiedAt?: string;
   },
 ): Promise<McpServerRecord> {
   return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function updateMcpServerPolicy(
+  serverId: string,
+  policy: Partial<McpServerRecord["policy"]>,
+): Promise<McpServerRecord> {
+  return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/policy`, {
+    method: "PATCH",
+    body: JSON.stringify(policy),
   });
 }
 

@@ -75,6 +75,8 @@ import type {
   McpInvokeRequest,
   McpInvokeResponse,
   McpOAuthStartResponse,
+  McpServerCategory,
+  McpServerPolicy,
   McpServerCreateInput,
   McpServerRecord,
   McpServerUpdateInput,
@@ -121,6 +123,10 @@ import type {
   TranscriptEvent,
   SessionSummary,
   SessionTimelineItem,
+  SkillActivationPolicy,
+  SkillListItem,
+  SkillRuntimeState,
+  SkillStateRecord,
   SkillResolveInput,
   SystemVitals,
   TaskActivityCreateInput,
@@ -252,7 +258,9 @@ export interface RuntimeSettings {
 const RETENTION_SETTINGS_KEY = "retention_policy";
 const MCP_SERVERS_SETTING_KEY = "mcp_servers_v1";
 const MCP_TOOLS_SETTING_KEY = "mcp_tools_v1";
+const MCP_TOOL_FIRST_APPROVAL_SETTING_KEY = "mcp_tool_first_approval_v1";
 const INTEGRATION_PLUGINS_SETTING_KEY = "integration_plugins_v1";
+const SKILL_ACTIVATION_POLICY_SETTING_KEY = "skill_activation_policy_v1";
 const DAEMON_LOG_TAIL_SETTING_KEY = "daemon_log_tail_v1";
 const VOICE_STATUS_SETTING_KEY = "voice_status_v1";
 const VOICE_WAKE_STATUS_SETTING_KEY = "voice_wake_status_v1";
@@ -264,6 +272,16 @@ const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
 };
 
 const DEFAULT_VOICE_PROVIDER: VoiceTranscribeResponse["provider"] = "whisper.cpp";
+const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
+  guardedAutoThreshold: 0.72,
+  requireFirstUseConfirmation: true,
+};
+const DEFAULT_MCP_SERVER_POLICY: McpServerPolicy = {
+  requireFirstToolApproval: false,
+  redactionMode: "basic",
+  allowedToolPatterns: [],
+  blockedToolPatterns: [],
+};
 const CORE_CHANNEL_KEYS = new Set([
   "discord",
   "slack",
@@ -400,7 +418,8 @@ export class GatewayService {
   public async init(): Promise<void> {
     await this.loadOnboardingMarker();
     this.storage.agentProfiles.seedBuiltins(BUILTIN_AGENT_PROFILES);
-    await this.skillsService.reload();
+    const skills = await this.skillsService.reload();
+    this.ensureSkillStates(skills.map((skill) => skill.skillId));
     await this.loadCronJobsFromConfig();
     this.meshService.init();
     await this.npuSidecar.init();
@@ -2740,16 +2759,170 @@ export class GatewayService {
     };
   }
 
-  public listSkills() {
-    return this.skillsService.list();
+  public listSkills(): SkillListItem[] {
+    const stateMap = this.readSkillStates();
+    return this.skillsService.list().map((skill) => {
+      const state = stateMap.get(skill.skillId);
+      return {
+        ...skill,
+        state: state?.state ?? "enabled",
+        note: state?.note,
+        stateUpdatedAt: state?.updatedAt,
+      };
+    });
   }
 
-  public async reloadSkills() {
-    return this.skillsService.reload();
+  public async reloadSkills(): Promise<SkillListItem[]> {
+    const loaded = await this.skillsService.reload();
+    this.ensureSkillStates(loaded.map((skill) => skill.skillId));
+    return this.listSkills();
+  }
+
+  public getSkillActivationPolicy(): SkillActivationPolicy {
+    const stored = this.storage.systemSettings.get<SkillActivationPolicy>(SKILL_ACTIVATION_POLICY_SETTING_KEY)?.value;
+    if (!stored) {
+      return { ...DEFAULT_SKILL_ACTIVATION_POLICY };
+    }
+    return {
+      guardedAutoThreshold: clamp01(stored.guardedAutoThreshold ?? DEFAULT_SKILL_ACTIVATION_POLICY.guardedAutoThreshold),
+      requireFirstUseConfirmation: stored.requireFirstUseConfirmation ?? DEFAULT_SKILL_ACTIVATION_POLICY.requireFirstUseConfirmation,
+    };
+  }
+
+  public updateSkillActivationPolicy(
+    input: Partial<SkillActivationPolicy>,
+  ): SkillActivationPolicy {
+    const current = this.getSkillActivationPolicy();
+    const next: SkillActivationPolicy = {
+      guardedAutoThreshold: clamp01(input.guardedAutoThreshold ?? current.guardedAutoThreshold),
+      requireFirstUseConfirmation: input.requireFirstUseConfirmation ?? current.requireFirstUseConfirmation,
+    };
+    this.storage.systemSettings.set(SKILL_ACTIVATION_POLICY_SETTING_KEY, next);
+    return next;
+  }
+
+  public setSkillState(
+    skillId: string,
+    state: SkillRuntimeState,
+    note?: string,
+  ): SkillStateRecord {
+    const knownSkill = this.skillsService.list().find((skill) => skill.skillId === skillId);
+    if (!knownSkill) {
+      throw new Error(`Unknown skill: ${skillId}`);
+    }
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      INSERT INTO skill_state (skill_id, state, note, updated_at, first_auto_approved_at)
+      VALUES (@skillId, @state, @note, @updatedAt, NULL)
+      ON CONFLICT(skill_id) DO UPDATE SET
+        state = excluded.state,
+        note = excluded.note,
+        updated_at = excluded.updated_at
+    `).run({
+      skillId,
+      state,
+      note: note?.trim() || null,
+      updatedAt: now,
+    });
+
+    this.storage.db.prepare(`
+      INSERT INTO skill_activation_events (
+        event_id, skill_id, event_type, payload_json, created_at
+      ) VALUES (
+        @eventId, @skillId, @eventType, @payloadJson, @createdAt
+      )
+    `).run({
+      eventId: randomUUID(),
+      skillId,
+      eventType: "state_updated",
+      payloadJson: JSON.stringify({ state, note: note?.trim() || undefined }),
+      createdAt: now,
+    });
+
+    const updated = this.readSkillStates().get(skillId);
+    if (!updated) {
+      throw new Error(`Failed to persist skill state for ${skillId}`);
+    }
+
+    return updated;
+  }
+
+  public bulkSetSkillState(
+    skillIds: string[],
+    state: SkillRuntimeState,
+    note?: string,
+  ): SkillStateRecord[] {
+    const uniqueIds = [...new Set(skillIds)];
+    const updated: SkillStateRecord[] = [];
+    for (const skillId of uniqueIds) {
+      updated.push(this.setSkillState(skillId, state, note));
+    }
+    return updated;
   }
 
   public resolveSkillActivation(input: SkillResolveInput) {
-    return this.skillsService.resolveActivation(input);
+    const policy = this.getSkillActivationPolicy();
+    const base = this.skillsService.resolveActivation(input);
+    const stateMap = this.readSkillStates();
+    const selected: Array<
+      SkillListItem & {
+        confidence: number;
+        requiresConfirmation: boolean;
+      }
+    > = [];
+    const suppressed: Array<{
+      skill: string;
+      state: SkillRuntimeState;
+      confidence: number;
+      reason: string;
+    }> = [];
+
+    for (const skill of base.selected) {
+      const reasons = base.reasons[skill.name] ?? [];
+      const isExplicit = reasons.includes("explicit");
+      const stateRecord = stateMap.get(skill.skillId);
+      const state: SkillRuntimeState = stateRecord?.state ?? "enabled";
+      const confidence = computeSkillActivationConfidence(reasons, isExplicit);
+
+      if (state === "disabled") {
+        suppressed.push({
+          skill: skill.name,
+          state,
+          confidence,
+          reason: "skill_disabled",
+        });
+        continue;
+      }
+
+      if (state === "sleep" && !isExplicit && confidence < policy.guardedAutoThreshold) {
+        suppressed.push({
+          skill: skill.name,
+          state,
+          confidence,
+          reason: "below_guarded_auto_threshold",
+        });
+        continue;
+      }
+
+      const requiresConfirmation =
+        state === "sleep"
+        && policy.requireFirstUseConfirmation
+        && !isExplicit
+        && !stateRecord?.firstAutoApprovedAt;
+
+      selected.push({
+        ...skill,
+        state,
+        confidence,
+        requiresConfirmation,
+      });
+    }
+
+    return {
+      ...base,
+      selected,
+      suppressed,
+    };
   }
 
   public listTasks(
@@ -3780,6 +3953,11 @@ export class GatewayService {
       url: input.url?.trim() || undefined,
       authType: input.authType ?? "none",
       enabled: input.enabled ?? true,
+      category: input.category ?? inferMcpCategory(input.transport),
+      trustTier: input.trustTier ?? "restricted",
+      costTier: input.costTier ?? "unknown",
+      policy: normalizeMcpPolicy(input.policy),
+      verifiedAt: input.verifiedAt,
       status: "disconnected",
       createdAt: now,
       updatedAt: now,
@@ -3809,6 +3987,11 @@ export class GatewayService {
         url: input.url === undefined ? item.url : (input.url.trim() || undefined),
         authType: input.authType ?? item.authType,
         enabled: input.enabled ?? item.enabled,
+        category: input.category ?? item.category,
+        trustTier: input.trustTier ?? item.trustTier,
+        costTier: input.costTier ?? item.costTier,
+        policy: input.policy ? normalizeMcpPolicy({ ...item.policy, ...input.policy }) : item.policy,
+        verifiedAt: input.verifiedAt ?? item.verifiedAt,
         updatedAt: now,
       };
       return updated;
@@ -3818,6 +4001,10 @@ export class GatewayService {
     }
     this.writeMcpServers(servers);
     return updated;
+  }
+
+  public updateMcpServerPolicy(serverId: string, policy: Partial<McpServerPolicy>): McpServerRecord {
+    return this.updateMcpServer(serverId, { policy });
   }
 
   public deleteMcpServer(serverId: string): { deleted: boolean } {
@@ -3921,6 +4108,12 @@ export class GatewayService {
         error: "MCP server is not connected.",
       };
     }
+    if (server.trustTier === "quarantined") {
+      return {
+        ok: false,
+        error: `MCP server ${server.label} is quarantined and cannot execute tools.`,
+      };
+    }
     const tools = this.listMcpTools(input.serverId);
     const tool = tools.find((item) => item.toolName === input.toolName && item.enabled);
     if (!tool) {
@@ -3929,21 +4122,45 @@ export class GatewayService {
         error: `MCP tool ${input.toolName} is not enabled on server ${input.serverId}.`,
       };
     }
+    if (server.policy.blockedToolPatterns.some((pattern) => wildcardMatch(input.toolName, pattern))) {
+      return {
+        ok: false,
+        error: `MCP policy blocked tool ${input.toolName} on server ${server.serverId}.`,
+      };
+    }
+    if (server.policy.allowedToolPatterns.length > 0
+      && !server.policy.allowedToolPatterns.some((pattern) => wildcardMatch(input.toolName, pattern))) {
+      return {
+        ok: false,
+        error: `MCP policy does not allow tool ${input.toolName} on server ${server.serverId}.`,
+      };
+    }
+
+    if (server.policy.requireFirstToolApproval && !this.isMcpToolApproved(input.serverId, input.toolName)) {
+      return {
+        ok: false,
+        error: `First-use approval required for ${input.toolName}. Approve this tool in MCP policy or disable first-use approval.`,
+      };
+    }
+
+    const output = {
+      serverId: input.serverId,
+      toolName: input.toolName,
+      arguments: input.arguments ?? {},
+      message: "MCP invocation recorded. Runtime adapter wiring is plugin-dependent.",
+    };
+    const redactedOutput = applyMcpRedaction(output, server.policy.redactionMode);
     this.publishRealtime("tool_invoked", "mcp", {
       type: "mcp_tool_invoked",
       serverId: input.serverId,
       toolName: input.toolName,
       sessionId: input.sessionId,
       taskId: input.taskId,
+      trustTier: server.trustTier,
     });
     return {
       ok: true,
-      output: {
-        serverId: input.serverId,
-        toolName: input.toolName,
-        arguments: input.arguments ?? {},
-        message: "MCP invocation recorded. Runtime adapter wiring is plugin-dependent.",
-      },
+      output: redactedOutput,
     };
   }
 
@@ -5025,7 +5242,15 @@ export class GatewayService {
     if (!Array.isArray(stored)) {
       return [];
     }
-    return stored.filter((item): item is McpServerRecord => Boolean(item?.serverId));
+    return stored
+      .filter((item): item is McpServerRecord => Boolean(item?.serverId))
+      .map((item) => ({
+        ...item,
+        category: item.category ?? inferMcpCategory(item.transport),
+        trustTier: item.trustTier ?? "restricted",
+        costTier: item.costTier ?? "unknown",
+        policy: normalizeMcpPolicy(item.policy),
+      }));
   }
 
   private writeMcpServers(servers: McpServerRecord[]): void {
@@ -5084,6 +5309,36 @@ export class GatewayService {
 
   private writeMcpAuthState(state: Record<string, McpAuthStateRecord>): void {
     this.storage.systemSettings.set("mcp_auth_state_v1", state);
+  }
+
+  private readMcpFirstApprovals(): Record<string, string[]> {
+    return this.storage.systemSettings.get<Record<string, string[]>>(MCP_TOOL_FIRST_APPROVAL_SETTING_KEY)?.value ?? {};
+  }
+
+  private isMcpToolApproved(serverId: string, toolName: string): boolean {
+    const approved = this.readMcpFirstApprovals();
+    return approved[serverId]?.includes(toolName) ?? false;
+  }
+
+  private readSkillStates(): Map<string, SkillStateRecord> {
+    const rows = this.storage.db.prepare(`
+      SELECT skill_id AS skillId, state, note, updated_at AS updatedAt, first_auto_approved_at AS firstAutoApprovedAt
+      FROM skill_state
+    `).all() as unknown as SkillStateRecord[];
+
+    return new Map(rows.map((row) => [row.skillId, row]));
+  }
+
+  private ensureSkillStates(skillIds: string[]): void {
+    const unique = [...new Set(skillIds)];
+    const now = new Date().toISOString();
+    const insert = this.storage.db.prepare(`
+      INSERT OR IGNORE INTO skill_state (skill_id, state, note, updated_at, first_auto_approved_at)
+      VALUES (@skillId, 'enabled', NULL, @updatedAt, NULL)
+    `);
+    for (const skillId of unique) {
+      insert.run({ skillId, updatedAt: now });
+    }
   }
 
   private processMediaJob(jobId: string): void {
@@ -6548,6 +6803,75 @@ function toTitleCase(value: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function computeSkillActivationConfidence(reasons: string[], isExplicit: boolean): number {
+  if (isExplicit) {
+    return 1;
+  }
+  if (reasons.includes("keyword")) {
+    return 0.84;
+  }
+  if (reasons.includes("dependency")) {
+    return 0.68;
+  }
+  return 0.5;
+}
+
+function inferMcpCategory(transport: McpServerRecord["transport"]): McpServerCategory {
+  if (transport === "stdio") {
+    return "development";
+  }
+  if (transport === "sse") {
+    return "research";
+  }
+  return "automation";
+}
+
+function normalizeMcpPolicy(policy?: Partial<McpServerPolicy>): McpServerPolicy {
+  return {
+    requireFirstToolApproval: policy?.requireFirstToolApproval ?? DEFAULT_MCP_SERVER_POLICY.requireFirstToolApproval,
+    redactionMode: policy?.redactionMode ?? DEFAULT_MCP_SERVER_POLICY.redactionMode,
+    allowedToolPatterns: Array.isArray(policy?.allowedToolPatterns)
+      ? policy.allowedToolPatterns.map((item) => item.trim()).filter(Boolean)
+      : [...DEFAULT_MCP_SERVER_POLICY.allowedToolPatterns],
+    blockedToolPatterns: Array.isArray(policy?.blockedToolPatterns)
+      ? policy.blockedToolPatterns.map((item) => item.trim()).filter(Boolean)
+      : [...DEFAULT_MCP_SERVER_POLICY.blockedToolPatterns],
+    notes: policy?.notes?.trim() || undefined,
+  };
+}
+
+function wildcardMatch(value: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  const regex = new RegExp(`^${escaped}$`, "i");
+  return regex.test(value);
+}
+
+function applyMcpRedaction(
+  payload: Record<string, unknown>,
+  mode: McpServerPolicy["redactionMode"],
+): Record<string, unknown> {
+  if (mode === "off") {
+    return payload;
+  }
+  const serialized = JSON.stringify(payload);
+  const redacted = serialized.replace(
+    /\b(sk-[a-z0-9]{16,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{12,}|[A-Za-z0-9+/]{36,}={0,2})\b/gi,
+    "[REDACTED]",
+  );
+  const parsed = safeJsonParse<Record<string, unknown>>(redacted, payload);
+  if (mode === "strict") {
+    return {
+      ...parsed,
+      message: "Output redacted in strict mode.",
+    };
+  }
+  return parsed;
 }
 
 function extFromMimeType(mimeType?: string): string {

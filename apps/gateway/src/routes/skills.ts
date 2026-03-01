@@ -2,6 +2,28 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
+  const skillParamsSchema = z.object({
+    skillId: z.string().min(1),
+  });
+
+  const stateSchema = z.enum(["enabled", "sleep", "disabled"]);
+
+  const updateStateSchema = z.object({
+    state: stateSchema,
+    note: z.string().trim().max(300).optional(),
+  });
+
+  const bulkStateSchema = z.object({
+    skillIds: z.array(z.string().min(1)).min(1),
+    state: stateSchema,
+    note: z.string().trim().max(300).optional(),
+  });
+
+  const activationPolicyPatchSchema = z.object({
+    guardedAutoThreshold: z.number().min(0).max(1).optional(),
+    requireFirstUseConfirmation: z.boolean().optional(),
+  });
+
   fastify.get("/api/v1/skills", async (_request, reply) => {
     return reply.send({ items: fastify.gateway.listSkills() });
   });
@@ -24,5 +46,57 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
 
     const decision = fastify.gateway.resolveSkillActivation(parsed.data);
     return reply.send(decision);
+  });
+
+  fastify.patch("/api/v1/skills/:skillId/state", async (request, reply) => {
+    const params = skillParamsSchema.safeParse(request.params);
+    const body = updateStateSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      const updated = fastify.gateway.setSkillState(
+        params.data.skillId,
+        body.data.state,
+        body.data.note,
+      );
+      return reply.send(updated);
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/skills/bulk-state", async (request, reply) => {
+    const parsed = bulkStateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      const items = fastify.gateway.bulkSetSkillState(
+        parsed.data.skillIds,
+        parsed.data.state,
+        parsed.data.note,
+      );
+      return reply.send({ items });
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/skills/activation-policies", async (_request, reply) => {
+    return reply.send(fastify.gateway.getSkillActivationPolicy());
+  });
+
+  fastify.patch("/api/v1/skills/activation-policies", async (request, reply) => {
+    const parsed = activationPolicyPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send(fastify.gateway.updateSkillActivationPolicy(parsed.data));
   });
 };

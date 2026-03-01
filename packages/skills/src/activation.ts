@@ -41,9 +41,15 @@ export function resolveSkillActivation(
   }
 
   return {
-    selected: dependencyResult.ordered,
+    selected: dependencyResult.ordered.map((skill) => ({
+      ...skill,
+      state: "enabled",
+      confidence: 1,
+      requiresConfirmation: false,
+    })),
     reasons,
     blocked: dependencyResult.blocked,
+    suppressed: [],
   };
 }
 

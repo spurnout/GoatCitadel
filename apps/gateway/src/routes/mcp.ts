@@ -5,6 +5,26 @@ const serverParamsSchema = z.object({
   serverId: z.string().min(1),
 });
 
+const categorySchema = z.enum([
+  "development",
+  "browser",
+  "automation",
+  "research",
+  "data",
+  "creative",
+  "orchestration",
+  "other",
+]);
+const trustTierSchema = z.enum(["trusted", "restricted", "quarantined"]);
+const costTierSchema = z.enum(["free", "mixed", "paid", "unknown"]);
+const policySchema = z.object({
+  requireFirstToolApproval: z.boolean().optional(),
+  redactionMode: z.enum(["off", "basic", "strict"]).optional(),
+  allowedToolPatterns: z.array(z.string()).optional(),
+  blockedToolPatterns: z.array(z.string()).optional(),
+  notes: z.string().optional(),
+});
+
 const createServerSchema = z.object({
   label: z.string().min(1),
   transport: z.enum(["stdio", "http", "sse"]),
@@ -13,6 +33,11 @@ const createServerSchema = z.object({
   url: z.string().url().optional(),
   authType: z.enum(["none", "token", "oauth2"]).optional(),
   enabled: z.boolean().optional(),
+  category: categorySchema.optional(),
+  trustTier: trustTierSchema.optional(),
+  costTier: costTierSchema.optional(),
+  policy: policySchema.optional(),
+  verifiedAt: z.string().optional(),
 });
 
 const updateServerSchema = z.object({
@@ -22,6 +47,11 @@ const updateServerSchema = z.object({
   url: z.string().url().optional(),
   authType: z.enum(["none", "token", "oauth2"]).optional(),
   enabled: z.boolean().optional(),
+  category: categorySchema.optional(),
+  trustTier: trustTierSchema.optional(),
+  costTier: costTierSchema.optional(),
+  policy: policySchema.optional(),
+  verifiedAt: z.string().optional(),
 });
 
 const oauthCompleteSchema = z.object({
@@ -157,6 +187,24 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(fastify.gateway.invokeMcpTool(parsed.data));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/mcp/servers/:serverId/policy", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    const body = policySchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.updateMcpServerPolicy(params.data.serverId, body.data));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
     }
   });
 };
