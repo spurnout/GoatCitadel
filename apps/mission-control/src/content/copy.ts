@@ -92,6 +92,7 @@ export const appCopy = {
     { id: "approvals", label: "Gatehouse (Approvals)", code: "APR" },
     { id: "tasks", label: "Trailboard (Tasks)", code: "TSK" },
     { id: "integrations", label: "Connections", code: "CNX" },
+    { id: "mcp", label: "MCP Servers", code: "MCP" },
     { id: "mesh", label: "Mesh", code: "MSH" },
     { id: "npu", label: "NPU Runtime", code: "NPU" },
   ] satisfies NavItemCopy[],
@@ -99,7 +100,7 @@ export const appCopy = {
     { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
     { label: "Operate", items: ["dashboard", "chat", "tasks", "agents", "office", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
-    { label: "Admin", items: ["skills"] },
+    { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
   nextStepByTab: {
     onboarding: "Finish the setup checklist, then move to Summit or Forge.",
@@ -120,6 +121,7 @@ export const appCopy = {
     approvals: "Resolve pending approvals to unblock agent work.",
     tasks: "Keep task state current and clean stale work with trash/restore.",
     integrations: "Start with the guided form and only use Advanced JSON when needed.",
+    mcp: "Connect local or remote MCP servers, inspect tools, and test invocations safely.",
     mesh: "Validate node status and lease health before distributed execution.",
     npu: "Confirm sidecar status and model readiness before selecting npu-local.",
   } as Record<TabId, string>,
@@ -383,6 +385,23 @@ export const pageCopy: Record<PageId, PageCopy> = {
       ],
       terms: [
         { term: "Catalog", meaning: "Built-in integration definitions with expected config fields." },
+      ],
+    },
+  },
+  mcp: {
+    title: "MCP Servers",
+    subtitle: "Manage local and remote MCP servers, auth state, and available tools.",
+    guide: {
+      what: "This page controls Model Context Protocol servers and tool discovery.",
+      when: "Use this when you want to add MCP servers or inspect MCP tool access.",
+      actions: [
+        "Register a server (stdio, HTTP, or SSE).",
+        "Connect/disconnect and check live status.",
+        "Review discovered tools and test invoke flows.",
+      ],
+      terms: [
+        { term: "MCP Server", meaning: "A process or endpoint exposing tools/resources over MCP." },
+        { term: "OAuth", meaning: "Token-based auth flow for remote MCP services." },
       ],
     },
   },

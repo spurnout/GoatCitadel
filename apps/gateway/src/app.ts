@@ -33,6 +33,10 @@ import { secretsRoutes } from "./routes/secrets.js";
 import { chatRoutes } from "./routes/chat.js";
 import { adminRoutes } from "./routes/admin.js";
 import { docsRoutes } from "./routes/docs.js";
+import { mcpRoutes } from "./routes/mcp.js";
+import { voiceRoutes } from "./routes/voice.js";
+import { mediaRoutes } from "./routes/media.js";
+import { daemonRoutes } from "./routes/daemon.js";
 
 loadLocalEnvFile();
 
@@ -119,6 +123,10 @@ export async function buildApp() {
   await app.register(commsRoutes);
   await app.register(knowledgeRoutes);
   await app.register(chatRoutes);
+  await app.register(mcpRoutes);
+  await app.register(voiceRoutes);
+  await app.register(mediaRoutes);
+  await app.register(daemonRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
 

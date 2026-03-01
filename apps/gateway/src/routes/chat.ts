@@ -68,6 +68,33 @@ const listMessagesSchema = z.object({
 
 const sendMessageSchema = z.object({
   content: z.string().min(1),
+  parts: z.array(z.union([
+    z.object({
+      type: z.literal("text"),
+      text: z.string().min(1),
+    }),
+    z.object({
+      type: z.literal("image_ref"),
+      attachmentId: z.string().min(1),
+      mimeType: z.string().optional(),
+      detail: z.enum(["low", "high", "auto"]).optional(),
+    }),
+    z.object({
+      type: z.literal("audio_ref"),
+      attachmentId: z.string().min(1),
+      mimeType: z.string().optional(),
+    }),
+    z.object({
+      type: z.literal("video_ref"),
+      attachmentId: z.string().min(1),
+      mimeType: z.string().optional(),
+    }),
+    z.object({
+      type: z.literal("file_ref"),
+      attachmentId: z.string().min(1),
+      mimeType: z.string().optional(),
+    }),
+  ])).optional(),
   providerId: z.string().optional(),
   model: z.string().optional(),
   useMemory: z.boolean().optional(),

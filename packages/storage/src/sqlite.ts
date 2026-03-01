@@ -123,6 +123,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "system_settings_schema",
     up: createSystemSettingsSchema,
   },
+  {
+    version: 12,
+    name: "v11_expansion_schema",
+    up: createV11ExpansionSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -822,4 +827,149 @@ function createSystemSettingsSchema(db: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
   `);
+}
+
+function createV11ExpansionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      server_id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      command TEXT,
+      args_json TEXT,
+      url TEXT,
+      auth_type TEXT NOT NULL DEFAULT 'none',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'disconnected',
+      last_error TEXT,
+      last_connected_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mcp_servers_updated
+      ON mcp_servers(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled
+      ON mcp_servers(enabled, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mcp_server_auth (
+      server_id TEXT PRIMARY KEY,
+      access_token_ref TEXT,
+      refresh_token_ref TEXT,
+      token_expires_at TEXT,
+      oauth_state TEXT,
+      scopes_json TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(server_id) REFERENCES mcp_servers(server_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_tools_cache (
+      cache_id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      description TEXT,
+      input_schema_json TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      UNIQUE(server_id, tool_name),
+      FOREIGN KEY(server_id) REFERENCES mcp_servers(server_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mcp_tools_cache_server
+      ON mcp_tools_cache(server_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS media_jobs (
+      job_id TEXT PRIMARY KEY,
+      session_id TEXT,
+      attachment_id TEXT,
+      job_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      input_json TEXT,
+      output_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_session
+      ON media_jobs(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_attachment
+      ON media_jobs(attachment_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_status
+      ON media_jobs(status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS media_artifacts (
+      artifact_id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      attachment_id TEXT,
+      kind TEXT NOT NULL,
+      storage_rel_path TEXT,
+      text_preview TEXT,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(job_id) REFERENCES media_jobs(job_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_media_artifacts_job
+      ON media_artifacts(job_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS voice_sessions (
+      voice_session_id TEXT PRIMARY KEY,
+      talk_session_id TEXT,
+      mode TEXT NOT NULL,
+      state TEXT NOT NULL,
+      session_id TEXT,
+      payload_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_sessions_updated
+      ON voice_sessions(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS voice_wake_profiles (
+      profile_id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      model TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sensitivity REAL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_voice_wake_profiles_enabled
+      ON voice_wake_profiles(enabled, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS daemon_events (
+      event_id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      payload_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_daemon_events_created
+      ON daemon_events(created_at DESC);
+  `);
+
+  addColumnIfMissing(db, "chat_attachments", "media_type", "TEXT");
+  addColumnIfMissing(db, "chat_attachments", "thumbnail_rel_path", "TEXT");
+  addColumnIfMissing(db, "chat_attachments", "ocr_text", "TEXT");
+  addColumnIfMissing(db, "chat_attachments", "transcript_text", "TEXT");
+  addColumnIfMissing(db, "chat_attachments", "analysis_status", "TEXT NOT NULL DEFAULT 'pending'");
+
+  addColumnIfMissing(db, "integration_connections", "plugin_id", "TEXT");
+  addColumnIfMissing(db, "integration_connections", "plugin_version", "TEXT");
+  addColumnIfMissing(db, "integration_connections", "plugin_enabled", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "integration_connections", "plugin_meta_json", "TEXT");
+}
+
+function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: string, columnSql: string): void {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  const columns = new Set(rows.map((row) => row.name));
+  if (!columns.has(columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`);
+  }
 }

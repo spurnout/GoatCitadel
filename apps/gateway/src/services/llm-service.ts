@@ -118,6 +118,7 @@ export class LlmService {
         apiKeySource: status.apiKeySource,
         hasKeychainSecret: status.hasKeychainSecret,
         apiKeyRef: status.apiKeyRef,
+        capabilities: inferProviderCapabilities(provider),
       };
     });
   }
@@ -665,4 +666,35 @@ function isBlockedIpv6(host: string): boolean {
 
 function isRedirect(status: number): boolean {
   return status >= 300 && status < 400;
+}
+
+function inferProviderCapabilities(provider: LlmProviderConfig): {
+  vision: boolean;
+  audio: boolean;
+  video: boolean;
+  toolCalling: boolean;
+  jsonMode: boolean;
+} {
+  const model = provider.defaultModel.toLowerCase();
+  const base = provider.baseUrl.toLowerCase();
+  const hasVision = (
+    model.includes("vision")
+    || model.includes("gpt-4o")
+    || model.includes("gpt-4.1")
+    || model.includes("gemini")
+    || model.includes("claude-3")
+    || model.includes("kimi")
+    || model.includes("glm")
+  );
+  const hasAudio = model.includes("audio") || model.includes("whisper");
+  const hasVideo = model.includes("video");
+  const hasToolCalling = true;
+  const hasJsonMode = model.includes("gpt") || model.includes("glm") || model.includes("gemini") || base.includes("openai");
+  return {
+    vision: hasVision,
+    audio: hasAudio,
+    video: hasVideo,
+    toolCalling: hasToolCalling,
+    jsonMode: hasJsonMode,
+  };
 }

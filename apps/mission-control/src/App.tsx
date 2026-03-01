@@ -21,10 +21,12 @@ import { ToolsPage } from "./pages/ToolsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
+import { McpPage } from "./pages/McpPage";
 import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NpuPage } from "./pages/NpuPage";
 import { CommandPalette } from "./components/CommandPalette";
+import { HelpHint } from "./components/HelpHint";
 import { appCopy } from "./content/copy";
 
 const OfficePage = lazy(async () => {
@@ -51,6 +53,7 @@ type Tab =
   | "approvals"
   | "tasks"
   | "integrations"
+  | "mcp"
   | "mesh"
   | "npu";
 
@@ -73,6 +76,7 @@ const allTabs: Tab[] = [
   "approvals",
   "tasks",
   "integrations",
+  "mcp",
   "mesh",
   "npu",
 ];
@@ -267,6 +271,9 @@ export function App() {
     if (tab === "mesh") {
       return <MeshPage refreshKey={refreshKey} />;
     }
+    if (tab === "mcp") {
+      return <McpPage refreshKey={refreshKey} />;
+    }
     if (tab === "npu") {
       return <NpuPage refreshKey={refreshKey} />;
     }
@@ -334,9 +341,10 @@ export function App() {
             {appCopy.streamBanner.replace("{state}", streamState)}
           </div>
         ) : null}
-        <article className="card">
+        <article className="card content-next-step">
           <h3>{appCopy.nextStepTitle}</h3>
           <p className="office-subtitle">{nextStepByTab[tab]}</p>
+          <HelpHint label="Next step help" text="This hint is contextual to the current tab and keeps page headers compact." />
         </article>
         {content}
       </main>

@@ -15,3 +15,4 @@ data/transcripts/*.jsonl
 !data/transcripts/.gitkeep
 data/audit/*.jsonl
 !data/audit/.gitkeep
+workspace/chat/

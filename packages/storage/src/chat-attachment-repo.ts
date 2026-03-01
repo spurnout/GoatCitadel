@@ -7,11 +7,16 @@ interface ChatAttachmentRow {
   project_id: string | null;
   file_name: string;
   mime_type: string;
+  media_type: "text" | "image" | "audio" | "video" | "binary" | null;
   size_bytes: number;
   sha256: string;
   storage_rel_path: string;
   extract_status: "ready" | "unsupported" | "failed";
   extract_preview: string | null;
+  thumbnail_rel_path: string | null;
+  ocr_text: string | null;
+  transcript_text: string | null;
+  analysis_status: "queued" | "running" | "pending" | "ready" | "failed" | "unsupported" | null;
   created_at: string;
 }
 
@@ -26,6 +31,11 @@ export interface ChatAttachmentInsertInput {
   storageRelPath: string;
   extractStatus: "ready" | "unsupported" | "failed";
   extractPreview?: string;
+  mediaType?: "text" | "image" | "audio" | "video" | "binary";
+  thumbnailRelPath?: string;
+  ocrText?: string;
+  transcriptText?: string;
+  analysisStatus?: "queued" | "running" | "pending" | "ready" | "failed" | "unsupported";
 }
 
 export class ChatAttachmentRepository {
@@ -39,10 +49,12 @@ export class ChatAttachmentRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO chat_attachments (
         attachment_id, session_id, project_id, file_name, mime_type, size_bytes,
-        sha256, storage_rel_path, extract_status, extract_preview, created_at
+        sha256, storage_rel_path, extract_status, extract_preview, media_type,
+        thumbnail_rel_path, ocr_text, transcript_text, analysis_status, created_at
       ) VALUES (
         @attachmentId, @sessionId, @projectId, @fileName, @mimeType, @sizeBytes,
-        @sha256, @storageRelPath, @extractStatus, @extractPreview, @createdAt
+        @sha256, @storageRelPath, @extractStatus, @extractPreview, @mediaType,
+        @thumbnailRelPath, @ocrText, @transcriptText, @analysisStatus, @createdAt
       )
     `);
     this.listBySessionStmt = db.prepare(`
@@ -70,6 +82,11 @@ export class ChatAttachmentRepository {
       ...input,
       projectId: input.projectId ?? null,
       extractPreview: input.extractPreview ?? null,
+      mediaType: input.mediaType ?? null,
+      thumbnailRelPath: input.thumbnailRelPath ?? null,
+      ocrText: input.ocrText ?? null,
+      transcriptText: input.transcriptText ?? null,
+      analysisStatus: input.analysisStatus ?? inferAnalysisStatus(input.extractStatus),
       createdAt: now,
     });
     return this.get(input.attachmentId);
@@ -101,11 +118,28 @@ function mapRow(row: ChatAttachmentRow): ChatAttachmentRecord {
     projectId: row.project_id ?? undefined,
     fileName: row.file_name,
     mimeType: row.mime_type,
+    mediaType: row.media_type ?? undefined,
     sizeBytes: row.size_bytes,
     sha256: row.sha256,
     storageRelPath: row.storage_rel_path,
     extractStatus: row.extract_status,
     extractPreview: row.extract_preview ?? undefined,
+    thumbnailRelPath: row.thumbnail_rel_path ?? undefined,
+    ocrText: row.ocr_text ?? undefined,
+    transcriptText: row.transcript_text ?? undefined,
+    analysisStatus: row.analysis_status ?? inferAnalysisStatus(row.extract_status),
     createdAt: row.created_at,
   };
+}
+
+function inferAnalysisStatus(
+  extractStatus: "ready" | "unsupported" | "failed",
+): "queued" | "running" | "pending" | "ready" | "failed" | "unsupported" {
+  if (extractStatus === "ready") {
+    return "ready";
+  }
+  if (extractStatus === "failed") {
+    return "failed";
+  }
+  return "unsupported";
 }

@@ -100,6 +100,8 @@ export const INTEGRATION_CATALOG: IntegrationCatalogEntry[] = [
   entry("channel", "whatsapp", "WhatsApp", "WhatsApp business bridge.", "planned", ["oauth", "token"], ["chat", "media"]),
   entry("channel", "telegram", "Telegram", "Telegram bot integration.", "beta", ["bot-token"], ["chat", "threads"]),
   entry("channel", "slack", "Slack", "Slack app/bot integration.", "beta", ["oauth"], ["chat", "threads", "mentions"]),
+  entry("channel", "google-chat", "Google Chat", "Google Chat app and webhook integration.", "planned", ["oauth", "token"], ["chat", "spaces", "threads"]),
+  entry("channel", "mattermost", "Mattermost", "Mattermost bot/webhook integration.", "planned", ["token"], ["chat", "channels", "threads"]),
   entry("channel", "imessage", "iMessage", "iMessage bridge (platform dependent).", "planned", ["local-agent"], ["chat", "attachments"]),
   entry("channel", "teams", "Microsoft Teams", "Teams bot/webhook integration.", "planned", ["oauth"], ["chat", "threads"]),
   entry("channel", "nextcloud-talk", "Nextcloud Talk", "Nextcloud Talk channel bridge.", "planned", ["token"], ["chat", "rooms"]),

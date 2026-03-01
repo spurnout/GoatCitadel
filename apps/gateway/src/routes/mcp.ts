@@ -1,0 +1,162 @@
+import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
+
+const serverParamsSchema = z.object({
+  serverId: z.string().min(1),
+});
+
+const createServerSchema = z.object({
+  label: z.string().min(1),
+  transport: z.enum(["stdio", "http", "sse"]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  url: z.string().url().optional(),
+  authType: z.enum(["none", "token", "oauth2"]).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const updateServerSchema = z.object({
+  label: z.string().min(1).optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  url: z.string().url().optional(),
+  authType: z.enum(["none", "token", "oauth2"]).optional(),
+  enabled: z.boolean().optional(),
+});
+
+const oauthCompleteSchema = z.object({
+  code: z.string().min(1),
+  state: z.string().optional(),
+});
+
+const invokeSchema = z.object({
+  serverId: z.string().min(1),
+  toolName: z.string().min(1),
+  arguments: z.record(z.unknown()).optional(),
+  sessionId: z.string().optional(),
+  taskId: z.string().optional(),
+});
+
+export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/api/v1/mcp/servers", async (_request, reply) => {
+    return reply.send({ items: fastify.gateway.listMcpServers() });
+  });
+
+  fastify.post("/api/v1/mcp/servers", async (request, reply) => {
+    const parsed = createServerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.code(201).send(fastify.gateway.createMcpServer(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/mcp/servers/:serverId", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    const body = updateServerSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.updateMcpServer(params.data.serverId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.delete("/api/v1/mcp/servers/:serverId", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    return reply.send(fastify.gateway.deleteMcpServer(params.data.serverId));
+  });
+
+  fastify.post("/api/v1/mcp/servers/:serverId/connect", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.connectMcpServer(params.data.serverId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/mcp/servers/:serverId/disconnect", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.disconnectMcpServer(params.data.serverId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/mcp/servers/:serverId/oauth/start", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.startMcpOAuth(params.data.serverId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/mcp/servers/:serverId/oauth/complete", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    const body = oauthCompleteSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(
+        fastify.gateway.completeMcpOAuth(params.data.serverId, body.data.code, body.data.state),
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/mcp/servers/:serverId/tools", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send({ items: fastify.gateway.listMcpTools(params.data.serverId) });
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/mcp/invoke", async (request, reply) => {
+    const parsed = invokeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.invokeMcpTool(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+};

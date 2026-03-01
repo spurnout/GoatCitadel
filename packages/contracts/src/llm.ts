@@ -1,5 +1,13 @@
 export type LlmApiStyle = "openai-chat-completions";
 
+export interface LlmProviderCapabilities {
+  vision: boolean;
+  audio: boolean;
+  video: boolean;
+  toolCalling: boolean;
+  jsonMode: boolean;
+}
+
 export interface LlmProviderConfig {
   providerId: string;
   label: string;
@@ -9,6 +17,7 @@ export interface LlmProviderConfig {
   apiKey?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
+  capabilities?: Partial<LlmProviderCapabilities>;
 }
 
 export interface LlmConfigFile {
@@ -26,6 +35,7 @@ export interface LlmProviderSummary {
   apiKeySource: "inline" | "env" | "keychain" | "none";
   hasKeychainSecret?: boolean;
   apiKeyRef?: string;
+  capabilities?: LlmProviderCapabilities;
 }
 
 export interface LlmRuntimeConfig {

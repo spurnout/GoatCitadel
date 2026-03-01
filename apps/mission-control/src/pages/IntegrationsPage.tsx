@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createIntegrationConnection,
+  disableIntegrationPlugin,
   deleteIntegrationConnection,
+  enableIntegrationPlugin,
   evaluateUiChangeRisk,
   fetchIntegrationCatalog,
   fetchIntegrationConnections,
   fetchIntegrationFormSchema,
+  fetchIntegrationPlugins,
+  installIntegrationPlugin,
   updateIntegrationConnection,
   type IntegrationCatalogEntry,
   type IntegrationConnection,
@@ -35,6 +39,9 @@ const KIND_OPTIONS: Array<{ value: IntegrationKind; label: string }> = [
 export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
+  const [plugins, setPlugins] = useState<Awaited<ReturnType<typeof fetchIntegrationPlugins>>["items"]>([]);
+  const [pluginSource, setPluginSource] = useState("");
+  const [pluginBusyId, setPluginBusyId] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<IntegrationKind>("all");
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
   const [label, setLabel] = useState("");
@@ -63,14 +70,16 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     void Promise.all([
       fetchIntegrationCatalog(kind),
       fetchIntegrationConnections(kind),
+      fetchIntegrationPlugins(),
     ])
-      .then(([catalogRes, connectionRes]) => {
+      .then(([catalogRes, connectionRes, pluginRes]) => {
         if (requestId !== requestSeq.current) {
           return;
         }
         const nextCatalog = catalogRes.items;
         setCatalog(nextCatalog);
         setConnections(connectionRes.items);
+        setPlugins(pluginRes.items);
 
         const hasCurrentSelection = selectedCatalogId
           ? nextCatalog.some((entry) => entry.catalogId === selectedCatalogId)
@@ -253,6 +262,42 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
+  const onInstallPlugin = async () => {
+    const source = pluginSource.trim();
+    if (!source) {
+      setError("Enter a plugin source first.");
+      return;
+    }
+    setPluginBusyId("install");
+    try {
+      await installIntegrationPlugin({ source });
+      setPluginSource("");
+      setError(null);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPluginBusyId(null);
+    }
+  };
+
+  const onTogglePlugin = async (pluginId: string, enabled: boolean) => {
+    setPluginBusyId(pluginId);
+    try {
+      if (enabled) {
+        await disableIntegrationPlugin(pluginId);
+      } else {
+        await enableIntegrationPlugin(pluginId);
+      }
+      setError(null);
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPluginBusyId(null);
+    }
+  };
+
   const onDeleteConfirmed = async () => {
     if (!deleteTarget) {
       return;
@@ -426,6 +471,61 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     disabled={deleteAction.pending}
                   >
                     Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </article>
+
+      <article className="card">
+        <h3>Plugin Adapters</h3>
+        <p className="office-subtitle">Install and toggle optional long-tail channel/provider adapters.</p>
+        <div className="controls-row">
+          <input
+            value={pluginSource}
+            onChange={(event) => setPluginSource(event.target.value)}
+            placeholder="Plugin source (file path, URL, or package id)"
+          />
+          <button onClick={() => void onInstallPlugin()} disabled={pluginBusyId === "install"}>
+            {pluginBusyId === "install" ? "Installing..." : "Install Plugin"}
+          </button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Plugin</th>
+              <th>Version</th>
+              <th>Capabilities</th>
+              <th>Status</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {plugins.length === 0 ? (
+              <tr>
+                <td colSpan={6}>No plugins installed.</td>
+              </tr>
+            ) : plugins.map((plugin) => (
+              <tr key={plugin.pluginId}>
+                <td>
+                  <strong>{plugin.label}</strong>
+                  <div className="office-subtitle">{plugin.pluginId}</div>
+                </td>
+                <td>{plugin.version}</td>
+                <td>{plugin.capabilities.join(", ") || "-"}</td>
+                <td>{plugin.enabled ? "enabled" : "disabled"}</td>
+                <td>{new Date(plugin.updatedAt).toLocaleString()}</td>
+                <td>
+                  <button
+                    onClick={() => void onTogglePlugin(plugin.pluginId, plugin.enabled)}
+                    disabled={pluginBusyId === plugin.pluginId}
+                  >
+                    {pluginBusyId === plugin.pluginId
+                      ? (plugin.enabled ? "Disabling..." : "Enabling...")
+                      : (plugin.enabled ? "Disable" : "Enable")}
                   </button>
                 </td>
               </tr>

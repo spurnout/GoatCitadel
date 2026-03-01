@@ -30,6 +30,9 @@ import type {
   ChannelSendInput,
   ChannelInboundMessageInput,
   ChatAttachmentRecord,
+  ChatAttachmentMediaType,
+  ChatAttachmentPreviewResponse,
+  ChatInputPart,
   ChatMessageRecord,
   ChatProjectRecord,
   ChatSendMessageResponse,
@@ -52,10 +55,21 @@ import type {
   GatewayEventResult,
   IntegrationCatalogEntry,
   IntegrationFormSchema,
+  IntegrationPluginInstallInput,
+  IntegrationPluginRecord,
   IntegrationConnection,
   IntegrationConnectionCreateInput,
   IntegrationConnectionUpdateInput,
   IntegrationKind,
+  McpInvokeRequest,
+  McpInvokeResponse,
+  McpOAuthStartResponse,
+  McpServerCreateInput,
+  McpServerRecord,
+  McpServerUpdateInput,
+  McpToolRecord,
+  MediaCreateJobRequest,
+  MediaJobRecord,
   LlmModelRecord,
   LlmRuntimeConfig,
   OnboardingBootstrapInput,
@@ -110,6 +124,9 @@ import type {
   GmailSendInput,
   ToolInvokeRequest,
   ToolInvokeResult,
+  VoiceStatus,
+  VoiceTalkSessionRecord,
+  VoiceTranscribeResponse,
 } from "@goatcitadel/contracts";
 import { BUILTIN_AGENT_PROFILES } from "@goatcitadel/contracts";
 import type { GatewayRuntimeConfig } from "../config.js";
@@ -212,12 +229,30 @@ export interface RuntimeSettings {
 }
 
 const RETENTION_SETTINGS_KEY = "retention_policy";
+const MCP_SERVERS_SETTING_KEY = "mcp_servers_v1";
+const MCP_TOOLS_SETTING_KEY = "mcp_tools_v1";
+const INTEGRATION_PLUGINS_SETTING_KEY = "integration_plugins_v1";
+const DAEMON_LOG_TAIL_SETTING_KEY = "daemon_log_tail_v1";
+const VOICE_STATUS_SETTING_KEY = "voice_status_v1";
+const VOICE_WAKE_STATUS_SETTING_KEY = "voice_wake_status_v1";
 const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
   realtimeEventsDays: 14,
   backupsKeep: 20,
   transcriptsDays: undefined,
   auditDays: undefined,
 };
+
+const DEFAULT_VOICE_PROVIDER: VoiceTranscribeResponse["provider"] = "whisper.cpp";
+const CORE_CHANNEL_KEYS = new Set([
+  "discord",
+  "slack",
+  "telegram",
+  "whatsapp",
+  "matrix",
+  "google-chat",
+  "mattermost",
+  "webchat",
+]);
 
 interface ChatSessionListQuery {
   scope?: "mission" | "external" | "all";
@@ -704,6 +739,7 @@ export class GatewayService {
     sessionId: string,
     input: {
       content: string;
+      parts?: ChatInputPart[];
       providerId?: string;
       model?: string;
       useMemory?: boolean;
@@ -721,6 +757,7 @@ export class GatewayService {
     }
 
     const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
     const route = this.routeFromSession(session);
     const userEventId = randomUUID();
     const userPayload = {
@@ -733,6 +770,7 @@ export class GatewayService {
       message: {
         role: "user" as const,
         content,
+        parts: inputParts,
         attachments: attachments.map((item) => ({
           attachmentId: item.attachmentId,
           fileName: item.fileName,
@@ -824,7 +862,10 @@ export class GatewayService {
       };
     }
 
-    const history = await this.buildLlmMessagesFromTranscript(sessionId);
+    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
+      providerId: input.providerId,
+      model: input.model,
+    });
     const response = await this.createChatCompletion({
       providerId: input.providerId,
       model: input.model,
@@ -883,6 +924,7 @@ export class GatewayService {
     sessionId: string,
     input: {
       content: string;
+      parts?: ChatInputPart[];
       providerId?: string;
       model?: string;
       useMemory?: boolean;
@@ -985,18 +1027,36 @@ export class GatewayService {
 
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const { extractStatus, extractPreview } = extractAttachmentPreview(bytes, mimeType, fileName);
+    const mediaType = detectAttachmentMediaType(mimeType);
+    const analysisStatus = inferAttachmentAnalysisStatus(mediaType, extractStatus);
     const created = this.storage.chatAttachments.create({
       attachmentId,
       sessionId: input.sessionId,
       projectId,
       fileName,
       mimeType,
+      mediaType,
       sizeBytes: bytes.length,
       sha256,
       storageRelPath,
       extractStatus,
       extractPreview,
+      analysisStatus,
+      ocrText: mediaType === "text" ? extractPreview : undefined,
     });
+    if (analysisStatus === "queued") {
+      this.createMediaJob({
+        type: mediaType === "image"
+          ? "ocr"
+          : mediaType === "audio"
+            ? "audio_transcribe"
+            : mediaType === "video"
+              ? "video_transcribe"
+              : "analyze",
+        sessionId: input.sessionId,
+        attachmentId,
+      });
+    }
     this.publishRealtime("chat_message", "chat", {
       type: "chat_attachment_uploaded",
       sessionId: input.sessionId,
@@ -2294,10 +2354,28 @@ export class GatewayService {
   }
 
   public listIntegrationCatalog(kind?: IntegrationKind): IntegrationCatalogEntry[] {
+    const pluginIds = new Set(this.readIntegrationPlugins().map((item) => item.pluginId));
+    const mapped = INTEGRATION_CATALOG.map((entry) => {
+      let maturity = entry.maturity;
+      if (entry.kind === "channel") {
+        if (CORE_CHANNEL_KEYS.has(entry.key)) {
+          maturity = entry.maturity === "planned" ? "native" : entry.maturity;
+        } else if (entry.maturity === "planned") {
+          maturity = pluginIds.size > 0 ? "plugin" : "disabled";
+        }
+      }
+      if (entry.maturity === "planned" && pluginIds.has(entry.key)) {
+        maturity = "plugin";
+      }
+      return {
+        ...entry,
+        maturity,
+      };
+    });
     if (!kind) {
-      return INTEGRATION_CATALOG;
+      return mapped;
     }
-    return INTEGRATION_CATALOG.filter((entry) => entry.kind === kind);
+    return mapped.filter((entry) => entry.kind === kind);
   }
 
   public getIntegrationFormSchema(catalogId: string): IntegrationFormSchema {
@@ -2360,6 +2438,527 @@ export class GatewayService {
       });
     }
     return deleted;
+  }
+
+  public listIntegrationPlugins(): IntegrationPluginRecord[] {
+    return this.readIntegrationPlugins();
+  }
+
+  public installIntegrationPlugin(input: IntegrationPluginInstallInput): IntegrationPluginRecord {
+    const now = new Date().toISOString();
+    const plugins = this.readIntegrationPlugins();
+    const nextId = sanitizePluginId(input.pluginId ?? input.source);
+    const existing = plugins.find((item) => item.pluginId === nextId);
+    if (existing) {
+      const updated: IntegrationPluginRecord = {
+        ...existing,
+        updatedAt: now,
+      };
+      this.writeIntegrationPlugins(plugins.map((item) => item.pluginId === nextId ? updated : item));
+      return updated;
+    }
+
+    const created: IntegrationPluginRecord = {
+      pluginId: nextId,
+      label: toTitleCase(nextId),
+      version: "0.1.0",
+      description: `Installed from ${input.source}`,
+      enabled: true,
+      installedAt: now,
+      updatedAt: now,
+      capabilities: ["channel.adapter"],
+    };
+    this.writeIntegrationPlugins([created, ...plugins]);
+    this.publishRealtime("system", "integrations", {
+      type: "integration_plugin_installed",
+      pluginId: created.pluginId,
+      source: input.source,
+    });
+    return created;
+  }
+
+  public setIntegrationPluginEnabled(pluginId: string, enabled: boolean): IntegrationPluginRecord {
+    const now = new Date().toISOString();
+    const plugins = this.readIntegrationPlugins();
+    const current = plugins.find((item) => item.pluginId === pluginId);
+    if (!current) {
+      throw new Error(`Unknown integration plugin: ${pluginId}`);
+    }
+    const updated: IntegrationPluginRecord = {
+      ...current,
+      enabled,
+      updatedAt: now,
+    };
+    this.writeIntegrationPlugins(plugins.map((item) => item.pluginId === pluginId ? updated : item));
+    this.publishRealtime("system", "integrations", {
+      type: enabled ? "integration_plugin_enabled" : "integration_plugin_disabled",
+      pluginId,
+    });
+    return updated;
+  }
+
+  public listMcpServers(): McpServerRecord[] {
+    return this.readMcpServers();
+  }
+
+  public createMcpServer(input: McpServerCreateInput): McpServerRecord {
+    const now = new Date().toISOString();
+    const created: McpServerRecord = {
+      serverId: randomUUID(),
+      label: input.label.trim(),
+      transport: input.transport,
+      command: input.command?.trim() || undefined,
+      args: input.args?.map((item) => item.trim()).filter(Boolean),
+      url: input.url?.trim() || undefined,
+      authType: input.authType ?? "none",
+      enabled: input.enabled ?? true,
+      status: "disconnected",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const servers = [created, ...this.readMcpServers()];
+    this.writeMcpServers(servers);
+    this.publishRealtime("system", "mcp", {
+      type: "mcp_server_created",
+      serverId: created.serverId,
+      transport: created.transport,
+    });
+    return created;
+  }
+
+  public updateMcpServer(serverId: string, input: McpServerUpdateInput): McpServerRecord {
+    const now = new Date().toISOString();
+    let updated: McpServerRecord | undefined;
+    const servers = this.readMcpServers().map((item) => {
+      if (item.serverId !== serverId) {
+        return item;
+      }
+      updated = {
+        ...item,
+        label: input.label?.trim() || item.label,
+        command: input.command === undefined ? item.command : (input.command.trim() || undefined),
+        args: input.args === undefined ? item.args : input.args.map((entry) => entry.trim()).filter(Boolean),
+        url: input.url === undefined ? item.url : (input.url.trim() || undefined),
+        authType: input.authType ?? item.authType,
+        enabled: input.enabled ?? item.enabled,
+        updatedAt: now,
+      };
+      return updated;
+    });
+    if (!updated) {
+      throw new Error(`Unknown MCP server: ${serverId}`);
+    }
+    this.writeMcpServers(servers);
+    return updated;
+  }
+
+  public deleteMcpServer(serverId: string): { deleted: boolean } {
+    const previous = this.readMcpServers();
+    const next = previous.filter((item) => item.serverId !== serverId);
+    const deleted = next.length !== previous.length;
+    if (deleted) {
+      this.writeMcpServers(next);
+      this.writeMcpTools(this.readMcpTools().filter((tool) => tool.serverId !== serverId));
+      this.publishRealtime("system", "mcp", {
+        type: "mcp_server_deleted",
+        serverId,
+      });
+    }
+    return { deleted };
+  }
+
+  public connectMcpServer(serverId: string): McpServerRecord {
+    const connected = this.patchMcpServerState(serverId, {
+      status: "connected",
+      lastConnectedAt: new Date().toISOString(),
+      lastError: undefined,
+    });
+    const tools = this.readMcpTools();
+    if (!tools.some((item) => item.serverId === serverId)) {
+      this.writeMcpTools([
+        ...tools,
+        {
+          serverId,
+          toolName: "search",
+          description: "Search tool exposed by MCP server.",
+          enabled: true,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          serverId,
+          toolName: "fetch",
+          description: "Fetch structured resource from MCP server.",
+          enabled: true,
+          updatedAt: new Date().toISOString(),
+        },
+      ]);
+    }
+    return connected;
+  }
+
+  public disconnectMcpServer(serverId: string): McpServerRecord {
+    return this.patchMcpServerState(serverId, {
+      status: "disconnected",
+    });
+  }
+
+  public startMcpOAuth(serverId: string): McpOAuthStartResponse {
+    const server = this.requireMcpServer(serverId);
+    const state = randomUUID();
+    const callback = encodeURIComponent("http://127.0.0.1:8787/api/v1/mcp/oauth/callback");
+    const authorizeUrl = `${server.url ?? "https://example-mcp-provider.local/oauth/authorize"}?state=${encodeURIComponent(state)}&redirect_uri=${callback}`;
+    const authRows = this.readMcpAuthState();
+    authRows[serverId] = {
+      ...(authRows[serverId] ?? {}),
+      oauthState: state,
+      updatedAt: new Date().toISOString(),
+    };
+    this.writeMcpAuthState(authRows);
+    return { authorizeUrl, state };
+  }
+
+  public completeMcpOAuth(serverId: string, code: string, state?: string): McpServerRecord {
+    const authRows = this.readMcpAuthState();
+    const authRow = authRows[serverId];
+    if (!authRow) {
+      throw new Error("No OAuth handshake in progress for this server.");
+    }
+    if (state && authRow.oauthState && authRow.oauthState !== state) {
+      throw new Error("OAuth state mismatch.");
+    }
+    authRows[serverId] = {
+      ...authRow,
+      accessTokenRef: `keychain:goatcitadel:mcp:${serverId}:access-token`,
+      refreshTokenRef: `keychain:goatcitadel:mcp:${serverId}:refresh-token`,
+      oauthState: undefined,
+      updatedAt: new Date().toISOString(),
+      lastCodePreview: code.slice(0, 8),
+    };
+    this.writeMcpAuthState(authRows);
+    return this.connectMcpServer(serverId);
+  }
+
+  public listMcpTools(serverId: string): McpToolRecord[] {
+    this.requireMcpServer(serverId);
+    return this.readMcpTools()
+      .filter((item) => item.serverId === serverId)
+      .sort((left, right) => left.toolName.localeCompare(right.toolName));
+  }
+
+  public invokeMcpTool(input: McpInvokeRequest): McpInvokeResponse {
+    const server = this.requireMcpServer(input.serverId);
+    if (!server.enabled || server.status !== "connected") {
+      return {
+        ok: false,
+        error: "MCP server is not connected.",
+      };
+    }
+    const tools = this.listMcpTools(input.serverId);
+    const tool = tools.find((item) => item.toolName === input.toolName && item.enabled);
+    if (!tool) {
+      return {
+        ok: false,
+        error: `MCP tool ${input.toolName} is not enabled on server ${input.serverId}.`,
+      };
+    }
+    this.publishRealtime("tool_invoked", "mcp", {
+      type: "mcp_tool_invoked",
+      serverId: input.serverId,
+      toolName: input.toolName,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+    });
+    return {
+      ok: true,
+      output: {
+        serverId: input.serverId,
+        toolName: input.toolName,
+        arguments: input.arguments ?? {},
+        message: "MCP invocation recorded. Runtime adapter wiring is plugin-dependent.",
+      },
+    };
+  }
+
+  public createMediaJob(input: MediaCreateJobRequest): MediaJobRecord {
+    const now = new Date().toISOString();
+    const jobId = randomUUID();
+    this.storage.db.prepare(`
+      INSERT INTO media_jobs (
+        job_id, session_id, attachment_id, job_type, status, input_json, output_json, error, created_at, updated_at, completed_at
+      ) VALUES (
+        @jobId, @sessionId, @attachmentId, @jobType, @status, @inputJson, NULL, NULL, @createdAt, @updatedAt, NULL
+      )
+    `).run({
+      jobId,
+      sessionId: input.sessionId ?? null,
+      attachmentId: input.attachmentId ?? null,
+      jobType: input.type,
+      status: "queued",
+      inputJson: input.input ? JSON.stringify(input.input) : null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const created = this.getMediaJob(jobId);
+    this.processMediaJob(jobId);
+    return created;
+  }
+
+  public getMediaJob(jobId: string): MediaJobRecord {
+    const row = this.storage.db.prepare(`
+      SELECT * FROM media_jobs
+      WHERE job_id = ?
+    `).get(jobId) as MediaJobRow | undefined;
+    if (!row) {
+      throw new Error(`Unknown media job: ${jobId}`);
+    }
+    return mapMediaJobRow(row);
+  }
+
+  public listMediaJobs(sessionId?: string): MediaJobRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT * FROM media_jobs
+      WHERE (@sessionId IS NULL OR session_id = @sessionId)
+      ORDER BY created_at DESC
+      LIMIT 500
+    `).all({
+      sessionId: sessionId ?? null,
+    }) as unknown as MediaJobRow[];
+    return rows.map(mapMediaJobRow);
+  }
+
+  public getChatAttachmentPreview(attachmentId: string): ChatAttachmentPreviewResponse {
+    const record = this.getChatAttachment(attachmentId);
+    return {
+      attachmentId: record.attachmentId,
+      fileName: record.fileName,
+      mimeType: record.mimeType,
+      mediaType: record.mediaType ?? detectAttachmentMediaType(record.mimeType),
+      thumbnailRelPath: record.thumbnailRelPath,
+      extractPreview: record.extractPreview,
+      ocrText: record.ocrText,
+      transcriptText: record.transcriptText,
+      analysisStatus: record.analysisStatus === "pending"
+        ? "queued"
+        : (record.analysisStatus ?? "queued"),
+    };
+  }
+
+  public async transcribeVoice(input: {
+    bytesBase64: string;
+    mimeType?: string;
+    language?: string;
+  }): Promise<VoiceTranscribeResponse> {
+    const bytes = Buffer.from(input.bytesBase64, "base64");
+    if (bytes.length === 0) {
+      throw new Error("Audio payload is empty.");
+    }
+    return this.transcribeAudioBytes(bytes, input.mimeType, input.language);
+  }
+
+  public getVoiceStatus(): VoiceStatus {
+    const now = new Date().toISOString();
+    const stt = this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
+      state: "stopped",
+      provider: DEFAULT_VOICE_PROVIDER,
+      updatedAt: now,
+    };
+    const wake = this.storage.systemSettings.get<VoiceStatus["wake"]>(VOICE_WAKE_STATUS_SETTING_KEY)?.value ?? {
+      enabled: false,
+      state: "stopped",
+      model: "openwakeword",
+      updatedAt: now,
+    };
+    const talkRecord = this.storage.systemSettings.get<{
+      activeSessionId?: string;
+      state: "stopped" | "running" | "error";
+      mode?: "push_to_talk" | "wake";
+      updatedAt: string;
+    }>("voice_talk_status_v1")?.value ?? {
+      activeSessionId: undefined,
+      state: "stopped",
+      mode: undefined,
+      updatedAt: now,
+    };
+    return {
+      stt,
+      talk: talkRecord,
+      wake,
+    };
+  }
+
+  public startTalkSession(input?: { mode?: "push_to_talk" | "wake"; sessionId?: string }): VoiceTalkSessionRecord {
+    const now = new Date().toISOString();
+    const record: VoiceTalkSessionRecord = {
+      talkSessionId: randomUUID(),
+      mode: input?.mode ?? "push_to_talk",
+      state: "running",
+      createdAt: now,
+      startedAt: now,
+      sessionId: input?.sessionId,
+    };
+    this.storage.db.prepare(`
+      INSERT INTO voice_sessions (
+        voice_session_id, talk_session_id, mode, state, session_id, payload_json, created_at, updated_at
+      ) VALUES (
+        @voiceSessionId, @talkSessionId, @mode, @state, @sessionId, @payloadJson, @createdAt, @updatedAt
+      )
+    `).run({
+      voiceSessionId: record.talkSessionId,
+      talkSessionId: record.talkSessionId,
+      mode: record.mode,
+      state: record.state,
+      sessionId: record.sessionId ?? null,
+      payloadJson: JSON.stringify(record),
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.storage.systemSettings.set("voice_talk_status_v1", {
+      activeSessionId: record.talkSessionId,
+      state: "running",
+      mode: record.mode,
+      updatedAt: now,
+    });
+    this.publishRealtime("system", "voice", {
+      type: "voice_talk_started",
+      talkSessionId: record.talkSessionId,
+      mode: record.mode,
+    });
+    return record;
+  }
+
+  public stopTalkSession(talkSessionId: string): VoiceTalkSessionRecord {
+    const now = new Date().toISOString();
+    const row = this.storage.db.prepare(`
+      SELECT payload_json FROM voice_sessions WHERE talk_session_id = ?
+    `).get(talkSessionId) as { payload_json: string } | undefined;
+    if (!row) {
+      throw new Error(`Unknown talk session: ${talkSessionId}`);
+    }
+    const payload = safeJsonParse<VoiceTalkSessionRecord>(row.payload_json, {
+      talkSessionId,
+      mode: "push_to_talk",
+      state: "running",
+      createdAt: now,
+    });
+    const stopped: VoiceTalkSessionRecord = {
+      ...payload,
+      state: "stopped",
+      stoppedAt: now,
+    };
+    this.storage.db.prepare(`
+      UPDATE voice_sessions
+      SET state = 'stopped', payload_json = @payloadJson, updated_at = @updatedAt
+      WHERE talk_session_id = @talkSessionId
+    `).run({
+      payloadJson: JSON.stringify(stopped),
+      updatedAt: now,
+      talkSessionId,
+    });
+    this.storage.systemSettings.set("voice_talk_status_v1", {
+      activeSessionId: undefined,
+      state: "stopped",
+      mode: stopped.mode,
+      updatedAt: now,
+    });
+    this.publishRealtime("system", "voice", {
+      type: "voice_talk_stopped",
+      talkSessionId,
+    });
+    return stopped;
+  }
+
+  public startVoiceWake(): VoiceStatus["wake"] {
+    const status: VoiceStatus["wake"] = {
+      enabled: true,
+      state: "running",
+      model: "openwakeword",
+      updatedAt: new Date().toISOString(),
+    };
+    this.storage.systemSettings.set(VOICE_WAKE_STATUS_SETTING_KEY, status);
+    this.publishRealtime("system", "voice", {
+      type: "voice_wake_started",
+    });
+    return status;
+  }
+
+  public stopVoiceWake(): VoiceStatus["wake"] {
+    const status: VoiceStatus["wake"] = {
+      enabled: false,
+      state: "stopped",
+      model: "openwakeword",
+      updatedAt: new Date().toISOString(),
+    };
+    this.storage.systemSettings.set(VOICE_WAKE_STATUS_SETTING_KEY, status);
+    this.publishRealtime("system", "voice", {
+      type: "voice_wake_stopped",
+    });
+    return status;
+  }
+
+  public getDaemonStatus(): {
+    running: boolean;
+    pid: number;
+    uptimeSeconds: number;
+    host: string;
+    state: "running" | "stopped";
+    lastCommandAt?: string;
+  } {
+    const state = this.storage.systemSettings.get<{ state: "running" | "stopped"; lastCommandAt?: string }>("daemon_state_v1")?.value;
+    return {
+      running: (state?.state ?? "running") === "running",
+      pid: process.pid,
+      uptimeSeconds: Math.floor(process.uptime()),
+      host: os.hostname(),
+      state: state?.state ?? "running",
+      lastCommandAt: state?.lastCommandAt,
+    };
+  }
+
+  public daemonStart(): { accepted: boolean; status: ReturnType<GatewayService["getDaemonStatus"]> } {
+    const now = new Date().toISOString();
+    this.storage.systemSettings.set("daemon_state_v1", {
+      state: "running" as const,
+      lastCommandAt: now,
+    });
+    this.appendDaemonLog("start", { at: now });
+    return {
+      accepted: true,
+      status: this.getDaemonStatus(),
+    };
+  }
+
+  public daemonStop(): { accepted: boolean; status: ReturnType<GatewayService["getDaemonStatus"]> } {
+    const now = new Date().toISOString();
+    this.storage.systemSettings.set("daemon_state_v1", {
+      state: "stopped" as const,
+      lastCommandAt: now,
+    });
+    this.appendDaemonLog("stop", { at: now });
+    return {
+      accepted: true,
+      status: this.getDaemonStatus(),
+    };
+  }
+
+  public daemonRestart(): { accepted: boolean; status: ReturnType<GatewayService["getDaemonStatus"]> } {
+    const now = new Date().toISOString();
+    this.storage.systemSettings.set("daemon_state_v1", {
+      state: "running" as const,
+      lastCommandAt: now,
+    });
+    this.appendDaemonLog("restart", { at: now });
+    return {
+      accepted: true,
+      status: this.getDaemonStatus(),
+    };
+  }
+
+  public listDaemonLogs(tail = 200): Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }> {
+    const rows = this.storage.systemSettings.get<Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>>(
+      DAEMON_LOG_TAIL_SETTING_KEY,
+    )?.value ?? [];
+    const bounded = Math.max(1, Math.min(2000, Math.floor(tail)));
+    return rows.slice(-bounded);
   }
 
   public async commsSend(input: ChannelSendInput): Promise<ToolInvokeResult | Record<string, unknown>> {
@@ -3032,6 +3631,297 @@ export class GatewayService {
     return this.storage.orchestration.listCheckpoints(runId);
   }
 
+  private readIntegrationPlugins(): IntegrationPluginRecord[] {
+    const stored = this.storage.systemSettings.get<IntegrationPluginRecord[]>(INTEGRATION_PLUGINS_SETTING_KEY)?.value;
+    if (!Array.isArray(stored)) {
+      return [];
+    }
+    return stored.filter((item): item is IntegrationPluginRecord => Boolean(item?.pluginId));
+  }
+
+  private writeIntegrationPlugins(plugins: IntegrationPluginRecord[]): void {
+    this.storage.systemSettings.set(INTEGRATION_PLUGINS_SETTING_KEY, plugins);
+  }
+
+  private readMcpServers(): McpServerRecord[] {
+    const stored = this.storage.systemSettings.get<McpServerRecord[]>(MCP_SERVERS_SETTING_KEY)?.value;
+    if (!Array.isArray(stored)) {
+      return [];
+    }
+    return stored.filter((item): item is McpServerRecord => Boolean(item?.serverId));
+  }
+
+  private writeMcpServers(servers: McpServerRecord[]): void {
+    this.storage.systemSettings.set(MCP_SERVERS_SETTING_KEY, servers);
+  }
+
+  private requireMcpServer(serverId: string): McpServerRecord {
+    const server = this.readMcpServers().find((item) => item.serverId === serverId);
+    if (!server) {
+      throw new Error(`Unknown MCP server: ${serverId}`);
+    }
+    return server;
+  }
+
+  private patchMcpServerState(
+    serverId: string,
+    patch: Partial<Pick<McpServerRecord, "status" | "lastConnectedAt" | "lastError">>,
+  ): McpServerRecord {
+    const now = new Date().toISOString();
+    let updated: McpServerRecord | undefined;
+    const servers = this.readMcpServers().map((item) => {
+      if (item.serverId !== serverId) {
+        return item;
+      }
+      updated = {
+        ...item,
+        status: patch.status ?? item.status,
+        lastConnectedAt: patch.lastConnectedAt ?? item.lastConnectedAt,
+        lastError: patch.lastError ?? item.lastError,
+        updatedAt: now,
+      };
+      return updated;
+    });
+    if (!updated) {
+      throw new Error(`Unknown MCP server: ${serverId}`);
+    }
+    this.writeMcpServers(servers);
+    return updated;
+  }
+
+  private readMcpTools(): McpToolRecord[] {
+    const stored = this.storage.systemSettings.get<McpToolRecord[]>(MCP_TOOLS_SETTING_KEY)?.value;
+    if (!Array.isArray(stored)) {
+      return [];
+    }
+    return stored.filter((item): item is McpToolRecord => Boolean(item?.serverId && item?.toolName));
+  }
+
+  private writeMcpTools(tools: McpToolRecord[]): void {
+    this.storage.systemSettings.set(MCP_TOOLS_SETTING_KEY, tools);
+  }
+
+  private readMcpAuthState(): Record<string, McpAuthStateRecord> {
+    return this.storage.systemSettings.get<Record<string, McpAuthStateRecord>>("mcp_auth_state_v1")?.value ?? {};
+  }
+
+  private writeMcpAuthState(state: Record<string, McpAuthStateRecord>): void {
+    this.storage.systemSettings.set("mcp_auth_state_v1", state);
+  }
+
+  private processMediaJob(jobId: string): void {
+    if (this.closing) {
+      return;
+    }
+    const task = this.runMediaJob(jobId)
+      .catch((error) => {
+        const now = new Date().toISOString();
+        this.storage.db.prepare(`
+          UPDATE media_jobs
+          SET status = 'failed', error = @error, updated_at = @updatedAt, completed_at = @completedAt
+          WHERE job_id = @jobId
+        `).run({
+          error: (error as Error).message,
+          updatedAt: now,
+          completedAt: now,
+          jobId,
+        });
+      })
+      .finally(() => {
+        this.backgroundTasks.delete(task);
+      });
+    this.backgroundTasks.add(task);
+    void task;
+  }
+
+  private async runMediaJob(jobId: string): Promise<void> {
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE media_jobs
+      SET status = 'running', updated_at = @updatedAt
+      WHERE job_id = @jobId
+    `).run({
+      updatedAt: now,
+      jobId,
+    });
+    const job = this.getMediaJob(jobId);
+    const attachmentId = job.attachmentId;
+    if (!attachmentId) {
+      this.storage.db.prepare(`
+        UPDATE media_jobs
+        SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
+        WHERE job_id = @jobId
+      `).run({
+        outputJson: JSON.stringify({ message: "No attachment supplied." }),
+        updatedAt: now,
+        completedAt: now,
+        jobId,
+      });
+      return;
+    }
+
+    const attachment = this.storage.chatAttachments.get(attachmentId);
+    if (job.type === "audio_transcribe" || job.type === "video_transcribe") {
+      const content = await this.readChatAttachmentContent(attachmentId);
+      const transcript = await this.transcribeAudioBytes(content.bytes, content.record.mimeType);
+      const completedAt = new Date().toISOString();
+      this.storage.db.prepare(`
+        UPDATE media_jobs
+        SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
+        WHERE job_id = @jobId
+      `).run({
+        outputJson: JSON.stringify({ transcriptText: transcript.text, provider: transcript.provider }),
+        updatedAt: completedAt,
+        completedAt,
+        jobId,
+      });
+      this.storage.db.prepare(`
+        UPDATE chat_attachments
+        SET transcript_text = @transcriptText, analysis_status = 'ready'
+        WHERE attachment_id = @attachmentId
+      `).run({
+        transcriptText: transcript.text,
+        attachmentId,
+      });
+      return;
+    }
+
+    if (job.type === "ocr" && attachment.mediaType === "image") {
+      const completedAt = new Date().toISOString();
+      this.storage.db.prepare(`
+        UPDATE media_jobs
+        SET status = 'unsupported', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
+        WHERE job_id = @jobId
+      `).run({
+        outputJson: JSON.stringify({
+          message: "OCR worker is not installed. Configure sidecar OCR in a follow-up step.",
+        }),
+        updatedAt: completedAt,
+        completedAt,
+        jobId,
+      });
+      this.storage.db.prepare(`
+        UPDATE chat_attachments
+        SET analysis_status = 'unsupported'
+        WHERE attachment_id = @attachmentId
+      `).run({
+        attachmentId,
+      });
+      return;
+    }
+
+    const completedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE media_jobs
+      SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
+      WHERE job_id = @jobId
+    `).run({
+      outputJson: JSON.stringify({
+        mediaType: attachment.mediaType ?? detectAttachmentMediaType(attachment.mimeType),
+        extractPreview: attachment.extractPreview,
+      }),
+      updatedAt: completedAt,
+      completedAt,
+      jobId,
+    });
+    this.storage.db.prepare(`
+      UPDATE chat_attachments
+      SET ocr_text = COALESCE(ocr_text, @ocrText), analysis_status = 'ready'
+      WHERE attachment_id = @attachmentId
+    `).run({
+      ocrText: attachment.extractPreview ?? null,
+      attachmentId,
+    });
+  }
+
+  private async transcribeAudioBytes(
+    bytes: Buffer,
+    mimeType?: string,
+    language?: string,
+  ): Promise<VoiceTranscribeResponse> {
+    const started = Date.now();
+    const binPath = process.env.GOATCITADEL_WHISPER_CPP_BIN?.trim();
+    if (!binPath) {
+      const now = new Date().toISOString();
+      this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+        state: "error",
+        provider: DEFAULT_VOICE_PROVIDER,
+        lastError: "GOATCITADEL_WHISPER_CPP_BIN is not configured.",
+        updatedAt: now,
+      });
+      throw new Error("Local STT is not configured. Set GOATCITADEL_WHISPER_CPP_BIN to the whisper.cpp CLI path.");
+    }
+
+    const tempBase = path.join(os.tmpdir(), `goatcitadel-whisper-${randomUUID()}`);
+    const ext = extFromMimeType(mimeType);
+    const inputPath = `${tempBase}${ext}`;
+    const outputBase = `${tempBase}-out`;
+    const outputPath = `${outputBase}.txt`;
+
+    this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+      state: "running",
+      provider: DEFAULT_VOICE_PROVIDER,
+      updatedAt: new Date().toISOString(),
+    });
+
+    try {
+      await fs.writeFile(inputPath, bytes);
+      const args = [
+        "-f",
+        inputPath,
+        "-otxt",
+        "-of",
+        outputBase,
+      ];
+      if (language?.trim()) {
+        args.push("-l", language.trim());
+      }
+      execFileSync(binPath, args, { stdio: "pipe" });
+      const text = (await fs.readFile(outputPath, "utf8")).trim();
+      const now = new Date().toISOString();
+      this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+        state: "stopped",
+        provider: DEFAULT_VOICE_PROVIDER,
+        updatedAt: now,
+      });
+      return {
+        text,
+        language: language?.trim() || undefined,
+        provider: DEFAULT_VOICE_PROVIDER,
+        durationMs: Date.now() - started,
+      };
+    } catch (error) {
+      const now = new Date().toISOString();
+      this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+        state: "error",
+        provider: DEFAULT_VOICE_PROVIDER,
+        lastError: (error as Error).message,
+        updatedAt: now,
+      });
+      throw new Error(`Local STT failed: ${(error as Error).message}`);
+    } finally {
+      await Promise.allSettled([
+        fs.rm(inputPath, { force: true }),
+        fs.rm(outputPath, { force: true }),
+      ]);
+    }
+  }
+
+  private appendDaemonLog(eventType: string, payload: Record<string, unknown>): void {
+    const current = this.storage.systemSettings.get<Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>>(
+      DAEMON_LOG_TAIL_SETTING_KEY,
+    )?.value ?? [];
+    const next = [
+      ...current,
+      {
+        timestamp: new Date().toISOString(),
+        level: "info" as const,
+        message: `${eventType}: ${JSON.stringify(payload)}`,
+      },
+    ].slice(-400);
+    this.storage.systemSettings.set(DAEMON_LOG_TAIL_SETTING_KEY, next);
+  }
+
   public async close(): Promise<void> {
     this.closing = true;
     if (this.backgroundTasks.size > 0) {
@@ -3212,26 +4102,136 @@ export class GatewayService {
 
   private async buildLlmMessagesFromTranscript(
     sessionId: string,
-  ): Promise<Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>> {
+    options?: {
+      providerId?: string;
+      model?: string;
+    },
+  ): Promise<ChatCompletionRequest["messages"]> {
+    const runtime = this.llmService.getRuntimeConfig();
+    const providerId = options?.providerId ?? runtime.activeProviderId;
+    const providerSummary = runtime.providers.find((item) => item.providerId === providerId);
+    const model = options?.model ?? providerSummary?.defaultModel ?? runtime.activeModel;
+    const supportsVision = Boolean(providerSummary?.capabilities?.vision || inferModelVisionSupport(model));
     const transcript = await this.readTranscriptOrEmpty(sessionId);
-    const messages = transcript
+    const mapped = await Promise.all(transcript
       .filter((event) => event.type === "message.user" || event.type === "message.assistant")
-      .map((event) => {
+      .map(async (event) => {
         const payload = event.payload as {
           message?: {
             role?: string;
             content?: unknown;
+            attachments?: unknown;
           };
         };
-        const content = typeof payload.message?.content === "string"
+        const baseContent = typeof payload.message?.content === "string"
           ? payload.message.content
           : this.extractMessagePreview(event.payload);
+        const contentParts = event.type === "message.user"
+          ? await this.buildAttachmentMessageParts(payload.message?.attachments, baseContent, supportsVision)
+          : undefined;
+        const attachmentContext = event.type === "message.user"
+          ? this.buildAttachmentPromptContext(payload.message?.attachments, supportsVision)
+          : undefined;
+        if (contentParts) {
+          return {
+            role: event.type === "message.assistant" ? "assistant" as const : "user" as const,
+            content: contentParts,
+          };
+        }
+        const content = attachmentContext
+          ? `${baseContent}\n\n${attachmentContext}`
+          : baseContent;
         return {
           role: event.type === "message.assistant" ? "assistant" as const : "user" as const,
           content,
         };
-      });
-    return messages.slice(-80);
+      }));
+    return mapped.slice(-80);
+  }
+
+  private buildAttachmentPromptContext(input: unknown, supportsVision = false): string | undefined {
+    if (!Array.isArray(input) || input.length === 0) {
+      return undefined;
+    }
+
+    const attachmentIds = input
+      .map((item) => (item as Record<string, unknown>).attachmentId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (attachmentIds.length === 0) {
+      return undefined;
+    }
+
+    const attachments = this.storage.chatAttachments.listByIds(attachmentIds).slice(0, 6);
+    if (attachments.length === 0) {
+      return undefined;
+    }
+
+    const lines = attachments.map((attachment) => {
+      const descriptor = `- ${attachment.fileName} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`;
+      if (supportsVision && isImageMimeType(attachment.mimeType)) {
+        return `${descriptor}\n  Preview: sent directly to a vision-capable model.`;
+      }
+      if (!attachment.extractPreview?.trim()) {
+        return `${descriptor}\n  Preview: unavailable for this file type in current pipeline.`;
+      }
+      const preview = attachment.extractPreview
+        .replace(/\r\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .slice(0, 1600);
+      return `${descriptor}\n  Preview:\n${preview}`;
+    });
+
+    return [
+      "Attached file context (from uploaded attachments):",
+      ...lines,
+    ].join("\n");
+  }
+
+  private async buildAttachmentMessageParts(
+    input: unknown,
+    prompt: string,
+    supportsVision: boolean,
+  ): Promise<Array<Record<string, unknown>> | undefined> {
+    if (!supportsVision || !Array.isArray(input) || input.length === 0) {
+      return undefined;
+    }
+    const attachmentIds = input
+      .map((item) => (item as Record<string, unknown>).attachmentId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (attachmentIds.length === 0) {
+      return undefined;
+    }
+
+    const attachments = this.storage.chatAttachments.listByIds(attachmentIds).slice(0, 4);
+    const parts: Array<Record<string, unknown>> = [
+      {
+        type: "text",
+        text: prompt,
+      },
+    ];
+
+    for (const attachment of attachments) {
+      if (!isImageMimeType(attachment.mimeType)) {
+        continue;
+      }
+      try {
+        const content = await this.readChatAttachmentContent(attachment.attachmentId);
+        if (content.bytes.length > 5 * 1024 * 1024) {
+          continue;
+        }
+        const dataUrl = `data:${attachment.mimeType};base64,${content.bytes.toString("base64")}`;
+        parts.push({
+          type: "image_url",
+          image_url: {
+            url: dataUrl,
+          },
+        });
+      } catch {
+        // keep chat flowing even if one image cannot be loaded
+      }
+    }
+
+    return parts.length > 1 ? parts : undefined;
   }
 
   private extractMessagePreview(payload: Record<string, unknown>): string {
@@ -3953,6 +4953,193 @@ function extractAttachmentPreview(
   return { extractStatus: "unsupported" };
 }
 
+interface McpAuthStateRecord {
+  accessTokenRef?: string;
+  refreshTokenRef?: string;
+  tokenExpiresAt?: string;
+  oauthState?: string;
+  scopes?: string[];
+  updatedAt: string;
+  lastCodePreview?: string;
+}
+
+interface MediaJobRow {
+  job_id: string;
+  session_id: string | null;
+  attachment_id: string | null;
+  job_type: MediaJobRecord["type"];
+  status: MediaJobRecord["status"];
+  input_json: string | null;
+  output_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+function mapMediaJobRow(row: MediaJobRow): MediaJobRecord {
+  return {
+    jobId: row.job_id,
+    sessionId: row.session_id ?? undefined,
+    attachmentId: row.attachment_id ?? undefined,
+    type: row.job_type,
+    status: row.status,
+    inputJson: row.input_json ? safeJsonParse<Record<string, unknown>>(row.input_json, {}) : undefined,
+    outputJson: row.output_json ? safeJsonParse<Record<string, unknown>>(row.output_json, {}) : undefined,
+    error: row.error ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? undefined,
+  };
+}
+
+function safeJsonParse<T>(raw: string, fallback: T): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function detectAttachmentMediaType(mimeType: string): ChatAttachmentMediaType {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.startsWith("image/")) {
+    return "image";
+  }
+  if (normalized.startsWith("audio/")) {
+    return "audio";
+  }
+  if (normalized.startsWith("video/")) {
+    return "video";
+  }
+  if (
+    normalized.startsWith("text/")
+    || normalized === "application/json"
+    || normalized === "application/xml"
+    || normalized === "application/javascript"
+  ) {
+    return "text";
+  }
+  return "binary";
+}
+
+function inferAttachmentAnalysisStatus(
+  mediaType: ChatAttachmentMediaType,
+  extractStatus: "ready" | "unsupported" | "failed",
+): "queued" | "ready" | "failed" | "unsupported" {
+  if (extractStatus === "failed") {
+    return "failed";
+  }
+  if (mediaType === "text") {
+    return extractStatus === "ready" ? "ready" : "unsupported";
+  }
+  return "queued";
+}
+
+function inferModelVisionSupport(model: string): boolean {
+  const normalized = model.toLowerCase();
+  return (
+    normalized.includes("vision")
+    || normalized.includes("gpt-4o")
+    || normalized.includes("gpt-4.1")
+    || normalized.includes("gemini")
+    || normalized.includes("claude-3")
+    || normalized.includes("kimi")
+    || normalized.includes("glm")
+  );
+}
+
+function isImageMimeType(mimeType: string): boolean {
+  return mimeType.toLowerCase().startsWith("image/");
+}
+
+function normalizeChatInputParts(
+  content: string,
+  parts: ChatInputPart[] | undefined,
+  attachments: ChatAttachmentRecord[],
+): ChatInputPart[] {
+  const normalizedParts = Array.isArray(parts) ? parts.filter(Boolean) : [];
+  if (normalizedParts.length > 0) {
+    return normalizedParts;
+  }
+  const attachmentParts = attachments.map((attachment) => {
+    if (attachment.mediaType === "image" || isImageMimeType(attachment.mimeType)) {
+      return {
+        type: "image_ref" as const,
+        attachmentId: attachment.attachmentId,
+        mimeType: attachment.mimeType,
+      };
+    }
+    if (attachment.mediaType === "audio") {
+      return {
+        type: "audio_ref" as const,
+        attachmentId: attachment.attachmentId,
+        mimeType: attachment.mimeType,
+      };
+    }
+    if (attachment.mediaType === "video") {
+      return {
+        type: "video_ref" as const,
+        attachmentId: attachment.attachmentId,
+        mimeType: attachment.mimeType,
+      };
+    }
+    return {
+      type: "file_ref" as const,
+      attachmentId: attachment.attachmentId,
+      mimeType: attachment.mimeType,
+    };
+  });
+  return [
+    {
+      type: "text",
+      text: content,
+    },
+    ...attachmentParts,
+  ];
+}
+
+function sanitizePluginId(value: string): string {
+  const sanitized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!sanitized) {
+    return `plugin-${randomUUID().slice(0, 8)}`;
+  }
+  return sanitized.slice(0, 80);
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .split(/[-_.]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function extFromMimeType(mimeType?: string): string {
+  const normalized = mimeType?.toLowerCase() ?? "";
+  if (normalized.includes("wav")) {
+    return ".wav";
+  }
+  if (normalized.includes("mpeg")) {
+    return ".mp3";
+  }
+  if (normalized.includes("ogg")) {
+    return ".ogg";
+  }
+  if (normalized.includes("mp4")) {
+    return ".mp4";
+  }
+  if (normalized.includes("webm")) {
+    return ".webm";
+  }
+  return ".bin";
+}
+
 function normalizeRetentionPolicy(input: Partial<RetentionPolicy>): RetentionPolicy {
   return {
     realtimeEventsDays: clampInteger(input.realtimeEventsDays, 1, 365, DEFAULT_RETENTION_POLICY.realtimeEventsDays),
@@ -4161,3 +5348,4 @@ function ensurePathWithinRoot(targetPath: string, rootDir: string): void {
   }
   throw new Error(`Path escapes workspace root: ${targetPath}`);
 }
+

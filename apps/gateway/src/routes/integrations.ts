@@ -61,6 +61,15 @@ const catalogParamsSchema = z.object({
   catalogId: z.string().min(3),
 });
 
+const pluginInstallSchema = z.object({
+  source: z.string().min(1),
+  pluginId: z.string().optional(),
+});
+
+const pluginParamsSchema = z.object({
+  pluginId: z.string().min(1),
+});
+
 export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/integrations/catalog", async (request, reply) => {
     const parsed = catalogQuerySchema.safeParse(request.query);
@@ -152,6 +161,48 @@ export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(result);
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/integrations/plugins", async (_request, reply) => {
+    return reply.send({
+      items: fastify.gateway.listIntegrationPlugins(),
+    });
+  });
+
+  fastify.post("/api/v1/integrations/plugins/install", async (request, reply) => {
+    const parsed = pluginInstallSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.code(201).send(fastify.gateway.installIntegrationPlugin(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/plugins/:pluginId/enable", async (request, reply) => {
+    const params = pluginParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.setIntegrationPluginEnabled(params.data.pluginId, true));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/plugins/:pluginId/disable", async (request, reply) => {
+    const params = pluginParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.setIntegrationPluginEnabled(params.data.pluginId, false));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
     }
   });
 };

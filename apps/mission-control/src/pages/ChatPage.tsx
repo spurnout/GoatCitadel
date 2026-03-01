@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from "react";
 import {
   archiveChatProject,
   archiveChatSession,
@@ -25,6 +25,7 @@ import {
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 import type { ChatAttachmentRecord, ChatMessageRecord, ChatSessionBindingRecord, ChatSessionRecord } from "@goatcitadel/contracts";
@@ -59,6 +60,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [integrationTarget, setIntegrationTarget] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const initializedRef = useRef(false);
+  const lastLoadedSessionIdRef = useRef<string | null>(null);
   const dragDepthRef = useRef(0);
   const [isDragActive, setIsDragActive] = useState(false);
 
@@ -85,7 +87,6 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       ]);
       setMessages(nextMessages.items);
       setBinding(bindingRes.item);
-      setPendingAttachments([]);
       const selected = sessions?.items.find((item) => item.sessionId === sessionId);
       setRenameTitle(selected?.title ?? "");
     } finally {
@@ -136,7 +137,13 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!selectedSessionId) {
       setMessages([]);
       setBinding(null);
+      setPendingAttachments([]);
+      lastLoadedSessionIdRef.current = null;
       return;
+    }
+    if (lastLoadedSessionIdRef.current !== selectedSessionId) {
+      setPendingAttachments([]);
+      lastLoadedSessionIdRef.current = selectedSessionId;
     }
     void loadMessages(selectedSessionId).catch((err: Error) => {
       setError(err.message);
@@ -259,7 +266,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     await uploadAttachments(Array.from(files));
   }, [uploadAttachments]);
 
-  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const handleDragEnter = useCallback((event: DragEvent<HTMLFormElement>) => {
     if (!Array.from(event.dataTransfer.types).includes("Files")) {
       return;
     }
@@ -268,7 +275,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setIsDragActive(true);
   }, []);
 
-  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const handleDragOver = useCallback((event: DragEvent<HTMLFormElement>) => {
     if (!Array.from(event.dataTransfer.types).includes("Files")) {
       return;
     }
@@ -276,7 +283,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     event.dataTransfer.dropEffect = "copy";
   }, []);
 
-  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const handleDragLeave = useCallback((event: DragEvent<HTMLFormElement>) => {
     if (!Array.from(event.dataTransfer.types).includes("Files")) {
       return;
     }
@@ -287,7 +294,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, []);
 
-  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+  const handleDrop = useCallback((event: DragEvent<HTMLFormElement>) => {
     if (!Array.from(event.dataTransfer.types).includes("Files")) {
       return;
     }
@@ -324,11 +331,37 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!content || sending) {
       return;
     }
+    const attachmentsSnapshot = pendingAttachments;
+    const attachmentIds = attachmentsSnapshot.map((item) => item.attachmentId);
+    const localAttachments = attachmentsSnapshot.map((item) => ({
+      attachmentId: item.attachmentId,
+      fileName: item.fileName,
+      mimeType: item.mimeType,
+      sizeBytes: item.sizeBytes,
+    }));
+    setDraft("");
+    setPendingAttachments([]);
     setSending(true);
     let placeholderId: string | null = null;
+    let localUserId: string | null = null;
+    let messageCommitted = false;
     try {
       const session = await ensureSession();
-      const attachmentIds = pendingAttachments.map((item) => item.attachmentId);
+      const createdLocalUserId = `local-user-${Date.now()}`;
+      localUserId = createdLocalUserId;
+      setMessages((current) => [
+        ...current,
+        {
+          messageId: createdLocalUserId,
+          sessionId: session.sessionId,
+          role: "user",
+          actorType: "user",
+          actorId: "operator",
+          content,
+          timestamp: new Date().toISOString(),
+          attachments: localAttachments.length > 0 ? localAttachments : undefined,
+        },
+      ]);
       if (streamEnabled) {
         const streamMessageId = `stream-${Date.now()}`;
         placeholderId = streamMessageId;
@@ -369,26 +402,46 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
             }
           },
         );
+        messageCommitted = true;
       } else {
-        await sendChatMessage(session.sessionId, {
+        const sent = await sendChatMessage(session.sessionId, {
           content,
           useMemory: true,
           attachments: attachmentIds,
         });
+        messageCommitted = true;
+        if (localUserId) {
+          setMessages((current) => current.map((item) => item.messageId === localUserId
+            ? sent.userMessage
+            : item));
+        }
+        if (sent.assistantMessage) {
+          setMessages((current) => [...current, sent.assistantMessage as ChatMessageRecord]);
+        }
       }
-      setDraft("");
-      setPendingAttachments([]);
-      await Promise.all([loadSidebar(), loadMessages(session.sessionId)]);
+      await loadSidebar();
       setError(null);
     } catch (err) {
       if (placeholderId) {
         setMessages((current) => current.filter((item) => item.messageId !== placeholderId));
       }
+      if (!messageCommitted) {
+        if (localUserId) {
+          setMessages((current) => current.filter((item) => item.messageId !== localUserId));
+        }
+        setDraft((current) => (current.trim().length > 0 ? current : content));
+        setPendingAttachments((current) => (current.length > 0 ? current : attachmentsSnapshot));
+      }
       setError((err as Error).message);
     } finally {
       setSending(false);
     }
-  }, [draft, ensureSession, loadMessages, loadSidebar, pendingAttachments, sending, streamEnabled]);
+  }, [draft, ensureSession, loadSidebar, pendingAttachments, sending, streamEnabled]);
+
+  const handleComposerSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void handleSend();
+  }, [handleSend]);
 
   const handleRenameSession = useCallback(async () => {
     if (!selectedSession) {
@@ -511,7 +564,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <li>
               <button
                 type="button"
-                className={selectedProjectId === "all" ? "active" : ""}
+                className={`chat-list-button${selectedProjectId === "all" ? " active" : ""}`}
                 onClick={() => setSelectedProjectId("all")}
               >
                 All projects
@@ -520,22 +573,22 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <li>
               <button
                 type="button"
-                className={selectedProjectId === "none" ? "active" : ""}
+                className={`chat-list-button${selectedProjectId === "none" ? " active" : ""}`}
                 onClick={() => setSelectedProjectId("none")}
               >
                 Unassigned
               </button>
             </li>
             {(projects?.items ?? []).map((project) => (
-              <li key={project.projectId}>
+              <li key={project.projectId} className="chat-list-item">
                 <button
                   type="button"
-                  className={selectedProjectId === project.projectId ? "active" : ""}
+                  className={`chat-list-button${selectedProjectId === project.projectId ? " active" : ""}`}
                   onClick={() => setSelectedProjectId(project.projectId)}
                 >
                   {project.name}
                 </button>
-                <p className="office-subtitle">{project.workspacePath}</p>
+                <p className="chat-item-meta">{project.workspacePath}</p>
                 <div className="actions">
                   {project.lifecycleStatus === "archived" ? (
                     <button
@@ -599,15 +652,15 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <h4>Mission</h4>
           <ul className="compact-list chat-scroll">
             {missionSessions.map((session) => (
-              <li key={session.sessionId}>
+              <li key={session.sessionId} className="chat-list-item">
                 <button
                   type="button"
-                  className={selectedSessionId === session.sessionId ? "active" : ""}
+                  className={`chat-list-button${selectedSessionId === session.sessionId ? " active" : ""}`}
                   onClick={() => setSelectedSessionId(session.sessionId)}
                 >
                   {session.title || session.sessionKey}
                 </button>
-                <p className="office-subtitle">
+                <p className="chat-item-meta">
                   {session.projectName ?? "No project"} | {new Date(session.updatedAt).toLocaleString()}
                 </p>
               </li>
@@ -616,15 +669,15 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <h4>External</h4>
           <ul className="compact-list chat-scroll">
             {externalSessions.map((session) => (
-              <li key={session.sessionId}>
+              <li key={session.sessionId} className="chat-list-item">
                 <button
                   type="button"
-                  className={selectedSessionId === session.sessionId ? "active" : ""}
+                  className={`chat-list-button${selectedSessionId === session.sessionId ? " active" : ""}`}
                   onClick={() => setSelectedSessionId(session.sessionId)}
                 >
                   {session.title || session.sessionKey}
                 </button>
-                <p className="office-subtitle">
+                <p className="chat-item-meta">
                   {session.channel}/{session.account}
                 </p>
               </li>
@@ -653,7 +706,10 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 />
               </div>
               <div className="controls-row">
-                <label htmlFor="chatProjectSelect">Project</label>
+                <label htmlFor="chatProjectSelect">
+                  Project
+                  <HelpHint label="Project assignment help" text="Projects group related sessions and attachments for quick filtering." />
+                </label>
                 <select
                   id="chatProjectSelect"
                   value={selectedSessionProjectValue}
@@ -676,7 +732,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                       <option key={project.projectId} value={project.projectId}>{project.name}</option>
                     ))}
                 </select>
-                <label htmlFor="streamMode">
+                <label htmlFor="streamMode" className="chat-stream-toggle">
                   <input
                     id="streamMode"
                     type="checkbox"
@@ -684,6 +740,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     onChange={(event) => setStreamEnabled(event.target.checked)}
                   />
                   Stream response
+                  <HelpHint label="Streaming mode help" text="Stream mode renders tokens as they arrive. Turn it off for single-shot responses." />
                 </label>
               </div>
 
@@ -733,8 +790,9 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 </ul>
               )}
 
-              <div
+              <form
                 className={`chat-composer${isDragActive ? " drop-active" : ""}`}
+                onSubmit={handleComposerSubmit}
                 onDragEnter={handleDragEnter}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -757,23 +815,24 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     {error}
                   </div>
                 ) : null}
-                <div className="actions">
+                <div className="chat-composer-actions">
                   <input
                     ref={fileInputRef}
                     type="file"
                     multiple
                     onChange={(event) => void handleAttachFiles(event.target.files)}
                   />
-                  <ActionButton label="Send" pending={sending} onClick={handleSend} />
+                  <ActionButton type="submit" label="Send" pending={sending} onClick={() => undefined} />
                 </div>
-                <p className="office-subtitle chat-attach-hint">
+                <p className="chat-attach-hint">
                   Drag files into this box or paste screenshots/images to attach.
                 </p>
                 {pendingAttachments.length > 0 ? (
-                  <div className="actions">
+                  <div className="chat-attachment-list">
                     {pendingAttachments.map((item) => (
                       <button
                         key={item.attachmentId}
+                        className="chat-attachment-chip"
                         type="button"
                         onClick={() => setPendingAttachments((current) => current.filter((entry) => entry.attachmentId !== item.attachmentId))}
                       >
@@ -782,7 +841,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     ))}
                   </div>
                 ) : null}
-              </div>
+              </form>
             </>
           )}
         </article>

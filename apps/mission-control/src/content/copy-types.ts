@@ -17,6 +17,7 @@ export type TabId =
   | "approvals"
   | "tasks"
   | "integrations"
+  | "mcp"
   | "mesh"
   | "npu";
 

@@ -24,7 +24,7 @@ export type IntegrationKind =
   | "automation"
   | "platform";
 
-export type IntegrationMaturity = "native" | "beta" | "planned";
+export type IntegrationMaturity = "native" | "plugin" | "disabled" | "beta" | "planned";
 export type IntegrationConnectionStatus = "connected" | "disconnected" | "error" | "paused";
 
 export interface IntegrationCatalogEntry {
@@ -38,6 +38,7 @@ export interface IntegrationCatalogEntry {
   capabilities: string[];
   docsUrl?: string;
   formSchema?: IntegrationFormSchema;
+  pluginId?: string;
 }
 
 export interface IntegrationConnection {
@@ -49,6 +50,9 @@ export interface IntegrationConnection {
   enabled: boolean;
   status: IntegrationConnectionStatus;
   config: Record<string, unknown>;
+  pluginId?: string;
+  pluginVersion?: string;
+  pluginEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
   lastSyncAt?: string;
@@ -61,6 +65,9 @@ export interface IntegrationConnectionCreateInput {
   enabled?: boolean;
   status?: IntegrationConnectionStatus;
   config?: Record<string, unknown>;
+  pluginId?: string;
+  pluginVersion?: string;
+  pluginEnabled?: boolean;
 }
 
 export interface IntegrationConnectionUpdateInput {
@@ -68,6 +75,9 @@ export interface IntegrationConnectionUpdateInput {
   enabled?: boolean;
   status?: IntegrationConnectionStatus;
   config?: Record<string, unknown>;
+  pluginId?: string;
+  pluginVersion?: string;
+  pluginEnabled?: boolean;
   lastSyncAt?: string;
   lastError?: string;
 }

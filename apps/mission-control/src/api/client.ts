@@ -9,6 +9,7 @@ import type {
   ChangeRiskEvaluationResponse,
   ChannelSendInput,
   ChatAttachmentRecord,
+  ChatAttachmentPreviewResponse,
   ChatMessageRecord,
   ChatProjectRecord,
   ChatSendMessageRequest,
@@ -34,6 +35,13 @@ import type {
   OnboardingState,
   PendingApprovalAction,
   IntegrationFormSchema,
+  IntegrationPluginRecord,
+  McpInvokeResponse,
+  McpOAuthStartResponse,
+  McpServerRecord,
+  McpToolRecord,
+  MediaCreateJobRequest,
+  MediaJobRecord,
   SessionMeta,
   SessionSummary,
   SessionTimelineItem,
@@ -45,6 +53,9 @@ import type {
   ToolGrantRecord,
   ToolInvokeResult,
   UiActionState,
+  VoiceStatus,
+  VoiceTalkSessionRecord,
+  VoiceTranscribeResponse,
   BackupCreateResponse,
   BackupManifestRecord,
   RetentionPolicy,
@@ -336,6 +347,13 @@ export interface RuntimeSettingsResponse {
       apiKeySource: "inline" | "env" | "keychain" | "none";
       hasKeychainSecret?: boolean;
       apiKeyRef?: string;
+      capabilities?: {
+        vision: boolean;
+        audio: boolean;
+        video: boolean;
+        toolCalling: boolean;
+        jsonMode: boolean;
+      };
     }>;
   };
   mesh: {
@@ -365,11 +383,12 @@ export interface IntegrationCatalogEntry {
   key: string;
   label: string;
   description: string;
-  maturity: "native" | "beta" | "planned";
+  maturity: "native" | "plugin" | "disabled" | "beta" | "planned";
   authMethods: string[];
   capabilities: string[];
   docsUrl?: string;
   formSchema?: IntegrationFormSchema;
+  pluginId?: string;
 }
 
 export interface IntegrationConnection {
@@ -381,6 +400,9 @@ export interface IntegrationConnection {
   enabled: boolean;
   status: "connected" | "disconnected" | "error" | "paused";
   config: Record<string, unknown>;
+  pluginId?: string;
+  pluginVersion?: string;
+  pluginEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
   lastSyncAt?: string;
@@ -695,6 +717,26 @@ export async function downloadChatAttachment(attachmentId: string): Promise<{ bl
     fileName: meta.fileName,
     mimeType: meta.mimeType,
   };
+}
+
+export async function fetchChatAttachmentPreview(attachmentId: string): Promise<ChatAttachmentPreviewResponse> {
+  return request<ChatAttachmentPreviewResponse>(`/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}/preview`);
+}
+
+export async function createMediaJob(input: MediaCreateJobRequest): Promise<MediaJobRecord> {
+  return request<MediaJobRecord>("/api/v1/media/jobs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchMediaJob(jobId: string): Promise<MediaJobRecord> {
+  return request<MediaJobRecord>(`/api/v1/media/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function fetchMediaJobs(sessionId?: string): Promise<{ items: MediaJobRecord[] }> {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  return request<{ items: MediaJobRecord[] }>(`/api/v1/media/jobs${query}`);
 }
 
 export async function fetchRetentionPolicy(): Promise<RetentionPolicy> {
@@ -1412,6 +1454,34 @@ export async function deleteIntegrationConnection(connectionId: string): Promise
   });
 }
 
+export async function fetchIntegrationPlugins(): Promise<{ items: IntegrationPluginRecord[] }> {
+  return request<{ items: IntegrationPluginRecord[] }>("/api/v1/integrations/plugins");
+}
+
+export async function installIntegrationPlugin(input: {
+  source: string;
+  pluginId?: string;
+}): Promise<IntegrationPluginRecord> {
+  return request<IntegrationPluginRecord>("/api/v1/integrations/plugins/install", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function enableIntegrationPlugin(pluginId: string): Promise<IntegrationPluginRecord> {
+  return request<IntegrationPluginRecord>(`/api/v1/integrations/plugins/${encodeURIComponent(pluginId)}/enable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function disableIntegrationPlugin(pluginId: string): Promise<IntegrationPluginRecord> {
+  return request<IntegrationPluginRecord>(`/api/v1/integrations/plugins/${encodeURIComponent(pluginId)}/disable`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function fetchLlmConfig(): Promise<RuntimeSettingsResponse["llm"]> {
   return request<RuntimeSettingsResponse["llm"]>("/api/v1/llm/config");
 }
@@ -1514,6 +1584,205 @@ export async function refreshNpuRuntime(): Promise<NpuRuntimeStatus> {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export async function fetchMcpServers(): Promise<{ items: McpServerRecord[] }> {
+  return request<{ items: McpServerRecord[] }>("/api/v1/mcp/servers");
+}
+
+export async function createMcpServer(input: {
+  label: string;
+  transport: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  url?: string;
+  authType?: "none" | "token" | "oauth2";
+  enabled?: boolean;
+}): Promise<McpServerRecord> {
+  return request<McpServerRecord>("/api/v1/mcp/servers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateMcpServer(
+  serverId: string,
+  input: {
+    label?: string;
+    command?: string;
+    args?: string[];
+    url?: string;
+    authType?: "none" | "token" | "oauth2";
+    enabled?: boolean;
+  },
+): Promise<McpServerRecord> {
+  return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteMcpServer(serverId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function connectMcpServer(serverId: string): Promise<McpServerRecord> {
+  return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/connect`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function disconnectMcpServer(serverId: string): Promise<McpServerRecord> {
+  return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/disconnect`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function startMcpOAuth(serverId: string): Promise<McpOAuthStartResponse> {
+  return request<McpOAuthStartResponse>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/oauth/start`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function completeMcpOAuth(serverId: string, input: { code: string; state?: string }): Promise<McpServerRecord> {
+  return request<McpServerRecord>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/oauth/complete`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchMcpTools(serverId: string): Promise<{ items: McpToolRecord[] }> {
+  return request<{ items: McpToolRecord[] }>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/tools`);
+}
+
+export async function invokeMcpTool(input: {
+  serverId: string;
+  toolName: string;
+  arguments?: Record<string, unknown>;
+  sessionId?: string;
+  taskId?: string;
+}): Promise<McpInvokeResponse> {
+  return request<McpInvokeResponse>("/api/v1/mcp/invoke", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function transcribeVoice(input: {
+  bytesBase64: string;
+  mimeType?: string;
+  language?: string;
+}): Promise<VoiceTranscribeResponse> {
+  return request<VoiceTranscribeResponse>("/api/v1/voice/transcribe", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchVoiceStatus(): Promise<VoiceStatus> {
+  return request<VoiceStatus>("/api/v1/voice/status");
+}
+
+export async function startVoiceTalkSession(input?: {
+  mode?: "push_to_talk" | "wake";
+  sessionId?: string;
+}): Promise<VoiceTalkSessionRecord> {
+  return request<VoiceTalkSessionRecord>("/api/v1/voice/talk/sessions", {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function stopVoiceTalkSession(talkSessionId: string): Promise<VoiceTalkSessionRecord> {
+  return request<VoiceTalkSessionRecord>(`/api/v1/voice/talk/sessions/${encodeURIComponent(talkSessionId)}/stop`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function startVoiceWake(): Promise<VoiceStatus["wake"]> {
+  return request<VoiceStatus["wake"]>("/api/v1/voice/wake/start", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopVoiceWake(): Promise<VoiceStatus["wake"]> {
+  return request<VoiceStatus["wake"]>("/api/v1/voice/wake/stop", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchDaemonStatus(): Promise<{
+  running: boolean;
+  pid: number;
+  uptimeSeconds: number;
+  host: string;
+  state: "running" | "stopped";
+  lastCommandAt?: string;
+}> {
+  return request<{
+    running: boolean;
+    pid: number;
+    uptimeSeconds: number;
+    host: string;
+    state: "running" | "stopped";
+    lastCommandAt?: string;
+  }>("/api/v1/daemon/status");
+}
+
+export async function startDaemon(): Promise<{
+  accepted: boolean;
+  status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+}> {
+  return request<{
+    accepted: boolean;
+    status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+  }>("/api/v1/daemon/start", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopDaemon(): Promise<{
+  accepted: boolean;
+  status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+}> {
+  return request<{
+    accepted: boolean;
+    status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+  }>("/api/v1/daemon/stop", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function restartDaemon(): Promise<{
+  accepted: boolean;
+  status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+}> {
+  return request<{
+    accepted: boolean;
+    status: Awaited<ReturnType<typeof fetchDaemonStatus>>;
+  }>("/api/v1/daemon/restart", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchDaemonLogs(tail = 200): Promise<{
+  items: Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>;
+}> {
+  return request<{
+    items: Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>;
+  }>(`/api/v1/daemon/logs?tail=${Math.max(1, Math.min(2000, tail))}`);
 }
 
 export async function evaluateUiChangeRisk(input: {

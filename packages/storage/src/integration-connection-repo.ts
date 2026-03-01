@@ -20,6 +20,10 @@ interface IntegrationConnectionRow {
   updated_at: string;
   last_sync_at: string | null;
   last_error: string | null;
+  plugin_id: string | null;
+  plugin_version: string | null;
+  plugin_enabled: number | null;
+  plugin_meta_json: string | null;
 }
 
 export class IntegrationConnectionRepository {
@@ -40,10 +44,12 @@ export class IntegrationConnectionRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO integration_connections (
         connection_id, catalog_id, kind, integration_key, label, enabled, status,
-        config_json, created_at, updated_at, last_sync_at, last_error
+        config_json, plugin_id, plugin_version, plugin_enabled, plugin_meta_json,
+        created_at, updated_at, last_sync_at, last_error
       ) VALUES (
         @connectionId, @catalogId, @kind, @integrationKey, @label, @enabled, @status,
-        @configJson, @createdAt, @updatedAt, @lastSyncAt, @lastError
+        @configJson, @pluginId, @pluginVersion, @pluginEnabled, @pluginMetaJson,
+        @createdAt, @updatedAt, @lastSyncAt, @lastError
       )
     `);
     this.updateStmt = db.prepare(`
@@ -53,6 +59,10 @@ export class IntegrationConnectionRepository {
         enabled = @enabled,
         status = @status,
         config_json = @configJson,
+        plugin_id = @pluginId,
+        plugin_version = @pluginVersion,
+        plugin_enabled = @pluginEnabled,
+        plugin_meta_json = @pluginMetaJson,
         updated_at = @updatedAt,
         last_sync_at = @lastSyncAt,
         last_error = @lastError
@@ -96,6 +106,10 @@ export class IntegrationConnectionRepository {
       enabled: (input.enabled ?? true) ? 1 : 0,
       status: input.status ?? "connected",
       configJson: JSON.stringify(input.config ?? {}),
+      pluginId: input.pluginId ?? null,
+      pluginVersion: input.pluginVersion ?? null,
+      pluginEnabled: input.pluginEnabled ? 1 : 0,
+      pluginMetaJson: null,
       createdAt: now,
       updatedAt: now,
       lastSyncAt: null,
@@ -112,6 +126,12 @@ export class IntegrationConnectionRepository {
       enabled: input.enabled === undefined ? (current.enabled ? 1 : 0) : (input.enabled ? 1 : 0),
       status: input.status ?? current.status,
       configJson: JSON.stringify(input.config ?? current.config),
+      pluginId: input.pluginId ?? current.pluginId ?? null,
+      pluginVersion: input.pluginVersion ?? current.pluginVersion ?? null,
+      pluginEnabled: input.pluginEnabled === undefined
+        ? (current.pluginEnabled ? 1 : 0)
+        : (input.pluginEnabled ? 1 : 0),
+      pluginMetaJson: null,
       updatedAt: now,
       lastSyncAt: input.lastSyncAt ?? current.lastSyncAt ?? null,
       lastError: input.lastError === undefined ? (current.lastError ?? null) : input.lastError,
@@ -139,6 +159,9 @@ function mapRow(row: IntegrationConnectionRow): IntegrationConnection {
     enabled: Boolean(row.enabled),
     status: row.status,
     config: JSON.parse(row.config_json) as Record<string, unknown>,
+    pluginId: row.plugin_id ?? undefined,
+    pluginVersion: row.plugin_version ?? undefined,
+    pluginEnabled: Boolean(row.plugin_enabled),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastSyncAt: row.last_sync_at ?? undefined,

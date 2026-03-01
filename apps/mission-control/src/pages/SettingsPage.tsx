@@ -4,14 +4,22 @@ import {
   deleteProviderSecret,
   evaluateUiChangeRisk,
   fetchLlmModels,
+  fetchVoiceStatus,
   fetchProviderSecretStatus,
   fetchSettings,
   patchSettings,
   saveProviderSecret,
+  startVoiceTalkSession,
+  startVoiceWake,
+  stopVoiceTalkSession,
+  stopVoiceWake,
+  transcribeVoice,
   type ProviderSecretStatus,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import type { VoiceStatus } from "@goatcitadel/contracts";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
@@ -196,6 +204,11 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [allowlistPreset, setAllowlistPreset] = useState("strict");
   const [chatResponse, setChatResponse] = useState("");
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceTalkMode, setVoiceTalkMode] = useState<"push_to_talk" | "wake">("push_to_talk");
+  const [voiceFile, setVoiceFile] = useState<File | null>(null);
+  const [voiceTranscriptResult, setVoiceTranscriptResult] = useState("");
   const [criticalConfirmed, setCriticalConfirmed] = useState(false);
   const [changeReview, setChangeReview] = useState<{
     overall: "safe" | "warning" | "critical";
@@ -278,6 +291,19 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     load();
+  }, [refreshKey]);
+
+  useEffect(() => {
+    void fetchVoiceStatus()
+      .then((status) => {
+        setVoiceStatus(status);
+        if (status.talk.mode) {
+          setVoiceTalkMode(status.talk.mode);
+        }
+      })
+      .catch(() => {
+        setVoiceStatus(null);
+      });
   }, [refreshKey]);
 
   useEffect(() => {
@@ -452,6 +478,91 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
+  const refreshVoiceRuntime = async () => {
+    const status = await fetchVoiceStatus();
+    setVoiceStatus(status);
+    if (status.talk.mode) {
+      setVoiceTalkMode(status.talk.mode);
+    }
+  };
+
+  const onStartVoiceTalk = async () => {
+    setVoiceBusy(true);
+    try {
+      await startVoiceTalkSession({ mode: voiceTalkMode });
+      await refreshVoiceRuntime();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onStopVoiceTalk = async () => {
+    if (!voiceStatus?.talk.activeSessionId) {
+      return;
+    }
+    setVoiceBusy(true);
+    try {
+      await stopVoiceTalkSession(voiceStatus.talk.activeSessionId);
+      await refreshVoiceRuntime();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onStartWake = async () => {
+    setVoiceBusy(true);
+    try {
+      await startVoiceWake();
+      await refreshVoiceRuntime();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onStopWake = async () => {
+    setVoiceBusy(true);
+    try {
+      await stopVoiceWake();
+      await refreshVoiceRuntime();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onRunVoiceTranscribeTest = async () => {
+    if (!voiceFile) {
+      setError("Choose an audio file first.");
+      return;
+    }
+    setVoiceBusy(true);
+    try {
+      const bytesBase64 = await fileToBase64(voiceFile);
+      const result = await transcribeVoice({
+        bytesBase64,
+        mimeType: voiceFile.type || "audio/wav",
+      });
+      setVoiceTranscriptResult(result.text);
+      await refreshVoiceRuntime();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
   const hydrateStoredAuthCredentials = () => {
     if (typeof window === "undefined") {
       return;
@@ -610,6 +721,63 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
         </p>
         <button onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
+      </article>
+
+      <article className="card">
+        <h3>
+          Voice Runtime
+          <HelpHint label="Voice runtime help" text="Talk Mode and Wake use your local voice runtime. Whisper.cpp is the default offline transcription provider." />
+        </h3>
+        <p className="office-subtitle">Local-first voice controls with no required cloud API key.</p>
+        <div className="controls-row">
+          <p>STT provider: <strong>{voiceStatus?.stt.provider ?? "unknown"}</strong></p>
+          <p>STT state: <strong>{voiceStatus?.stt.state ?? "unknown"}</strong></p>
+          <p>Wake state: <strong>{voiceStatus?.wake.state ?? "unknown"}</strong></p>
+          <p>Talk state: <strong>{voiceStatus?.talk.state ?? "unknown"}</strong></p>
+        </div>
+        <div className="controls-row">
+          <label htmlFor="voiceTalkMode">Talk mode</label>
+          <select
+            id="voiceTalkMode"
+            value={voiceTalkMode}
+            onChange={(event) => setVoiceTalkMode(event.target.value as "push_to_talk" | "wake")}
+          >
+            <option value="push_to_talk">Push to talk</option>
+            <option value="wake">Wake triggered</option>
+          </select>
+          <button onClick={onStartVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state === "running"}>
+            Start Talk Mode
+          </button>
+          <button onClick={onStopVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state !== "running"}>
+            Stop Talk Mode
+          </button>
+        </div>
+        <div className="controls-row">
+          <button onClick={onStartWake} disabled={voiceBusy || voiceStatus?.wake.enabled}>
+            Enable Wake
+          </button>
+          <button onClick={onStopWake} disabled={voiceBusy || !voiceStatus?.wake.enabled}>
+            Disable Wake
+          </button>
+          <button onClick={() => void refreshVoiceRuntime()} disabled={voiceBusy}>
+            Refresh Voice Status
+          </button>
+        </div>
+        <div className="controls-row">
+          <label htmlFor="voiceTestFile">Transcription test file</label>
+          <input
+            id="voiceTestFile"
+            type="file"
+            accept="audio/*"
+            onChange={(event) => setVoiceFile(event.target.files?.[0] ?? null)}
+          />
+          <button onClick={onRunVoiceTranscribeTest} disabled={voiceBusy || !voiceFile}>
+            Run Local Transcription
+          </button>
+        </div>
+        {voiceTranscriptResult ? (
+          <pre>{voiceTranscriptResult}</pre>
+        ) : null}
       </article>
 
       <article className="card">
@@ -893,4 +1061,21 @@ function persistGatewayAuthClient(input: {
     tokenQueryParam: "access_token",
   };
   window.localStorage.setItem(GATEWAY_AUTH_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Unable to read audio file."));
+        return;
+      }
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("Unable to read audio file."));
+    reader.readAsDataURL(file);
+  });
 }

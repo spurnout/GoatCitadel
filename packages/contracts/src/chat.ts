@@ -3,6 +3,34 @@ export type ChatSessionScope = "mission" | "external";
 export type ChatSessionLifecycleStatus = "active" | "archived";
 export type ChatBindingTransport = "llm" | "integration";
 export type ChatMessageRole = "user" | "assistant" | "system";
+export type ChatAttachmentMediaType = "text" | "image" | "audio" | "video" | "binary";
+
+export type ChatInputPart =
+  | {
+    type: "text";
+    text: string;
+  }
+  | {
+    type: "image_ref";
+    attachmentId: string;
+    mimeType?: string;
+    detail?: "low" | "high" | "auto";
+  }
+  | {
+    type: "audio_ref";
+    attachmentId: string;
+    mimeType?: string;
+  }
+  | {
+    type: "video_ref";
+    attachmentId: string;
+    mimeType?: string;
+  }
+  | {
+    type: "file_ref";
+    attachmentId: string;
+    mimeType?: string;
+  };
 
 export interface ChatProjectRecord {
   projectId: string;
@@ -50,11 +78,16 @@ export interface ChatAttachmentRecord {
   projectId?: string;
   fileName: string;
   mimeType: string;
+  mediaType?: ChatAttachmentMediaType;
   sizeBytes: number;
   sha256: string;
   storageRelPath: string;
   extractStatus: "ready" | "unsupported" | "failed";
   extractPreview?: string;
+  thumbnailRelPath?: string;
+  ocrText?: string;
+  transcriptText?: string;
+  analysisStatus?: "queued" | "running" | "pending" | "ready" | "failed" | "unsupported";
   createdAt: string;
 }
 
@@ -79,6 +112,7 @@ export interface ChatMessageRecord {
 
 export interface ChatSendMessageRequest {
   content: string;
+  parts?: ChatInputPart[];
   providerId?: string;
   model?: string;
   useMemory?: boolean;
