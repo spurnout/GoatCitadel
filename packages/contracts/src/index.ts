@@ -26,3 +26,5 @@ export * from "./voice.js";
 export * from "./media.js";
 export * from "./mcp.js";
 export * from "./channels.js";
+export * from "./research.js";
+export * from "./prompt-pack.js";

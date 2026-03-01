@@ -85,6 +85,7 @@ export const appCopy = {
     { id: "cron", label: "Bell Tower (Cron)", code: "CRN" },
     { id: "sessions", label: "Runs (Sessions)", code: "SES" },
     { id: "chat", label: "Chat Workspace", code: "CHT" },
+    { id: "promptLab", label: "Prompt Lab", code: "LAB" },
     { id: "skills", label: "Playbook (Skills)", code: "SKL" },
     { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
     { id: "settings", label: "Forge (Settings)", code: "CFG" },
@@ -98,7 +99,7 @@ export const appCopy = {
   ] satisfies NavItemCopy[],
   navSections: [
     { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
-    { label: "Operate", items: ["dashboard", "chat", "tasks", "agents", "office", "approvals", "sessions"] },
+    { label: "Operate", items: ["dashboard", "chat", "promptLab", "tasks", "agents", "office", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
     { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
@@ -114,6 +115,7 @@ export const appCopy = {
     cron: "Verify schedules and recent outcomes before enabling more automation.",
     sessions: "Select a run and inspect timeline details for recent behavior.",
     chat: "Pick a project, open a session, then send a message with optional attachments.",
+    promptLab: "Import a prompt pack, run tests, and score outputs against the 0-2 rubric.",
     skills: "Reload skills after adding or updating SKILL.md files.",
     costs: "Check burn rate and switch to a cheaper run mode if needed.",
     settings: "Apply provider and policy changes after reviewing risk indicators.",
@@ -279,6 +281,23 @@ export const pageCopy: Record<PageId, PageCopy> = {
         { term: "Mission session", meaning: "A local GoatCitadel chat session using configured model providers." },
         { term: "External session", meaning: "A routed chat that can write back to an integration target." },
         { term: "Writeback binding", meaning: "Connection + target mapping required before posting to external sessions." },
+      ],
+    },
+  },
+  promptLab: {
+    title: "Prompt Lab",
+    subtitle: "Import your prompt pack, run TEST blocks, and score outputs with routing/honesty/handoff rubrics.",
+    guide: {
+      what: "Prompt Lab is your fast validation harness before large test passes.",
+      when: "Use it when tuning models, tools, or prompt policies against a fixed benchmark.",
+      actions: [
+        "Import markdown prompt packs with [TEST-##] blocks.",
+        "Run one test, run next, or batch-run all tests.",
+        "Score each run on the 0-2 rubric and review pass/fail clusters.",
+      ],
+      terms: [
+        { term: "Pass threshold", meaning: "Default pass threshold is 7/10 total score." },
+        { term: "Run trace", meaning: "Per-test execution trace including routing and tool behavior." },
       ],
     },
   },

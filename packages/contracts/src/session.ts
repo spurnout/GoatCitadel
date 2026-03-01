@@ -1,3 +1,5 @@
+import type { ChatInputPart } from "./chat.js";
+
 export type SessionKind = "dm" | "group" | "thread";
 export type SessionHealth = "healthy" | "degraded" | "blocked";
 export type BudgetState = "ok" | "warning" | "hard_cap";
@@ -70,6 +72,7 @@ export interface GatewayEventInput {
   message: {
     role: "user" | "assistant";
     content: string;
+    parts?: ChatInputPart[];
     attachments?: Array<{
       attachmentId: string;
       fileName: string;

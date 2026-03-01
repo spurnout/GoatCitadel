@@ -21,12 +21,14 @@
     "tui": "pnpm --filter @goatcitadel/gateway tui",
     "tools": "pnpm --filter @goatcitadel/gateway tools",
     "admin": "pnpm --filter @goatcitadel/gateway admin",
+    "brand:derive": "node scripts/brand/derive-assets.mjs",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "sharp": "^0.34.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^2.1.9"

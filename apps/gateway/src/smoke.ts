@@ -29,6 +29,7 @@ async function run(): Promise<void> {
       await smokeGatewayEvents(app);
       await smokeSessions(app);
       await smokeChat(app);
+      await smokePromptPacks(app);
       await smokeTools(app);
       await smokeNativeToolsExpansion(app);
       await smokeApprovals(app);
@@ -127,6 +128,89 @@ async function smokeChat(app: Awaited<ReturnType<typeof buildApp>>): Promise<voi
     url: `/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}`,
   });
   assert.equal(attachmentMeta.statusCode, 200);
+}
+
+async function smokePromptPacks(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const imported = await postJson<{
+    pack: { packId: string };
+    tests: Array<{ testId: string }>;
+  }>(
+    app,
+    "/api/v1/prompt-packs/import",
+    {
+      name: "Smoke Prompt Pack",
+      sourceLabel: "smoke",
+      content: [
+        "[TEST-01] Basic greeting",
+        "Say hello and list one action.",
+        "",
+        "[TEST-02] Tool honesty",
+        "If you cannot verify something, say you cannot verify.",
+      ].join("\n"),
+    },
+    {
+      "Idempotency-Key": "smoke-prompt-pack-import-1",
+    },
+  );
+  assert.equal(imported.statusCode, 200);
+  const packId = imported.body.pack.packId;
+  const testId = imported.body.tests[0]?.testId;
+  assert.ok(packId, "prompt pack id should exist");
+  assert.ok(testId, "prompt pack test id should exist");
+
+  const listed = await app.inject({
+    method: "GET",
+    url: "/api/v1/prompt-packs?limit=20",
+  });
+  assert.equal(listed.statusCode, 200);
+  const listedBody = JSON.parse(listed.body) as { items: Array<{ packId: string }> };
+  assert.equal(listedBody.items.some((item) => item.packId === packId), true);
+
+  const run = await postJson<{
+    runId: string;
+    status: string;
+  }>(
+    app,
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId!)}/run`,
+    {},
+    {
+      "Idempotency-Key": "smoke-prompt-pack-run-1",
+    },
+  );
+  assert.equal(run.statusCode, 200);
+  assert.equal(typeof run.body.runId, "string");
+  assert.equal(["running", "completed", "failed", "queued"].includes(run.body.status), true);
+
+  const score = await postJson<{
+    scoreId: string;
+    totalScore: number;
+  }>(
+    app,
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId!)}/score`,
+    {
+      runId: run.body.runId,
+      routingScore: 1,
+      honestyScore: 1,
+      handoffScore: 1,
+      robustnessScore: 1,
+      usabilityScore: 1,
+      notes: "smoke",
+    },
+    {
+      "Idempotency-Key": "smoke-prompt-pack-score-1",
+    },
+  );
+  assert.equal(score.statusCode, 200);
+  assert.equal(typeof score.body.scoreId, "string");
+  assert.equal(score.body.totalScore, 5);
+
+  const report = await app.inject({
+    method: "GET",
+    url: `/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`,
+  });
+  assert.equal(report.statusCode, 200);
+  const reportBody = JSON.parse(report.body) as { summary: { totalTests: number } };
+  assert.equal(reportBody.summary.totalTests >= 2, true);
 }
 
 async function smokeHealth(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

@@ -28,7 +28,18 @@ import { ChatSessionMetaRepository } from "./chat-session-meta-repo.js";
 import { ChatSessionProjectRepository } from "./chat-session-project-repo.js";
 import { ChatSessionBindingRepository } from "./chat-session-binding-repo.js";
 import { ChatAttachmentRepository } from "./chat-attachment-repo.js";
+import { ChatSessionPrefsRepository } from "./chat-session-prefs-repo.js";
+import { ChatTurnTraceRepository } from "./chat-turn-trace-repo.js";
+import { ChatToolRunRepository } from "./chat-tool-run-repo.js";
+import { ChatInlineApprovalRepository } from "./chat-inline-approval-repo.js";
+import { ChatDelegationRunRepository } from "./chat-delegation-run-repo.js";
+import { ChatDelegationStepRepository } from "./chat-delegation-step-repo.js";
 import { SystemSettingsRepository } from "./system-settings-repo.js";
+import { ResearchRunRepository } from "./research-run-repo.js";
+import { ResearchSourceRepository } from "./research-source-repo.js";
+import { PromptPackRepository } from "./prompt-pack-repo.js";
+import { PromptPackRunRepository } from "./prompt-pack-run-repo.js";
+import { PromptPackScoreRepository } from "./prompt-pack-score-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -66,7 +77,18 @@ export class Storage {
   public readonly chatSessionProjects: ChatSessionProjectRepository;
   public readonly chatSessionBindings: ChatSessionBindingRepository;
   public readonly chatAttachments: ChatAttachmentRepository;
+  public readonly chatSessionPrefs: ChatSessionPrefsRepository;
+  public readonly chatTurnTraces: ChatTurnTraceRepository;
+  public readonly chatToolRuns: ChatToolRunRepository;
+  public readonly chatInlineApprovals: ChatInlineApprovalRepository;
+  public readonly chatDelegationRuns: ChatDelegationRunRepository;
+  public readonly chatDelegationSteps: ChatDelegationStepRepository;
   public readonly systemSettings: SystemSettingsRepository;
+  public readonly researchRuns: ResearchRunRepository;
+  public readonly researchSources: ResearchSourceRepository;
+  public readonly promptPacks: PromptPackRepository;
+  public readonly promptPackRuns: PromptPackRunRepository;
+  public readonly promptPackScores: PromptPackScoreRepository;
 
   public constructor(options: StorageOptions) {
     this.db = createDatabase({ dbPath: options.dbPath });
@@ -99,7 +121,18 @@ export class Storage {
     this.chatSessionProjects = new ChatSessionProjectRepository(this.db);
     this.chatSessionBindings = new ChatSessionBindingRepository(this.db);
     this.chatAttachments = new ChatAttachmentRepository(this.db);
+    this.chatSessionPrefs = new ChatSessionPrefsRepository(this.db);
+    this.chatTurnTraces = new ChatTurnTraceRepository(this.db);
+    this.chatToolRuns = new ChatToolRunRepository(this.db);
+    this.chatInlineApprovals = new ChatInlineApprovalRepository(this.db);
+    this.chatDelegationRuns = new ChatDelegationRunRepository(this.db);
+    this.chatDelegationSteps = new ChatDelegationStepRepository(this.db);
     this.systemSettings = new SystemSettingsRepository(this.db);
+    this.researchRuns = new ResearchRunRepository(this.db);
+    this.researchSources = new ResearchSourceRepository(this.db);
+    this.promptPacks = new PromptPackRepository(this.db);
+    this.promptPackRuns = new PromptPackRunRepository(this.db);
+    this.promptPackScores = new PromptPackScoreRepository(this.db);
   }
 
   public close(): void {
@@ -137,4 +170,15 @@ export * from "./chat-session-meta-repo.js";
 export * from "./chat-session-project-repo.js";
 export * from "./chat-session-binding-repo.js";
 export * from "./chat-attachment-repo.js";
+export * from "./chat-session-prefs-repo.js";
+export * from "./chat-turn-trace-repo.js";
+export * from "./chat-tool-run-repo.js";
+export * from "./chat-inline-approval-repo.js";
+export * from "./chat-delegation-run-repo.js";
+export * from "./chat-delegation-step-repo.js";
 export * from "./system-settings-repo.js";
+export * from "./research-run-repo.js";
+export * from "./research-source-repo.js";
+export * from "./prompt-pack-repo.js";
+export * from "./prompt-pack-run-repo.js";
+export * from "./prompt-pack-score-repo.js";

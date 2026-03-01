@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LlmConfigFile } from "@goatcitadel/contracts";
 import { LlmService } from "./llm-service.js";
 import { SecretStoreService } from "./secret-store-service.js";
@@ -97,7 +97,7 @@ describe("LlmService", () => {
     expect(provider?.baseUrl).toBe("https://example.com/v1");
   });
 
-  it("enforces network allowlist for outbound model calls", async () => {
+  it("enforces network allowlist for outbound model calls when configured", async () => {
     const config: LlmConfigFile = {
       activeProviderId: "openai",
       providers: [
@@ -113,7 +113,7 @@ describe("LlmService", () => {
 
     const service = new LlmService(config, process.env, {
       secretStore: createNoopSecretStore(),
-      networkAllowlist: [],
+      networkAllowlist: ["example.com"],
     });
     await expect(service.listModels()).rejects.toThrowError(/allowlist/i);
   });
@@ -166,6 +166,78 @@ describe("LlmService", () => {
     });
     expect(secretStore.getCalls()).toBe(2);
     expect(explicitMoonshot.apiKeySource).toBe("keychain");
+  });
+
+  it("adds reasoning_content for kimi assistant tool-call history messages", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "moonshot",
+      providers: [
+        {
+          providerId: "moonshot",
+          label: "Moonshot",
+          baseUrl: "https://api.moonshot.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "kimi-k2.5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    let payloadBody: Record<string, unknown> | undefined;
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      payloadBody = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      return new Response(
+        JSON.stringify({
+          id: "cmpl_test",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      await service.chatCompletions({
+        model: "kimi-k2.5",
+        messages: [
+          { role: "user", content: "what is the weather today?" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "browser_search",
+                  arguments: "{\"query\":\"weather 91303\"}",
+                },
+              },
+            ],
+          } as unknown as { role: "assistant"; content: string },
+          {
+            role: "tool",
+            tool_call_id: "call_1",
+            content: "{\"results\":[]}",
+          },
+        ],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const messages = Array.isArray(payloadBody?.messages)
+      ? payloadBody.messages as Array<Record<string, unknown>>
+      : [];
+    const assistantToolCallMessage = messages.find((message) => (
+      message.role === "assistant" && Array.isArray(message.tool_calls)
+    ));
+    expect(assistantToolCallMessage).toBeTruthy();
+    expect(typeof assistantToolCallMessage?.reasoning_content).toBe("string");
+    expect(String(assistantToolCallMessage?.reasoning_content)).not.toHaveLength(0);
   });
 });
 

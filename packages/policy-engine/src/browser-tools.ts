@@ -55,59 +55,71 @@ async function executeBrowserSearch(
 ): Promise<Record<string, unknown>> {
   const query = asNonEmptyString(args.query, "query");
   const engine = asString(args.engine)?.toLowerCase() ?? "duckduckgo";
-  const limit = clampInteger(args.limit, 5, 1, 25);
+  const limit = clampInteger(args.limit ?? args.maxResults, 5, 1, 25);
   const searchUrl = buildSearchUrl(engine, query);
+  try {
+    const snapshot = await withBrowserPage(
+      searchUrl,
+      args,
+      config,
+      async (page) => {
+        await page.waitForLoadState("domcontentloaded");
+        const results = await page.evaluate((maxItems: number) => {
+          const out: Array<{ title: string; url: string; snippet: string }> = [];
+          const seen = new Set<string>();
+          const anchors = Array.from(document.querySelectorAll("a[href]"));
+          for (const anchor of anchors) {
+            if (out.length >= maxItems) {
+              break;
+            }
+            const href = anchor.getAttribute("href") ?? "";
+            if (!href.startsWith("http://") && !href.startsWith("https://")) {
+              continue;
+            }
+            if (seen.has(href)) {
+              continue;
+            }
+            const title = (anchor.textContent ?? "").replace(/\s+/g, " ").trim();
+            if (!title) {
+              continue;
+            }
+            const containerText = (anchor.closest("article, li, div")?.textContent ?? "")
+              .replace(/\s+/g, " ")
+              .trim();
+            out.push({
+              title: title.slice(0, 240),
+              url: href,
+              snippet: containerText.slice(0, 420),
+            });
+            seen.add(href);
+          }
+          return out;
+        }, limit);
 
-  const snapshot = await withBrowserPage(
-    searchUrl,
-    args,
-    config,
-    async (page) => {
-      await page.waitForLoadState("domcontentloaded");
-      const results = await page.evaluate((maxItems: number) => {
-        const out: Array<{ title: string; url: string; snippet: string }> = [];
-        const seen = new Set<string>();
-        const anchors = Array.from(document.querySelectorAll("a[href]"));
-        for (const anchor of anchors) {
-          if (out.length >= maxItems) {
-            break;
-          }
-          const href = anchor.getAttribute("href") ?? "";
-          if (!href.startsWith("http://") && !href.startsWith("https://")) {
-            continue;
-          }
-          if (seen.has(href)) {
-            continue;
-          }
-          const title = (anchor.textContent ?? "").replace(/\s+/g, " ").trim();
-          if (!title) {
-            continue;
-          }
-          const containerText = (anchor.closest("article, li, div")?.textContent ?? "")
-            .replace(/\s+/g, " ")
-            .trim();
-          out.push({
-            title: title.slice(0, 240),
-            url: href,
-            snippet: containerText.slice(0, 420),
-          });
-          seen.add(href);
-        }
-        return out;
-      }, limit);
+        return {
+          engine,
+          query,
+          results,
+        };
+      },
+    );
 
-      return {
-        engine,
-        query,
-        results,
-      };
-    },
-  );
-
-  return {
-    ...snapshot,
-    action: "search",
-  };
+    return {
+      ...snapshot,
+      action: "search",
+      fallbackUsed: false,
+    };
+  } catch (playwrightError) {
+    const fallback = await executeBrowserSearchFallback(query, limit, config);
+    return {
+      ...fallback,
+      action: "search",
+      engine,
+      query,
+      fallbackUsed: true,
+      fallbackReason: (playwrightError as Error).message,
+    };
+  }
 }
 
 async function executeBrowserNavigate(
@@ -119,12 +131,27 @@ async function executeBrowserNavigate(
 
   return withBrowserPage(url, args, config, async (page, responseStatus) => {
     const title = await page.title();
+    const domWeather = await extractWeatherSnapshot(page, title);
+    let visualTextSnippet: string | undefined;
+    const visualWeather = domWeather
+      ? undefined
+      : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
+    if (visualWeather) {
+      visualTextSnippet = visualWeather.visualTextSnippet;
+    }
+    const weather = domWeather ?? visualWeather?.weather;
     const bodyText = await extractText(page, "body", maxChars);
+    const textSnippet = weather
+      ? `${weather.summary}\n\n${bodyText}`.slice(0, maxChars)
+      : bodyText;
     return {
       action: "navigate",
       title,
       status: responseStatus,
-      textSnippet: bodyText,
+      textSnippet,
+      weather,
+      extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
+      visualTextSnippet,
     };
   });
 }
@@ -139,13 +166,28 @@ async function executeBrowserExtract(
 
   return withBrowserPage(url, args, config, async (page, responseStatus) => {
     const title = await page.title();
+    const domWeather = await extractWeatherSnapshot(page, title);
+    let visualTextSnippet: string | undefined;
+    const visualWeather = domWeather
+      ? undefined
+      : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
+    if (visualWeather) {
+      visualTextSnippet = visualWeather.visualTextSnippet;
+    }
+    const weather = domWeather ?? visualWeather?.weather;
     const extracted = await extractText(page, selector, maxChars);
+    const text = weather && selector === "body"
+      ? `${weather.summary}\n\n${extracted}`.slice(0, maxChars)
+      : extracted;
     return {
       action: "extract",
       title,
       selector,
       status: responseStatus,
-      text: extracted,
+      text,
+      weather,
+      extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
+      visualTextSnippet,
     };
   });
 }
@@ -314,6 +356,7 @@ async function loadPlaywright(): Promise<PlaywrightModule> {
 }
 
 async function extractText(page: PlaywrightPage, selector: string, maxChars: number): Promise<string> {
+  await page.waitForTimeout(750);
   try {
     const text = await page.locator(selector).first().innerText({
       timeout: 5000,
@@ -323,6 +366,236 @@ async function extractText(page: PlaywrightPage, selector: string, maxChars: num
     const text = await page.locator("body").first().innerText({ timeout: 5000 });
     return text.replace(/\s+/g, " ").trim().slice(0, maxChars);
   }
+}
+
+interface WeatherSnapshot {
+  summary: string;
+  location?: string;
+  condition?: string;
+  temperature?: string;
+}
+
+async function extractWeatherSnapshot(
+  page: PlaywrightPage,
+  title: string,
+): Promise<WeatherSnapshot | undefined> {
+  await page.waitForTimeout(900);
+  const rawTemperature = await readFirstLocatorText(page, [
+    "[data-testid='TemperatureValue']",
+    "[data-testid='TemperatureValue'] span",
+    "[class*='CurrentConditions--tempValue']",
+    "[class*='CurrentConditions--tempValue'] span",
+    "[class*='CurrentConditions--primary-temp']",
+    "span[data-testid*='Temperature']",
+  ]);
+  const rawCondition = await readFirstLocatorText(page, [
+    "[data-testid='wxPhrase']",
+    "[data-testid='wxPhrase'] span",
+    "[class*='CurrentConditions--phraseValue']",
+    "[class*='CurrentConditions--phraseValue'] span",
+    "[class*='CurrentConditions--condition']",
+  ]);
+  const rawLocation = await readFirstLocatorText(page, [
+    "[data-testid='PresentationName']",
+    "[data-testid='LocationPageTitle']",
+    "[class*='CurrentConditions--location']",
+    "h1[data-testid*='LocationPageTitle']",
+    "h1",
+  ]);
+  const body = await extractText(page, "body", 3500);
+
+  const temperature = normalizeTemperature(rawTemperature)
+    ?? normalizeTemperature(title)
+    ?? normalizeTemperature(body);
+  const condition = normalizeCondition(rawCondition)
+    ?? normalizeCondition(title)
+    ?? normalizeCondition(body);
+  const location = normalizeLocation(rawLocation)
+    ?? extractLocationFromTitle(title)
+    ?? normalizeLocation(title);
+
+  if (!temperature && !condition) {
+    return undefined;
+  }
+
+  const parts = [location, temperature, condition].filter(Boolean).join(" | ");
+  return {
+    summary: `Current weather snapshot: ${parts}.`,
+    location: location ?? undefined,
+    condition: condition ?? undefined,
+    temperature: temperature ?? undefined,
+  };
+}
+
+async function extractWeatherSnapshotFromVisualTree(
+  page: PlaywrightPage,
+  title: string,
+  maxChars: number,
+): Promise<{ weather: WeatherSnapshot; visualTextSnippet: string } | undefined> {
+  const visualText = await extractVisualTextFromAccessibilityTree(page, Math.max(800, maxChars));
+  if (!visualText) {
+    return undefined;
+  }
+
+  const temperature = normalizeTemperature(visualText) ?? normalizeTemperature(title);
+  const condition = normalizeCondition(visualText) ?? normalizeCondition(title);
+  const location = extractLocationFromTitle(title) ?? normalizeLocation(visualText) ?? normalizeLocation(title);
+
+  if (!temperature && !condition) {
+    return undefined;
+  }
+
+  const parts = [location, temperature, condition].filter(Boolean).join(" | ");
+  return {
+    weather: {
+      summary: `Visual weather snapshot: ${parts}.`,
+      location: location ?? undefined,
+      condition: condition ?? undefined,
+      temperature: temperature ?? undefined,
+    },
+    visualTextSnippet: visualText.slice(0, 900),
+  };
+}
+
+async function extractVisualTextFromAccessibilityTree(
+  page: PlaywrightPage,
+  maxChars: number,
+): Promise<string | undefined> {
+  if (!page.accessibility?.snapshot) {
+    return undefined;
+  }
+
+  try {
+    const root = await page.accessibility.snapshot({ interestingOnly: false });
+    if (!root) {
+      return undefined;
+    }
+    const chunks: string[] = [];
+    collectAccessibilityText(root, chunks);
+    const merged = chunks
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return merged ? merged.slice(0, maxChars) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function collectAccessibilityText(node: AccessibilitySnapshotNode, output: string[]): void {
+  if (typeof node.name === "string" && node.name.trim()) {
+    output.push(node.name.trim());
+  }
+  if (typeof node.value === "string" && node.value.trim()) {
+    output.push(node.value.trim());
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      collectAccessibilityText(child, output);
+    }
+  }
+}
+
+async function readFirstLocatorText(
+  page: PlaywrightPage,
+  selectors: string[],
+): Promise<string | undefined> {
+  for (const selector of selectors) {
+    try {
+      const value = await page.locator(selector).first().innerText({ timeout: 1200 });
+      const normalized = value.replace(/\s+/g, " ").trim();
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Continue searching other selectors.
+    }
+  }
+  return undefined;
+}
+
+function normalizeTemperature(input: string | undefined): string | undefined {
+  const value = (input ?? "").replace(/\s+/g, " ").trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const direct = value.match(/(-?\d{1,3})\s*°\s*([FC])?/i);
+  if (direct) {
+    const unit = direct[2] ? direct[2].toUpperCase() : "";
+    return `${direct[1]}°${unit}`;
+  }
+
+  const fahrenheitWord = value.match(/(-?\d{1,3})\s*(degrees?|deg)\s*fahrenheit/i);
+  if (fahrenheitWord) {
+    return `${fahrenheitWord[1]}°F`;
+  }
+  const celsiusWord = value.match(/(-?\d{1,3})\s*(degrees?|deg)\s*celsius/i);
+  if (celsiusWord) {
+    return `${celsiusWord[1]}°C`;
+  }
+
+  const jsonLike = value.match(/(?:temp(?:erature)?|currentTemp|feelsLike)[^0-9-]{0,12}(-?\d{1,3})/i);
+  if (jsonLike) {
+    return `${jsonLike[1]}°`;
+  }
+
+  return undefined;
+}
+
+function normalizeCondition(input: string | undefined): string | undefined {
+  const value = (input ?? "").replace(/\s+/g, " ").trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const phrase = value.match(
+    /\b(sunny|mostly sunny|partly cloudy|cloudy|overcast|rain|rainy|showers|snow|snowy|fog|mist|haze|clear|windy|thunderstorms?)\b/i,
+  );
+  if (!phrase) {
+    return undefined;
+  }
+  return phrase[0]
+    .split(" ")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function normalizeLocation(input: string | undefined): string | undefined {
+  const value = (input ?? "").replace(/\s+/g, " ").trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const cleaned = value
+    .replace(/\b(weather|forecast|today|hourly|current conditions)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || cleaned.length < 3) {
+    return undefined;
+  }
+  if (/^-?\d{1,3}\s*°[FC]?$/i.test(cleaned) || cleaned.includes("°")) {
+    return undefined;
+  }
+  if (/^\d+$/.test(cleaned)) {
+    return undefined;
+  }
+  return cleaned.slice(0, 80);
+}
+
+function extractLocationFromTitle(title: string): string | undefined {
+  const value = title.replace(/\s+/g, " ").trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const weatherFor = value.match(/\bfor\s+(.+?)\s*(?:\||$)/i);
+  if (weatherFor?.[1]) {
+    return normalizeLocation(weatherFor[1]);
+  }
+
+  const dashSplit = value.split("|")[0]?.trim();
+  return normalizeLocation(dashSplit);
 }
 
 function parseStep(value: unknown): BrowserStepInput {
@@ -351,7 +624,7 @@ function buildSearchUrl(engine: string, query: string): string {
   if (engine === "bing") {
     return `https://www.bing.com/search?q=${encoded}`;
   }
-  return `https://duckduckgo.com/?q=${encoded}`;
+  return `https://lite.duckduckgo.com/lite/?q=${encoded}`;
 }
 
 function parseWaitUntil(input: unknown): "load" | "domcontentloaded" | "networkidle" {
@@ -420,6 +693,140 @@ function assertAllowedHttpUrl(url: string): void {
   }
 }
 
+async function executeBrowserSearchFallback(
+  query: string,
+  limit: number,
+  config: ToolPolicyConfig,
+): Promise<{
+  finalUrl: string;
+  results: Array<{ title: string; url: string; snippet: string }>;
+}> {
+  const url = buildSearchUrl("duckduckgo", query);
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  return {
+    finalUrl: page.finalUrl,
+    results: parseSearchResults(page.html, limit),
+  };
+}
+
+async function fetchTextAllowlisted(
+  url: string,
+  allowlist: string[],
+): Promise<{ html: string; finalUrl: string }> {
+  assertAllowedHttpUrl(url);
+  assertHostAllowed(url, allowlist);
+
+  const response = await fetch(url, {
+    method: "GET",
+    redirect: "follow",
+    signal: AbortSignal.timeout(20_000),
+    headers: {
+      "User-Agent": "GoatCitadel/1.1.1 (+https://localhost)",
+      Accept: "text/html,application/xhtml+xml",
+    },
+  });
+
+  const finalUrl = response.url || url;
+  assertAllowedHttpUrl(finalUrl);
+  assertHostAllowed(finalUrl, allowlist);
+
+  if (!response.ok) {
+    throw new Error(`Search fetch failed (${response.status})`);
+  }
+
+  return {
+    html: await response.text(),
+    finalUrl,
+  };
+}
+
+function parseSearchResults(
+  html: string,
+  limit: number,
+): Array<{ title: string; url: string; snippet: string }> {
+  const out: Array<{ title: string; url: string; snippet: string }> = [];
+  const seen = new Set<string>();
+  const anchorPattern = /<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = anchorPattern.exec(html)) !== null && out.length < limit) {
+    const rawHref = decodeHtmlEntities(match[1] ?? "").trim();
+    const resolvedUrl = normalizeSearchResultUrl(rawHref);
+    if (!resolvedUrl || seen.has(resolvedUrl)) {
+      continue;
+    }
+
+    const title = stripHtml(decodeHtmlEntities(match[2] ?? "")).replace(/\s+/g, " ").trim();
+    if (!title) {
+      continue;
+    }
+
+    const snippet = extractSnippetNear(html, match.index, 420);
+    out.push({
+      title: title.slice(0, 240),
+      url: resolvedUrl,
+      snippet,
+    });
+    seen.add(resolvedUrl);
+  }
+
+  return out;
+}
+
+function normalizeSearchResultUrl(href: string): string | undefined {
+  if (!href) {
+    return undefined;
+  }
+  if (href.startsWith("http://") || href.startsWith("https://")) {
+    return href;
+  }
+  if (href.startsWith("//")) {
+    return `https:${href}`;
+  }
+  if (href.startsWith("/l/?")) {
+    try {
+      const parsed = new URL(`https://duckduckgo.com${href}`);
+      const target = parsed.searchParams.get("uddg");
+      if (!target) {
+        return undefined;
+      }
+      const decoded = decodeURIComponent(target);
+      if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+        return decoded;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function extractSnippetNear(html: string, index: number, maxChars: number): string {
+  const window = html.slice(Math.max(0, index), Math.min(html.length, index + 900));
+  const stripped = stripHtml(decodeHtmlEntities(window)).replace(/\s+/g, " ").trim();
+  return stripped.slice(0, maxChars);
+}
+
+function stripHtml(input: string): string {
+  return input.replace(/<[^>]+>/g, " ");
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&#(\d+);/g, (_, code: string) => {
+      const numeric = Number(code);
+      return Number.isFinite(numeric) ? String.fromCharCode(numeric) : "";
+    });
+}
+
 type PlaywrightModule = {
   chromium: {
     launch: (options: { headless: boolean }) => Promise<PlaywrightBrowser>;
@@ -445,7 +852,7 @@ type PlaywrightPage = {
   waitForTimeout: (timeoutMs: number) => Promise<void>;
   title: () => Promise<string>;
   url: () => string;
-  evaluate: <T>(fn: (maxItems: number) => T, maxItems: number) => Promise<T>;
+  evaluate: <T, Arg>(fn: (arg: Arg) => T, arg: Arg) => Promise<T>;
   locator: (selector: string) => {
     first: () => {
       innerText: (options?: { timeout: number }) => Promise<string>;
@@ -458,4 +865,13 @@ type PlaywrightPage = {
   keyboard: {
     press: (key: string) => Promise<void>;
   };
+  accessibility?: {
+    snapshot: (options?: { interestingOnly?: boolean }) => Promise<AccessibilitySnapshotNode | null>;
+  };
 };
+
+interface AccessibilitySnapshotNode {
+  name?: string;
+  value?: string;
+  children?: AccessibilitySnapshotNode[];
+}

@@ -143,8 +143,9 @@ export class MemoryContextService {
     }
 
     const runtime = this.llmService.getRuntimeConfig();
-    const providerId = qmd.distiller.providerId ?? pickCheapestProvider(runtime.providers.map((provider) => provider.providerId), runtime.activeProviderId);
-    const model = qmd.distiller.model ?? qmd.distiller.fallbackCheapModel;
+    const providerId = qmd.distiller.providerId ?? runtime.activeProviderId;
+    const model = qmd.distiller.model
+      ?? (providerId === runtime.activeProviderId ? runtime.activeModel : qmd.distiller.fallbackCheapModel);
 
     try {
       const response = await withTimeout(
@@ -458,16 +459,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       clearTimeout(timeoutHandle);
     }
   }
-}
-
-function pickCheapestProvider(providerIds: string[], fallback: string): string {
-  const preferred = ["lmstudio", "ollama", "localai", "openai", fallback];
-  for (const value of preferred) {
-    if (providerIds.includes(value)) {
-      return value;
-    }
-  }
-  return fallback;
 }
 
 function calculateSavings(originalTokens: number, distilledTokens: number): number {

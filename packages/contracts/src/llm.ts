@@ -6,6 +6,8 @@ export interface LlmProviderCapabilities {
   video: boolean;
   toolCalling: boolean;
   jsonMode: boolean;
+  webSearch?: boolean;
+  reasoning?: boolean;
 }
 
 export interface LlmProviderConfig {
@@ -102,5 +104,22 @@ export interface ChatCompletionResponse {
     savingsPercent: number;
     citationsCount: number;
   };
+  routing?: {
+    primaryProviderId?: string;
+    primaryModel?: string;
+    effectiveProviderId?: string;
+    effectiveModel?: string;
+    fallbackProviderId?: string;
+    fallbackModel?: string;
+    fallbackReason?: string;
+    fallbackUsed?: boolean;
+  };
+  citations?: Array<{
+    citationId: string;
+    title?: string;
+    url: string;
+    snippet?: string;
+    sourceType?: "web" | "file" | "tool";
+  }>;
   [key: string]: unknown;
 }

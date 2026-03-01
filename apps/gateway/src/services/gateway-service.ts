@@ -32,13 +32,24 @@ import type {
   ChatAttachmentRecord,
   ChatAttachmentMediaType,
   ChatAttachmentPreviewResponse,
+  ChatCitationRecord,
+  ChatDelegateRequest,
+  ChatDelegateResponse,
+  ChatDelegationRunRecord,
+  ChatDelegationStepRecord,
   ChatInputPart,
+  ChatMode,
   ChatMessageRecord,
   ChatProjectRecord,
+  ChatSendMessageRequest,
   ChatSendMessageResponse,
+  ChatSessionPrefsRecord,
   ChatSessionBindingRecord,
   ChatSessionRecord,
   ChatStreamChunk,
+  ChatThinkingLevel,
+  ChatTurnTraceRecord,
+  ChatWebMode,
   DocsIngestInput,
   EmbeddingIndexInput,
   EmbeddingQueryInput,
@@ -98,6 +109,14 @@ import type {
   RealtimeEvent,
   RetentionPolicy,
   RetentionPruneResult,
+  PromptPackRecord,
+  PromptPackReportRecord,
+  PromptPackRunRecord,
+  PromptPackScoreRecord,
+  PromptPackTestRecord,
+  ResearchRunRecord,
+  ResearchSourceRecord,
+  ResearchSummaryRecord,
   SessionMeta,
   TranscriptEvent,
   SessionSummary,
@@ -137,6 +156,8 @@ import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-cat
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
 import { SecretStoreService } from "./secret-store-service.js";
+import { ChatAgentOrchestrator, normalizeAgentInputFromSend } from "./chat-agent-orchestrator.js";
+import { ResearchService } from "./research-service.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -254,6 +275,23 @@ const CORE_CHANNEL_KEYS = new Set([
   "webchat",
 ]);
 
+const CHAT_SESSION_AUTO_ALLOW_TOOLS = [
+  "browser.search",
+  "browser.navigate",
+  "browser.extract",
+  "http.get",
+] as const;
+
+const PROMPT_PACK_PASS_THRESHOLD = 7;
+const DEFAULT_PROMPT_RUNNER_SOURCE = "goatcitadel_prompt_pack.md";
+const DEFAULT_DELEGATION_ROLES = ["product", "architect", "coder", "qa", "ops"];
+const PIPELINE_TEMPLATES: Record<string, string[]> = {
+  prd: ["product", "architect"],
+  build: ["architect", "coder", "qa"],
+  triage: ["qa", "ops", "product"],
+  release: ["qa", "ops", "product"],
+};
+
 interface ChatSessionListQuery {
   scope?: "mission" | "external" | "all";
   projectId?: string;
@@ -278,6 +316,8 @@ export class GatewayService {
   private readonly meshService: MeshService;
   private readonly npuSidecar: NpuSidecarService;
   private readonly approvalExplainer: ApprovalExplainerService;
+  private readonly chatAgentOrchestrator: ChatAgentOrchestrator;
+  private readonly researchService: ResearchService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly onboardingMarkerPath: string;
@@ -344,6 +384,17 @@ export class GatewayService {
         this.publishRealtime("approval_explained", "approvals", { ...payload });
       },
     );
+    this.chatAgentOrchestrator = new ChatAgentOrchestrator({
+      storage: this.storage,
+      listToolCatalog: () => this.listToolCatalog(),
+      createChatCompletion: (request) => this.createChatCompletion(request),
+      invokeTool: (request) => this.invokeTool(request),
+    });
+    this.researchService = new ResearchService({
+      storage: this.storage,
+      invokeTool: (request) => this.invokeTool(request),
+      createChatCompletion: (request) => this.createChatCompletion(request),
+    });
   }
 
   public async init(): Promise<void> {
@@ -608,6 +659,8 @@ export class GatewayService {
       timestamp: now,
     });
     this.storage.chatSessionMeta.ensure(resolution.sessionId, now);
+    this.storage.chatSessionPrefs.ensure(resolution.sessionId, now);
+    this.ensureChatSessionRuntimeGrants(resolution.sessionId);
     if (input.title?.trim()) {
       this.storage.chatSessionMeta.patch(resolution.sessionId, {
         title: input.title.trim(),
@@ -733,6 +786,1221 @@ export class GatewayService {
     }
 
     return messages.slice(-Math.max(1, Math.min(limit, 1000)));
+  }
+
+  public getChatSessionPrefs(sessionId: string): ChatSessionPrefsRecord {
+    this.getSession(sessionId);
+    const prefs = this.storage.chatSessionPrefs.ensure(sessionId);
+    return this.ensureGlmPrimaryDefaults(sessionId, prefs);
+  }
+
+  public updateChatSessionPrefs(
+    sessionId: string,
+    input: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>,
+  ): ChatSessionPrefsRecord {
+    this.getSession(sessionId);
+    const updated = this.storage.chatSessionPrefs.patch(sessionId, input);
+    const normalized = this.ensureGlmPrimaryDefaults(sessionId, updated);
+    this.publishRealtime("chat_session_updated", "chat", {
+      type: "chat_session_prefs_updated",
+      sessionId,
+      prefs: normalized,
+    });
+    return normalized;
+  }
+
+  private ensureGlmPrimaryDefaults(sessionId: string, prefs: ChatSessionPrefsRecord): ChatSessionPrefsRecord {
+    if (prefs.providerId && prefs.model) {
+      return prefs;
+    }
+    const defaults = this.getPromptRunnerModelDefaults();
+    const patch: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">> = {};
+    if (!prefs.providerId && defaults.providerId) {
+      patch.providerId = defaults.providerId;
+    }
+    if (!prefs.model && defaults.model) {
+      patch.model = defaults.model;
+    }
+    if (Object.keys(patch).length === 0) {
+      return prefs;
+    }
+    return this.storage.chatSessionPrefs.patch(sessionId, patch);
+  }
+
+  private getPromptRunnerModelDefaults(): { providerId?: string; model?: string } {
+    const runtime = this.llmService.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
+    const glm = runtime.providers.find((provider) => provider.providerId === "glm" && provider.hasApiKey);
+    if (glm) {
+      return {
+        providerId: glm.providerId,
+        model: glm.defaultModel || "glm-5",
+      };
+    }
+    const kimi = runtime.providers.find((provider) => provider.providerId === "moonshot" && provider.hasApiKey);
+    if (kimi) {
+      return {
+        providerId: kimi.providerId,
+        model: kimi.defaultModel,
+      };
+    }
+    const active = runtime.providers.find((provider) => provider.providerId === runtime.activeProviderId);
+    return {
+      providerId: active?.providerId ?? runtime.activeProviderId,
+      model: runtime.activeModel,
+    };
+  }
+
+  private ensureChatSessionRuntimeGrants(sessionId: string): void {
+    const existing = this.listToolGrants("session", sessionId, 1000);
+    const active = existing.filter((grant) => isActiveToolGrant(grant));
+    const inheritedDeny = [
+      ...this.listToolGrants("global", "global", 1000),
+      ...this.listToolGrants("agent", "assistant", 1000),
+    ].filter((grant) => isActiveToolGrant(grant) && grant.decision === "deny");
+    for (const toolName of CHAT_SESSION_AUTO_ALLOW_TOOLS) {
+      const deniedByInheritedScope = inheritedDeny.some((grant) => grantPatternMatches(grant.toolPattern, toolName));
+      if (deniedByInheritedScope) {
+        continue;
+      }
+      const hasDeny = active.some((grant) => grant.decision === "deny" && grantPatternMatches(grant.toolPattern, toolName));
+      if (hasDeny) {
+        continue;
+      }
+      const hasAllow = active.some((grant) => grant.decision === "allow" && grantPatternMatches(grant.toolPattern, toolName));
+      if (hasAllow) {
+        continue;
+      }
+      this.createToolGrant({
+        toolPattern: toolName,
+        decision: "allow",
+        scope: "session",
+        scopeRef: sessionId,
+        grantType: "persistent",
+        createdBy: "system-chat-agent-bootstrap",
+      });
+    }
+  }
+
+  public listChatCommandCatalog(): Array<{
+    command: string;
+    usage: string;
+    description: string;
+  }> {
+    return [
+      { command: "/mode", usage: "/mode chat|cowork|code", description: "Switch session mode." },
+      { command: "/model", usage: "/model <model-id>", description: "Override model for this session." },
+      { command: "/web", usage: "/web auto|off|quick|deep", description: "Set web retrieval behavior." },
+      { command: "/memory", usage: "/memory auto|on|off", description: "Set memory behavior." },
+      { command: "/think", usage: "/think minimal|standard|extended", description: "Set thinking depth." },
+      { command: "/tool", usage: "/tool safe_auto|manual", description: "Set tool autonomy mode." },
+      { command: "/research", usage: "/research <query>", description: "Run quick research for current session." },
+      { command: "/delegate", usage: "/delegate <role1,role2,...> :: <objective>", description: "Run task-backed role delegation." },
+      { command: "/pipeline", usage: "/pipeline prd|build|triage|release :: <objective>", description: "Run a built-in delegation template." },
+      { command: "/score", usage: "/score <TEST-##> <routing> <honesty> <handoff> <robustness> <usability>", description: "Score the latest run for a prompt-pack test." },
+      { command: "/pack", usage: "/pack run <TEST-##|all>", description: "Run prompt-pack tests from Prompt Lab." },
+      { command: "/project", usage: "/project <project-id|none>", description: "Assign or clear this session project." },
+      { command: "/attach", usage: "/attach <attachment-id>", description: "Reference an attachment id in your next send." },
+      { command: "/run", usage: "/run research <query>", description: "Run a named workflow from chat." },
+      { command: "/approve", usage: "/approve <approval-id>", description: "Approve a pending inline tool request." },
+      { command: "/deny", usage: "/deny <approval-id>", description: "Deny a pending inline tool request." },
+      { command: "/help", usage: "/help", description: "Show command catalog." },
+    ];
+  }
+
+  public async parseChatCommand(
+    sessionId: string,
+    commandText: string,
+  ): Promise<{
+    ok: boolean;
+    command: string;
+    args: string[];
+    message: string;
+    prefs?: ChatSessionPrefsRecord;
+    research?: ResearchSummaryRecord;
+  }> {
+    this.getSession(sessionId);
+    const parsed = parseSlashCommand(commandText);
+    if (!parsed) {
+      return {
+        ok: false,
+        command: "",
+        args: [],
+        message: "Command must start with '/'.",
+      };
+    }
+
+    const [head, ...args] = parsed;
+    const command = (head ?? "").toLowerCase();
+    if (!command) {
+      return {
+        ok: false,
+        command: "",
+        args: [],
+        message: "Command must include a command name after '/'.",
+      };
+    }
+
+    if (command === "/help") {
+      const help = this.listChatCommandCatalog()
+        .map((item) => `${item.usage} - ${item.description}`)
+        .join("\n");
+      return {
+        ok: true,
+        command,
+        args,
+        message: help,
+      };
+    }
+
+    if (command === "/mode") {
+      const mode = (args[0] ?? "").toLowerCase() as ChatMode;
+      if (mode !== "chat" && mode !== "cowork" && mode !== "code") {
+        return { ok: false, command, args, message: "Usage: /mode chat|cowork|code" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { mode });
+      return { ok: true, command, args, prefs, message: `Mode set to ${prefs.mode}.` };
+    }
+
+    if (command === "/model") {
+      const model = args.join(" ").trim();
+      if (!model) {
+        return { ok: false, command, args, message: "Usage: /model <model-id>" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { model });
+      return { ok: true, command, args, prefs, message: `Model set to ${prefs.model}.` };
+    }
+
+    if (command === "/web") {
+      const webMode = (args[0] ?? "").toLowerCase() as ChatWebMode;
+      if (!["auto", "off", "quick", "deep"].includes(webMode)) {
+        return { ok: false, command, args, message: "Usage: /web auto|off|quick|deep" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { webMode });
+      return { ok: true, command, args, prefs, message: `Web mode set to ${prefs.webMode}.` };
+    }
+
+    if (command === "/memory") {
+      const memoryMode = (args[0] ?? "").toLowerCase() as "auto" | "on" | "off";
+      if (!["auto", "on", "off"].includes(memoryMode)) {
+        return { ok: false, command, args, message: "Usage: /memory auto|on|off" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { memoryMode });
+      return { ok: true, command, args, prefs, message: `Memory mode set to ${prefs.memoryMode}.` };
+    }
+
+    if (command === "/think") {
+      const thinkingLevel = (args[0] ?? "").toLowerCase() as ChatThinkingLevel;
+      if (!["minimal", "standard", "extended"].includes(thinkingLevel)) {
+        return { ok: false, command, args, message: "Usage: /think minimal|standard|extended" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { thinkingLevel });
+      return { ok: true, command, args, prefs, message: `Thinking level set to ${prefs.thinkingLevel}.` };
+    }
+
+    if (command === "/tool") {
+      const toolAutonomy = (args[0] ?? "").toLowerCase() as "safe_auto" | "manual";
+      if (!["safe_auto", "manual"].includes(toolAutonomy)) {
+        return { ok: false, command, args, message: "Usage: /tool safe_auto|manual" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, { toolAutonomy });
+      return { ok: true, command, args, prefs, message: `Tool autonomy set to ${prefs.toolAutonomy}.` };
+    }
+
+    if (command === "/research") {
+      const query = args.join(" ").trim();
+      if (!query) {
+        return { ok: false, command, args, message: "Usage: /research <query>" };
+      }
+      const research = await this.runChatResearch(sessionId, {
+        query,
+        mode: "quick",
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        research,
+        message: research.summary,
+      };
+    }
+
+    if (command === "/delegate") {
+      const { roles, objective, error } = parseDelegateCommand(commandText);
+      if (error || !objective || roles.length === 0) {
+        return { ok: false, command, args, message: "Usage: /delegate <role1,role2,...> :: <objective>" };
+      }
+      const run = await this.runChatDelegation(sessionId, {
+        objective,
+        roles,
+        mode: "sequential",
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        message: `Delegation ${run.runId} completed with ${run.steps.length} steps.`,
+      };
+    }
+
+    if (command === "/pipeline") {
+      const parsedPipeline = parsePipelineCommand(commandText);
+      if (!parsedPipeline) {
+        return { ok: false, command, args, message: "Usage: /pipeline prd|build|triage|release :: <objective>" };
+      }
+      const run = await this.runChatDelegation(sessionId, {
+        objective: parsedPipeline.objective,
+        roles: parsedPipeline.roles,
+        mode: "sequential",
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        message: `Pipeline ${parsedPipeline.template} completed (${run.steps.length} steps).`,
+      };
+    }
+
+    if (command === "/score") {
+      const [testCodeRaw, routingRaw, honestyRaw, handoffRaw, robustnessRaw, usabilityRaw, ...noteParts] = args;
+      if (!testCodeRaw || [routingRaw, honestyRaw, handoffRaw, robustnessRaw, usabilityRaw].some((item) => item === undefined)) {
+        return {
+          ok: false,
+          command,
+          args,
+          message: "Usage: /score <TEST-##> <routing> <honesty> <handoff> <robustness> <usability>",
+        };
+      }
+      const score = await this.scorePromptPackLatestRunByCode({
+        sessionId,
+        testCode: normalizePromptTestCode(testCodeRaw),
+        routingScore: clampPromptScore(routingRaw!),
+        honestyScore: clampPromptScore(honestyRaw!),
+        handoffScore: clampPromptScore(handoffRaw!),
+        robustnessScore: clampPromptScore(robustnessRaw!),
+        usabilityScore: clampPromptScore(usabilityRaw!),
+        notes: noteParts.join(" ").trim() || undefined,
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        message: `Scored ${testCodeRaw}: total ${score.totalScore}/10.`,
+      };
+    }
+
+    if (command === "/pack") {
+      const subcommand = (args[0] ?? "").toLowerCase();
+      if (subcommand !== "run") {
+        return { ok: false, command, args, message: "Usage: /pack run <TEST-##|all>" };
+      }
+      const selector = normalizePromptTestCode(args[1] ?? "all");
+      const results = await this.runPromptPackFromChat(sessionId, selector);
+      return {
+        ok: true,
+        command,
+        args,
+        message: `Prompt pack run complete: ${results.length} test(s) executed.`,
+      };
+    }
+
+    if (command === "/project") {
+      const nextProject = args.join(" ").trim();
+      const updated = this.assignChatSessionProject(
+        sessionId,
+        !nextProject || nextProject === "none" ? undefined : nextProject,
+      );
+      return {
+        ok: true,
+        command,
+        args,
+        message: updated.projectId
+          ? `Session assigned to project ${updated.projectId}.`
+          : "Session project cleared.",
+      };
+    }
+
+    if (command === "/attach") {
+      const attachmentId = args.join(" ").trim();
+      if (!attachmentId) {
+        return { ok: false, command, args, message: "Usage: /attach <attachment-id>" };
+      }
+      return {
+        ok: true,
+        command,
+        args,
+        message: `Attachment ${attachmentId} noted. Include it in your next message send.`,
+      };
+    }
+
+    if (command === "/run") {
+      const workflow = (args[0] ?? "").toLowerCase();
+      if (workflow !== "research") {
+        return { ok: false, command, args, message: "Usage: /run research <query>" };
+      }
+      const query = args.slice(1).join(" ").trim();
+      if (!query) {
+        return { ok: false, command, args, message: "Usage: /run research <query>" };
+      }
+      const research = await this.runChatResearch(sessionId, {
+        query,
+        mode: "quick",
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        research,
+        message: research.summary,
+      };
+    }
+
+    if (command === "/approve") {
+      const approvalId = args[0]?.trim();
+      if (!approvalId) {
+        return { ok: false, command, args, message: "Usage: /approve <approval-id>" };
+      }
+      await this.resolveChatToolApproval(sessionId, approvalId, "approve");
+      return { ok: true, command, args, message: `Approved ${approvalId}.` };
+    }
+
+    if (command === "/deny") {
+      const approvalId = args[0]?.trim();
+      if (!approvalId) {
+        return { ok: false, command, args, message: "Usage: /deny <approval-id>" };
+      }
+      await this.resolveChatToolApproval(sessionId, approvalId, "reject");
+      return { ok: true, command, args, message: `Denied ${approvalId}.` };
+    }
+
+    return {
+      ok: false,
+      command,
+      args,
+      message: `Unknown command ${command}. Use /help.`,
+    };
+  }
+
+  public async runChatResearch(
+    sessionId: string,
+    input: {
+      query: string;
+      mode: "quick" | "deep";
+      providerId?: string;
+      model?: string;
+    },
+  ): Promise<ResearchSummaryRecord> {
+    this.getSession(sessionId);
+    this.ensureChatSessionRuntimeGrants(sessionId);
+    return this.researchService.run({
+      sessionId,
+      query: input.query,
+      mode: input.mode,
+      providerId: input.providerId,
+      model: input.model,
+    });
+  }
+
+  public getChatResearchRun(
+    sessionId: string,
+    runId: string,
+  ): {
+    run: ResearchRunRecord;
+    sources: ResearchSourceRecord[];
+  } {
+    return this.researchService.getRun(sessionId, runId);
+  }
+
+  public async runChatDelegation(
+    sessionId: string,
+    input: ChatDelegateRequest,
+  ): Promise<ChatDelegateResponse> {
+    this.getSession(sessionId);
+    const objective = input.objective.trim();
+    if (!objective) {
+      throw new Error("objective is required");
+    }
+    const roles = normalizeDelegationRoles(input.roles);
+    if (roles.length === 0) {
+      throw new Error("at least one role is required");
+    }
+    const mode = input.mode ?? "sequential";
+    const prefs = this.ensureGlmPrimaryDefaults(sessionId, this.storage.chatSessionPrefs.ensure(sessionId));
+    const providerId = input.providerId ?? prefs.providerId;
+    const model = input.model ?? prefs.model;
+
+    const task = this.createTask({
+      title: `Delegation: ${objective.slice(0, 120)}`,
+      description: objective,
+      status: "in_progress",
+      priority: "normal",
+      createdBy: "chat",
+    });
+
+    const runId = randomUUID();
+    this.storage.chatDelegationRuns.create({
+      runId,
+      sessionId,
+      taskId: task.taskId,
+      objective,
+      roles,
+      mode,
+      providerId,
+      model,
+      status: "running",
+      citations: [],
+    });
+    this.appendTaskActivity(task.taskId, {
+      activityType: "comment",
+      message: `Delegation started (${roles.join(" -> ")})`,
+      metadata: { runId, sessionId, mode },
+    });
+
+    const stitchedSections: string[] = [];
+    const citations: ChatCitationRecord[] = [];
+    let trace: ChatTurnTraceRecord["routing"] | undefined;
+    let failures = 0;
+    const sharedContext: Array<{ role: string; output: string }> = [];
+
+    for (let index = 0; index < roles.length; index += 1) {
+      const role = roles[index]!;
+      const stepId = randomUUID();
+      const startedAt = new Date().toISOString();
+      this.storage.chatDelegationSteps.create({
+        stepId,
+        runId,
+        role,
+        index,
+        status: "running",
+        startedAt,
+      });
+
+      const agentSessionId = `delegate:${runId}:${index + 1}`;
+      this.registerTaskSubagent(task.taskId, {
+        agentSessionId,
+        agentName: role,
+      });
+
+      try {
+        const completion = await this.createChatCompletion({
+          providerId,
+          model,
+          stream: false,
+          memory: {
+            enabled: true,
+            mode: "qmd",
+            sessionId,
+          },
+          messages: [
+            {
+              role: "system",
+              content: buildDelegationSystemPrompt(role),
+            },
+            {
+              role: "user",
+              content: buildDelegationUserPrompt({
+                objective,
+                role,
+                mode,
+                sharedContext,
+              }),
+            },
+          ],
+        });
+        const output = extractCompletionText(completion).trim() || "(no output returned)";
+        const finishedAt = new Date().toISOString();
+        this.storage.chatDelegationSteps.patch(stepId, {
+          status: "completed",
+          output,
+          finishedAt,
+          durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        });
+        this.updateTaskSubagent(agentSessionId, {
+          status: "completed",
+          endedAt: finishedAt,
+        });
+        this.appendTaskActivity(task.taskId, {
+          activityType: "comment",
+          agentId: role,
+          message: `${role} completed delegation step ${index + 1}/${roles.length}.`,
+          metadata: { runId, stepId },
+        });
+        this.appendTaskDeliverable(task.taskId, {
+          deliverableType: "artifact",
+          title: `${toTitleCase(role)} step`,
+          description: output.slice(0, 6000),
+        });
+        stitchedSections.push(`### ${toTitleCase(role)}\n${output}`);
+        sharedContext.push({
+          role,
+          output: output.slice(0, 4000),
+        });
+
+        const completionRouting = readCompletionRouting(completion);
+        if (completionRouting) {
+          trace = {
+            ...(trace ?? {}),
+            ...completionRouting,
+          };
+        }
+
+        const completionCitations = readCompletionCitations(completion);
+        for (const citation of completionCitations) {
+          citations.push(citation);
+        }
+      } catch (error) {
+        failures += 1;
+        const finishedAt = new Date().toISOString();
+        const message = (error as Error).message;
+        this.storage.chatDelegationSteps.patch(stepId, {
+          status: "failed",
+          error: message,
+          finishedAt,
+          durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        });
+        this.updateTaskSubagent(agentSessionId, {
+          status: "failed",
+          endedAt: finishedAt,
+        });
+        this.appendTaskActivity(task.taskId, {
+          activityType: "comment",
+          agentId: role,
+          message: `${role} failed delegation step ${index + 1}/${roles.length}: ${message}`,
+          metadata: { runId, stepId, error: message },
+        });
+        stitchedSections.push(`### ${toTitleCase(role)}\nFAILED: ${message}`);
+        if (mode === "parallel") {
+          continue;
+        }
+      }
+    }
+
+    const finishedAt = new Date().toISOString();
+    const stitchedOutput = stitchedSections.join("\n\n").trim();
+    const status: ChatDelegationRunRecord["status"] = failures === 0
+      ? "completed"
+      : stitchedSections.length > failures
+        ? "partial"
+        : "failed";
+    this.storage.chatDelegationRuns.patch(runId, {
+      status,
+      stitchedOutput,
+      citations,
+      trace,
+      finishedAt,
+    });
+    this.appendTaskActivity(task.taskId, {
+      activityType: "comment",
+      message: `Delegation ${status}.`,
+      metadata: { runId, failures, steps: roles.length },
+    });
+    if (stitchedSections.length > 0) {
+      this.updateTask(task.taskId, {
+        status: status === "completed" ? "review" : "blocked",
+      });
+    } else {
+      this.updateTask(task.taskId, {
+        status: "blocked",
+      });
+    }
+
+    return {
+      runId,
+      taskId: task.taskId,
+      steps: this.storage.chatDelegationSteps.listByRun(runId),
+      stitchedOutput,
+      citations,
+      trace,
+    };
+  }
+
+  public async *runChatDelegationStream(
+    sessionId: string,
+    input: ChatDelegateRequest,
+  ): AsyncGenerator<{
+    type: "status" | "step" | "done" | "error";
+    runId?: string;
+    taskId?: string;
+    message?: string;
+    step?: ChatDelegationStepRecord;
+    result?: ChatDelegateResponse;
+  }> {
+    yield { type: "status", message: "Delegation started." };
+    try {
+      const result = await this.runChatDelegation(sessionId, input);
+      for (const step of result.steps) {
+        yield { type: "step", runId: result.runId, taskId: result.taskId, step };
+      }
+      yield { type: "done", runId: result.runId, taskId: result.taskId, result };
+    } catch (error) {
+      yield { type: "error", message: (error as Error).message };
+    }
+  }
+
+  public getChatDelegationRun(
+    sessionId: string,
+    runId: string,
+  ): {
+    run: ChatDelegationRunRecord;
+    steps: ChatDelegationStepRecord[];
+  } {
+    const run = this.storage.chatDelegationRuns.get(runId);
+    if (run.sessionId !== sessionId) {
+      throw new Error("Delegation run does not belong to this session.");
+    }
+    return {
+      run,
+      steps: this.storage.chatDelegationSteps.listByRun(runId),
+    };
+  }
+
+  public importPromptPack(input: {
+    content: string;
+    name?: string;
+    sourceLabel?: string;
+    packId?: string;
+  }): {
+    pack: PromptPackRecord;
+    tests: PromptPackTestRecord[];
+  } {
+    const tests = parsePromptPackTests(input.content);
+    if (tests.length === 0) {
+      throw new Error("No tests found in prompt-pack markdown.");
+    }
+    const name = input.name?.trim() || inferPromptPackName(input.sourceLabel);
+    return this.storage.promptPacks.replacePackTests({
+      packId: input.packId,
+      name,
+      sourceLabel: input.sourceLabel,
+      tests,
+    });
+  }
+
+  public listPromptPacks(limit = 100): PromptPackRecord[] {
+    return this.storage.promptPacks.listPacks(limit);
+  }
+
+  public listPromptPackTests(packId: string, limit = 2000): PromptPackTestRecord[] {
+    this.storage.promptPacks.getPack(packId);
+    return this.storage.promptPacks.listTests(packId, limit);
+  }
+
+  public async runPromptPackTest(
+    packId: string,
+    testId: string,
+    input?: {
+      sessionId?: string;
+      providerId?: string;
+      model?: string;
+    },
+  ): Promise<PromptPackRunRecord> {
+    const pack = this.storage.promptPacks.getPack(packId);
+    const test = this.storage.promptPacks.getTest(testId);
+    if (test.packId !== pack.packId) {
+      throw new Error("Prompt-pack test does not belong to this pack.");
+    }
+
+    const defaults = this.getPromptRunnerModelDefaults();
+    const providerId = input?.providerId ?? defaults.providerId;
+    const model = input?.model ?? defaults.model;
+    const runId = randomUUID();
+    const sessionId = input?.sessionId ?? this.createChatSession({
+      title: `[${test.code}] ${test.title}`.slice(0, 200),
+    }).sessionId;
+
+    this.storage.promptPackRuns.create({
+      runId,
+      packId: pack.packId,
+      testId: test.testId,
+      sessionId,
+      status: "running",
+      providerId,
+      model,
+    });
+
+    try {
+      const response = await this.agentSendChatMessage(sessionId, {
+        content: test.prompt,
+        providerId,
+        model,
+        mode: "chat",
+        webMode: "auto",
+        memoryMode: "auto",
+        thinkingLevel: "standard",
+      });
+      const updated = this.storage.promptPackRuns.patch(runId, {
+        status: "completed",
+        responseText: response.assistantMessage?.content ?? "",
+        trace: response.trace,
+        citations: response.citations,
+        finishedAt: new Date().toISOString(),
+      });
+      return updated;
+    } catch (error) {
+      return this.storage.promptPackRuns.patch(runId, {
+        status: "failed",
+        error: (error as Error).message,
+        finishedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  public scorePromptPackTest(input: {
+    packId: string;
+    testId: string;
+    runId: string;
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+    notes?: string;
+  }): PromptPackScoreRecord {
+    const run = this.storage.promptPackRuns.get(input.runId);
+    if (run.packId !== input.packId || run.testId !== input.testId) {
+      throw new Error("Score target does not match run.");
+    }
+    return this.storage.promptPackScores.create({
+      scoreId: randomUUID(),
+      packId: input.packId,
+      testId: input.testId,
+      runId: input.runId,
+      routingScore: input.routingScore,
+      honestyScore: input.honestyScore,
+      handoffScore: input.handoffScore,
+      robustnessScore: input.robustnessScore,
+      usabilityScore: input.usabilityScore,
+      notes: input.notes?.trim() || undefined,
+    });
+  }
+
+  public async scorePromptPackLatestRunByCode(input: {
+    sessionId?: string;
+    testCode: string;
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+    notes?: string;
+  }): Promise<PromptPackScoreRecord> {
+    const pack = await this.ensurePromptPackLoaded();
+    if (!pack) {
+      throw new Error("No prompt pack is available. Import one in Prompt Lab first.");
+    }
+    const tests = this.storage.promptPacks.listTests(pack.packId, 5000);
+    const test = tests.find((item) => item.code.toUpperCase() === input.testCode.toUpperCase());
+    if (!test) {
+      throw new Error(`Prompt-pack test ${input.testCode} not found.`);
+    }
+    const runs = this.storage.promptPackRuns.listByTest(test.testId, 1000)
+      .filter((item) => !input.sessionId || item.sessionId === input.sessionId);
+    const latest = runs.at(0);
+    if (!latest) {
+      throw new Error(`No run found for ${test.code}. Run /pack run ${test.code} first.`);
+    }
+    return this.scorePromptPackTest({
+      packId: pack.packId,
+      testId: test.testId,
+      runId: latest.runId,
+      routingScore: input.routingScore,
+      honestyScore: input.honestyScore,
+      handoffScore: input.handoffScore,
+      robustnessScore: input.robustnessScore,
+      usabilityScore: input.usabilityScore,
+      notes: input.notes,
+    });
+  }
+
+  public getPromptPackReport(packId: string): PromptPackReportRecord {
+    const pack = this.storage.promptPacks.getPack(packId);
+    const tests = this.storage.promptPacks.listTests(packId, 5000);
+    const runs = this.storage.promptPackRuns.listByPack(packId, 10000);
+    const scores = this.storage.promptPackScores.listByPack(packId, 10000);
+
+    const completedRuns = runs.filter((item) => item.status === "completed").length;
+    const failedRuns = runs.filter((item) => item.status === "failed").length;
+    const totalScore = scores.reduce((sum, score) => sum + score.totalScore, 0);
+    const averageTotalScore = scores.length > 0 ? totalScore / scores.length : 0;
+    const passScores = scores.filter((score) => score.totalScore >= PROMPT_PACK_PASS_THRESHOLD).length;
+    const passRate = scores.length > 0 ? passScores / scores.length : 0;
+    const failingCodes = tests
+      .filter((test) => {
+        const latestScore = scores.find((score) => score.testId === test.testId);
+        return latestScore ? latestScore.totalScore < PROMPT_PACK_PASS_THRESHOLD : false;
+      })
+      .map((test) => test.code);
+
+    return {
+      pack,
+      tests,
+      runs,
+      scores,
+      summary: {
+        totalTests: tests.length,
+        completedRuns,
+        failedRuns,
+        averageTotalScore,
+        passRate,
+        failingCodes,
+      },
+    };
+  }
+
+  private async runPromptPackFromChat(sessionId: string, selector: string): Promise<PromptPackRunRecord[]> {
+    const pack = await this.ensurePromptPackLoaded();
+    if (!pack) {
+      throw new Error("No prompt pack available. Import a pack first.");
+    }
+    const tests = this.storage.promptPacks.listTests(pack.packId, 5000);
+    if (tests.length === 0) {
+      throw new Error("Prompt pack has no tests.");
+    }
+    const defaults = this.getPromptRunnerModelDefaults();
+    const selectedTests = selector === "all"
+      ? tests
+      : tests.filter((test) => test.code.toUpperCase() === selector.toUpperCase());
+    if (selectedTests.length === 0) {
+      throw new Error(`Prompt-pack selector ${selector} did not match any tests.`);
+    }
+
+    const runs: PromptPackRunRecord[] = [];
+    for (const test of selectedTests) {
+      runs.push(await this.runPromptPackTest(pack.packId, test.testId, {
+        sessionId,
+        providerId: defaults.providerId,
+        model: defaults.model,
+      }));
+    }
+    return runs;
+  }
+
+  private async ensurePromptPackLoaded(): Promise<PromptPackRecord | undefined> {
+    const existing = this.storage.promptPacks.listPacks(20);
+    if (existing.length > 0) {
+      return existing[0];
+    }
+    const sourcePath = process.env.GOATCITADEL_PROMPT_PACK_PATH?.trim()
+      || "C:\\Users\\spurn\\Desktop\\Chrome Downloads\\goatcitadel_prompt_pack.md";
+    try {
+      const markdown = await fs.readFile(sourcePath, "utf8");
+      const imported = this.importPromptPack({
+        content: markdown,
+        sourceLabel: DEFAULT_PROMPT_RUNNER_SOURCE,
+      });
+      return imported.pack;
+    } catch {
+      return undefined;
+    }
+  }
+
+  public async resolveChatToolApproval(
+    sessionId: string,
+    approvalId: string,
+    decision: "approve" | "reject",
+  ): Promise<void> {
+    const approval = this.storage.approvals.get(approvalId);
+    if (approval.status !== "pending") {
+      return;
+    }
+    await this.resolveApproval(approvalId, {
+      decision,
+      resolvedBy: "chat-operator",
+      resolutionNote: decision === "approve" ? "Approved from chat inline control." : "Denied from chat inline control.",
+    });
+    const turn = this.storage.chatToolRuns.listBySession(sessionId, 2000)
+      .find((toolRun) => toolRun.approvalId === approvalId);
+    this.storage.chatInlineApprovals.upsert({
+      approvalId,
+      sessionId,
+      turnId: turn?.turnId ?? "unknown",
+      toolName: turn?.toolName,
+      status: decision === "approve" ? "approved" : "denied",
+      reason: decision === "approve" ? "approved by operator" : "denied by operator",
+      resolvedBy: "chat-operator",
+    });
+  }
+
+  public async agentSendChatMessage(
+    sessionId: string,
+    input: ChatSendMessageRequest,
+  ): Promise<ChatSendMessageResponse> {
+    const session = this.getSession(sessionId);
+    this.ensureChatSessionRuntimeGrants(sessionId);
+    const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    if (sessionMeta.lifecycleStatus === "archived") {
+      throw new Error(`Session ${sessionId} is archived`);
+    }
+
+    const content = input.content.trim();
+    if (!content) {
+      throw new Error("content is required");
+    }
+
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
+    const route = this.routeFromSession(session);
+    const userEventId = randomUUID();
+    await this.ingestEvent(randomUUID(), {
+      eventId: userEventId,
+      route,
+      actor: {
+        type: "user",
+        id: "operator",
+      },
+      message: {
+        role: "user",
+        content,
+        parts: inputParts,
+        attachments: attachments.map((item) => ({
+          attachmentId: item.attachmentId,
+          fileName: item.fileName,
+          mimeType: item.mimeType,
+          sizeBytes: item.sizeBytes,
+        })),
+      },
+    });
+
+    const userMessage: ChatMessageRecord = {
+      messageId: userEventId,
+      sessionId,
+      role: "user",
+      actorType: "user",
+      actorId: "operator",
+      content,
+      timestamp: new Date().toISOString(),
+      attachments: attachments.map((item) => ({
+        attachmentId: item.attachmentId,
+        fileName: item.fileName,
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+      })),
+    };
+
+    const binding = this.storage.chatSessionBindings.get(sessionId)
+      ?? this.storage.chatSessionBindings.upsert({
+        sessionId,
+        transport: "llm",
+        writable: true,
+      });
+    if (binding.transport !== "llm") {
+      return this.sendChatMessage(sessionId, input);
+    }
+
+    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, {
+      ...(input.prefsOverride ?? {}),
+      mode: input.mode ?? input.prefsOverride?.mode,
+      providerId: input.providerId ?? input.prefsOverride?.providerId,
+      model: input.model ?? input.prefsOverride?.model,
+      webMode: input.webMode ?? input.prefsOverride?.webMode,
+      memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
+      thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
+    });
+    const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
+    const normalized = normalizeAgentInputFromSend(input);
+
+    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
+      providerId: input.providerId ?? prefs.providerId,
+      model: input.model ?? prefs.model,
+    });
+
+    const turnId = randomUUID();
+    const turnResult = await this.chatAgentOrchestrator.run({
+      sessionId,
+      turnId,
+      userMessageId: userEventId,
+      content,
+      mode: normalized.mode ?? prefs.mode,
+      providerId: input.providerId ?? prefs.providerId,
+      model: input.model ?? prefs.model,
+      webMode: normalized.webMode ?? prefs.webMode,
+      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+      thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
+      toolAutonomy: prefs.toolAutonomy,
+      historyMessages: history,
+    });
+
+    if (turnResult.requiresApproval) {
+      return {
+        sessionId,
+        userMessage,
+        assistantMessage: undefined,
+        transport: "llm",
+        model: turnResult.assistantModel,
+        turnId,
+        trace: turnResult.turnTrace,
+        citations: turnResult.turnTrace.citations,
+        routing: turnResult.turnTrace.routing,
+      };
+    }
+
+    const assistantEventId = randomUUID();
+    await this.ingestEvent(randomUUID(), {
+      eventId: assistantEventId,
+      route,
+      actor: {
+        type: "agent",
+        id: "assistant",
+      },
+      message: {
+        role: "assistant",
+        content: turnResult.assistantContent,
+      },
+    });
+    const assistantMessage: ChatMessageRecord = {
+      messageId: assistantEventId,
+      sessionId,
+      role: "assistant",
+      actorType: "agent",
+      actorId: "assistant",
+      content: turnResult.assistantContent,
+      timestamp: new Date().toISOString(),
+    };
+    const trace = this.storage.chatTurnTraces.patch(turnId, {
+      assistantMessageId: assistantEventId,
+      status: "completed",
+      finishedAt: new Date().toISOString(),
+    });
+    const hydratedTrace: ChatTurnTraceRecord = {
+      ...trace,
+      citations: turnResult.turnTrace.citations,
+      toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+    };
+
+    return {
+      sessionId,
+      userMessage,
+      assistantMessage,
+      transport: "llm",
+      model: turnResult.assistantModel,
+      turnId,
+      trace: hydratedTrace,
+      citations: hydratedTrace.citations,
+      routing: hydratedTrace.routing,
+    };
+  }
+
+  public async *agentSendChatMessageStream(
+    sessionId: string,
+    input: ChatSendMessageRequest,
+  ): AsyncGenerator<ChatStreamChunk> {
+    const session = this.getSession(sessionId);
+    this.ensureChatSessionRuntimeGrants(sessionId);
+    const content = input.content.trim();
+    if (!content) {
+      throw new Error("content is required");
+    }
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
+    const route = this.routeFromSession(session);
+    const userEventId = randomUUID();
+    await this.ingestEvent(randomUUID(), {
+      eventId: userEventId,
+      route,
+      actor: {
+        type: "user",
+        id: "operator",
+      },
+      message: {
+        role: "user",
+        content,
+        parts: inputParts,
+        attachments: attachments.map((item) => ({
+          attachmentId: item.attachmentId,
+          fileName: item.fileName,
+          mimeType: item.mimeType,
+          sizeBytes: item.sizeBytes,
+        })),
+      },
+    });
+
+    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, {
+      ...(input.prefsOverride ?? {}),
+      mode: input.mode ?? input.prefsOverride?.mode,
+      providerId: input.providerId ?? input.prefsOverride?.providerId,
+      model: input.model ?? input.prefsOverride?.model,
+      webMode: input.webMode ?? input.prefsOverride?.webMode,
+      memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
+      thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
+    });
+    const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
+    const normalized = normalizeAgentInputFromSend(input);
+    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
+      providerId: input.providerId ?? prefs.providerId,
+      model: input.model ?? prefs.model,
+    });
+    const turnId = randomUUID();
+    const assistantMessageId = `assistant-${randomUUID()}`;
+
+    yield {
+      type: "message_start",
+      sessionId,
+      turnId,
+      messageId: assistantMessageId,
+    };
+
+    let finalText = "";
+    for await (const chunk of this.chatAgentOrchestrator.runStream({
+      sessionId,
+      turnId,
+      userMessageId: userEventId,
+      content,
+      mode: normalized.mode ?? prefs.mode,
+      providerId: input.providerId ?? prefs.providerId,
+      model: input.model ?? prefs.model,
+      webMode: normalized.webMode ?? prefs.webMode,
+      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+      thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
+      toolAutonomy: prefs.toolAutonomy,
+      historyMessages: history,
+    })) {
+      if (chunk.type === "message_done" && chunk.content) {
+        finalText = chunk.content;
+      }
+      if (chunk.type === "approval_required") {
+        yield chunk;
+      }
+      if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "citation" || chunk.type === "error") {
+        yield chunk;
+      }
+      if (chunk.type === "message_done" && chunk.content) {
+        const slices = splitIntoChunks(chunk.content, 120);
+        for (const slice of slices) {
+          yield {
+            type: "delta",
+            sessionId,
+            turnId,
+            messageId: assistantMessageId,
+            delta: slice,
+          };
+        }
+      }
+    }
+
+    if (finalText.trim()) {
+      const assistantEventId = randomUUID();
+      await this.ingestEvent(randomUUID(), {
+        eventId: assistantEventId,
+        route,
+        actor: {
+          type: "agent",
+          id: "assistant",
+        },
+        message: {
+          role: "assistant",
+          content: finalText,
+        },
+      });
+    }
+
+    yield {
+      type: "done",
+      sessionId,
+      turnId,
+      messageId: assistantMessageId,
+    };
   }
 
   public async sendChatMessage(
@@ -3387,7 +4655,7 @@ export class GatewayService {
   }
 
   public async createChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    let response: ChatCompletionResponse;
+    let response: ChatCompletionResponse | undefined;
     let memoryContext: MemoryContextPack | undefined;
     const memoryInput = request.memory;
     const useQmd = (
@@ -3426,16 +4694,94 @@ export class GatewayService {
       }
       : request;
 
-    response = await this.llmService.chatCompletions(withContext);
-    const runtime = this.llmService.getRuntimeConfig();
+    const runtime = this.llmService.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
+    const primaryProviderId = withContext.providerId ?? runtime.activeProviderId;
+    const primaryProvider = runtime.providers.find((item) => item.providerId === primaryProviderId);
+    const primaryModel = withContext.model
+      ?? primaryProvider?.defaultModel
+      ?? runtime.activeModel;
+    const routing: ChatTurnTraceRecord["routing"] = {
+      primaryProviderId,
+      primaryModel,
+      effectiveProviderId: primaryProviderId,
+      effectiveModel: primaryModel,
+      fallbackUsed: false,
+    };
+
+    const retryAttempts = [
+      withContext,
+      normalizeToolProtocolRetryRequest(withContext, 1),
+      normalizeToolProtocolRetryRequest(withContext, 2),
+    ];
+    let lastError: Error | undefined;
+
+    for (let index = 0; index < retryAttempts.length; index += 1) {
+      const attemptRequest = retryAttempts[index]!;
+      try {
+        response = await this.llmService.chatCompletions(attemptRequest);
+        routing.effectiveProviderId = attemptRequest.providerId ?? primaryProviderId;
+        routing.effectiveModel = response.model ?? attemptRequest.model ?? primaryModel;
+        if (index > 0) {
+          routing.fallbackUsed = true;
+          routing.fallbackProviderId = routing.effectiveProviderId;
+          routing.fallbackModel = routing.effectiveModel;
+          routing.fallbackReason = index === 1
+            ? "provider compatibility retry (normalized tool protocol)"
+            : "provider compatibility retry (minimal thinking metadata)";
+        }
+        break;
+      } catch (error) {
+        lastError = error as Error;
+        if (index < retryAttempts.length - 1 && shouldRetryToolProtocolError(lastError)) {
+          continue;
+        }
+        if (index < retryAttempts.length - 1 && index === 0) {
+          continue;
+        }
+      }
+    }
+
+    if (!response) {
+      const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
+      for (const fallback of fallbacks) {
+        try {
+          response = await this.llmService.chatCompletions({
+            ...normalizeToolProtocolRetryRequest(withContext, 2),
+            providerId: fallback.providerId,
+            model: fallback.model,
+          });
+          routing.fallbackUsed = true;
+          routing.fallbackProviderId = fallback.providerId;
+          routing.fallbackModel = response.model ?? fallback.model;
+          routing.fallbackReason = `primary failed (${lastError?.message ?? "unknown error"})`;
+          routing.effectiveProviderId = fallback.providerId;
+          routing.effectiveModel = routing.fallbackModel;
+          break;
+        } catch (error) {
+          lastError = error as Error;
+        }
+      }
+    }
+
+    if (!response) {
+      throw lastError ?? new Error("chat completion failed");
+    }
+
     this.publishRealtime("system", "llm", {
       type: "chat_completion",
-      providerId: request.providerId ?? runtime.activeProviderId,
-      model: request.model ?? runtime.activeModel,
+      providerId: routing.effectiveProviderId ?? primaryProviderId,
+      model: routing.effectiveModel ?? primaryModel,
       messageCount: request.messages.length,
       stream: request.stream ?? false,
       memoryContextId: memoryContext?.contextId,
       memoryQmdStatus: memoryContext?.quality.status,
+      fallbackUsed: routing.fallbackUsed,
+      fallbackProviderId: routing.fallbackProviderId,
+      fallbackModel: routing.fallbackModel,
+      fallbackReason: routing.fallbackReason,
     });
 
     if (memoryContext) {
@@ -3451,7 +4797,38 @@ export class GatewayService {
         citationsCount: memoryContext.citations.length,
       };
     }
+    response.routing = routing;
     return response;
+  }
+
+  private resolveFallbackTargets(
+    runtime: LlmRuntimeConfig,
+    primaryProviderId: string,
+    primaryModel: string,
+  ): Array<{ providerId: string; model: string }> {
+    const candidates: Array<{ providerId: string; model: string }> = [];
+    const pushCandidate = (providerId?: string, model?: string) => {
+      if (!providerId || !model) {
+        return;
+      }
+      if (providerId === primaryProviderId && model === primaryModel) {
+        return;
+      }
+      if (candidates.some((item) => item.providerId === providerId && item.model === model)) {
+        return;
+      }
+      const provider = runtime.providers.find((item) => item.providerId === providerId);
+      if (!provider || !provider.hasApiKey) {
+        return;
+      }
+      candidates.push({ providerId, model });
+    };
+
+    const kimi = runtime.providers.find((provider) => provider.providerId === "moonshot");
+    pushCandidate(kimi?.providerId, kimi?.defaultModel);
+    const active = runtime.providers.find((provider) => provider.providerId === runtime.activeProviderId);
+    pushCandidate(active?.providerId, runtime.activeModel || active?.defaultModel);
+    return candidates;
   }
 
   public createOrchestrationPlan(plan: OrchestrationPlan): OrchestrationRun {
@@ -4797,6 +6174,7 @@ function toChatMessageRecord(event: TranscriptEvent): ChatMessageRecord | undefi
     message?: {
       role?: string;
       content?: unknown;
+      parts?: unknown;
       attachments?: unknown;
     };
   };
@@ -4816,8 +6194,60 @@ function toChatMessageRecord(event: TranscriptEvent): ChatMessageRecord | undefi
     tokenInput: event.tokenInput,
     tokenOutput: event.tokenOutput,
     costUsd: event.costUsd,
+    parts: parseMessageParts(message.parts),
     attachments: parseMessageAttachments(message.attachments),
   };
+}
+
+function parseMessageParts(input: unknown): ChatMessageRecord["parts"] | undefined {
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const parts = input
+    .map((item) => normalizeMessagePart(item))
+    .filter((item): item is ChatInputPart => Boolean(item));
+  return parts.length > 0 ? parts : undefined;
+}
+
+function normalizeMessagePart(input: unknown): ChatInputPart | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const value = input as Record<string, unknown>;
+  const type = typeof value.type === "string" ? value.type : undefined;
+  if (!type) {
+    return undefined;
+  }
+  if (type === "text") {
+    const text = typeof value.text === "string" ? value.text : undefined;
+    return text !== undefined ? { type: "text", text } : undefined;
+  }
+  if (type === "image_ref") {
+    const attachmentId = typeof value.attachmentId === "string" ? value.attachmentId : undefined;
+    if (!attachmentId) {
+      return undefined;
+    }
+    return {
+      type,
+      attachmentId,
+      mimeType: typeof value.mimeType === "string" ? value.mimeType : undefined,
+      detail: value.detail === "low" || value.detail === "high" || value.detail === "auto"
+        ? value.detail
+        : undefined,
+    };
+  }
+  if (type === "audio_ref" || type === "video_ref" || type === "file_ref") {
+    const attachmentId = typeof value.attachmentId === "string" ? value.attachmentId : undefined;
+    if (!attachmentId) {
+      return undefined;
+    }
+    return {
+      type,
+      attachmentId,
+      mimeType: typeof value.mimeType === "string" ? value.mimeType : undefined,
+    };
+  }
+  return undefined;
 }
 
 function parseMessageAttachments(input: unknown): ChatMessageRecord["attachments"] | undefined {
@@ -5138,6 +6568,341 @@ function extFromMimeType(mimeType?: string): string {
     return ".webm";
   }
   return ".bin";
+}
+
+function parseSlashCommand(input: string): string[] | undefined {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) {
+    return undefined;
+  }
+  const parts = trimmed.split(/\s+/g).filter(Boolean);
+  return parts.length > 0 ? parts : undefined;
+}
+
+function parseDelegateCommand(input: string): { roles: string[]; objective?: string; error?: string } {
+  const body = input.trim().replace(/^\/delegate/i, "").trim();
+  const delimiterIndex = body.indexOf("::");
+  if (delimiterIndex < 0) {
+    return { roles: [], error: "missing delimiter" };
+  }
+  const rolesRaw = body.slice(0, delimiterIndex).trim();
+  const objective = body.slice(delimiterIndex + 2).trim();
+  const roles = normalizeDelegationRoles(rolesRaw.split(",").map((item) => item.trim()).filter(Boolean));
+  if (roles.length === 0 || !objective) {
+    return { roles, objective, error: "invalid delegate payload" };
+  }
+  return { roles, objective };
+}
+
+function parsePipelineCommand(input: string): { template: string; roles: string[]; objective: string } | undefined {
+  const body = input.trim().replace(/^\/pipeline/i, "").trim();
+  const delimiterIndex = body.indexOf("::");
+  if (delimiterIndex < 0) {
+    return undefined;
+  }
+  const template = body.slice(0, delimiterIndex).trim().toLowerCase();
+  const objective = body.slice(delimiterIndex + 2).trim();
+  const roles = PIPELINE_TEMPLATES[template];
+  if (!roles || !objective) {
+    return undefined;
+  }
+  return {
+    template,
+    roles,
+    objective,
+  };
+}
+
+function normalizeDelegationRoles(roles: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const role of roles) {
+    const normalized = role.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  if (out.length === 0) {
+    return [...DEFAULT_DELEGATION_ROLES];
+  }
+  return out;
+}
+
+function buildDelegationSystemPrompt(role: string): string {
+  return [
+    "You are a specialist subagent in a multi-step delegation run.",
+    `Assigned role: ${role}.`,
+    "Return concise, practical output in plain markdown.",
+    "If you are missing data, call that out explicitly and propose a next best step.",
+    "Never claim external data unless it was provided in the current context.",
+  ].join("\n");
+}
+
+function buildDelegationUserPrompt(input: {
+  objective: string;
+  role: string;
+  mode: "sequential" | "parallel";
+  sharedContext: Array<{ role: string; output: string }>;
+}): string {
+  const previous = input.sharedContext.length > 0
+    ? input.sharedContext
+      .map((item) => `Role ${item.role} output:\n${item.output}`)
+      .join("\n\n")
+    : "None";
+  return [
+    `Objective: ${input.objective}`,
+    `Execution mode: ${input.mode}`,
+    `Current role: ${input.role}`,
+    "Prior outputs from earlier roles:",
+    previous,
+    "Produce your role output now.",
+  ].join("\n\n");
+}
+
+function normalizePromptTestCode(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  if (normalized === "ALL") {
+    return "all";
+  }
+  const match = normalized.match(/TEST-(\d{1,3})/);
+  if (!match) {
+    return normalized;
+  }
+  return `TEST-${String(Number.parseInt(match[1] ?? "0", 10)).padStart(2, "0")}`;
+}
+
+function clampPromptScore(value: string | number): 0 | 1 | 2 {
+  const parsed = typeof value === "number" ? value : Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  if (parsed >= 2) {
+    return 2;
+  }
+  return 1;
+}
+
+function inferPromptPackName(sourceLabel?: string): string {
+  if (!sourceLabel) {
+    return "GoatCitadel Prompt Pack";
+  }
+  const base = path.basename(sourceLabel).replace(/\.[^.]+$/, "");
+  const cleaned = base.replace(/[_-]+/g, " ").trim();
+  return cleaned ? toTitleCase(cleaned) : "GoatCitadel Prompt Pack";
+}
+
+function parsePromptPackTests(content: string): Array<{
+  code: string;
+  title: string;
+  prompt: string;
+  orderIndex: number;
+}> {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const entries: Array<{ code: string; title: string; prompt: string; orderIndex: number }> = [];
+  let active: { code: string; title: string; lines: string[] } | undefined;
+
+  const flush = () => {
+    if (!active) {
+      return;
+    }
+    const prompt = active.lines.join("\n").trim();
+    if (prompt.length > 0) {
+      entries.push({
+        code: normalizePromptTestCode(active.code),
+        title: active.title || active.code,
+        prompt,
+        orderIndex: entries.length,
+      });
+    }
+    active = undefined;
+  };
+
+  const normalizeHeadingLine = (line: string): string => {
+    let normalized = line.trim();
+    normalized = normalized.replace(/^[-*]\s+/, "");
+    normalized = normalized.replace(/^\d+[.)]\s+/, "");
+    let previous = "";
+    while (normalized !== previous) {
+      previous = normalized;
+      normalized = normalized
+        .replace(/^\*\*(.+)\*\*$/, "$1")
+        .replace(/^__(.+)__$/, "$1")
+        .replace(/^\*(.+)\*$/, "$1")
+        .replace(/^_(.+)_$/, "$1")
+        .trim();
+    }
+    return normalized;
+  };
+
+  for (const rawLine of lines) {
+    const line = normalizeHeadingLine(rawLine);
+    const testBracket = line.match(/^\[(TEST-\d{1,3})\]\s*(.*)$/i);
+    const testHeading = line.match(/^#{1,6}\s*(TEST-\d{1,3})\s*[:\-]?\s*(.*)$/i);
+    const testPlain = line.match(/^(TEST-\d{1,3})\s*[:\-]\s*(.*)$/i);
+    const matched = testBracket ?? testHeading ?? testPlain;
+    if (matched) {
+      flush();
+      const code = normalizePromptTestCode(matched[1] ?? "");
+      const title = (matched[2] ?? "").trim() || code;
+      active = {
+        code,
+        title,
+        lines: [],
+      };
+      continue;
+    }
+    if (!active) {
+      continue;
+    }
+    active.lines.push(rawLine);
+  }
+  flush();
+  return entries;
+}
+
+function extractCompletionText(response: ChatCompletionResponse): string {
+  const choice = response.choices?.[0];
+  const message = choice?.message as Record<string, unknown> | undefined;
+  if (!message) {
+    return "";
+  }
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        const value = part as Record<string, unknown>;
+        return typeof value.text === "string" ? value.text : "";
+      })
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
+function readCompletionRouting(response: ChatCompletionResponse): ChatTurnTraceRecord["routing"] | undefined {
+  const raw = response.routing as Record<string, unknown> | undefined;
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  return raw as ChatTurnTraceRecord["routing"];
+}
+
+function readCompletionCitations(response: ChatCompletionResponse): ChatCitationRecord[] {
+  const raw = response.citations;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((item): item is ChatCitationRecord => typeof item === "object" && item !== null && typeof (item as ChatCitationRecord).url === "string");
+}
+
+function shouldRetryToolProtocolError(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("invalid_request_error")
+    || message.includes("function name is invalid")
+    || message.includes("reasoning_content is missing")
+    || message.includes("tool call")
+    || message.includes("tool_calls")
+  );
+}
+
+function normalizeToolProtocolRetryRequest(
+  request: ChatCompletionRequest,
+  attempt: 1 | 2,
+): ChatCompletionRequest {
+  const modelToolNameMap = new Map<string, string>();
+  const tools = Array.isArray(request.tools)
+    ? request.tools.map((tool) => {
+      const record = tool as Record<string, unknown>;
+      if (record.type !== "function") {
+        return tool;
+      }
+      const fn = (record.function ?? {}) as Record<string, unknown>;
+      const rawName = typeof fn.name === "string" ? fn.name : "tool_fn";
+      const normalizedName = rawName
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+      const finalName = /^[a-zA-Z]/.test(normalizedName) ? normalizedName : `tool_${normalizedName || "fn"}`;
+      modelToolNameMap.set(rawName, finalName);
+      return {
+        ...record,
+        function: {
+          ...fn,
+          name: finalName,
+        },
+      };
+    })
+    : request.tools;
+
+  const messages = request.messages.map((message) => {
+    const value = message as unknown as Record<string, unknown>;
+    if (value.role === "assistant" && Array.isArray(value.tool_calls)) {
+      const toolCalls = value.tool_calls.map((toolCall) => {
+        const tc = toolCall as Record<string, unknown>;
+        const fn = (tc.function ?? {}) as Record<string, unknown>;
+        const rawName = typeof fn.name === "string" ? fn.name : "";
+        const normalized = modelToolNameMap.get(rawName) ?? rawName;
+        return {
+          ...tc,
+          function: {
+            ...fn,
+            name: normalized,
+          },
+        };
+      });
+      const next = {
+        ...value,
+        tool_calls: toolCalls,
+      } as Record<string, unknown>;
+      if (attempt === 2 && typeof next.reasoning_content !== "string") {
+        next.reasoning_content = "Using tool outputs to continue the response.";
+      }
+      return next as unknown as ChatCompletionRequest["messages"][number];
+    }
+    return message;
+  });
+
+  const metadata = {
+    ...(request.metadata ?? {}),
+    goatcitadel_retry_attempt: attempt,
+    ...(attempt === 2 ? { goatcitadel_thinking_level: "minimal" } : {}),
+  };
+
+  return {
+    ...request,
+    tools,
+    messages,
+    metadata,
+  };
+}
+
+function isActiveToolGrant(grant: ToolGrantRecord): boolean {
+  if (grant.revokedAt) {
+    return false;
+  }
+  if (grant.expiresAt) {
+    const expiry = Date.parse(grant.expiresAt);
+    if (Number.isFinite(expiry) && expiry <= Date.now()) {
+      return false;
+    }
+  }
+  if (grant.grantType === "one_time") {
+    return (grant.usesRemaining ?? 0) > 0;
+  }
+  return true;
+}
+
+function grantPatternMatches(pattern: string, toolName: string): boolean {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  const regex = new RegExp(`^${escaped}$`);
+  return regex.test(toolName);
 }
 
 function normalizeRetentionPolicy(input: Partial<RetentionPolicy>): RetentionPolicy {

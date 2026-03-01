@@ -323,10 +323,11 @@ export class LlmService {
     const resolved = this.resolveProvider(request.providerId);
     this.assertProviderHostAllowed(resolved.provider.baseUrl);
     const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
+    const normalizedMessages = normalizeProviderMessages(request.messages, model);
 
     const payload: Record<string, unknown> = {
       model,
-      messages: request.messages,
+      messages: normalizedMessages,
       stream: request.stream ?? false,
     };
     if (request.temperature !== undefined) payload.temperature = request.temperature;
@@ -365,10 +366,11 @@ export class LlmService {
     const resolved = this.resolveProvider(request.providerId);
     this.assertProviderHostAllowed(resolved.provider.baseUrl);
     const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
+    const normalizedMessages = normalizeProviderMessages(request.messages, model);
 
     const payload: Record<string, unknown> = {
       model,
-      messages: request.messages,
+      messages: normalizedMessages,
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -483,6 +485,11 @@ export class LlmService {
   }
 
   private assertProviderHostAllowed(baseUrl: string): void {
+    // When no explicit runtime allowlist is configured, permit validated provider base URLs.
+    // Provider URLs still pass strict baseUrl validation (protocol/host/private-range checks).
+    if (this.networkAllowlist.length === 0) {
+      return;
+    }
     assertHostAllowed(baseUrl, this.networkAllowlist);
   }
 
@@ -668,12 +675,43 @@ function isRedirect(status: number): boolean {
   return status >= 300 && status < 400;
 }
 
+function normalizeProviderMessages(
+  messages: ChatCompletionRequest["messages"],
+  model: string,
+): ChatCompletionRequest["messages"] {
+  if (!modelRequiresReasoningContentForToolCalls(model)) {
+    return messages;
+  }
+  return messages.map((message) => {
+    const value = message as unknown as Record<string, unknown>;
+    if (value.role !== "assistant" || !Array.isArray(value.tool_calls)) {
+      return message;
+    }
+    const existingReasoning = typeof value.reasoning_content === "string" ? value.reasoning_content.trim() : "";
+    if (existingReasoning.length > 0) {
+      return message;
+    }
+    const content = typeof value.content === "string" ? value.content.trim() : "";
+    return {
+      ...value,
+      reasoning_content: content || "Using tools to gather and verify information.",
+    } as unknown as ChatCompletionRequest["messages"][number];
+  });
+}
+
+function modelRequiresReasoningContentForToolCalls(model: string): boolean {
+  const normalized = model.toLowerCase();
+  return normalized.includes("kimi") || normalized.includes("moonshot");
+}
+
 function inferProviderCapabilities(provider: LlmProviderConfig): {
   vision: boolean;
   audio: boolean;
   video: boolean;
   toolCalling: boolean;
   jsonMode: boolean;
+  webSearch?: boolean;
+  reasoning?: boolean;
 } {
   const model = provider.defaultModel.toLowerCase();
   const base = provider.baseUrl.toLowerCase();
@@ -690,11 +728,15 @@ function inferProviderCapabilities(provider: LlmProviderConfig): {
   const hasVideo = model.includes("video");
   const hasToolCalling = true;
   const hasJsonMode = model.includes("gpt") || model.includes("glm") || model.includes("gemini") || base.includes("openai");
+  const hasWebSearch = model.includes("search") || model.includes("kimi") || model.includes("gpt-4.1");
+  const hasReasoning = model.includes("reason") || model.includes("thinking") || model.includes("o1") || model.includes("o3");
   return {
     vision: hasVision,
     audio: hasAudio,
     video: hasVideo,
     toolCalling: hasToolCalling,
     jsonMode: hasJsonMode,
+    webSearch: hasWebSearch,
+    reasoning: hasReasoning,
   };
 }

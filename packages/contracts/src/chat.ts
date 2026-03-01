@@ -4,6 +4,13 @@ export type ChatSessionLifecycleStatus = "active" | "archived";
 export type ChatBindingTransport = "llm" | "integration";
 export type ChatMessageRole = "user" | "assistant" | "system";
 export type ChatAttachmentMediaType = "text" | "image" | "audio" | "video" | "binary";
+export type ChatMode = "chat" | "cowork" | "code";
+export type ChatWebMode = "auto" | "off" | "quick" | "deep";
+export type ChatMemoryMode = "auto" | "on" | "off";
+export type ChatThinkingLevel = "minimal" | "standard" | "extended";
+export type ChatDelegationMode = "sequential" | "parallel";
+export type ChatDelegationStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type ChatDelegationRunStatus = "running" | "completed" | "failed" | "partial";
 
 export type ChatInputPart =
   | {
@@ -98,6 +105,7 @@ export interface ChatMessageRecord {
   actorType: "user" | "agent" | "system";
   actorId: string;
   content: string;
+  parts?: ChatInputPart[];
   timestamp: string;
   tokenInput?: number;
   tokenOutput?: number;
@@ -110,6 +118,118 @@ export interface ChatMessageRecord {
   }>;
 }
 
+export interface ChatSessionPrefsRecord {
+  sessionId: string;
+  mode: ChatMode;
+  providerId?: string;
+  model?: string;
+  webMode: ChatWebMode;
+  memoryMode: ChatMemoryMode;
+  thinkingLevel: ChatThinkingLevel;
+  toolAutonomy: "safe_auto" | "manual";
+  visionFallbackModel?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatCitationRecord {
+  citationId: string;
+  title?: string;
+  url: string;
+  snippet?: string;
+  sourceType?: "web" | "file" | "tool";
+}
+
+export interface ChatToolRunRecord {
+  toolRunId: string;
+  turnId: string;
+  sessionId: string;
+  toolName: string;
+  status: "started" | "executed" | "blocked" | "approval_required" | "failed";
+  approvalId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ChatTurnTraceRecord {
+  turnId: string;
+  sessionId: string;
+  userMessageId: string;
+  assistantMessageId?: string;
+  status: "running" | "completed" | "failed" | "approval_required";
+  mode: ChatMode;
+  model?: string;
+  webMode: ChatWebMode;
+  memoryMode: ChatMemoryMode;
+  thinkingLevel: ChatThinkingLevel;
+  startedAt: string;
+  finishedAt?: string;
+  toolRuns: ChatToolRunRecord[];
+  citations: ChatCitationRecord[];
+  routing: {
+    usedVisionFallback?: boolean;
+    effectiveProviderId?: string;
+    effectiveModel?: string;
+    liveDataIntent?: boolean;
+    primaryProviderId?: string;
+    primaryModel?: string;
+    fallbackProviderId?: string;
+    fallbackModel?: string;
+    fallbackReason?: string;
+    fallbackUsed?: boolean;
+  };
+}
+
+export interface ChatDelegationStepRecord {
+  stepId: string;
+  runId: string;
+  role: string;
+  status: ChatDelegationStepStatus;
+  index: number;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  output?: string;
+  error?: string;
+}
+
+export interface ChatDelegationRunRecord {
+  runId: string;
+  sessionId: string;
+  taskId: string;
+  objective: string;
+  roles: string[];
+  mode: ChatDelegationMode;
+  providerId?: string;
+  model?: string;
+  status: ChatDelegationRunStatus;
+  startedAt: string;
+  finishedAt?: string;
+  stitchedOutput?: string;
+  citations: ChatCitationRecord[];
+  trace?: ChatTurnTraceRecord["routing"];
+}
+
+export interface ChatDelegateRequest {
+  objective: string;
+  roles: string[];
+  mode?: ChatDelegationMode;
+  providerId?: string;
+  model?: string;
+}
+
+export interface ChatDelegateResponse {
+  runId: string;
+  taskId: string;
+  steps: ChatDelegationStepRecord[];
+  stitchedOutput: string;
+  citations: ChatCitationRecord[];
+  trace?: ChatTurnTraceRecord["routing"];
+}
+
 export interface ChatSendMessageRequest {
   content: string;
   parts?: ChatInputPart[];
@@ -117,6 +237,12 @@ export interface ChatSendMessageRequest {
   model?: string;
   useMemory?: boolean;
   attachments?: string[];
+  mode?: ChatMode;
+  webMode?: ChatWebMode;
+  memoryMode?: ChatMemoryMode;
+  thinkingLevel?: ChatThinkingLevel;
+  commandText?: string;
+  prefsOverride?: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>;
 }
 
 export interface ChatSendMessageResponse {
@@ -125,12 +251,28 @@ export interface ChatSendMessageResponse {
   assistantMessage?: ChatMessageRecord;
   transport: ChatBindingTransport;
   model?: string;
+  turnId?: string;
+  trace?: ChatTurnTraceRecord;
+  citations?: ChatCitationRecord[];
+  routing?: ChatTurnTraceRecord["routing"];
 }
 
 export interface ChatStreamChunk {
-  type: "message_start" | "delta" | "usage" | "message_done" | "error" | "done";
+  type:
+    | "message_start"
+    | "delta"
+    | "usage"
+    | "message_done"
+    | "tool_start"
+    | "tool_result"
+    | "approval_required"
+    | "trace_update"
+    | "citation"
+    | "error"
+    | "done";
   sessionId: string;
   messageId?: string;
+  turnId?: string;
   delta?: string;
   content?: string;
   usage?: {
@@ -138,6 +280,14 @@ export interface ChatStreamChunk {
     outputTokens?: number;
     cachedInputTokens?: number;
     costUsd?: number;
+  };
+  toolRun?: ChatToolRunRecord;
+  trace?: ChatTurnTraceRecord;
+  citation?: ChatCitationRecord;
+  approval?: {
+    approvalId: string;
+    toolName?: string;
+    reason?: string;
   };
   error?: string;
 }

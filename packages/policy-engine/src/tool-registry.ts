@@ -29,6 +29,14 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     pack: "core",
   },
   {
+    name: "time.now",
+    category: "session",
+    riskLevel: "safe",
+    requiresApproval: false,
+    description: "Return current local time and UTC time on this host.",
+    pack: "core",
+  },
+  {
     name: "fs.read",
     category: "fs",
     riskLevel: "caution",

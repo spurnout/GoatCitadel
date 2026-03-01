@@ -14,6 +14,7 @@ import { ActivityPage } from "./pages/ActivityPage";
 import { CronPage } from "./pages/CronPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { ChatPage } from "./pages/ChatPage";
+import { PromptLabPage } from "./pages/PromptLabPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { CostConsolePage } from "./pages/CostConsolePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -46,6 +47,7 @@ type Tab =
   | "cron"
   | "sessions"
   | "chat"
+  | "promptLab"
   | "skills"
   | "costs"
   | "settings"
@@ -69,6 +71,7 @@ const allTabs: Tab[] = [
   "cron",
   "sessions",
   "chat",
+  "promptLab",
   "skills",
   "costs",
   "settings",
@@ -126,6 +129,8 @@ export function App() {
   });
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [showBrandMark, setShowBrandMark] = useState(true);
+  const [showBrandWordmark, setShowBrandWordmark] = useState(true);
 
   const handleOnboardingCompleted = useCallback(() => {
     setOnboardingComplete(true);
@@ -250,6 +255,9 @@ export function App() {
     if (tab === "chat") {
       return <ChatPage refreshKey={refreshKey} />;
     }
+    if (tab === "promptLab") {
+      return <PromptLabPage refreshKey={refreshKey} />;
+    }
     if (tab === "skills") {
       return <SkillsPage refreshKey={refreshKey} />;
     }
@@ -283,8 +291,27 @@ export function App() {
   return (
     <div className="layout-shell">
       <aside className="sidebar">
-        <h1>{appCopy.brandTitle}</h1>
-        <p className="sidebar-subtitle">{appCopy.brandSubtitle}</p>
+        <div className="sidebar-brand">
+          {showBrandMark ? (
+            <img
+              src="/brand/goatcitadel-mark.png"
+              alt="GoatCitadel mark"
+              className="sidebar-brand-mark"
+              onError={() => setShowBrandMark(false)}
+            />
+          ) : null}
+          <div className="sidebar-brand-copy">
+            {showBrandWordmark ? (
+              <img
+                src="/brand/goatcitadel-wordmark.png"
+                alt="GoatCitadel"
+                className="sidebar-brand-wordmark"
+                onError={() => setShowBrandWordmark(false)}
+              />
+            ) : <h1>{appCopy.brandTitle}</h1>}
+            <p className="sidebar-subtitle">{appCopy.brandSubtitle}</p>
+          </div>
+        </div>
         <button type="button" onClick={() => setPaletteOpen(true)}>{appCopy.quickActionsButton}</button>
         <nav>
           {navSections.map((section) => (

@@ -128,6 +128,16 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "v11_expansion_schema",
     up: createV11ExpansionSchema,
   },
+  {
+    version: 13,
+    name: "agentic_chat_schema",
+    up: createAgenticChatSchema,
+  },
+  {
+    version: 14,
+    name: "prompt_pack_readiness_schema",
+    up: createPromptPackReadinessSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -964,6 +974,220 @@ function createV11ExpansionSchema(db: DatabaseSync): void {
   addColumnIfMissing(db, "integration_connections", "plugin_version", "TEXT");
   addColumnIfMissing(db, "integration_connections", "plugin_enabled", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "integration_connections", "plugin_meta_json", "TEXT");
+}
+
+function createAgenticChatSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_session_prefs (
+      session_id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL DEFAULT 'chat',
+      provider_id TEXT,
+      model TEXT,
+      web_mode TEXT NOT NULL DEFAULT 'auto',
+      memory_mode TEXT NOT NULL DEFAULT 'auto',
+      thinking_level TEXT NOT NULL DEFAULT 'standard',
+      tool_autonomy TEXT NOT NULL DEFAULT 'safe_auto',
+      vision_fallback_model TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_session_prefs_updated
+      ON chat_session_prefs(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_turn_traces (
+      turn_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_message_id TEXT NOT NULL,
+      assistant_message_id TEXT,
+      status TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      model TEXT,
+      web_mode TEXT NOT NULL,
+      memory_mode TEXT NOT NULL,
+      thinking_level TEXT NOT NULL,
+      routing_json TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_session
+      ON chat_turn_traces(session_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_tool_runs (
+      tool_run_id TEXT PRIMARY KEY,
+      turn_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      approval_id TEXT,
+      args_json TEXT,
+      result_json TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_tool_runs_turn
+      ON chat_tool_runs(turn_id, started_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_chat_tool_runs_session
+      ON chat_tool_runs(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_tool_runs_approval
+      ON chat_tool_runs(approval_id);
+
+    CREATE TABLE IF NOT EXISTS research_runs (
+      run_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      query TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_runs_session
+      ON research_runs(session_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS research_sources (
+      source_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      title TEXT,
+      url TEXT NOT NULL,
+      snippet TEXT,
+      rank INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_sources_run
+      ON research_sources(run_id, rank ASC, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS chat_inline_approvals (
+      approval_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      tool_name TEXT,
+      status TEXT NOT NULL,
+      reason TEXT,
+      resolved_by TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_inline_approvals_session
+      ON chat_inline_approvals(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_inline_approvals_turn
+      ON chat_inline_approvals(turn_id, created_at DESC);
+  `);
+}
+
+function createPromptPackReadinessSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_delegation_runs (
+      run_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      roles_json TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      provider_id TEXT,
+      model TEXT,
+      status TEXT NOT NULL,
+      stitched_output TEXT,
+      citations_json TEXT NOT NULL,
+      trace_json TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_delegation_runs_session
+      ON chat_delegation_runs(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_delegation_runs_task
+      ON chat_delegation_runs(task_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_delegation_steps (
+      step_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      output TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      duration_ms INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_delegation_steps_run
+      ON chat_delegation_steps(run_id, step_index ASC, started_at ASC);
+
+    CREATE TABLE IF NOT EXISTS prompt_packs (
+      pack_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      source_label TEXT,
+      test_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_packs_updated
+      ON prompt_packs(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS prompt_pack_tests (
+      test_id TEXT PRIMARY KEY,
+      pack_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      title TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_pack_tests_pack_code
+      ON prompt_pack_tests(pack_id, code);
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_tests_pack_order
+      ON prompt_pack_tests(pack_id, order_index ASC, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS prompt_pack_runs (
+      run_id TEXT PRIMARY KEY,
+      pack_id TEXT NOT NULL,
+      test_id TEXT NOT NULL,
+      session_id TEXT,
+      status TEXT NOT NULL,
+      provider_id TEXT,
+      model TEXT,
+      response_text TEXT,
+      trace_json TEXT,
+      citations_json TEXT,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_runs_pack
+      ON prompt_pack_runs(pack_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_runs_test
+      ON prompt_pack_runs(test_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS prompt_pack_scores (
+      score_id TEXT PRIMARY KEY,
+      pack_id TEXT NOT NULL,
+      test_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      routing_score INTEGER NOT NULL,
+      honesty_score INTEGER NOT NULL,
+      handoff_score INTEGER NOT NULL,
+      robustness_score INTEGER NOT NULL,
+      usability_score INTEGER NOT NULL,
+      total_score INTEGER NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_scores_pack_test
+      ON prompt_pack_scores(pack_id, test_id, created_at DESC);
+  `);
 }
 
 function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: string, columnSql: string): void {

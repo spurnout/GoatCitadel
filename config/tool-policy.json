@@ -29,6 +29,7 @@
     ],
     "research": [
       "session.status",
+      "time.now",
       "memory.read",
       "browser.search",
       "browser.navigate",
@@ -37,12 +38,23 @@
       "http.get",
       "citations.build"
     ],
+    "chat-agent": [
+      "session.status",
+      "time.now",
+      "memory.read",
+      "memory.search",
+      "browser.search",
+      "browser.navigate",
+      "browser.extract",
+      "http.get",
+      "citations.build"
+    ],
     "danger": [
       "*"
     ]
   },
   "tools": {
-    "profile": "minimal",
+    "profile": "chat-agent",
     "allow": [],
     "deny": []
   },

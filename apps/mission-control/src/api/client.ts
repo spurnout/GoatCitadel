@@ -9,14 +9,24 @@ import type {
   ChangeRiskEvaluationResponse,
   ChannelSendInput,
   ChatAttachmentRecord,
+  ChatMode,
   ChatAttachmentPreviewResponse,
+  ChatCitationRecord,
+  ChatDelegateRequest,
+  ChatDelegateResponse,
+  ChatDelegationRunRecord,
+  ChatDelegationStepRecord,
   ChatMessageRecord,
   ChatProjectRecord,
   ChatSendMessageRequest,
   ChatSendMessageResponse,
   ChatSessionBindingRecord,
+  ChatSessionPrefsRecord,
   ChatSessionRecord,
   ChatStreamChunk,
+  ChatThinkingLevel,
+  ChatTurnTraceRecord,
+  ChatWebMode,
   DocsIngestInput,
   EmbeddingIndexInput,
   EmbeddingQueryInput,
@@ -60,6 +70,14 @@ import type {
   BackupManifestRecord,
   RetentionPolicy,
   RetentionPruneResult,
+  ResearchRunRecord,
+  ResearchSourceRecord,
+  ResearchSummaryRecord,
+  PromptPackRecord,
+  PromptPackTestRecord,
+  PromptPackRunRecord,
+  PromptPackScoreRecord,
+  PromptPackReportRecord,
 } from "@goatcitadel/contracts";
 
 export type { SessionSummary, SessionTimelineItem };
@@ -651,6 +669,13 @@ export async function sendChatMessage(sessionId: string, input: ChatSendMessageR
   });
 }
 
+export async function sendAgentChatMessage(sessionId: string, input: ChatSendMessageRequest): Promise<ChatSendMessageResponse> {
+  return request<ChatSendMessageResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function streamChatMessage(
   sessionId: string,
   input: ChatSendMessageRequest,
@@ -671,6 +696,263 @@ export async function streamChatMessage(
     throw new Error(`API error ${response.status}: ${text}`);
   }
   await consumeSseResponse(response.body, onChunk);
+}
+
+export async function streamAgentChatMessage(
+  sessionId: string,
+  input: ChatSendMessageRequest,
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`);
+  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+      ...authHeaders,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+  await consumeSseResponse(response.body, onChunk);
+}
+
+export async function fetchChatSessionPrefs(sessionId: string): Promise<ChatSessionPrefsRecord> {
+  return request<ChatSessionPrefsRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`);
+}
+
+export async function updateChatSessionPrefs(
+  sessionId: string,
+  input: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>,
+): Promise<ChatSessionPrefsRecord> {
+  return request<ChatSessionPrefsRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchChatCommandCatalog(): Promise<{
+  items: Array<{ command: string; usage: string; description: string }>;
+}> {
+  return request<{ items: Array<{ command: string; usage: string; description: string }> }>("/api/v1/chat/catalog/commands");
+}
+
+export async function parseChatCommand(
+  sessionId: string,
+  commandText: string,
+): Promise<{
+  ok: boolean;
+  command: string;
+  args: string[];
+  message: string;
+  prefs?: ChatSessionPrefsRecord;
+  research?: ResearchSummaryRecord;
+}> {
+  return request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/commands/parse`, {
+    method: "POST",
+    body: JSON.stringify({ commandText }),
+  });
+}
+
+export async function runChatResearch(
+  sessionId: string,
+  input: {
+    query: string;
+    mode?: "quick" | "deep";
+    providerId?: string;
+    model?: string;
+  },
+): Promise<ResearchSummaryRecord> {
+  return request<ResearchSummaryRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/research/run`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchChatResearchRun(
+  sessionId: string,
+  runId: string,
+): Promise<{
+  run: ResearchRunRecord;
+  sources: ResearchSourceRecord[];
+}> {
+  return request<{ run: ResearchRunRecord; sources: ResearchSourceRecord[] }>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/research/${encodeURIComponent(runId)}`,
+  );
+}
+
+export async function runChatDelegation(
+  sessionId: string,
+  input: ChatDelegateRequest,
+): Promise<ChatDelegateResponse> {
+  return request<ChatDelegateResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export interface ChatDelegationStreamChunk {
+  type: "status" | "step" | "done" | "error";
+  runId?: string;
+  taskId?: string;
+  message?: string;
+  step?: {
+    stepId: string;
+    runId: string;
+    role: string;
+    status: string;
+    index: number;
+    startedAt: string;
+    finishedAt?: string;
+    durationMs?: number;
+    output?: string;
+    error?: string;
+  };
+  result?: ChatDelegateResponse;
+  error?: string;
+}
+
+export async function streamChatDelegation(
+  sessionId: string,
+  input: ChatDelegateRequest,
+  onChunk: (chunk: ChatDelegationStreamChunk) => void,
+): Promise<void> {
+  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/stream`);
+  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+      ...authHeaders,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const separatorIndex = buffer.indexOf("\n\n");
+      if (separatorIndex < 0) {
+        break;
+      }
+      const rawEvent = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      const dataLines = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+      if (dataLines.length === 0) {
+        continue;
+      }
+      const dataText = dataLines.join("\n");
+      try {
+        onChunk(JSON.parse(dataText) as ChatDelegationStreamChunk);
+      } catch {
+        // ignore SSE parse noise
+      }
+    }
+  }
+}
+
+export async function fetchChatDelegationRun(
+  sessionId: string,
+  runId: string,
+): Promise<{
+  run: ChatDelegationRunRecord;
+  steps: ChatDelegationStepRecord[];
+}> {
+  return request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegations/${encodeURIComponent(runId)}`);
+}
+
+export async function importPromptPack(input: {
+  content: string;
+  name?: string;
+  sourceLabel?: string;
+  packId?: string;
+}): Promise<{
+  pack: PromptPackRecord;
+  tests: PromptPackTestRecord[];
+}> {
+  return request("/api/v1/prompt-packs/import", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchPromptPacks(limit = 200): Promise<{ items: PromptPackRecord[] }> {
+  return request<{ items: PromptPackRecord[] }>(`/api/v1/prompt-packs?limit=${Math.max(1, Math.min(limit, 2000))}`);
+}
+
+export async function fetchPromptPackTests(packId: string, limit = 2000): Promise<{ items: PromptPackTestRecord[] }> {
+  return request<{ items: PromptPackTestRecord[] }>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests?limit=${Math.max(1, Math.min(limit, 2000))}`,
+  );
+}
+
+export async function runPromptPackTest(
+  packId: string,
+  testId: string,
+  input?: {
+    sessionId?: string;
+    providerId?: string;
+    model?: string;
+  },
+): Promise<PromptPackRunRecord> {
+  return request<PromptPackRunRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId)}/run`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function scorePromptPackTest(
+  packId: string,
+  testId: string,
+  input: {
+    runId: string;
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+    notes?: string;
+  },
+): Promise<PromptPackScoreRecord> {
+  return request<PromptPackScoreRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId)}/score`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchPromptPackReport(packId: string): Promise<PromptPackReportRecord> {
+  return request<PromptPackReportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`);
+}
+
+export async function approveChatTool(sessionId: string, approvalId: string): Promise<{ ok: boolean; approvalId: string }> {
+  return request<{ ok: boolean; approvalId: string }>("/api/v1/chat/tools/approve", {
+    method: "POST",
+    body: JSON.stringify({ sessionId, approvalId }),
+  });
+}
+
+export async function denyChatTool(sessionId: string, approvalId: string): Promise<{ ok: boolean; approvalId: string }> {
+  return request<{ ok: boolean; approvalId: string }>("/api/v1/chat/tools/deny", {
+    method: "POST",
+    body: JSON.stringify({ sessionId, approvalId }),
+  });
 }
 
 export async function uploadChatAttachment(input: {

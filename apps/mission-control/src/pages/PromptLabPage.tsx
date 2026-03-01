@@ -1,0 +1,473 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { PromptPackRunRecord, PromptPackScoreRecord, PromptPackTestRecord } from "@goatcitadel/contracts";
+import {
+  fetchPromptPackReport,
+  fetchPromptPacks,
+  fetchPromptPackTests,
+  importPromptPack,
+  runPromptPackTest,
+  scorePromptPackTest,
+} from "../api/client";
+import { ActionButton } from "../components/ActionButton";
+import { CardSkeleton } from "../components/CardSkeleton";
+import { pageCopy } from "../content/copy";
+
+interface ScoreDraft {
+  routingScore: 0 | 1 | 2;
+  honestyScore: 0 | 1 | 2;
+  handoffScore: 0 | 1 | 2;
+  robustnessScore: 0 | 1 | 2;
+  usabilityScore: 0 | 1 | 2;
+  notes: string;
+}
+
+const DEFAULT_SCORE_DRAFT: ScoreDraft = {
+  routingScore: 1,
+  honestyScore: 1,
+  handoffScore: 1,
+  robustnessScore: 1,
+  usabilityScore: 1,
+  notes: "",
+};
+
+export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [savingScore, setSavingScore] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [packs, setPacks] = useState<Array<{ packId: string; name: string; testCount: number }>>([]);
+  const [selectedPackId, setSelectedPackId] = useState<string | null>(null);
+  const [tests, setTests] = useState<PromptPackTestRecord[]>([]);
+  const [importText, setImportText] = useState("");
+  const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
+  const [report, setReport] = useState<{
+    runs: PromptPackRunRecord[];
+    scores: PromptPackScoreRecord[];
+    summary: {
+      totalTests: number;
+      completedRuns: number;
+      failedRuns: number;
+      averageTotalScore: number;
+      passRate: number;
+      failingCodes: string[];
+    };
+  } | null>(null);
+  const [reuseLastModel, setReuseLastModel] = useState(true);
+  const [scoreDraft, setScoreDraft] = useState<ScoreDraft>(DEFAULT_SCORE_DRAFT);
+
+  const loadPack = useCallback(async (packId: string) => {
+    const [testsResponse, reportResponse] = await Promise.all([
+      fetchPromptPackTests(packId),
+      fetchPromptPackReport(packId),
+    ]);
+    setTests(testsResponse.items);
+    setReport({
+      runs: reportResponse.runs,
+      scores: reportResponse.scores,
+      summary: reportResponse.summary,
+    });
+    setSelectedTestId((current) => current && testsResponse.items.some((item) => item.testId === current)
+      ? current
+      : testsResponse.items[0]?.testId ?? null);
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetchPromptPacks();
+      setPacks(response.items.map((item) => ({
+        packId: item.packId,
+        name: item.name,
+        testCount: item.testCount,
+      })));
+      const firstPackId = response.items[0]?.packId ?? null;
+      setSelectedPackId((current) => current ?? firstPackId);
+      if (firstPackId) {
+        await loadPack(firstPackId);
+      } else {
+        setTests([]);
+        setReport(null);
+      }
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [loadPack]);
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+
+  useEffect(() => {
+    if (!selectedPackId) {
+      return;
+    }
+    void loadPack(selectedPackId).catch((err: Error) => setError(err.message));
+  }, [loadPack, selectedPackId]);
+
+  const latestRunByTest = useMemo(() => {
+    const map = new Map<string, PromptPackRunRecord>();
+    for (const run of report?.runs ?? []) {
+      if (!map.has(run.testId)) {
+        map.set(run.testId, run);
+      }
+    }
+    return map;
+  }, [report?.runs]);
+
+  const latestScoreByTest = useMemo(() => {
+    const map = new Map<string, PromptPackScoreRecord>();
+    for (const score of report?.scores ?? []) {
+      if (!map.has(score.testId)) {
+        map.set(score.testId, score);
+      }
+    }
+    return map;
+  }, [report?.scores]);
+
+  const selectedTest = tests.find((item) => item.testId === selectedTestId) ?? null;
+  const selectedRun = selectedTest ? latestRunByTest.get(selectedTest.testId) : undefined;
+  const selectedScore = selectedTest ? latestScoreByTest.get(selectedTest.testId) : undefined;
+
+  const lastSuccessfulModel = useMemo(() => {
+    for (const run of report?.runs ?? []) {
+      if (run.status === "completed" && run.providerId && run.model) {
+        return { providerId: run.providerId, model: run.model };
+      }
+    }
+    return undefined;
+  }, [report?.runs]);
+
+  const unscoredCompletedCount = useMemo(() => tests.filter((test) => {
+    const run = latestRunByTest.get(test.testId);
+    const score = latestScoreByTest.get(test.testId);
+    return run?.status === "completed" && !score;
+  }).length, [latestRunByTest, latestScoreByTest, tests]);
+
+  useEffect(() => {
+    if (selectedScore) {
+      setScoreDraft({
+        routingScore: selectedScore.routingScore,
+        honestyScore: selectedScore.honestyScore,
+        handoffScore: selectedScore.handoffScore,
+        robustnessScore: selectedScore.robustnessScore,
+        usabilityScore: selectedScore.usabilityScore,
+        notes: selectedScore.notes ?? "",
+      });
+      return;
+    }
+    setScoreDraft(DEFAULT_SCORE_DRAFT);
+  }, [selectedScore, selectedTestId]);
+
+  const runOne = useCallback(async (test: PromptPackTestRecord) => {
+    if (!selectedPackId) {
+      return;
+    }
+    setRunning(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const input = reuseLastModel && lastSuccessfulModel
+        ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
+        : undefined;
+      const run = await runPromptPackTest(selectedPackId, test.testId, input);
+      await loadPack(selectedPackId);
+      setSelectedTestId(test.testId);
+      if (run.status === "failed") {
+        setError(`Ran ${test.code}, but it failed: ${run.error ?? "Unknown error"}`);
+      } else {
+        setSuccess(`Ran ${test.code}.`);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  }, [lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId]);
+
+  const runAll = useCallback(async () => {
+    if (!selectedPackId || tests.length === 0) {
+      return;
+    }
+    setRunning(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      let completed = 0;
+      let failed = 0;
+      for (const test of tests) {
+        const input = reuseLastModel && lastSuccessfulModel
+          ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
+          : undefined;
+        const run = await runPromptPackTest(selectedPackId, test.testId, input);
+        if (run.status === "failed") {
+          failed += 1;
+        } else if (run.status === "completed") {
+          completed += 1;
+        }
+      }
+      await loadPack(selectedPackId);
+      setSuccess(`Run all finished: ${completed} completed, ${failed} failed.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  }, [lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId, tests]);
+
+  const runNext = useCallback(async () => {
+    if (!selectedPackId || tests.length === 0) {
+      return;
+    }
+    const nextNotRun = tests.find((test) => !latestRunByTest.get(test.testId));
+    const nextFailed = tests.find((test) => latestRunByTest.get(test.testId)?.status === "failed");
+    const nextUnscoredCompleted = tests.find((test) => {
+      const run = latestRunByTest.get(test.testId);
+      const score = latestScoreByTest.get(test.testId);
+      return run?.status === "completed" && !score;
+    });
+    const next = nextNotRun ?? nextFailed ?? nextUnscoredCompleted ?? tests[0];
+    if (!next) {
+      return;
+    }
+    await runOne(next);
+    setSelectedTestId(next.testId);
+  }, [latestRunByTest, latestScoreByTest, runOne, selectedPackId, tests]);
+
+  const submitScore = useCallback(async () => {
+    if (!selectedPackId || !selectedTest || !selectedRun) {
+      return;
+    }
+    setSavingScore(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await scorePromptPackTest(selectedPackId, selectedTest.testId, {
+        runId: selectedRun.runId,
+        routingScore: scoreDraft.routingScore,
+        honestyScore: scoreDraft.honestyScore,
+        handoffScore: scoreDraft.handoffScore,
+        robustnessScore: scoreDraft.robustnessScore,
+        usabilityScore: scoreDraft.usabilityScore,
+        notes: scoreDraft.notes.trim() || undefined,
+      });
+      await loadPack(selectedPackId);
+      setSuccess(`Saved score for ${selectedTest.code}.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingScore(false);
+    }
+  }, [loadPack, scoreDraft, selectedPackId, selectedRun, selectedTest]);
+
+  const handleImport = useCallback(async () => {
+    const content = importText.trim();
+    if (!content) {
+      setError("Paste prompt-pack markdown first.");
+      return;
+    }
+    setImporting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const imported = await importPromptPack({
+        content,
+        sourceLabel: "manual-import",
+      });
+      setImportText("");
+      await load();
+      setSelectedPackId(imported.pack.packId);
+      setSuccess(`Imported ${imported.tests.length} tests.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  }, [importText, load]);
+
+  if (loading) {
+    return (
+      <section>
+        <h2>{pageCopy.promptLab.title}</h2>
+        <CardSkeleton lines={10} />
+      </section>
+    );
+  }
+
+  return (
+    <section className="prompt-lab">
+      <header className="prompt-lab-header">
+        <div>
+          <h2>{pageCopy.promptLab.title}</h2>
+          <p className="office-subtitle">{pageCopy.promptLab.subtitle}</p>
+        </div>
+        <div className="prompt-lab-actions">
+          <ActionButton label="Run next test" pending={running} onClick={() => void runNext()} />
+          <ActionButton label="Run all" pending={running} onClick={() => void runAll()} />
+        </div>
+      </header>
+
+      {error ? <p className="error">{error}</p> : null}
+      {success ? <p className="status-banner">{success}</p> : null}
+      <div className="status-banner warning">
+        Runs only verify execution. Pass rate updates after you save scores.
+        {unscoredCompletedCount > 0 ? ` ${unscoredCompletedCount} completed test(s) are still unscored.` : ""}
+      </div>
+
+      <div className="prompt-lab-grid">
+        <article className="card prompt-lab-import">
+          <h3>Import Prompt Pack</h3>
+          <textarea
+            rows={10}
+            placeholder="Paste goatcitadel_prompt_pack.md content here..."
+            value={importText}
+            onChange={(event) => setImportText(event.target.value)}
+          />
+          <ActionButton label="Import" pending={importing} onClick={() => void handleImport()} />
+          <p className="office-subtitle">Tip: paste the full markdown once, then use Run next test for fast iteration.</p>
+        </article>
+
+        <article className="card prompt-lab-packs">
+          <h3>Prompt Packs</h3>
+          <ul>
+            {packs.map((pack) => (
+              <li key={pack.packId}>
+                <button
+                  type="button"
+                  className={selectedPackId === pack.packId ? "active" : ""}
+                  onClick={() => setSelectedPackId(pack.packId)}
+                >
+                  {pack.name}
+                </button>
+                <span>{pack.testCount} tests</span>
+              </li>
+            ))}
+          </ul>
+          <label className="prompt-lab-toggle">
+            <input
+              type="checkbox"
+              checked={reuseLastModel}
+              onChange={(event) => setReuseLastModel(event.target.checked)}
+            />
+            Reuse last successful model settings
+          </label>
+        </article>
+      </div>
+
+      <div className="prompt-lab-grid">
+        <article className="card prompt-lab-tests">
+          <h3>Tests</h3>
+          <ul>
+            {tests.map((test) => {
+              const run = latestRunByTest.get(test.testId);
+              const score = latestScoreByTest.get(test.testId);
+              return (
+                <li key={test.testId}>
+                  <button
+                    type="button"
+                    className={selectedTestId === test.testId ? "active" : ""}
+                    onClick={() => setSelectedTestId(test.testId)}
+                  >
+                    {test.code} - {test.title}
+                  </button>
+                  <div className="prompt-lab-test-meta">
+                    <span>{run?.status ?? "not run"}</span>
+                    <span>{score ? `${score.totalScore}/10` : "unscored"}</span>
+                  </div>
+                  <ActionButton label="Run" pending={running} onClick={() => void runOne(test)} />
+                </li>
+              );
+            })}
+          </ul>
+        </article>
+
+        <article className="card prompt-lab-detail">
+          <h3>{selectedTest ? `${selectedTest.code} - ${selectedTest.title}` : "Select a test"}</h3>
+          {selectedTest ? <pre>{selectedTest.prompt}</pre> : <p className="office-subtitle">Pick a test to inspect prompt content and score it.</p>}
+          {selectedRun ? (
+            <section className="prompt-lab-run-summary">
+              <p>
+                Latest run: <strong>{selectedRun.status}</strong>
+                {selectedRun.providerId ? ` • ${selectedRun.providerId}` : ""}
+                {selectedRun.model ? ` / ${selectedRun.model}` : ""}
+                {selectedRun.finishedAt ? ` • finished ${new Date(selectedRun.finishedAt).toLocaleTimeString()}` : ""}
+              </p>
+              {selectedRun.status === "failed" && selectedRun.error ? <p className="error">{selectedRun.error}</p> : null}
+              {selectedRun.responseText ? (
+                <details>
+                  <summary>Assistant output</summary>
+                  <pre>{selectedRun.responseText}</pre>
+                </details>
+              ) : null}
+              {selectedRun.trace ? (
+                <p className="office-subtitle">
+                  Tools used: {selectedRun.trace.toolRuns.length}
+                  {selectedRun.trace.routing?.fallbackUsed ? ` • fallback: ${selectedRun.trace.routing.fallbackModel ?? "model"}` : ""}
+                </p>
+              ) : null}
+              {selectedRun.citations && selectedRun.citations.length > 0 ? (
+                <p className="office-subtitle">Citations captured: {selectedRun.citations.length}</p>
+              ) : null}
+            </section>
+          ) : (
+            <p className="office-subtitle">No run yet for this test.</p>
+          )}
+          <div className="prompt-lab-score-grid">
+            <ScoreField label="Routing" value={scoreDraft.routingScore} onChange={(value) => setScoreDraft((current) => ({ ...current, routingScore: value }))} />
+            <ScoreField label="Honesty" value={scoreDraft.honestyScore} onChange={(value) => setScoreDraft((current) => ({ ...current, honestyScore: value }))} />
+            <ScoreField label="Handoff" value={scoreDraft.handoffScore} onChange={(value) => setScoreDraft((current) => ({ ...current, handoffScore: value }))} />
+            <ScoreField label="Robustness" value={scoreDraft.robustnessScore} onChange={(value) => setScoreDraft((current) => ({ ...current, robustnessScore: value }))} />
+            <ScoreField label="Usability" value={scoreDraft.usabilityScore} onChange={(value) => setScoreDraft((current) => ({ ...current, usabilityScore: value }))} />
+          </div>
+          <textarea
+            rows={3}
+            placeholder="Optional notes..."
+            value={scoreDraft.notes}
+            onChange={(event) => setScoreDraft((current) => ({ ...current, notes: event.target.value }))}
+          />
+          <ActionButton label="Save score" pending={savingScore} onClick={() => void submitScore()} />
+          {selectedRun?.status === "failed" ? (
+            <div className="status-banner warning">
+              Latest run failed. Remediation hint: retry with web mode `quick`, then inspect trace and tool grants before scoring.
+            </div>
+          ) : null}
+        </article>
+      </div>
+
+      {report ? (
+        <article className="card prompt-lab-summary">
+          <h3>Report</h3>
+          <p>Total tests: {report.summary.totalTests}</p>
+          <p>Completed runs: {report.summary.completedRuns}</p>
+          <p>Failed runs: {report.summary.failedRuns}</p>
+          <p>Scored runs: {report.scores.length}</p>
+          <p>Completed but unscored: {unscoredCompletedCount}</p>
+          <p>Average score: {report.summary.averageTotalScore.toFixed(2)}/10</p>
+          <p>Pass rate: {(report.summary.passRate * 100).toFixed(1)}%</p>
+          <p>Failing tests: {report.summary.failingCodes.length > 0 ? report.summary.failingCodes.join(", ") : "none"}</p>
+        </article>
+      ) : null}
+    </section>
+  );
+}
+
+function ScoreField(props: {
+  label: string;
+  value: 0 | 1 | 2;
+  onChange: (value: 0 | 1 | 2) => void;
+}) {
+  return (
+    <label className="chat-v11-select">
+      {props.label}
+      <select value={props.value} onChange={(event) => props.onChange(Number(event.target.value) as 0 | 1 | 2)}>
+        <option value={0}>0</option>
+        <option value={1}>1</option>
+        <option value={2}>2</option>
+      </select>
+    </label>
+  );
+}

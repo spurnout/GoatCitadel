@@ -24,6 +24,8 @@ export async function executeTool(
   switch (request.toolName) {
     case "session.status":
       return { sessionId: request.sessionId, status: "ok" };
+    case "time.now":
+      return timeNow();
     case "fs.read":
       return fsRead(request.args, config);
     case "fs.write":
@@ -92,6 +94,16 @@ export async function executeTool(
     default:
       return { simulated: true, toolName: request.toolName };
   }
+}
+
+function timeNow() {
+  const now = new Date();
+  return {
+    iso: now.toISOString(),
+    local: now.toString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    epochMs: now.getTime(),
+  };
 }
 
 async function fsRead(args: Record<string, unknown>, config: ToolPolicyConfig) {
