@@ -11,6 +11,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { TableSkeleton } from "../components/TableSkeleton";
+import { pageCopy } from "../content/copy";
 
 export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<SessionsResponse | null>(null);
@@ -115,7 +116,7 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   if (!data) {
     return (
       <section>
-        <h2>Runs</h2>
+        <h2>{pageCopy.sessions.title}</h2>
         <CardSkeleton lines={5} />
       </section>
     );
@@ -123,20 +124,13 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Runs</h2>
-      <p className="office-subtitle">Live session health, token usage, and feed-cost visibility.</p>
+      <h2>{pageCopy.sessions.title}</h2>
+      <p className="office-subtitle">{pageCopy.sessions.subtitle}</p>
       <PageGuideCard
-        what="Summarizes session health and usage across current runs and lets you inspect each run in detail."
-        when="Use this to monitor active conversations and drill into event timelines."
-        actions={[
-          "Filter sessions by health/search.",
-          "Select a run from the left panel.",
-          "Inspect summary and timeline on the right panel.",
-        ]}
-        terms={[
-          { term: "Session", meaning: "A routed conversation keyed by channel/account/peer or room/thread." },
-          { term: "Timeline", meaning: "Chronological transcript events for the selected run." },
-        ]}
+        what={pageCopy.sessions.guide?.what ?? ""}
+        when={pageCopy.sessions.guide?.when ?? ""}
+        actions={pageCopy.sessions.guide?.actions ?? []}
+        terms={pageCopy.sessions.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
 

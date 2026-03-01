@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { globalCopy } from "../content/copy";
 
 export interface SelectOption {
   value: string;
@@ -53,7 +54,7 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
               }
             }}
           >
-            {props.suggestedModeLabel ?? "Suggested"}
+            {props.suggestedModeLabel ?? globalCopy.selectOrCustom.suggested}
           </button>
           <button
             type="button"
@@ -64,7 +65,7 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
               props.onCustomModeChange?.(true);
             }}
           >
-            {props.customModeLabel ?? "Custom"}
+            {props.customModeLabel ?? globalCopy.selectOrCustom.custom}
           </button>
         </div>
       ) : null}
@@ -79,7 +80,7 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
         }}
       >
         {!isKnownValue ? (
-          <option value="">{props.customPlaceholder ?? "Select value"}</option>
+          <option value="">{props.customPlaceholder ?? globalCopy.selectOrCustom.selectValue}</option>
         ) : null}
         {dedupedOptions.map((option) => (
           <option key={option.value} value={option.value}>
@@ -90,7 +91,7 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
 
       {hasUnknownValue && !isCustomMode && allowCustom ? (
         <p className="office-subtitle">
-          Current value is custom. Switch to Custom mode to edit it.
+          {globalCopy.selectOrCustom.customValueHint}
         </p>
       ) : null}
 
@@ -100,7 +101,7 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
           <input
             type={props.inputType ?? "text"}
             value={props.value}
-            placeholder={props.customPlaceholder ?? "Enter custom value"}
+            placeholder={props.customPlaceholder ?? globalCopy.selectOrCustom.enterCustom}
             disabled={props.disabled}
             onChange={(event) => props.onChange(event.target.value)}
           />

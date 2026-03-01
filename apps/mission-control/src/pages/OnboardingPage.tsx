@@ -10,6 +10,7 @@ import {
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
+import { pageCopy } from "../content/copy";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
   { value: "minimal", label: "minimal (safest)" },
@@ -308,21 +309,18 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   };
 
   if (loading) {
-    return <p>Loading onboarding wizard...</p>;
+    return <p>Loading Launch Wizard...</p>;
   }
 
   return (
     <section>
-      <h2>Launch Wizard</h2>
-      <p className="office-subtitle">Guided first-time setup for auth, models, runtime defaults, and optional mesh.</p>
+      <h2>{pageCopy.onboarding.title}</h2>
+      <p className="office-subtitle">{pageCopy.onboarding.subtitle}</p>
       <PageGuideCard
-        what="Launch Wizard guides first-time setup with safe defaults."
-        when="Use this after installation or when resetting environment defaults."
-        actions={[
-          "Step through auth, provider, runtime, and optional mesh settings.",
-          "Review risk and apply changes.",
-          "After apply, continue in Dashboard and Forge for normal operations.",
-        ]}
+        what={pageCopy.onboarding.guide?.what ?? ""}
+        when={pageCopy.onboarding.guide?.when ?? ""}
+        actions={pageCopy.onboarding.guide?.actions ?? []}
+        terms={pageCopy.onboarding.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
       {applyMessage ? <p className="office-subtitle">{applyMessage}</p> : null}

@@ -595,6 +595,13 @@ pre {
   display: block;
 }
 
+.office-stage-loading {
+  display: grid;
+  place-items: center;
+  color: var(--accent-soft);
+  font-size: 0.92rem;
+}
+
 .office-desk-list {
   margin-top: 8px;
   display: flex;
@@ -693,6 +700,192 @@ pre {
   gap: 12px;
 }
 
+.office-v5 {
+  display: grid;
+  gap: 12px;
+}
+
+.office-focus-mode .office-kpi-grid,
+.office-focus-mode .page-guide-card {
+  display: none;
+}
+
+.office-stage-card-v5 {
+  overflow: hidden;
+}
+
+.office-stage-head-v5 {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.office-stage-controls {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.office-stage-controls > label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.office-stage-controls select {
+  min-width: 156px;
+}
+
+.office-toggle-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.office-toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 0.78rem;
+  color: var(--accent-soft);
+  background: rgba(255, 214, 108, 0.08);
+}
+
+.office-toggle-row input {
+  accent-color: var(--accent);
+}
+
+.office-webgl-stage-v5 {
+  height: clamp(620px, 72vh, 980px);
+}
+
+.office-dock-card {
+  display: grid;
+  gap: 10px;
+}
+
+.office-dock-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 8px;
+}
+
+.office-dock-tabs button {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.office-dock-body {
+  display: grid;
+  gap: 8px;
+  min-height: 240px;
+}
+
+.office-collab-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 8px;
+}
+
+.office-collab-legend b {
+  color: var(--accent-soft);
+}
+
+.office-preset-active {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255, 214, 108, 0.07);
+}
+
+.office-preset-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.office-preset-copy {
+  margin: 2px 0;
+  font-size: 0.82rem;
+}
+
+.office-preset-bestfor {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.office-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.office-preset-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255, 214, 108, 0.05);
+  display: grid;
+  gap: 6px;
+}
+
+.office-preset-card.active {
+  border-color: rgba(255, 214, 108, 0.72);
+  background: rgba(255, 214, 108, 0.14);
+}
+
+.office-preset-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.office-preset-card p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.office-preset-card small {
+  color: var(--muted);
+}
+
+.office-preset-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  display: inline-block;
+}
+
+.preset-trailblazer {
+  background: linear-gradient(135deg, #f68e56, #ffcc74);
+}
+
+.preset-strategist {
+  background: linear-gradient(135deg, #88be5f, #bedf76);
+}
+
+.preset-nightwatch {
+  background: linear-gradient(135deg, #58a4d9, #8bc8f3);
+}
+
 @media (max-width: 1180px) {
   .layout-shell {
     grid-template-columns: 1fr;
@@ -717,6 +910,18 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .office-stage-head-v5 {
+    flex-direction: column;
+  }
+
+  .office-stage-controls {
+    justify-items: start;
+  }
+
+  .office-toggle-row {
+    justify-content: flex-start;
+  }
+
   .office-kpi-grid {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
@@ -730,6 +935,15 @@ pre {
   .office-kpi-grid,
   .office-meta-grid {
     grid-template-columns: 1fr;
+  }
+
+  .office-webgl-stage-v5 {
+    height: clamp(460px, 58vh, 640px);
+  }
+
+  .office-dock-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
 
   .sidebar nav {

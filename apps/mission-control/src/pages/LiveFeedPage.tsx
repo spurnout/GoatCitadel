@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { connectEventStream, fetchRealtimeEvents, type RealtimeEvent } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 export function LiveFeedPage() {
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
@@ -22,16 +23,13 @@ export function LiveFeedPage() {
 
   return (
     <section>
-      <h2>Live Feed</h2>
-      <p className="office-subtitle">Raw stream of realtime GoatCitadel events.</p>
+      <h2>{pageCopy.liveFeed.title}</h2>
+      <p className="office-subtitle">{pageCopy.liveFeed.subtitle}</p>
       <PageGuideCard
-        what="Shows the raw unfiltered realtime event stream."
-        when="Use this for deep debugging when you need exact event payloads."
-        actions={[
-          "Keep this open while testing a workflow.",
-          "Inspect payload JSON for state transitions.",
-          "Correlate event timestamps with logs.",
-        ]}
+        what={pageCopy.liveFeed.guide?.what ?? ""}
+        when={pageCopy.liveFeed.guide?.when ?? ""}
+        actions={pageCopy.liveFeed.guide?.actions ?? []}
+        terms={pageCopy.liveFeed.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
       <ul className="compact-list">

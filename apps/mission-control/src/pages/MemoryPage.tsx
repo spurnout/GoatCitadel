@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchFilesList, fetchMemoryQmdStats } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { pageCopy } from "../content/copy";
 
 interface WorkspaceFile {
   relativePath: string;
@@ -90,22 +91,13 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section className="memory-v2">
-      <h2>Memory Pasture</h2>
-      <p className="office-subtitle">
-        Workspace-aware memory terrain with per-area drill-down.
-      </p>
+      <h2>{pageCopy.memory.title}</h2>
+      <p className="office-subtitle">{pageCopy.memory.subtitle}</p>
       <PageGuideCard
-        what="Memory Pasture maps your workspace and distilled-memory activity so you can see what context is available."
-        when="Use this when memory quality, context size, or retrieval coverage needs review."
-        actions={[
-          "Filter by workspace area to narrow memory context.",
-          "Inspect memory/* breakdown and recent QMD packs.",
-          "Use file/path search to verify memory artifacts exist.",
-        ]}
-        terms={[
-          { term: "QMD", meaning: "Query-time distillation that compresses context before model calls." },
-          { term: "Workspace area", meaning: "Top-level folder grouping (for example memory, docs, skills)." },
-        ]}
+        what={pageCopy.memory.guide?.what ?? ""}
+        when={pageCopy.memory.guide?.when ?? ""}
+        actions={pageCopy.memory.guide?.actions ?? []}
+        terms={pageCopy.memory.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
 

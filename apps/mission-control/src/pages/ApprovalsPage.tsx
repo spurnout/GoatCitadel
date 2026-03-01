@@ -10,6 +10,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { useAction } from "../hooks/useAction";
+import { pageCopy } from "../content/copy";
 
 export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
@@ -59,23 +60,16 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Gatehouse Queue</h2>
-      <p className="office-subtitle">Human-in-the-loop decisions for risky goat actions.</p>
+      <h2>{pageCopy.approvals.title}</h2>
+      <p className="office-subtitle">{pageCopy.approvals.subtitle}</p>
       <PageGuideCard
-        what="Gatehouse is where you review and resolve risky actions before they execute."
-        when="Use this when tools are blocked for approval or you want an audit-friendly replay trail."
-        actions={[
-          "Open a pending request and read the plain-English explanation.",
-          "Approve to allow execution or reject to stop it.",
-          "Use replay to inspect the full event trail.",
-        ]}
-        terms={[
-          { term: "Replay trail", meaning: "Ordered audit events for the full approval lifecycle." },
-          { term: "Risk level", meaning: "Safety severity assigned before execution." },
-        ]}
+        what={pageCopy.approvals.guide?.what ?? ""}
+        when={pageCopy.approvals.guide?.when ?? ""}
+        actions={pageCopy.approvals.guide?.actions ?? []}
+        terms={pageCopy.approvals.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
-      {data.items.length === 0 ? <p>No pending approvals.</p> : null}
+      {data.items.length === 0 ? <p>No pending approvals right now.</p> : null}
       {data.items.map((approval) => {
         const replay = replayById[approval.approvalId];
         const explanationLabel =

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchCronJobs, type CronJobsResponse } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 export function CronPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<CronJobsResponse | null>(null);
@@ -16,21 +17,17 @@ export function CronPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return <p className="error">{error}</p>;
   }
   if (!data) {
-    return <p>Loading bell tower jobs...</p>;
+    return <p>Loading schedule data...</p>;
   }
 
   return (
     <section>
-      <h2>Bell Tower</h2>
-      <p className="office-subtitle">Scheduled automations and recurring herd routines.</p>
+      <h2>{pageCopy.cron.title}</h2>
+      <p className="office-subtitle">{pageCopy.cron.subtitle}</p>
       <PageGuideCard
-        what="Lists scheduled jobs and their last/next run times."
-        when="Use this to confirm automation timing and whether jobs are active."
-        actions={[
-          "Check enabled state before relying on scheduled automation.",
-          "Compare last run and next run timestamps for drift.",
-          "Correlate missing runs with Pulse events.",
-        ]}
+        what={pageCopy.cron.guide?.what ?? ""}
+        when={pageCopy.cron.guide?.when ?? ""}
+        actions={pageCopy.cron.guide?.actions ?? []}
       />
       <table>
         <thead>

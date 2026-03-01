@@ -44,6 +44,7 @@ try {
   }
 
   $targets = @(
+    @{ tab = "onboarding"; file = "onboarding.png"; wait = 2500 },
     @{ tab = "dashboard"; file = "dashboard.png"; wait = 2500 },
     @{ tab = "system"; file = "system.png"; wait = 2500 },
     @{ tab = "files"; file = "files.png"; wait = 2500 },
@@ -56,9 +57,12 @@ try {
     @{ tab = "skills"; file = "skills.png"; wait = 2500 },
     @{ tab = "costs"; file = "costs.png"; wait = 2500 },
     @{ tab = "settings"; file = "settings.png"; wait = 2500 },
+    @{ tab = "tools"; file = "tools.png"; wait = 2500 },
     @{ tab = "approvals"; file = "approvals.png"; wait = 2500 },
     @{ tab = "tasks"; file = "tasks.png"; wait = 2500 },
-    @{ tab = "integrations"; file = "integrations.png"; wait = 2500 }
+    @{ tab = "integrations"; file = "integrations.png"; wait = 2500 },
+    @{ tab = "mesh"; file = "mesh.png"; wait = 2500 },
+    @{ tab = "npu"; file = "npu.png"; wait = 2500 }
   )
 
   foreach ($target in $targets) {

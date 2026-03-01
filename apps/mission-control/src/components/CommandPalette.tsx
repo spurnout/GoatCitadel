@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { appCopy, globalCopy } from "../content/copy";
 
 export interface CommandPaletteItem {
   id: string;
@@ -40,16 +41,16 @@ export function CommandPalette({ open, onClose, items }: CommandPaletteProps) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal-card command-palette" onClick={(event) => event.stopPropagation()}>
-        <h3>Quick Actions</h3>
+        <h3>{appCopy.quickActionsButton.replace(" (Ctrl/Cmd+K)", "")}</h3>
         <input
           autoFocus
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Type an action or page name..."
+          placeholder={globalCopy.commandPalette.placeholder}
         />
         <ul className="compact-list">
           {filtered.length === 0 ? (
-            <li>No matches.</li>
+            <li>No matching actions.</li>
           ) : filtered.map((item) => (
             <li key={item.id}>
               <button

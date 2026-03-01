@@ -25,6 +25,7 @@ import { ConfirmModal } from "../components/ConfirmModal";
 import { TableSkeleton } from "../components/TableSkeleton";
 import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 import { useAction } from "../hooks/useAction";
+import { pageCopy } from "../content/copy";
 
 const statuses: TaskRecord["status"][] = [
   "inbox",
@@ -332,21 +333,13 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Trailboard</h2>
-      <p className="office-subtitle">Plan and track work packets across the goat sub-agent roster.</p>
+      <h2>{pageCopy.tasks.title}</h2>
+      <p className="office-subtitle">{pageCopy.tasks.subtitle}</p>
       <PageGuideCard
-        what="Trailboard is your task hub for planning, tracking progress, deliverables, and subagent work."
-        when="Use this when you want structured execution instead of ad-hoc chat prompts."
-        actions={[
-          "Create a task with a clear title.",
-          "Update status as work moves through implementation/testing/review.",
-          "Attach deliverables and subagent sessions for traceability.",
-        ]}
-        terms={[
-          { term: "Subagent session", meaning: "A linked agent conversation/session performing part of the task." },
-          { term: "Deliverable", meaning: "A concrete output like a file, report, or artifact." },
-          { term: "Trash", meaning: "Soft-deleted tasks you can restore later." },
-        ]}
+        what={pageCopy.tasks.guide?.what ?? ""}
+        when={pageCopy.tasks.guide?.when ?? ""}
+        actions={pageCopy.tasks.guide?.actions ?? []}
+        terms={pageCopy.tasks.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
       {info ? <p className="office-subtitle">{info}</p> : null}

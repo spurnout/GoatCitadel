@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { pageCopy } from "../content/copy";
 
 type DashboardTab = "approvals" | "tasks" | "sessions" | "settings" | "integrations" | "office";
 
@@ -50,7 +51,7 @@ export function DashboardPage({
   if (error && (!state || !vitals || !cron || !operators)) {
     return (
       <section>
-        <h2>Summit</h2>
+        <h2>{pageCopy.dashboard.title}</h2>
         <p className="error">{error}</p>
       </section>
     );
@@ -59,7 +60,7 @@ export function DashboardPage({
   if (!state || !vitals || !cron || !operators) {
     return (
       <section>
-        <h2>Summit</h2>
+        <h2>{pageCopy.dashboard.title}</h2>
         <div className="metric-grid">
           <CardSkeleton lines={5} />
           <CardSkeleton lines={5} />
@@ -70,20 +71,13 @@ export function DashboardPage({
 
   return (
     <section>
-      <h2>Summit</h2>
-      <p className="office-subtitle">GoatCitadel overview of herd activity, platform vitals, and workload pressure.</p>
+      <h2>{pageCopy.dashboard.title}</h2>
+      <p className="office-subtitle">{pageCopy.dashboard.subtitle}</p>
       <PageGuideCard
-        what="Summit is your high-level operations overview for health, workload, approvals, and cost pressure."
-        when="Open this first to see whether the system is healthy before drilling into other tabs."
-        actions={[
-          "Check pending approvals and daily cost trend.",
-          "Scan task status counts and bell tower jobs.",
-          "Jump into the specific tab that needs action.",
-        ]}
-        terms={[
-          { term: "Pending approvals", meaning: "Risky actions waiting for human confirmation." },
-          { term: "Task status counts", meaning: "How many tasks are in each lifecycle state." },
-        ]}
+        what={pageCopy.dashboard.guide?.what ?? ""}
+        when={pageCopy.dashboard.guide?.when ?? ""}
+        actions={pageCopy.dashboard.guide?.actions ?? []}
+        terms={pageCopy.dashboard.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchPathSuggestions } from "../api/client";
 import { ChangeBadge, type UiRiskLevel } from "./ChangeBadge";
 import { SelectOrCustom } from "./SelectOrCustom";
+import { globalCopy } from "../content/copy";
 
 interface SmartPathInputProps {
   label: string;
@@ -83,13 +84,13 @@ export function SmartPathInput({
           }}
           disabled={loading || options.length === 0}
         >
-          Browse
+          {globalCopy.smartPathInput.browse}
         </button>
       </div>
       <div className="controls-row">
         <ChangeBadge level={riskLevel} />
-        {loading ? <span className="office-subtitle">Loading path suggestions...</span> : null}
-        {editedManually ? <span className="office-subtitle">Path edited after auto-fill.</span> : null}
+        {loading ? <span className="office-subtitle">{globalCopy.smartPathInput.loadingSuggestions}</span> : null}
+        {editedManually ? <span className="office-subtitle">{globalCopy.smartPathInput.editedAfterAutofill}</span> : null}
       </div>
       {helpText ? <p className="office-subtitle">{helpText}</p> : null}
     </div>

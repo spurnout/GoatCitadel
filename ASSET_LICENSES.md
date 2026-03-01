@@ -10,7 +10,16 @@ License policy: **CC0 only**.
 |---|---|---|---|---|---|---|---|
 | central-operator | 3D model | apps/mission-control/public/assets/office/models/central-operator.glb | (pending) | (pending) | CC0 | (pending) | Optional. Procedural fallback active by default. |
 | goat-subagent | 3D model | apps/mission-control/public/assets/office/models/goat-subagent.glb | (pending) | (pending) | CC0 | (pending) | Optional. Procedural fallback active by default. |
+| office-furniture-pack | 3D model | apps/mission-control/public/assets/office/models/office-furniture-pack.glb | (pending) | (pending) | CC0 | (pending) | Optional. Procedural furniture fallback active by default. |
 | office-floor | texture | apps/mission-control/public/assets/office/textures/office-floor.png | (pending) | (pending) | CC0 | (pending) | Optional texture pack. |
+
+## Office V5 Source Targets (CC0-first)
+
+1. Quaternius: stylized low-poly character and environment packs.
+2. Poly Pizza: targeted low-poly goat/human/furniture model searches.
+3. Kenney: broad CC0 environment and prop coverage.
+
+Backup targets (CC0-only per asset verification): Sketchfab, OpenGameArt.
 
 ## Verification Rules
 

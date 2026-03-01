@@ -24,6 +24,7 @@ import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NpuPage } from "./pages/NpuPage";
 import { CommandPalette } from "./components/CommandPalette";
+import { appCopy } from "./content/copy";
 
 const OfficePage = lazy(async () => {
   const module = await import("./pages/OfficePage");
@@ -73,56 +74,11 @@ const allTabs: Tab[] = [
   "npu",
 ];
 
-const navItems: Array<{ id: Tab; label: string; code: string }> = [
-  { id: "onboarding", label: "Launch Wizard", code: "NEW" },
-  { id: "dashboard", label: "Summit (Dashboard)", code: "SUM" },
-  { id: "system", label: "Engine (System)", code: "ENG" },
-  { id: "files", label: "Trail Files", code: "FS" },
-  { id: "memory", label: "Memory Pasture", code: "MEM" },
-  { id: "agents", label: "Goat Crew (Agents)", code: "HERD" },
-  { id: "office", label: "Herd HQ (Office)", code: "HQ" },
-  { id: "activity", label: "Pulse (Activity)", code: "ACT" },
-  { id: "cron", label: "Bell Tower (Cron)", code: "CRN" },
-  { id: "sessions", label: "Runs (Sessions)", code: "SES" },
-  { id: "skills", label: "Playbook (Skills)", code: "SKL" },
-  { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
-  { id: "settings", label: "Forge (Settings)", code: "CFG" },
-  { id: "tools", label: "Tool Access", code: "TLS" },
-  { id: "approvals", label: "Gatehouse (Approvals)", code: "APR" },
-  { id: "tasks", label: "Trailboard (Tasks)", code: "TSK" },
-  { id: "integrations", label: "Connections", code: "CNX" },
-  { id: "mesh", label: "Mesh", code: "MSH" },
-  { id: "npu", label: "NPU", code: "NPU" },
-];
+const navItems: Array<{ id: Tab; label: string; code: string }> = appCopy.navItems;
 
-const navSections: Array<{ label: string; items: Tab[] }> = [
-  { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
-  { label: "Operate", items: ["dashboard", "tasks", "agents", "office", "approvals", "sessions"] },
-  { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
-  { label: "Admin", items: ["skills"] },
-];
+const navSections: Array<{ label: string; items: Tab[] }> = appCopy.navSections;
 
-const nextStepByTab: Record<Tab, string> = {
-  onboarding: "Complete Launch Wizard, then move to Summit or Forge.",
-  dashboard: "Use Quick Actions to jump into approvals, tasks, or sessions.",
-  system: "Check host vitals and resolve resource issues if any metric spikes.",
-  files: "Create or edit an artifact, then verify the path/risk badges before saving.",
-  memory: "Inspect memory health and run a context compose test if quality drops.",
-  agents: "Review active roster and archive unused roles to keep assignments clean.",
-  office: "Select a goat desk to inspect current thought/action telemetry.",
-  activity: "Watch event flow while testing one action in another tab.",
-  cron: "Confirm schedules and last-run outcomes before enabling more automation.",
-  sessions: "Pick a run in split view and inspect timeline for recent behavior.",
-  skills: "Reload skills after adding/updating SKILL.md definitions.",
-  costs: "Check burn rate and apply run-cheaper mode if warnings appear.",
-  settings: "Apply runtime profile and provider safely with change review.",
-  tools: "Create scoped grants and dry-run risky tools before live execution.",
-  approvals: "Resolve pending approvals to unblock agent progress.",
-  tasks: "Keep statuses current and move stale work to Trash/restore as needed.",
-  integrations: "Start with guided form fields; use Advanced JSON only when needed.",
-  mesh: "Validate node health and leases before enabling distributed execution.",
-  npu: "Verify sidecar status and model readiness before selecting npu-local.",
-};
+const nextStepByTab: Record<Tab, string> = appCopy.nextStepByTab;
 
 function isTab(value: string | null): value is Tab {
   if (!value) {
@@ -314,9 +270,9 @@ export function App() {
   return (
     <div className="layout-shell">
       <aside className="sidebar">
-        <h1>GoatCitadel</h1>
-        <p className="sidebar-subtitle">Herd-Orchestrated Mission Control</p>
-        <button type="button" onClick={() => setPaletteOpen(true)}>Quick Actions (Ctrl/Cmd+K)</button>
+        <h1>{appCopy.brandTitle}</h1>
+        <p className="sidebar-subtitle">{appCopy.brandSubtitle}</p>
+        <button type="button" onClick={() => setPaletteOpen(true)}>{appCopy.quickActionsButton}</button>
         <nav>
           {navSections.map((section) => (
             <div key={section.label} className="sidebar-section">
@@ -342,24 +298,38 @@ export function App() {
         </nav>
         <footer className="sidebar-footer">
           <p className={`stream-pill ${streamStatus.state}`}>
-            Stream {streamStatus.state}
+            {appCopy.sidebar.stream} {streamStatus.state}
           </p>
-          <p>Stream: {streamState}</p>
-          <p>Onboarding: {onboardingComplete === null ? "unknown" : onboardingComplete ? "complete" : "required"}</p>
-          <p>Reconnects: {streamStatus.reconnectAttempts}</p>
-          <p>Last event: {streamStatus.lastEventAt ? new Date(streamStatus.lastEventAt).toLocaleTimeString() : "n/a"}</p>
-          <p>Mode: local herd</p>
+          <p>{appCopy.sidebar.stream}: {streamState}</p>
+          <p>
+            {appCopy.sidebar.onboarding}: {
+              onboardingComplete === null
+                ? appCopy.sidebar.unknown
+                : onboardingComplete
+                  ? appCopy.sidebar.complete
+                  : appCopy.sidebar.required
+            }
+          </p>
+          <p>{appCopy.sidebar.reconnects}: {streamStatus.reconnectAttempts}</p>
+          <p>
+            {appCopy.sidebar.lastEvent}: {
+              streamStatus.lastEventAt
+                ? new Date(streamStatus.lastEventAt).toLocaleTimeString()
+                : appCopy.sidebar.notAvailable
+            }
+          </p>
+          <p>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</p>
           <p>{clock}</p>
         </footer>
       </aside>
       <main className="content">
         {streamState !== "open" ? (
           <div className="status-banner warning">
-            Live stream is {streamState}. Mission Control will reconnect automatically.
+            {appCopy.streamBanner.replace("{state}", streamState)}
           </div>
         ) : null}
         <article className="card">
-          <h3>Next Step</h3>
+          <h3>{appCopy.nextStepTitle}</h3>
           <p className="office-subtitle">{nextStepByTab[tab]}</p>
         </article>
         {content}

@@ -17,6 +17,7 @@ import { ConfigFormBuilder } from "../components/ConfigFormBuilder";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { useAction } from "../hooks/useAction";
+import { pageCopy } from "../content/copy";
 
 type IntegrationKind = IntegrationCatalogEntry["kind"] | "all";
 type UiRiskLevel = "safe" | "warning" | "critical";
@@ -271,22 +272,13 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Connections</h2>
-      <p className="office-subtitle">
-        Configure channels, provider endpoints, productivity apps, and automation hooks.
-      </p>
+      <h2>{pageCopy.integrations.title}</h2>
+      <p className="office-subtitle">{pageCopy.integrations.subtitle}</p>
       <PageGuideCard
-        what="Connections defines external systems GoatCitadel can talk to and how each is authenticated."
-        when="Use this to add, pause, or remove channel/model/productivity integrations."
-        actions={[
-          "Pick a scope and choose a catalog entry.",
-          "Use guided fields first, then advanced JSON only if needed.",
-          "Pause, resume, or remove active connections.",
-        ]}
-        terms={[
-          { term: "Catalog entry", meaning: "Built-in integration definition with capabilities and auth hints." },
-          { term: "Connection config", meaning: "Settings for this integration instance." },
-        ]}
+        what={pageCopy.integrations.guide?.what ?? ""}
+        when={pageCopy.integrations.guide?.when ?? ""}
+        actions={pageCopy.integrations.guide?.actions ?? []}
+        terms={pageCopy.integrations.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
 

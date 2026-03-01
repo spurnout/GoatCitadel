@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { IntegrationFieldSchema, IntegrationFormSchema } from "@goatcitadel/contracts";
 import { SelectOrCustom } from "./SelectOrCustom";
+import { globalCopy } from "../content/copy";
 
 interface ConfigFormBuilderProps {
   schema?: IntegrationFormSchema;
@@ -19,7 +20,7 @@ export function ConfigFormBuilder({ schema, value, onChange }: ConfigFormBuilder
   }, [schema, showAdvanced]);
 
   if (!schema) {
-    return <p className="office-subtitle">No guided schema available. Use advanced JSON.</p>;
+    return <p className="office-subtitle">{globalCopy.configFormBuilder.noSchema}</p>;
   }
 
   const setField = (field: IntegrationFieldSchema, nextValue: unknown) => {
@@ -35,7 +36,7 @@ export function ConfigFormBuilder({ schema, value, onChange }: ConfigFormBuilder
       {schema.description ? <p className="office-subtitle">{schema.description}</p> : null}
       {schema.fields.some((field) => field.advanced) ? (
         <button type="button" onClick={() => setShowAdvanced((current) => !current)}>
-          {showAdvanced ? "Hide Advanced Fields" : "Show Advanced Fields"}
+          {showAdvanced ? globalCopy.configFormBuilder.hideAdvanced : globalCopy.configFormBuilder.showAdvanced}
         </button>
       ) : null}
       {fields.map((field) => (
@@ -49,7 +50,7 @@ export function ConfigFormBuilder({ schema, value, onChange }: ConfigFormBuilder
             value={value[field.key] ?? field.defaultValue}
             onChange={(nextValue) => setField(field, nextValue)}
           />
-          {field.secretRef ? <span className="token-chip">ENV Ref</span> : null}
+          {field.secretRef ? <span className="token-chip">{globalCopy.configFormBuilder.envRefChip}</span> : null}
           {field.description ? <p className="office-subtitle">{field.description}</p> : null}
         </div>
       ))}
@@ -75,7 +76,7 @@ function FieldInput({
           checked={Boolean(value)}
           onChange={(event) => onChange(event.target.checked)}
         />{" "}
-        enabled
+        {globalCopy.configFormBuilder.enabled}
       </label>
     );
   }
@@ -88,7 +89,7 @@ function FieldInput({
         value={String(value ?? "")}
         onChange={(next) => onChange(next)}
         options={options.map((option) => ({ value: option.value, label: option.label }))}
-        customPlaceholder={field.placeholder ?? "Custom value"}
+        customPlaceholder={field.placeholder ?? globalCopy.configFormBuilder.customValue}
       />
     );
   }

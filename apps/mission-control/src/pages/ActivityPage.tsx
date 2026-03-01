@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { connectEventStream, fetchRealtimeEvents, type RealtimeEvent } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 export function ActivityPage() {
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
@@ -22,16 +23,12 @@ export function ActivityPage() {
 
   return (
     <section>
-      <h2>Pulse</h2>
-      <p className="office-subtitle">Live event stream across GoatCitadel systems, tools, and workflows.</p>
+      <h2>{pageCopy.activity.title}</h2>
+      <p className="office-subtitle">{pageCopy.activity.subtitle}</p>
       <PageGuideCard
-        what="Shows realtime events from gateway, tools, approvals, and orchestration."
-        when="Use this when debugging behavior or confirming that actions are flowing through the system."
-        actions={[
-          "Open this tab while you perform an action in another tab.",
-          "Watch event names and sources to confirm expected behavior.",
-          "Use payload details to trace issues quickly.",
-        ]}
+        what={pageCopy.activity.guide?.what ?? ""}
+        when={pageCopy.activity.guide?.when ?? ""}
+        actions={pageCopy.activity.guide?.actions ?? []}
       />
       {error ? <p className="error">{error}</p> : null}
       <ul className="compact-list">

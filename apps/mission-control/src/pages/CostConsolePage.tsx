@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchCostSummary, fetchMemoryQmdStats, runCheaper, type CostSummaryResponse } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 type CostScope = "day" | "session" | "agent" | "task";
 
@@ -49,21 +50,17 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   if (!data) {
-    return <p>Loading feed ledger...</p>;
+    return <p>Loading cost data...</p>;
   }
 
   return (
     <section>
-      <h2>Feed Ledger</h2>
-      <p className="office-subtitle">Token and cost burn-rate controls for herd operations.</p>
+      <h2>{pageCopy.costs.title}</h2>
+      <p className="office-subtitle">{pageCopy.costs.subtitle}</p>
       <PageGuideCard
-        what="Tracks token and dollar usage by day, session, agent, or task."
-        when="Use this before long runs and when controlling spend."
-        actions={[
-          "Pick a scope to inspect where usage is accumulating.",
-          "Use Run Leaner for immediate cost-reduction suggestions.",
-          "Review QMD savings to verify memory compression impact.",
-        ]}
+        what={pageCopy.costs.guide?.what ?? ""}
+        when={pageCopy.costs.guide?.when ?? ""}
+        actions={pageCopy.costs.guide?.actions ?? []}
       />
       <div className="controls-row">
         <label htmlFor="scope">Scope</label>

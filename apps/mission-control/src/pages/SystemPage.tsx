@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchSystemVitals, type SystemVitalsResponse } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [vitals, setVitals] = useState<SystemVitalsResponse | null>(null);
@@ -17,21 +18,17 @@ export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   if (!vitals) {
-    return <p>Loading citadel vitals...</p>;
+    return <p>Loading system vitals...</p>;
   }
 
   return (
     <section>
-      <h2>Engine</h2>
-      <p className="office-subtitle">Runtime health for the local GoatCitadel node.</p>
+      <h2>{pageCopy.system.title}</h2>
+      <p className="office-subtitle">{pageCopy.system.subtitle}</p>
       <PageGuideCard
-        what="Shows host and process vitals for the running gateway node."
-        when="Use this when performance is slow, memory usage spikes, or services feel unstable."
-        actions={[
-          "Check memory and process RSS for pressure.",
-          "Verify uptime and load before running heavy jobs.",
-          "Use this with Pulse to triage incidents.",
-        ]}
+        what={pageCopy.system.guide?.what ?? ""}
+        when={pageCopy.system.guide?.when ?? ""}
+        actions={pageCopy.system.guide?.actions ?? []}
       />
       <article className="card">
         <p>Hostname: {vitals.hostname}</p>

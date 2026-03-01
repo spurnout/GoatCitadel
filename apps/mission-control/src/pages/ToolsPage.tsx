@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { pageCopy } from "../content/copy";
 
 interface ToolsPageProps {
   refreshKey: number;
@@ -154,22 +155,14 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
 
   return (
     <div>
-      <h2>Tool Access</h2>
-      <p className="office-subtitle">Consent-first native tools across Dev Ops, Knowledge, and Comms.</p>
+      <h2>{pageCopy.tools.title}</h2>
+      <p className="office-subtitle">{pageCopy.tools.subtitle}</p>
 
       <PageGuideCard
-        what="Configure which tools can run, at what scope, and with what approval expectations."
-        when="Use this before enabling high-impact automations like filesystem mutation, git writes, and outbound comms."
-        actions={[
-          "Review catalog risk levels before granting access.",
-          "Create scoped grants (task/agent/session/global) with TTL where possible.",
-          "Run access evaluate and dry-run invoke before letting agents execute.",
-        ]}
-        terms={[
-          { term: "Grant", meaning: "Explicit allow/deny for a tool pattern at a scope." },
-          { term: "Scope precedence", meaning: "task > agent > session > global." },
-          { term: "Nuclear tools", meaning: "Always require per-action approval." },
-        ]}
+        what={pageCopy.tools.guide?.what ?? ""}
+        when={pageCopy.tools.guide?.when ?? ""}
+        actions={pageCopy.tools.guide?.actions ?? []}
+        terms={pageCopy.tools.guide?.terms}
       />
 
       {error ? <p className="error">{error}</p> : null}

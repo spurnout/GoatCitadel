@@ -10,6 +10,7 @@ import {
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
+import { pageCopy } from "../content/copy";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
   { value: "minimal", label: "minimal (safest)" },
@@ -464,27 +465,20 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   if (!settings) {
-    return <p>Loading forge settings...</p>;
+    return <p>Loading Forge settings...</p>;
   }
 
   const blockSaves = changeReview.overall === "critical" && !criticalConfirmed;
 
   return (
     <section>
-      <h2>Forge</h2>
-      <p className="office-subtitle">Tune policy, budgets, and model providers for GoatCitadel.</p>
+      <h2>{pageCopy.settings.title}</h2>
+      <p className="office-subtitle">{pageCopy.settings.subtitle}</p>
       <PageGuideCard
-        what="Forge controls runtime safety, budgets, auth, and model-provider setup."
-        when="Use this for initial setup and whenever you need to adjust operating posture."
-        actions={[
-          "Set auth mode and confirm client credentials.",
-          "Adjust tool profile/budget/allowlist for safety and cost.",
-          "Configure active provider and run a test prompt.",
-        ]}
-        terms={[
-          { term: "Tool profile", meaning: "Predefined tool capability tier from minimal to danger." },
-          { term: "Allowlist", meaning: "Hosts permitted for outbound tool and provider calls." },
-        ]}
+        what={pageCopy.settings.guide?.what ?? ""}
+        when={pageCopy.settings.guide?.when ?? ""}
+        actions={pageCopy.settings.guide?.actions ?? []}
+        terms={pageCopy.settings.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
       <ChangeReviewPanel

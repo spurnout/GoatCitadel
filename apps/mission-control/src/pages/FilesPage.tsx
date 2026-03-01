@@ -13,6 +13,7 @@ import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { SmartPathInput } from "../components/SmartPathInput";
+import { pageCopy } from "../content/copy";
 
 export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [files, setFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
@@ -170,22 +171,13 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section>
-      <h2>Trail Files</h2>
-      <p className="office-subtitle">Browse and edit workspace artifacts inside GoatCitadel write-jail roots.</p>
+      <h2>{pageCopy.files.title}</h2>
+      <p className="office-subtitle">{pageCopy.files.subtitle}</p>
       <PageGuideCard
-        what="Trail Files is where you inspect, create, and edit files in your workspace safely."
-        when="Use this for documentation, artifacts, quick notes, and direct file edits."
-        actions={[
-          "Pick an existing file to preview it.",
-          "Use a template to create a beginner-friendly artifact.",
-          "Edit content and click Save File.",
-        ]}
-        terms={[
-          {
-            term: "Artifact",
-            meaning: "A concrete output file produced by work, like a report, bug summary, or release note.",
-          },
-        ]}
+        what={pageCopy.files.guide?.what ?? ""}
+        when={pageCopy.files.guide?.when ?? ""}
+        actions={pageCopy.files.guide?.actions ?? []}
+        terms={pageCopy.files.guide?.terms}
       />
 
       {error ? <p className="error">{error}</p> : null}
@@ -194,7 +186,7 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <article className="card">
         <h3>Create Example Artifact</h3>
         <p className="office-subtitle">
-          Start with a template if you are unsure where artifacts should go.
+          Start with a template if you are not sure where to begin.
         </p>
         <div className="actions">
           {templates.map((template) => (

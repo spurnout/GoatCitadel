@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 interface NpuPageProps {
   refreshKey?: number;
@@ -173,22 +174,13 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
 
   return (
     <section>
-      <h2>NPU Runtime</h2>
-      <p className="office-subtitle">
-        Manage the local Snapdragon-ready NPU sidecar exposed as an OpenAI-compatible endpoint.
-      </p>
+      <h2>{pageCopy.npu.title}</h2>
+      <p className="office-subtitle">{pageCopy.npu.subtitle}</p>
       <PageGuideCard
-        what="NPU Runtime configures and controls the local sidecar for Snapdragon-class acceleration."
-        when="Use this when enabling local inference, checking sidecar health, or validating capability probes."
-        actions={[
-          "Set enabled/auto-start and confirm sidecar URL.",
-          "Save config, then start or refresh the runtime.",
-          "Verify capabilities and model list before selecting npu-local in Forge.",
-        ]}
-        terms={[
-          { term: "Sidecar", meaning: "Separate local process exposing OpenAI-compatible APIs." },
-          { term: "QNN", meaning: "Qualcomm acceleration path used for NPU execution." },
-        ]}
+        what={pageCopy.npu.guide?.what ?? ""}
+        when={pageCopy.npu.guide?.when ?? ""}
+        actions={pageCopy.npu.guide?.actions ?? []}
+        terms={pageCopy.npu.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
       <ChangeReviewPanel

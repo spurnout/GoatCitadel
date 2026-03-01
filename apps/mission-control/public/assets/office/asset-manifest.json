@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "theme": "goatcitadel-office-v4",
+  "theme": "goatcitadel-office-v5",
   "licensePolicy": "cc0-only",
   "models": [
     {
@@ -22,6 +22,16 @@
       "sourceUrl": "",
       "license": "CC0",
       "includedInRepo": false
+    },
+    {
+      "id": "office-furniture-pack",
+      "label": "Office Furniture Pack",
+      "path": "/assets/office/models/office-furniture-pack.glb",
+      "required": false,
+      "fallback": "procedural-furniture",
+      "sourceUrl": "",
+      "license": "CC0",
+      "includedInRepo": false
     }
   ],
   "textures": [
@@ -35,6 +45,7 @@
   ],
   "notes": [
     "All production assets must be CC0 and logged in ASSET_LICENSES.md.",
-    "If assets are missing, Office V4 falls back to procedural meshes."
+    "Primary sourcing targets: Quaternius, Poly Pizza, Kenney (CC0-only verification required per asset).",
+    "If assets are missing, Office V5 falls back to procedural meshes."
   ]
 }

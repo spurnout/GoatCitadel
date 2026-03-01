@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchSkills, reloadSkills } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { pageCopy } from "../content/copy";
 
 interface SkillsState {
   items: Array<{
@@ -42,21 +43,18 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return <p className="error">{error}</p>;
   }
   if (!data) {
-    return <p>Loading playbook skills...</p>;
+    return <p>Loading Playbook skills...</p>;
   }
 
   return (
     <section>
-      <h2>Playbook Skills</h2>
-      <p className="office-subtitle">Reusable capabilities that keep the goat crew consistent.</p>
+      <h2>{pageCopy.skills.title}</h2>
+      <p className="office-subtitle">{pageCopy.skills.subtitle}</p>
       <PageGuideCard
-        what="Displays loaded skills that influence agent behavior and tool usage."
-        when="Use this when adding capabilities or debugging unexpected agent decisions."
-        actions={[
-          "Reload skills after editing SKILL.md files.",
-          "Inspect declared tools and dependencies.",
-          "Validate that required skills are present before runs.",
-        ]}
+        what={pageCopy.skills.guide?.what ?? ""}
+        when={pageCopy.skills.guide?.when ?? ""}
+        actions={pageCopy.skills.guide?.actions ?? []}
+        terms={pageCopy.skills.guide?.terms}
       />
       <div className="controls-row">
         <button onClick={onReload}>Reload Playbook</button>

@@ -1,4 +1,5 @@
 import { ChangeBadge, type UiRiskLevel } from "./ChangeBadge";
+import { globalCopy } from "../content/copy";
 
 interface ReviewItem {
   field: string;
@@ -27,7 +28,7 @@ export function ChangeReviewPanel({
     <article className="card change-review-panel">
       <h4>{title}</h4>
       <p className="controls-row">
-        <strong>Overall:</strong> <ChangeBadge level={overall} />
+        <strong>Overall risk:</strong> <ChangeBadge level={overall} />
       </p>
       {items.length > 0 ? (
         <ul className="compact-list">
@@ -39,7 +40,7 @@ export function ChangeReviewPanel({
           ))}
         </ul>
       ) : (
-        <p className="office-subtitle">No pending edits.</p>
+        <p className="office-subtitle">{globalCopy.common.noPendingEdits}</p>
       )}
       {requireCriticalConfirm && overall === "critical" ? (
         <label className="controls-row">
@@ -54,4 +55,3 @@ export function ChangeReviewPanel({
     </article>
   );
 }
-

@@ -15,6 +15,7 @@ import { SelectOrCustom } from "../components/SelectOrCustom";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { buildAgentDirectory, BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 import { useAction } from "../hooks/useAction";
+import { globalCopy, pageCopy } from "../content/copy";
 
 type AgentView = "active" | "archived" | "all";
 
@@ -88,6 +89,54 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return [...map.values()];
   }, [agentsResponse.items]);
 
+  const existingRoleIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const agent of agentsResponse.items) {
+      const normalized = normalizeRoleIdCandidate(agent.roleId);
+      if (normalized) {
+        ids.add(normalized);
+      }
+    }
+    for (const builtin of BUILTIN_AGENT_ROSTER) {
+      const normalized = normalizeRoleIdCandidate(builtin.roleId);
+      if (normalized) {
+        ids.add(normalized);
+      }
+    }
+    return ids;
+  }, [agentsResponse.items]);
+
+  const normalizedRoleIdCandidate = normalizeRoleIdCandidate(form.roleId);
+  const roleIdAvailability: "invalid" | "available" | "taken" = !creating
+    ? "available"
+    : !normalizedRoleIdCandidate
+      ? "invalid"
+      : existingRoleIds.has(normalizedRoleIdCandidate)
+        ? "taken"
+        : "available";
+
+  const createDisabledReason = useMemo(() => {
+    if (!creating) {
+      return null;
+    }
+    if (!normalizedRoleIdCandidate) {
+      return "Role ID is required. Use letters, numbers, hyphens, or underscores.";
+    }
+    if (roleIdAvailability === "taken") {
+      return "That Role ID is already in use. Pick a different Role ID.";
+    }
+    if (!form.name.trim()) {
+      return "Name is required.";
+    }
+    if (!form.title.trim()) {
+      return "Title is required.";
+    }
+    if (!form.summary.trim()) {
+      return "Summary is required.";
+    }
+    return null;
+  }, [creating, form.name, form.summary, form.title, normalizedRoleIdCandidate, roleIdAvailability]);
+
   const load = () => {
     void fetchAgents(view, 500)
       .then((res) => {
@@ -157,7 +206,7 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setCreating(true);
     setSelectedAgentId(null);
     setForm(emptyForm());
-    setInfo("Creating a new custom goat agent profile.");
+    setInfo("Creating a new custom agent profile.");
     setError(null);
     setCriticalConfirmed(false);
   };
@@ -173,6 +222,10 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (saving) {
       return;
     }
+    if (creating && createDisabledReason) {
+      setError(createDisabledReason);
+      return;
+    }
     if (risk.overall === "critical" && !criticalConfirmed) {
       setError("Critical change requires confirmation before saving.");
       return;
@@ -184,8 +237,21 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
     try {
       if (creating) {
+        const latest = await fetchAgents("all", 1000);
+        const latestRoleIds = new Set(latest.items.map((item) => normalizeRoleIdCandidate(item.roleId)).filter(Boolean));
+        for (const builtin of BUILTIN_AGENT_ROSTER) {
+          const normalized = normalizeRoleIdCandidate(builtin.roleId);
+          if (normalized) {
+            latestRoleIds.add(normalized);
+          }
+        }
+        if (latestRoleIds.has(normalizedRoleIdCandidate)) {
+          setError("That Role ID was just claimed. Pick another.");
+          return;
+        }
+
         const created = await createAgentProfile({
-          roleId: form.roleId,
+          roleId: normalizedRoleIdCandidate,
           name: form.name,
           title: form.title,
           summary: form.summary,
@@ -209,7 +275,12 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       }
       load();
     } catch (err) {
-      setError((err as Error).message);
+      const message = (err as Error).message;
+      if (message.includes("already exists")) {
+        setError("That Role ID was just claimed. Pick another.");
+      } else {
+        setError(message);
+      }
     } finally {
       setSaving(false);
     }
@@ -261,23 +332,13 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   return (
     <section className="agents-v2">
-      <h2>Goat Crew</h2>
-      <p className="office-subtitle">
-        Manage persistent agent profiles, built-ins, and custom specialist goats.
-      </p>
+      <h2>{pageCopy.agents.title}</h2>
+      <p className="office-subtitle">{pageCopy.agents.subtitle}</p>
       <PageGuideCard
-        what="Goat Crew lets you define your long-lived agent roster that Mission Control uses everywhere."
-        when="Use this when adding a new specialist, editing role descriptions, or archiving unused agents."
-        actions={[
-          "Create custom agents with role, specialties, and tools.",
-          "Edit built-in display fields while keeping identity keys stable.",
-          "Archive or restore agents, and hard-delete custom agents if needed.",
-        ]}
-        terms={[
-          { term: "Role ID", meaning: "Stable identity key for an agent role. Built-in role IDs are immutable." },
-          { term: "Archived", meaning: "Hidden from active views, but restorable." },
-          { term: "Hard delete", meaning: "Permanent removal (custom agents only)." },
-        ]}
+        what={pageCopy.agents.guide?.what ?? ""}
+        when={pageCopy.agents.guide?.when ?? ""}
+        actions={pageCopy.agents.guide?.actions ?? []}
+        terms={pageCopy.agents.guide?.terms}
       />
 
       {error ? <p className="error">{error}</p> : null}
@@ -318,7 +379,7 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <option value="all">All</option>
         </select>
         <button onClick={onNew}>Create Custom Agent</button>
-        {creating ? <button onClick={onCancelNew}>Cancel New</button> : null}
+        {creating ? <button onClick={onCancelNew}>{globalCopy.common.cancel}</button> : null}
       </div>
 
       <div className="split-grid">
@@ -351,7 +412,7 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     }}
                   >
                     <td>{agent.name}</td>
-                    <td>{agent.roleId}</td>
+                    <td>{agent.roleId}{agent.isBuiltin ? <span className="token-chip">built-in</span> : null}</td>
                     <td>{agent.lifecycleStatus}</td>
                     <td>{agent.status}</td>
                     <td>{agent.activeSessions}/{agent.sessionCount}</td>
@@ -367,17 +428,41 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <>
               <div className="controls-row">
                 <label htmlFor="agentRoleId">Role ID</label>
-                <SelectOrCustom
-                  id="agentRoleId"
-                  value={form.roleId}
-                  onChange={(value) => setForm((prev) => ({ ...prev, roleId: value }))}
-                  options={roleOptions}
-                  customPlaceholder="agent-role-id"
-                  customLabel="Role ID"
-                  allowCustom={creating}
-                  disabled={!creating}
-                />
+                {creating ? (
+                  <input
+                    id="agentRoleId"
+                    value={form.roleId}
+                    onChange={(event) => setForm((prev) => ({ ...prev, roleId: event.target.value }))}
+                    placeholder="writer-goat"
+                    autoComplete="off"
+                  />
+                ) : (
+                  <SelectOrCustom
+                    id="agentRoleId"
+                    value={form.roleId}
+                    onChange={() => undefined}
+                    options={roleOptions}
+                    customPlaceholder="role-id"
+                    customLabel="Role ID"
+                    allowCustom={false}
+                    disabled
+                  />
+                )}
               </div>
+              {creating ? (
+                <p className="office-subtitle">
+                  Role ID must be unique. Creating a custom agent never modifies built-in roles.
+                </p>
+              ) : null}
+              {creating ? (
+                <p className={`office-subtitle ${roleIdAvailability === "taken" ? "error" : ""}`}>
+                  {roleIdAvailability === "available"
+                    ? `Role ID is available: ${normalizedRoleIdCandidate}`
+                    : roleIdAvailability === "taken"
+                      ? "That Role ID is already used. Choose a new one."
+                      : "Enter a Role ID using letters, numbers, hyphens, or underscores."}
+                </p>
+              ) : null}
 
               <div className="controls-row">
                 <label htmlFor="agentName">Name</label>
@@ -452,20 +537,25 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               />
 
               <div className="controls-row">
-                <button onClick={() => void onSave()} disabled={saving}>
+                <button
+                  onClick={() => void onSave()}
+                  disabled={saving || Boolean(createDisabledReason)}
+                  title={createDisabledReason ?? undefined}
+                >
                   {saving ? "Saving..." : creating ? "Create Agent" : "Save Changes"}
                 </button>
+                {creating && createDisabledReason ? <span className="office-subtitle">{createDisabledReason}</span> : null}
                 {!creating && selected && selected.lifecycleStatus === "active" ? (
                   <button onClick={() => setConfirmAction({ type: "archive", name: selected.name })}>
-                    Archive
+                    {globalCopy.common.archive}
                   </button>
                 ) : null}
                 {!creating && selected && selected.lifecycleStatus === "archived" ? (
-                  <button onClick={() => void onRestore()}>Restore</button>
+                  <button onClick={() => void onRestore()}>{globalCopy.common.restore}</button>
                 ) : null}
                 {!creating && selected && !selected.isBuiltin ? (
                   <button className="danger" onClick={() => setConfirmAction({ type: "hardDelete", name: selected.name })}>
-                    Delete Permanently
+                    {globalCopy.common.deletePermanently}
                   </button>
                 ) : null}
               </div>
@@ -534,6 +624,19 @@ function splitMultiline(value: string): string[] {
       .map((item) => item.trim())
       .filter(Boolean),
   )];
+}
+
+function normalizeRoleIdCandidate(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  if (!normalized) {
+    return "";
+  }
+  return normalized.slice(0, 80);
 }
 
 function buildFormChanges(current: AgentFormState, baseline: AgentFormState): Array<{ field: string; from: unknown; to: unknown }> {

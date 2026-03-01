@@ -1,3 +1,5 @@
+import { globalCopy } from "../content/copy";
+
 interface ConfirmModalProps {
   open: boolean;
   title: string;
@@ -13,8 +15,8 @@ export function ConfirmModal({
   open,
   title,
   message,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel = globalCopy.common.apply,
+  cancelLabel = globalCopy.common.cancel,
   danger = false,
   onConfirm,
   onCancel,
