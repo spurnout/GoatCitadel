@@ -128,6 +128,20 @@ const ALLOWLIST_PRESETS: Array<{ id: string; label: string; hosts: string[] }> =
   { id: "strict", label: "Strict (no outbound hosts)", hosts: [] },
   { id: "local", label: "Local models only", hosts: ["127.0.0.1", "localhost"] },
   {
+    id: "web-research",
+    label: "Web research (browser tools + local)",
+    hosts: [
+      "127.0.0.1",
+      "localhost",
+      "*.duckduckgo.com",
+      "*.google.com",
+      "*.bing.com",
+      "*.wikipedia.org",
+      "*.github.com",
+      "*.developer.mozilla.org",
+    ],
+  },
+  {
     id: "common-llm",
     label: "Common providers + local",
     hosts: ["127.0.0.1", "localhost", "api.openai.com", "openrouter.ai"],

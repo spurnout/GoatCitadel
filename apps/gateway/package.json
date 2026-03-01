@@ -29,6 +29,7 @@
     "smoke": "tsx src/smoke.ts",
     "onboarding:tui": "tsx src/onboarding-tui.ts",
     "tui": "tsx src/tui/main.ts",
+    "tools": "tsx src/tui/tools-cli.ts",
     "config:sync": "tsx src/config-sync.ts",
     "lint": "tsc -p tsconfig.json --noEmit"
   }

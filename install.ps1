@@ -139,9 +139,13 @@ if (`$Args.Count -gt 0) {
 
 $launcherCmdPath = Join-Path $BinDir "goatcitadel.cmd"
 $launcherPs1Path = Join-Path $BinDir "goatcitadel.ps1"
+$launcherGcCmdPath = Join-Path $BinDir "gc.cmd"
+$launcherGcPs1Path = Join-Path $BinDir "gc.ps1"
 
 Set-Content -Path $launcherCmdPath -Value $launcherCmd -Encoding Ascii
 Set-Content -Path $launcherPs1Path -Value $launcherPs1 -Encoding Ascii
+Set-Content -Path $launcherGcCmdPath -Value $launcherCmd -Encoding Ascii
+Set-Content -Path $launcherGcPs1Path -Value $launcherPs1 -Encoding Ascii
 
 if (-not $NoPathUpdate) {
   $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -166,3 +170,5 @@ Write-Host ""
 Write-Host "Run:"
 Write-Host "  goatcitadel onboard"
 Write-Host "  goatcitadel up"
+Write-Host "  gc onboard"
+Write-Host "  gc up"

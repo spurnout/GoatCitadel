@@ -11,6 +11,7 @@ import { SessionsPage } from "./pages/SessionsPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { CostConsolePage } from "./pages/CostConsolePage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { ToolsPage } from "./pages/ToolsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
@@ -37,6 +38,7 @@ type Tab =
   | "skills"
   | "costs"
   | "settings"
+  | "tools"
   | "approvals"
   | "tasks"
   | "integrations"
@@ -57,6 +59,7 @@ const allTabs: Tab[] = [
   "skills",
   "costs",
   "settings",
+  "tools",
   "approvals",
   "tasks",
   "integrations",
@@ -78,6 +81,7 @@ const navItems: Array<{ id: Tab; label: string; code: string }> = [
   { id: "skills", label: "Playbook (Skills)", code: "SKL" },
   { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
   { id: "settings", label: "Forge (Settings)", code: "CFG" },
+  { id: "tools", label: "Tool Access", code: "TLS" },
   { id: "approvals", label: "Gatehouse (Approvals)", code: "APR" },
   { id: "tasks", label: "Trailboard (Tasks)", code: "TSK" },
   { id: "integrations", label: "Connections", code: "CNX" },
@@ -221,6 +225,9 @@ export function App() {
     }
     if (tab === "settings") {
       return <SettingsPage refreshKey={refreshKey} />;
+    }
+    if (tab === "tools") {
+      return <ToolsPage refreshKey={refreshKey} />;
     }
     if (tab === "approvals") {
       return <ApprovalsPage refreshKey={refreshKey} />;

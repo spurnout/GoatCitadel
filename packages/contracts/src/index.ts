@@ -13,3 +13,8 @@ export * from "./memory.js";
 export * from "./npu.js";
 export * from "./ui-change-risk.js";
 export * from "./agents.js";
+export * from "./tools.js";
+export * from "./tool-grants.js";
+export * from "./tool-catalog.js";
+export * from "./comms.js";
+export * from "./knowledge.js";

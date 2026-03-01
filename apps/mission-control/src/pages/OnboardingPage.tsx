@@ -41,6 +41,20 @@ const BUDGET_OPTIONS: Array<RuntimeSettingsResponse["budgetMode"]> = ["saver", "
 const ALLOWLIST_PRESETS: Array<{ id: string; label: string; hosts: string[] }> = [
   { id: "strict", label: "Strict (none)", hosts: [] },
   { id: "local", label: "Local only", hosts: ["127.0.0.1", "localhost"] },
+  {
+    id: "web-research",
+    label: "Web research + local",
+    hosts: [
+      "127.0.0.1",
+      "localhost",
+      "*.duckduckgo.com",
+      "*.google.com",
+      "*.bing.com",
+      "*.wikipedia.org",
+      "*.github.com",
+      "*.developer.mozilla.org",
+    ],
+  },
   { id: "common", label: "Common cloud + local", hosts: ["127.0.0.1", "localhost", "api.openai.com", "openrouter.ai"] },
 ];
 

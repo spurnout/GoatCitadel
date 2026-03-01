@@ -29,6 +29,7 @@ async function run(): Promise<void> {
       await smokeGatewayEvents(app);
       await smokeSessions(app);
       await smokeTools(app);
+      await smokeNativeToolsExpansion(app);
       await smokeApprovals(app);
       await smokeAgents(app);
       await smokeIntegrations(app);
@@ -112,6 +113,135 @@ async function smokeTools(app: Awaited<ReturnType<typeof buildApp>>): Promise<vo
   });
   assert.equal(res.statusCode, 200);
   assert.equal((res.body as { outcome: string }).outcome, "executed");
+}
+
+async function smokeNativeToolsExpansion(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const catalogRes = await app.inject({
+    method: "GET",
+    url: "/api/v1/tools/catalog",
+  });
+  assert.equal(catalogRes.statusCode, 200);
+  const catalog = JSON.parse(catalogRes.body) as { items: Array<{ toolName: string }> };
+  assert.equal(catalog.items.some((item) => item.toolName === "memory.write"), true);
+
+  const createGrant = await postJson<{ grantId: string }>(
+    app,
+    "/api/v1/tools/grants",
+    {
+      toolPattern: "memory.write",
+      decision: "allow",
+      scope: "session",
+      scopeRef: "smoke-knowledge-session",
+      grantType: "persistent",
+      createdBy: "smoke",
+    },
+    {
+      "Idempotency-Key": "smoke-tool-grant-create-1",
+    },
+  );
+  assert.equal(createGrant.statusCode, 201);
+  assert.equal(typeof createGrant.body.grantId, "string");
+
+  const evaluate = await postJson<{
+    toolName: string;
+    allowed: boolean;
+    requiresApproval: boolean;
+    reasonCodes: string[];
+  }>(
+    app,
+    "/api/v1/tools/access/evaluate",
+    {
+      toolName: "memory.write",
+      agentId: "architect",
+      sessionId: "smoke-knowledge-session",
+      args: {
+        namespace: "smoke",
+        title: "entry",
+        content: "hello",
+      },
+    },
+    {
+      "Idempotency-Key": "smoke-tool-access-evaluate-1",
+    },
+  );
+  assert.equal(evaluate.statusCode, 200);
+  assert.equal(evaluate.body.allowed, true);
+
+  const memoryWrite = await postJson<{
+    mode: string;
+    document: { docId: string };
+    chunksSaved: number;
+  }>(
+    app,
+    "/api/v1/knowledge/memory/write",
+    {
+      namespace: "smoke",
+      title: "smoke-note",
+      content: "smoke tools expansion check",
+      sessionId: "smoke-knowledge-session",
+      agentId: "architect",
+    },
+    {
+      "Idempotency-Key": "smoke-knowledge-write-1",
+    },
+  );
+  assert.equal(memoryWrite.statusCode, 200);
+  assert.equal(memoryWrite.body.mode, "write");
+  assert.equal(memoryWrite.body.chunksSaved >= 1, true);
+
+  const createSearchGrant = await postJson<{ grantId: string }>(
+    app,
+    "/api/v1/tools/grants",
+    {
+      toolPattern: "memory.search",
+      decision: "allow",
+      scope: "session",
+      scopeRef: "smoke-knowledge-session",
+      grantType: "persistent",
+      createdBy: "smoke",
+    },
+    {
+      "Idempotency-Key": "smoke-tool-grant-create-2",
+    },
+  );
+  assert.equal(createSearchGrant.statusCode, 201);
+
+  const memorySearch = await postJson<{
+    namespace: string;
+    query: string;
+    items: unknown[];
+  }>(
+    app,
+    "/api/v1/knowledge/memory/search",
+    {
+      namespace: "smoke",
+      query: "tools expansion",
+      sessionId: "smoke-knowledge-session",
+      agentId: "architect",
+    },
+    {
+      "Idempotency-Key": "smoke-knowledge-search-1",
+    },
+  );
+  assert.equal(memorySearch.statusCode, 200);
+  assert.equal(Array.isArray(memorySearch.body.items), true);
+
+  const commsSend = await postJson<{ outcome?: string }>(
+    app,
+    "/api/v1/comms/send",
+    {
+      connectionId: randomUUID(),
+      target: "smoke",
+      message: "test",
+      sessionId: "smoke-comms-session",
+      agentId: "architect",
+    },
+    {
+      "Idempotency-Key": "smoke-comms-send-1",
+    },
+  );
+  assert.equal(commsSend.statusCode, 200);
+  assert.equal(commsSend.body.outcome, "blocked");
 }
 
 async function smokeApprovals(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

@@ -161,6 +161,8 @@ esac
 EOF
 
 chmod +x "${BIN_DIR}/goatcitadel"
+cp "${BIN_DIR}/goatcitadel" "${BIN_DIR}/gc"
+chmod +x "${BIN_DIR}/gc"
 
 if [[ "${NO_PATH_UPDATE}" == "0" ]]; then
   SHELL_NAME="$(basename "${SHELL:-}")"
@@ -191,3 +193,5 @@ echo ""
 echo "Run:"
 echo "  ${BIN_DIR}/goatcitadel onboard"
 echo "  ${BIN_DIR}/goatcitadel up"
+echo "  ${BIN_DIR}/gc onboard"
+echo "  ${BIN_DIR}/gc up"

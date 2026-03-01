@@ -19,6 +19,10 @@ import { MeshRepository } from "./mesh-repo.js";
 import { MemoryContextRepository } from "./memory-context-repo.js";
 import { MemoryQmdRunRepository } from "./memory-qmd-run-repo.js";
 import { AgentProfileRepository } from "./agent-profile-repo.js";
+import { ToolGrantRepository } from "./tool-grant-repo.js";
+import { ToolAccessDecisionRepository } from "./tool-access-decision-repo.js";
+import { KnowledgeRepository } from "./knowledge-repo.js";
+import { CommsDeliveryRepository } from "./comms-delivery-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -47,6 +51,10 @@ export class Storage {
   public readonly mesh: MeshRepository;
   public readonly memoryContexts: MemoryContextRepository;
   public readonly memoryQmdRuns: MemoryQmdRunRepository;
+  public readonly toolGrants: ToolGrantRepository;
+  public readonly toolAccessDecisions: ToolAccessDecisionRepository;
+  public readonly knowledge: KnowledgeRepository;
+  public readonly commsDeliveries: CommsDeliveryRepository;
 
   public constructor(options: StorageOptions) {
     this.db = createDatabase({ dbPath: options.dbPath });
@@ -70,6 +78,10 @@ export class Storage {
     this.mesh = new MeshRepository(this.db);
     this.memoryContexts = new MemoryContextRepository(this.db);
     this.memoryQmdRuns = new MemoryQmdRunRepository(this.db);
+    this.toolGrants = new ToolGrantRepository(this.db);
+    this.toolAccessDecisions = new ToolAccessDecisionRepository(this.db);
+    this.knowledge = new KnowledgeRepository(this.db);
+    this.commsDeliveries = new CommsDeliveryRepository(this.db);
   }
 
   public close(): void {
@@ -98,3 +110,7 @@ export * from "./agent-profile-repo.js";
 export * from "./mesh-repo.js";
 export * from "./memory-context-repo.js";
 export * from "./memory-qmd-run-repo.js";
+export * from "./tool-grant-repo.js";
+export * from "./tool-access-decision-repo.js";
+export * from "./knowledge-repo.js";
+export * from "./comms-delivery-repo.js";

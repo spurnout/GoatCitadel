@@ -152,9 +152,9 @@ Execution order:
    - deny wins
 3. Unknown or denied tool is blocked and audited.
 4. Safety gates:
-   - `fs.write`: jailed path check, then mandatory approval.
-   - `http.*`: host/domain allowlist check.
-   - `shell.exec`: risky pattern check, approval if risky and enabled.
+   - path/host structural safety checks (jail + allowlist).
+   - scoped consent grants (`global|session|agent|task`) with deny-wins.
+   - risk-level gates (`safe|caution|danger|nuclear`) with approval requirements.
 5. For approval-required actions:
    - create approval
    - store pending action payload
@@ -195,6 +195,21 @@ Lifecycle:
    - emits replayable events.
 
 Guarantee: explainer is informational only; policy decisions do not depend on it.
+
+### 4.6 Native Tool Expansion Packs
+
+Implemented packs:
+
+- Dev Ops: `fs.*`, `git.*`, `tests.run`, `lint.run`, `build.run`
+- Knowledge: `memory.*`, `docs.ingest`, `embeddings.*`, `artifacts.create`
+- Comms: `channel.send`, `webhook.send`, `slack.send`, `discord.send`, `gmail.*`, `calendar.*`
+
+Execution model:
+
+- All calls still go through `POST /api/v1/tools/invoke` and the policy engine.
+- Helper endpoints exist for API-first UX, but they do not bypass policy.
+- Grant scopes are evaluated in precedence order `task > agent > session > global`.
+- Grants and access decisions are persisted in SQLite (`tool_grants`, `tool_access_decisions`).
 
 ### 4.4 Channel Inbound Adapters
 
@@ -390,6 +405,7 @@ Navigation tabs currently implemented:
 - Trailboard (Tasks): tasks, activities, deliverables, subagent sessions.
   - Includes task trash lifecycle (`active|trash|all`, soft delete, restore, hard delete).
 - Connections: integration catalog and connection management.
+- Tool Access: catalog, grant lifecycle (create/revoke), access evaluation, and dry-run invoke.
 - Every tab now includes a `PageGuideCard` with plain-English "what/when/actions/terms".
 - Editable tabs use shared change-awareness components with goat-themed risk badges.
 
@@ -422,6 +438,11 @@ All mutating endpoints require `Idempotency-Key`.
 ### Tools and Policy
 
 - `POST /api/v1/tools/invoke`
+- `GET /api/v1/tools/catalog`
+- `POST /api/v1/tools/access/evaluate`
+- `GET /api/v1/tools/grants`
+- `POST /api/v1/tools/grants`
+- `POST /api/v1/tools/grants/:grantId/revoke`
 
 ### Approvals
 
@@ -501,6 +522,22 @@ All mutating endpoints require `Idempotency-Key`.
 - `PATCH /api/v1/integrations/connections/:connectionId`
 - `DELETE /api/v1/integrations/connections/:connectionId`
 - `POST /api/v1/channels/:channel/inbound`
+
+### Comms Helpers
+
+- `POST /api/v1/comms/send`
+- `POST /api/v1/comms/gmail/read`
+- `POST /api/v1/comms/gmail/send`
+- `POST /api/v1/comms/calendar/list`
+- `POST /api/v1/comms/calendar/create`
+
+### Knowledge Helpers
+
+- `POST /api/v1/knowledge/memory/write`
+- `POST /api/v1/knowledge/memory/search`
+- `POST /api/v1/knowledge/docs/ingest`
+- `POST /api/v1/knowledge/embeddings/index`
+- `POST /api/v1/knowledge/embeddings/query`
 
 ### Orchestration
 

@@ -1,13 +1,36 @@
-import type { ToolInvokeRequest, ToolInvokeResult, ToolPolicyConfig } from "@goatcitadel/contracts";
+import type {
+  ToolAccessEvaluateRequest,
+  ToolAccessEvaluateResponse,
+  ToolGrantCreateInput,
+  ToolGrantRecord,
+  ToolInvokeRequest,
+  ToolInvokeResult,
+  ToolPolicyConfig,
+  ToolRiskLevel,
+} from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
 import { randomUUID } from "node:crypto";
 import { ApprovalGate } from "./approval-gate.js";
-import { resolveEffectivePolicy, isToolAllowed } from "./policy-resolver.js";
-import { createDefaultToolRegistry, type ToolRegistry } from "./tool-registry.js";
-import { assertWritePathInJail } from "./sandbox/path-jail.js";
+import { resolveEffectivePolicy } from "./policy-resolver.js";
+import { createDefaultToolRegistry, type ToolDefinition, type ToolRegistry } from "./tool-registry.js";
+import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
-import { classifyShellRisk } from "./sandbox/shell-risk-gate.js";
 import { executeTool } from "./tool-executor.js";
+
+interface AccessEvaluation {
+  allowed: boolean;
+  reasonCodes: string[];
+  requiresApproval: boolean;
+  matchedGrantId?: string;
+  riskLevel: ToolRiskLevel;
+  policyReason: string;
+  grantToConsume?: string;
+}
+
+interface GrantDecision {
+  decision: "allow" | "deny";
+  grant: ToolGrantRecord;
+}
 
 export class ToolPolicyEngine {
   private readonly approvals: ApprovalGate;
@@ -20,13 +43,73 @@ export class ToolPolicyEngine {
     this.approvals = new ApprovalGate(storage);
   }
 
+  public listCatalog() {
+    return this.registry.toCatalog();
+  }
+
+  public listGrants(
+    scope?: "global" | "session" | "agent" | "task",
+    scopeRef?: string,
+    limit = 200,
+  ): ToolGrantRecord[] {
+    return this.storage.toolGrants.list(scope, scopeRef, limit);
+  }
+
+  public createGrant(input: ToolGrantCreateInput): ToolGrantRecord {
+    return this.storage.toolGrants.create(input);
+  }
+
+  public revokeGrant(grantId: string): boolean {
+    return this.storage.toolGrants.revoke(grantId);
+  }
+
+  public evaluateAccess(input: ToolAccessEvaluateRequest): ToolAccessEvaluateResponse {
+    const evaluation = this.evaluateAccessInternal(input);
+    this.storage.toolAccessDecisions.record({
+      toolName: input.toolName,
+      agentId: input.agentId,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      allowed: evaluation.allowed,
+      reasonCodes: evaluation.reasonCodes,
+      matchedGrantId: evaluation.matchedGrantId,
+      requiresApproval: evaluation.requiresApproval,
+      riskLevel: evaluation.riskLevel,
+    });
+
+    return {
+      toolName: input.toolName,
+      allowed: evaluation.allowed,
+      reasonCodes: evaluation.reasonCodes,
+      requiresApproval: evaluation.requiresApproval,
+      matchedGrantId: evaluation.matchedGrantId,
+      riskLevel: evaluation.riskLevel,
+    };
+  }
+
   public async invoke(request: ToolInvokeRequest): Promise<ToolInvokeResult> {
     const auditEventId = randomUUID();
-    const policy = resolveEffectivePolicy(this.config, request.agentId);
+    const evaluation = this.evaluateAccessInternal(request);
 
-    if (!isToolAllowed(policy, request.toolName)) {
-      const reason = `blocked: tool ${request.toolName} denied by policy`;
-      await this.recordBlocked(auditEventId, request, reason, { policyProfile: policy.profile });
+    this.storage.toolAccessDecisions.record({
+      toolName: request.toolName,
+      agentId: request.agentId,
+      sessionId: request.sessionId,
+      taskId: request.taskId,
+      allowed: evaluation.allowed,
+      reasonCodes: evaluation.reasonCodes,
+      matchedGrantId: evaluation.matchedGrantId,
+      requiresApproval: evaluation.requiresApproval,
+      riskLevel: evaluation.riskLevel,
+    });
+
+    if (!evaluation.allowed) {
+      const reason = `blocked: ${evaluation.policyReason}`;
+      await this.recordBlocked(auditEventId, request, reason, {
+        reasonCodes: evaluation.reasonCodes,
+        riskLevel: evaluation.riskLevel,
+        matchedGrantId: evaluation.matchedGrantId,
+      });
       return {
         outcome: "blocked",
         policyReason: reason,
@@ -34,23 +117,83 @@ export class ToolPolicyEngine {
       };
     }
 
-    const toolDef = this.registry.get(request.toolName);
-    if (!toolDef && !policy.effectiveTools.has("*")) {
-      const reason = `blocked: unknown tool ${request.toolName}`;
-      await this.recordBlocked(auditEventId, request, reason, {});
+    if (request.dryRun) {
+      const result = {
+        dryRun: true,
+        toolName: request.toolName,
+        policy: {
+          allowed: evaluation.allowed,
+          requiresApproval: evaluation.requiresApproval,
+          riskLevel: evaluation.riskLevel,
+          reasonCodes: evaluation.reasonCodes,
+        },
+      };
+      await this.recordInvocation(
+        auditEventId,
+        request,
+        "executed",
+        `${evaluation.policyReason}; dry-run`,
+        result,
+      );
       return {
-        outcome: "blocked",
-        policyReason: reason,
+        outcome: "executed",
+        policyReason: `${evaluation.policyReason}; dry-run`,
+        auditEventId,
+        result,
+      };
+    }
+
+    if (evaluation.requiresApproval) {
+      const approval = await this.approvals.create({
+        kind: request.toolName,
+        riskLevel: evaluation.riskLevel,
+        payload: request.args,
+        preview: this.buildApprovalPreview(request),
+      });
+
+      this.storage.pendingApprovalActions.upsertPending({
+        approvalId: approval.approvalId,
+        actionType: "tool.invoke",
+        request: request as unknown as Record<string, unknown>,
+      });
+
+      this.storage.approvalEvents.append({
+        approvalId: approval.approvalId,
+        eventType: "pending_action_registered",
+        actorId: request.agentId,
+        payload: {
+          actionType: "tool.invoke",
+          toolName: request.toolName,
+          sessionId: request.sessionId,
+          taskId: request.taskId,
+          matchedGrantId: evaluation.matchedGrantId,
+          reasonCodes: evaluation.reasonCodes,
+        },
+      });
+
+      await this.recordInvocation(
+        auditEventId,
+        request,
+        "approval_required",
+        evaluation.policyReason,
+        undefined,
+        approval.approvalId,
+      );
+
+      return {
+        outcome: "approval_required",
+        approvalId: approval.approvalId,
+        policyReason: evaluation.policyReason,
         auditEventId,
       };
     }
 
-    const maybeApproval = await this.evaluateSafetyGates(request, auditEventId);
-    if (maybeApproval) {
-      return maybeApproval;
-    }
-
-    return this.executeAllowedRequest(request, auditEventId, "allowed");
+    return this.executeAllowedRequest(
+      request,
+      auditEventId,
+      evaluation.policyReason,
+      evaluation.grantToConsume,
+    );
   }
 
   public async executeApprovedAction(approvalId: string): Promise<ToolInvokeResult | undefined> {
@@ -68,11 +211,28 @@ export class ToolPolicyEngine {
 
     const request = asToolInvokeRequest(pending.request);
     const auditEventId = randomUUID();
+    const evaluation = this.evaluateAccessInternal(request);
 
-    const policy = resolveEffectivePolicy(this.config, request.agentId);
-    if (!isToolAllowed(policy, request.toolName)) {
-      const reason = `blocked: tool ${request.toolName} denied by policy after approval`;
-      await this.recordBlocked(auditEventId, request, reason, { policyProfile: policy.profile, approvalId });
+    this.storage.toolAccessDecisions.record({
+      toolName: request.toolName,
+      agentId: request.agentId,
+      sessionId: request.sessionId,
+      taskId: request.taskId,
+      allowed: evaluation.allowed,
+      reasonCodes: evaluation.reasonCodes,
+      matchedGrantId: evaluation.matchedGrantId,
+      requiresApproval: false,
+      riskLevel: evaluation.riskLevel,
+    });
+
+    if (!evaluation.allowed) {
+      const reason = `blocked: ${evaluation.policyReason}`;
+      await this.recordBlocked(auditEventId, request, reason, {
+        reasonCodes: evaluation.reasonCodes,
+        riskLevel: evaluation.riskLevel,
+        matchedGrantId: evaluation.matchedGrantId,
+        approvalId,
+      });
       this.storage.pendingApprovalActions.markResolved(approvalId, "failed", { reason });
       this.storage.approvalEvents.append({
         approvalId,
@@ -91,6 +251,7 @@ export class ToolPolicyEngine {
       request,
       auditEventId,
       `allowed_via_approval:${approvalId}`,
+      evaluation.grantToConsume,
     );
 
     this.storage.pendingApprovalActions.markResolved(
@@ -119,132 +280,278 @@ export class ToolPolicyEngine {
     return result;
   }
 
-  private async evaluateSafetyGates(request: ToolInvokeRequest, auditEventId: string): Promise<ToolInvokeResult | undefined> {
-    if (request.toolName === "fs.write") {
-      const pathArg = String(request.args.path ?? "");
-      try {
-        assertWritePathInJail(pathArg, this.config.sandbox.writeJailRoots);
-      } catch (error) {
-        const reason = `blocked: ${(error as Error).message}`;
-        await this.recordBlocked(auditEventId, request, reason, { path: pathArg });
-        return {
-          outcome: "blocked",
-          policyReason: reason,
-          auditEventId,
-        };
-      }
+  private evaluateAccessInternal(request: ToolAccessEvaluateRequest): AccessEvaluation {
+    const toolDef = this.registry.get(request.toolName);
+    const riskLevel = toolDef?.riskLevel ?? "caution";
 
-      const approval = await this.approvals.create({
-        kind: "fs.write",
-        riskLevel: "danger",
-        payload: request.args,
-        preview: { path: pathArg },
-      });
+    const policy = resolveEffectivePolicy(this.config, request.agentId);
+    if (matchesAnyPattern(policy.denySet, request.toolName)) {
+      return deny(riskLevel, "policy_deny", "tool denied by policy");
+    }
 
-      this.storage.pendingApprovalActions.upsertPending({
-        approvalId: approval.approvalId,
-        actionType: "tool.invoke",
-        request: request as unknown as Record<string, unknown>,
-      });
+    if (!toolDef && !matchesAnyPattern(policy.effectiveTools, request.toolName)) {
+      return deny(riskLevel, "unknown_tool", `unknown tool ${request.toolName}`);
+    }
 
-      this.storage.approvalEvents.append({
-        approvalId: approval.approvalId,
-        eventType: "pending_action_registered",
-        actorId: request.agentId,
-        payload: {
-          actionType: "tool.invoke",
-          toolName: request.toolName,
-          sessionId: request.sessionId,
-          taskId: request.taskId,
-        },
-      });
+    const structuralError = this.validateStructuralSafety(request);
+    if (structuralError) {
+      return deny(riskLevel, "structural_safety_block", structuralError);
+    }
 
-      await this.recordInvocation(auditEventId, request, "approval_required", "fs.write requires HITL", undefined, approval.approvalId);
+    const grantDecision = this.resolveGrantDecision(request);
+    if (grantDecision?.decision === "deny") {
       return {
-        outcome: "approval_required",
-        approvalId: approval.approvalId,
-        policyReason: "fs.write requires approval",
-        auditEventId,
+        allowed: false,
+        reasonCodes: ["grant_deny"],
+        requiresApproval: false,
+        matchedGrantId: grantDecision.grant.grantId,
+        riskLevel,
+        policyReason: "tool denied by scoped grant",
       };
     }
 
-    if (request.toolName.startsWith("http.")) {
-      const target = String(request.args.url ?? request.args.host ?? "");
-      try {
-        assertHostAllowed(target, this.config.sandbox.networkAllowlist);
-      } catch (error) {
-        const reason = `blocked: ${(error as Error).message}`;
-        await this.recordBlocked(auditEventId, request, reason, { target });
+    if (riskLevel !== "safe") {
+      if (!grantDecision || grantDecision.decision !== "allow") {
+        return deny(riskLevel, "grant_required", `tool risk ${riskLevel} requires explicit grant`);
+      }
+
+      const constraintsError = this.applyGrantConstraints(request, grantDecision.grant, toolDef);
+      if (constraintsError) {
         return {
-          outcome: "blocked",
-          policyReason: reason,
-          auditEventId,
+          allowed: false,
+          reasonCodes: ["grant_constraints_block"],
+          requiresApproval: false,
+          matchedGrantId: grantDecision.grant.grantId,
+          riskLevel,
+          policyReason: constraintsError,
         };
       }
     }
 
-    if (request.toolName === "shell.exec") {
-      const command = String(request.args.command ?? "");
-      const risk = classifyShellRisk(command, this.config.sandbox.riskyShellPatterns);
-      if (this.config.sandbox.requireApprovalForRiskyShell) {
-        const approval = await this.approvals.create({
-          kind: "shell.exec",
-          riskLevel: risk.risky ? "danger" : "caution",
-          payload: request.args,
-          preview: { command, matchedPattern: risk.matchedPattern },
-        });
+    const inProfile = matchesAnyPattern(policy.effectiveTools, request.toolName);
+    const hasAllowGrant = grantDecision?.decision === "allow";
+    if (!inProfile && !hasAllowGrant) {
+      return deny(riskLevel, "profile_disallow", "tool not available in resolved profile");
+    }
 
-        this.storage.pendingApprovalActions.upsertPending({
-          approvalId: approval.approvalId,
-          actionType: "tool.invoke",
-          request: request as unknown as Record<string, unknown>,
-        });
+    let requiresApproval = Boolean(toolDef?.requiresApproval);
 
-        this.storage.approvalEvents.append({
-          approvalId: approval.approvalId,
-          eventType: "pending_action_registered",
-          actorId: request.agentId,
-          payload: {
-            actionType: "tool.invoke",
-            toolName: request.toolName,
-            sessionId: request.sessionId,
-            taskId: request.taskId,
-            matchedPattern: risk.matchedPattern,
-          },
-        });
+    if (
+      riskLevel === "danger"
+      && grantDecision?.decision === "allow"
+      && isMutationTool(toolDef)
+      && this.isFirstMutationInScope(request, grantDecision.grant)
+    ) {
+      requiresApproval = true;
+    }
 
-        await this.recordInvocation(
-          auditEventId,
-          request,
-          "approval_required",
-          risk.risky
-            ? `shell.exec requires approval: matched ${risk.matchedPattern}`
-            : "shell.exec requires approval",
-          undefined,
-          approval.approvalId,
-        );
+    if (riskLevel === "nuclear") {
+      requiresApproval = true;
+    }
 
-        return {
-          outcome: "approval_required",
-          approvalId: approval.approvalId,
-          policyReason: risk.risky
-            ? `shell.exec requires approval: matched ${risk.matchedPattern}`
-            : "shell.exec requires approval",
-          auditEventId,
-        };
+    return {
+      allowed: true,
+      reasonCodes: ["allowed"],
+      requiresApproval,
+      matchedGrantId: grantDecision?.grant.grantId,
+      riskLevel,
+      policyReason: requiresApproval ? "approval required by risk gate" : "allowed",
+      grantToConsume: grantDecision?.grant.grantId,
+    };
+  }
+
+  private resolveGrantDecision(request: ToolAccessEvaluateRequest): GrantDecision | undefined {
+    const scoped = buildScopeCandidates(request);
+    for (const candidate of scoped) {
+      const grants = this.storage.toolGrants.list(candidate.scope, candidate.scopeRef, 500)
+        .filter((grant) => isGrantActive(grant))
+        .filter((grant) => matchesToolPattern(grant.toolPattern, request.toolName));
+
+      if (grants.length === 0) {
+        continue;
+      }
+
+      const denyGrant = grants.find((grant) => grant.decision === "deny");
+      if (denyGrant) {
+        return { decision: "deny", grant: denyGrant };
+      }
+
+      const allowGrant = grants.find((grant) => grant.decision === "allow");
+      if (allowGrant) {
+        return { decision: "allow", grant: allowGrant };
       }
     }
 
     return undefined;
   }
 
+  private applyGrantConstraints(
+    request: ToolAccessEvaluateRequest,
+    grant: ToolGrantRecord,
+    toolDef?: ToolDefinition,
+  ): string | undefined {
+    const constraints = grant.constraints;
+    if (!constraints) {
+      return undefined;
+    }
+
+    if (constraints.mutationAllowed === false && isMutationTool(toolDef)) {
+      return "grant disallows mutation actions";
+    }
+
+    if (typeof constraints.maxCallsPerHour === "number") {
+      const count = this.storage.toolAccessDecisions.countToolCallsInLastHour(
+        request.toolName,
+        request.agentId,
+        request.sessionId,
+      );
+      if (count >= constraints.maxCallsPerHour) {
+        return `grant maxCallsPerHour exceeded (${constraints.maxCallsPerHour})`;
+      }
+    }
+
+    if (typeof constraints.maxWritesPerHour === "number" && isMutationTool(toolDef)) {
+      const count = this.storage.toolAccessDecisions.countWritesInLastHour(
+        request.agentId,
+        request.sessionId,
+      );
+      if (count >= constraints.maxWritesPerHour) {
+        return `grant maxWritesPerHour exceeded (${constraints.maxWritesPerHour})`;
+      }
+    }
+
+    if (constraints.allowedHosts && constraints.allowedHosts.length > 0) {
+      const candidates = extractHostCandidates(request.args);
+      if (candidates.length > 0) {
+        const blocked = candidates.some((host) => !matchesHostAllowlist(host, constraints.allowedHosts as string[]));
+        if (blocked) {
+          return "grant host constraints blocked this action";
+        }
+      }
+    }
+
+    if (constraints.allowedPaths && constraints.allowedPaths.length > 0) {
+      const candidates = extractPathCandidates(request.args);
+      if (candidates.length > 0) {
+        const blocked = candidates.some((candidate) => !isPathWithinAnyRoot(candidate, constraints.allowedPaths as string[]));
+        if (blocked) {
+          return "grant path constraints blocked this action";
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private isFirstMutationInScope(request: ToolAccessEvaluateRequest, grant: ToolGrantRecord): boolean {
+    if (grant.scope === "global") {
+      return this.storage.toolAccessDecisions.countToolCallsInLastHour(
+        request.toolName,
+        request.agentId,
+        request.sessionId,
+      ) === 0;
+    }
+
+    if (grant.scope === "task") {
+      return this.storage.toolAccessDecisions.countToolCallsInLastHour(
+        request.toolName,
+        request.agentId,
+        request.sessionId,
+      ) === 0;
+    }
+
+    if (grant.scope === "agent") {
+      return this.storage.toolAccessDecisions.countToolCallsInLastHour(
+        request.toolName,
+        request.agentId,
+        request.sessionId,
+      ) === 0;
+    }
+
+    return this.storage.toolAccessDecisions.countToolCallsInLastHour(
+      request.toolName,
+      request.agentId,
+      request.sessionId,
+    ) === 0;
+  }
+
+  private validateStructuralSafety(request: ToolAccessEvaluateRequest): string | undefined {
+    try {
+      if (request.toolName === "fs.read") {
+        const target = String(request.args?.path ?? "");
+        assertReadPathAllowed(target, this.config.sandbox.writeJailRoots, this.config.sandbox.readOnlyRoots);
+      }
+
+      if (request.toolName === "fs.write" || request.toolName === "fs.move" || request.toolName === "fs.delete" || request.toolName === "artifacts.create") {
+        const pathValue = String(request.args?.path ?? request.args?.to ?? request.args?.from ?? "");
+        assertWritePathInJail(pathValue, this.config.sandbox.writeJailRoots);
+      }
+
+      if (request.toolName === "docs.ingest" && request.args?.sourceType === "file") {
+        const source = String(request.args?.source ?? "");
+        assertReadPathAllowed(source, this.config.sandbox.writeJailRoots, this.config.sandbox.readOnlyRoots);
+      }
+
+      if (request.toolName.startsWith("http.") || request.toolName === "webhook.send") {
+        const target = String(request.args?.url ?? request.args?.host ?? "");
+        if (target) {
+          assertHostAllowed(target, this.config.sandbox.networkAllowlist);
+        }
+      }
+
+      if (request.toolName === "docs.ingest" && request.args?.sourceType === "url") {
+        const source = String(request.args?.source ?? "");
+        assertHostAllowed(source, this.config.sandbox.networkAllowlist);
+      }
+
+      if (request.toolName.startsWith("browser.")) {
+        const target = String(request.args?.url ?? "");
+        if (target) {
+          assertHostAllowed(target, this.config.sandbox.networkAllowlist);
+        }
+      }
+    } catch (error) {
+      return (error as Error).message;
+    }
+
+    return undefined;
+  }
+
+  private buildApprovalPreview(request: ToolInvokeRequest): Record<string, unknown> {
+    const preview: Record<string, unknown> = {
+      toolName: request.toolName,
+      sessionId: request.sessionId,
+      taskId: request.taskId,
+    };
+
+    const pathValue = request.args.path ?? request.args.to ?? request.args.from;
+    if (pathValue) {
+      preview.path = String(pathValue);
+    }
+
+    const target = request.args.url ?? request.args.target ?? request.args.host;
+    if (target) {
+      preview.target = String(target);
+    }
+
+    if (request.toolName === "shell.exec" && request.args.command) {
+      preview.command = String(request.args.command);
+    }
+
+    return preview;
+  }
+
   private async executeAllowedRequest(
     request: ToolInvokeRequest,
     auditEventId: string,
     policyReason: string,
+    grantIdToConsume?: string,
   ): Promise<ToolInvokeResult> {
     try {
-      const result = await executeTool(request, this.config);
+      const result = await executeTool(request, this.config, this.storage);
+      if (grantIdToConsume) {
+        this.storage.toolGrants.consumeOne(grantIdToConsume);
+      }
       await this.recordInvocation(auditEventId, request, "executed", policyReason, result);
       return {
         outcome: "executed",
@@ -339,12 +646,157 @@ export class ToolPolicyEngine {
   }
 }
 
+function buildScopeCandidates(request: ToolAccessEvaluateRequest): Array<{ scope: "task" | "agent" | "session" | "global"; scopeRef: string }> {
+  const out: Array<{ scope: "task" | "agent" | "session" | "global"; scopeRef: string }> = [];
+  if (request.taskId) {
+    out.push({ scope: "task", scopeRef: request.taskId });
+  }
+  out.push({ scope: "agent", scopeRef: request.agentId });
+  out.push({ scope: "session", scopeRef: request.sessionId });
+  out.push({ scope: "global", scopeRef: "global" });
+  return out;
+}
+
+function matchesAnyPattern(values: Iterable<string>, toolName: string): boolean {
+  for (const value of values) {
+    if (matchesToolPattern(value, toolName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function matchesToolPattern(pattern: string, toolName: string): boolean {
+  const trimmed = pattern.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed === "*") {
+    return true;
+  }
+  if (!trimmed.includes("*")) {
+    return trimmed === toolName;
+  }
+  const escaped = trimmed
+    .replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
+    .replace(/\*/g, ".*");
+  const regex = new RegExp(`^${escaped}$`);
+  return regex.test(toolName);
+}
+
+function isGrantActive(grant: ToolGrantRecord): boolean {
+  if (grant.revokedAt) {
+    return false;
+  }
+  if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now()) {
+    return false;
+  }
+  if (typeof grant.usesRemaining === "number" && grant.usesRemaining <= 0) {
+    return false;
+  }
+  return true;
+}
+
+function isMutationTool(toolDef?: ToolDefinition): boolean {
+  if (!toolDef) {
+    return false;
+  }
+  return toolDef.riskLevel === "danger" || toolDef.riskLevel === "nuclear";
+}
+
+function extractHostCandidates(args?: Record<string, unknown>): string[] {
+  if (!args) {
+    return [];
+  }
+  const values = [args.url, args.host, args.target]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+
+  const hosts = new Set<string>();
+  for (const value of values) {
+    try {
+      hosts.add(new URL(value).hostname.toLowerCase());
+    } catch {
+      hosts.add(value.toLowerCase());
+    }
+  }
+  return [...hosts];
+}
+
+function extractPathCandidates(args?: Record<string, unknown>): string[] {
+  if (!args) {
+    return [];
+  }
+  return [args.path, args.from, args.to, args.relativePath]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+}
+
+function matchesHostAllowlist(host: string, patterns: string[]): boolean {
+  const normalizedHost = host.toLowerCase();
+  return patterns.some((pattern) => {
+    const normalized = pattern.toLowerCase().trim();
+    if (!normalized) {
+      return false;
+    }
+    if (normalized === "*") {
+      return true;
+    }
+    if (normalized.startsWith("*.")) {
+      const suffix = normalized.slice(1);
+      return normalizedHost.endsWith(suffix);
+    }
+    return normalizedHost === normalized;
+  });
+}
+
+function isPathWithinAnyRoot(candidate: string, roots: string[]): boolean {
+  try {
+    const resolvedCandidate = normalizePathForMatch(candidate);
+    for (const root of roots) {
+      const resolvedRoot = normalizePathForMatch(root);
+      if (resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}/`)) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function normalizePathForMatch(value: string): string {
+  return value.replaceAll("\\", "/").replace(/\/+$/, "");
+}
+
+function deny(riskLevel: ToolRiskLevel, code: string, reason: string): AccessEvaluation {
+  return {
+    allowed: false,
+    reasonCodes: [code],
+    requiresApproval: false,
+    riskLevel,
+    policyReason: reason,
+  };
+}
+
 function asToolInvokeRequest(value: Record<string, unknown>): ToolInvokeRequest {
   const toolName = String(value.toolName ?? "");
   const agentId = String(value.agentId ?? "");
   const sessionId = String(value.sessionId ?? "");
   const args = (value.args ?? {}) as Record<string, unknown>;
   const taskId = value.taskId ? String(value.taskId) : undefined;
+  const consentContext = value.consentContext && typeof value.consentContext === "object"
+    ? {
+      operatorId: typeof (value.consentContext as Record<string, unknown>).operatorId === "string"
+        ? String((value.consentContext as Record<string, unknown>).operatorId)
+        : undefined,
+      source: (value.consentContext as Record<string, unknown>).source as "ui" | "tui" | "agent" | undefined,
+      reason: typeof (value.consentContext as Record<string, unknown>).reason === "string"
+        ? String((value.consentContext as Record<string, unknown>).reason)
+        : undefined,
+    }
+    : undefined;
+  const dryRun = typeof value.dryRun === "boolean" ? value.dryRun : undefined;
 
   if (!toolName || !agentId || !sessionId) {
     throw new Error("Invalid pending action request payload");
@@ -356,5 +808,7 @@ function asToolInvokeRequest(value: Record<string, unknown>): ToolInvokeRequest 
     agentId,
     sessionId,
     taskId,
+    consentContext,
+    dryRun,
   };
 }

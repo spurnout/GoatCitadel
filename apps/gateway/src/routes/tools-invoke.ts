@@ -7,6 +7,12 @@ const bodySchema = z.object({
   agentId: z.string().min(1),
   sessionId: z.string().min(1),
   taskId: z.string().optional(),
+  consentContext: z.object({
+    operatorId: z.string().optional(),
+    source: z.enum(["ui", "tui", "agent"]).optional(),
+    reason: z.string().optional(),
+  }).optional(),
+  dryRun: z.boolean().optional(),
 });
 
 export const toolsInvokeRoute: FastifyPluginAsync = async (fastify) => {

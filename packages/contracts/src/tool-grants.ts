@@ -1,0 +1,60 @@
+import type { ToolRiskLevel } from "./tools.js";
+
+export type ToolGrantScope = "global" | "session" | "agent" | "task";
+export type ToolGrantDecision = "allow" | "deny";
+export type ToolGrantType = "one_time" | "ttl" | "persistent";
+
+export interface ToolGrantConstraints {
+  allowedHosts?: string[];
+  allowedPaths?: string[];
+  maxWritesPerHour?: number;
+  maxCallsPerHour?: number;
+  mutationAllowed?: boolean;
+}
+
+export interface ToolGrantRecord {
+  grantId: string;
+  toolPattern: string;
+  decision: ToolGrantDecision;
+  scope: ToolGrantScope;
+  scopeRef: string;
+  grantType: ToolGrantType;
+  constraints?: ToolGrantConstraints;
+  createdBy: string;
+  createdAt: string;
+  expiresAt?: string;
+  revokedAt?: string;
+  usesRemaining?: number;
+}
+
+export interface ToolGrantCreateInput {
+  toolPattern: string;
+  decision: ToolGrantDecision;
+  scope: ToolGrantScope;
+  scopeRef?: string;
+  grantType?: ToolGrantType;
+  constraints?: ToolGrantConstraints;
+  createdBy: string;
+  expiresAt?: string;
+  usesRemaining?: number;
+}
+
+export interface ToolAccessDecision {
+  allowed: boolean;
+  reasonCodes: string[];
+  requiresApproval: boolean;
+  matchedGrantId?: string;
+  riskLevel: ToolRiskLevel;
+}
+
+export interface ToolAccessEvaluateRequest {
+  toolName: string;
+  agentId: string;
+  sessionId: string;
+  taskId?: string;
+  args?: Record<string, unknown>;
+}
+
+export interface ToolAccessEvaluateResponse extends ToolAccessDecision {
+  toolName: string;
+}

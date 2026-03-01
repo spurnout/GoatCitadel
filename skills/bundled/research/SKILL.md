@@ -1,7 +1,7 @@
 ---
 name: research
 description: Deep web research with citations and source validation.
-metadata: {"version":"0.1.0","tags":["research","web"],"tools":["browser.search","http.get","citations.build"],"keywords":["research","investigate","find","sources"]}
+metadata: {"version":"0.1.0","tags":["research","web"],"tools":["browser.search","browser.navigate","browser.extract","browser.screenshot","http.get","citations.build"],"keywords":["research","investigate","find","sources"]}
 ---
 
 ## How to run
@@ -11,5 +11,8 @@ metadata: {"version":"0.1.0","tags":["research","web"],"tools":["browser.search"
 
 ## Tools you may use
 - browser.search
+- browser.navigate
+- browser.extract
+- browser.screenshot
 - http.get
 - citations.build

@@ -63,6 +63,12 @@ corepack prepare pnpm@10.29.3 --activate
 pnpm install
 ```
 
+Optional but recommended for browser automation tools:
+
+```powershell
+pnpm exec playwright install chromium
+```
+
 ## 3) Create Local Env File
 
 ```powershell
@@ -159,6 +165,9 @@ All should pass.
 4. `Memory Pasture` shows QMD metrics/context packs.
 5. `Mesh` tab loads status and nodes.
 6. `NPU` tab loads status (even if sidecar is stopped).
+7. Browser tools work when enabled:
+   - Tool profile includes research (or danger / explicit allow).
+   - Network allowlist includes target hosts (for example `*.duckduckgo.com`).
 
 ## 7) Optional: Terminal Mission Control (TUI)
 
@@ -171,6 +180,14 @@ or:
 
 ```powershell
 goatcitadel tui
+```
+
+### Tool Access CLI shortcuts
+
+```powershell
+goatcitadel tools catalog
+goatcitadel tools grant add --tool fs.list --decision allow --scope session --scope-ref demo-session --grant-type ttl --created-by operator
+goatcitadel tools invoke --tool fs.list --args "{\"path\":\"./workspace\"}" --agent operator --session demo-session --dry-run
 ```
 
 ## 8) Optional: NPU Sidecar (Snapdragon-ready path)

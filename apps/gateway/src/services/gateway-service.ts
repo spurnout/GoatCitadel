@@ -21,10 +21,18 @@ import type {
   ApprovalReplayEvent,
   ApprovalRequest,
   ApprovalResolveInput,
+  CalendarCreateEventInput,
+  CalendarListQuery,
+  ChannelSendInput,
   ChannelInboundMessageInput,
+  DocsIngestInput,
+  EmbeddingIndexInput,
+  EmbeddingQueryInput,
   MemoryContextComposeRequest,
   MemoryContextPack,
   MemoryQmdStatsResponse,
+  MemorySearchQuery,
+  MemoryWriteInput,
   CronJobRecord,
   DashboardState,
   ChatCompletionRequest,
@@ -74,7 +82,14 @@ import type {
   TaskSubagentCreateInput,
   TaskSubagentSession,
   TaskSubagentUpdateInput,
+  ToolAccessEvaluateRequest,
+  ToolAccessEvaluateResponse,
+  ToolCatalogEntry,
+  ToolGrantCreateInput,
+  ToolGrantRecord,
   TaskUpdateInput,
+  GmailReadQuery,
+  GmailSendInput,
   ToolInvokeRequest,
   ToolInvokeResult,
 } from "@goatcitadel/contracts";
@@ -333,6 +348,47 @@ export class GatewayService {
     }
 
     return result;
+  }
+
+  public listToolCatalog(): ToolCatalogEntry[] {
+    return this.policyEngine.listCatalog();
+  }
+
+  public evaluateToolAccess(input: ToolAccessEvaluateRequest): ToolAccessEvaluateResponse {
+    return this.policyEngine.evaluateAccess(input);
+  }
+
+  public listToolGrants(
+    scope?: "global" | "session" | "agent" | "task",
+    scopeRef?: string,
+    limit = 200,
+  ): ToolGrantRecord[] {
+    return this.policyEngine.listGrants(scope, scopeRef, limit);
+  }
+
+  public createToolGrant(input: ToolGrantCreateInput): ToolGrantRecord {
+    const grant = this.policyEngine.createGrant(input);
+    this.publishRealtime("system", "tools", {
+      type: "tool_grant_created",
+      grantId: grant.grantId,
+      toolPattern: grant.toolPattern,
+      decision: grant.decision,
+      scope: grant.scope,
+      scopeRef: grant.scopeRef,
+      expiresAt: grant.expiresAt,
+    });
+    return grant;
+  }
+
+  public revokeToolGrant(grantId: string): boolean {
+    const revoked = this.policyEngine.revokeGrant(grantId);
+    if (revoked) {
+      this.publishRealtime("system", "tools", {
+        type: "tool_grant_revoked",
+        grantId,
+      });
+    }
+    return revoked;
   }
 
   public async createApproval(input: ApprovalCreateInput): Promise<ApprovalRequest> {
@@ -1375,6 +1431,195 @@ export class GatewayService {
     return deleted;
   }
 
+  public async commsSend(input: ChannelSendInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "channel.send",
+        args: {
+          connectionId: input.connectionId,
+          target: input.target,
+          message: input.message,
+          attachments: input.attachments,
+        },
+        sessionId: input.sessionId ?? "session:operator:comms",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "comms_send",
+    );
+  }
+
+  public async commsGmailRead(input: GmailReadQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "gmail.read",
+        args: {
+          connectionId: input.connectionId,
+          query: input.query,
+          maxResults: input.maxResults,
+        },
+        sessionId: input.sessionId ?? "session:operator:comms",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "comms_gmail_read",
+    );
+  }
+
+  public async commsGmailSend(input: GmailSendInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "gmail.send",
+        args: {
+          connectionId: input.connectionId,
+          to: input.to,
+          cc: input.cc,
+          bcc: input.bcc,
+          subject: input.subject,
+          bodyText: input.bodyText,
+          bodyHtml: input.bodyHtml,
+        },
+        sessionId: input.sessionId ?? "session:operator:comms",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "comms_gmail_send",
+    );
+  }
+
+  public async commsCalendarList(input: CalendarListQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "calendar.list",
+        args: {
+          connectionId: input.connectionId,
+          calendarId: input.calendarId,
+          fromIso: input.fromIso,
+          toIso: input.toIso,
+          maxResults: input.maxResults,
+        },
+        sessionId: input.sessionId ?? "session:operator:comms",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "comms_calendar_list",
+    );
+  }
+
+  public async commsCalendarCreate(input: CalendarCreateEventInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "calendar.create_event",
+        args: {
+          connectionId: input.connectionId,
+          calendarId: input.calendarId,
+          title: input.title,
+          description: input.description,
+          startIso: input.startIso,
+          endIso: input.endIso,
+          attendees: input.attendees,
+          timeZone: input.timeZone,
+        },
+        sessionId: input.sessionId ?? "session:operator:comms",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "comms_calendar_create",
+    );
+  }
+
+  public async knowledgeMemoryWrite(input: MemoryWriteInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "memory.write",
+        args: {
+          namespace: input.namespace,
+          title: input.title,
+          content: input.content,
+          tags: input.tags,
+          metadata: input.metadata,
+          source: input.source,
+        },
+        sessionId: input.sessionId ?? "session:operator:knowledge",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "knowledge_memory_write",
+    );
+  }
+
+  public async knowledgeMemorySearch(input: MemorySearchQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "memory.search",
+        args: {
+          namespace: input.namespace,
+          query: input.query,
+          limit: input.limit,
+          filters: input.filters,
+        },
+        sessionId: input.sessionId ?? "session:operator:knowledge",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "knowledge_memory_search",
+    );
+  }
+
+  public async knowledgeDocsIngest(input: DocsIngestInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "docs.ingest",
+        args: {
+          sourceType: input.sourceType,
+          source: input.source,
+          namespace: input.namespace,
+          title: input.title,
+          chunking: input.chunking,
+          metadata: input.metadata,
+        },
+        sessionId: input.sessionId ?? "session:operator:knowledge",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "knowledge_docs_ingest",
+    );
+  }
+
+  public async knowledgeEmbeddingsIndex(input: EmbeddingIndexInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "embeddings.index",
+        args: {
+          namespace: input.namespace,
+          documentId: input.documentId,
+          force: input.force,
+        },
+        sessionId: input.sessionId ?? "session:operator:knowledge",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "knowledge_embeddings_index",
+    );
+  }
+
+  public async knowledgeEmbeddingsQuery(input: EmbeddingQueryInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+    return this.invokeAndUnwrap(
+      {
+        toolName: "embeddings.query",
+        args: {
+          namespace: input.namespace,
+          query: input.query,
+          limit: input.limit,
+        },
+        sessionId: input.sessionId ?? "session:operator:knowledge",
+        agentId: input.agentId ?? "operator",
+        taskId: input.taskId,
+      },
+      "knowledge_embeddings_query",
+    );
+  }
+
   public getMeshStatus(): MeshStatus {
     return this.meshService.status();
   }
@@ -1829,6 +2074,25 @@ export class GatewayService {
     }
     await this.npuSidecar.close();
     this.storage.close();
+  }
+
+  private async invokeAndUnwrap(
+    request: ToolInvokeRequest,
+    realtimeType: string,
+  ): Promise<ToolInvokeResult | Record<string, unknown>> {
+    const result = await this.invokeTool(request);
+    if (result.outcome === "executed") {
+      this.publishRealtime("system", "tools", {
+        type: realtimeType,
+        toolName: request.toolName,
+        sessionId: request.sessionId,
+        agentId: request.agentId,
+        taskId: request.taskId,
+        outcome: result.outcome,
+      });
+      return result.result ?? {};
+    }
+    return result;
   }
 
   private publishRealtime(eventType: string, source: string, payload: Record<string, unknown>): RealtimeEvent {

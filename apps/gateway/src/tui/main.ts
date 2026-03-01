@@ -11,6 +11,7 @@ type HomeView =
   | "approvals"
   | "sessions"
   | "costs"
+  | "tools"
   | "tasks"
   | "skills"
   | "integrations"
@@ -71,6 +72,8 @@ async function main(): Promise<void> {
         await viewSessions(client);
       } else if (current === "costs") {
         await viewCosts(client);
+      } else if (current === "tools") {
+        await viewTools(client);
       } else if (current === "tasks") {
         await viewTasks(client);
       } else if (current === "skills") {
@@ -208,6 +211,7 @@ async function chooseNextView(): Promise<HomeView> {
       { name: "Approvals", value: "approvals" },
       { name: "Sessions", value: "sessions" },
       { name: "Costs", value: "costs" },
+      { name: "Tools", value: "tools" },
       { name: "Tasks", value: "tasks" },
       { name: "Skills", value: "skills" },
       { name: "Integrations", value: "integrations" },
@@ -379,6 +383,150 @@ async function viewCosts(client: TuiApiClient): Promise<void> {
       console.log(`- ${action}`);
     }
   }
+  await pause();
+}
+
+async function viewTools(client: TuiApiClient): Promise<void> {
+  const [catalog, grants] = await Promise.all([
+    client.toolsCatalog(),
+    client.toolsListGrants({ limit: 500 }),
+  ]);
+
+  console.log(chalk.bold("Tool Catalog"));
+  console.table(
+    catalog.items.map((item) => ({
+      toolName: item.toolName,
+      category: item.category,
+      risk: item.riskLevel,
+      requiresApproval: item.requiresApproval,
+      pack: item.pack,
+    })),
+  );
+
+  console.log(chalk.bold("Tool Grants"));
+  console.table(
+    grants.items.map((grant) => ({
+      grantId: grant.grantId,
+      toolPattern: grant.toolPattern,
+      decision: grant.decision,
+      scope: `${grant.scope}:${grant.scopeRef}`,
+      grantType: grant.grantType,
+      expiresAt: grant.expiresAt ?? "",
+      revokedAt: grant.revokedAt ?? "",
+    })),
+  );
+
+  const action = await select({
+    message: "Tools action",
+    choices: [
+      { name: "Back", value: "back" },
+      { name: "Evaluate access", value: "evaluate" },
+      { name: "Create grant", value: "create-grant" },
+      { name: "Revoke grant", value: "revoke-grant" },
+      { name: "Invoke dry-run", value: "dry-run" },
+    ],
+  });
+
+  if (action === "back") {
+    return;
+  }
+
+  if (action === "evaluate") {
+    const toolName = await input({ message: "Tool name" });
+    const agentId = await input({ message: "Agent ID", default: "operator" });
+    const sessionId = await input({ message: "Session ID", default: "demo-session" });
+    const taskId = await input({ message: "Task ID (optional)" });
+    const result = await client.toolsEvaluateAccess({
+      toolName,
+      agentId,
+      sessionId,
+      taskId: taskId.trim() || undefined,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    await pause();
+    return;
+  }
+
+  if (action === "create-grant") {
+    const toolPattern = await input({ message: "Tool pattern", default: "fs.list" });
+    const decision = await select<"allow" | "deny">({
+      message: "Decision",
+      choices: [
+        { name: "allow", value: "allow" },
+        { name: "deny", value: "deny" },
+      ],
+    });
+    const scope = await select<"global" | "session" | "agent" | "task">({
+      message: "Scope",
+      choices: [
+        { name: "global", value: "global" },
+        { name: "session", value: "session" },
+        { name: "agent", value: "agent" },
+        { name: "task", value: "task" },
+      ],
+    });
+    const scopeRef = scope === "global" ? "" : await input({ message: "Scope ref" });
+    const grantType = await select<"one_time" | "ttl" | "persistent">({
+      message: "Grant type",
+      choices: [
+        { name: "one_time", value: "one_time" },
+        { name: "ttl", value: "ttl" },
+        { name: "persistent", value: "persistent" },
+      ],
+    });
+    const expiresAt = await input({ message: "Expires at ISO (optional)" });
+    const createdBy = await input({ message: "Created by", default: "tui-operator" });
+    const confirmed = await confirm({ message: "Create grant?", default: false });
+    if (!confirmed) {
+      return;
+    }
+
+    const created = await client.toolsCreateGrant({
+      toolPattern,
+      decision,
+      scope,
+      scopeRef: scope === "global" ? undefined : (scopeRef.trim() || undefined),
+      grantType,
+      expiresAt: expiresAt.trim() || undefined,
+      createdBy: createdBy.trim() || "tui-operator",
+    });
+    console.log(JSON.stringify(created, null, 2));
+    await pause();
+    return;
+  }
+
+  if (action === "revoke-grant") {
+    const grantId = await input({ message: "Grant ID" });
+    const confirmed = await confirm({ message: `Revoke grant ${grantId}?`, default: false });
+    if (!confirmed) {
+      return;
+    }
+    const result = await client.toolsRevokeGrant(grantId.trim());
+    console.log(JSON.stringify(result, null, 2));
+    await pause();
+    return;
+  }
+
+  const toolName = await input({ message: "Tool name", default: "fs.list" });
+  const argsRaw = await input({ message: "Args JSON", default: "{\"path\":\"./workspace\"}" });
+  const agentId = await input({ message: "Agent ID", default: "operator" });
+  const sessionId = await input({ message: "Session ID", default: "demo-session" });
+  const taskId = await input({ message: "Task ID (optional)" });
+  const parsedArgs = JSON.parse(argsRaw) as Record<string, unknown>;
+  const result = await client.toolsInvoke({
+    toolName,
+    args: parsedArgs,
+    agentId,
+    sessionId,
+    taskId: taskId.trim() || undefined,
+    dryRun: true,
+    consentContext: {
+      source: "tui",
+      operatorId: "tui-operator",
+      reason: "tools dry-run",
+    },
+  });
+  console.log(JSON.stringify(result, null, 2));
   await pause();
 }
 

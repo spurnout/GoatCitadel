@@ -11,6 +11,9 @@ import type {
   PendingApprovalAction,
   RealtimeEvent,
   SessionMeta,
+  ToolAccessEvaluateResponse,
+  ToolCatalogEntry,
+  ToolGrantRecord,
   ToolInvokeResult,
 } from "@goatcitadel/contracts";
 import type { TuiResolvedAuth } from "./profile.js";
@@ -332,6 +335,82 @@ export class TuiApiClient {
     recent: MemoryContextPack[];
   }> {
     return this.request("/api/v1/memory/qmd/stats?limit=25", { method: "GET" });
+  }
+
+  public async toolsCatalog(): Promise<{ items: ToolCatalogEntry[] }> {
+    return this.request("/api/v1/tools/catalog", { method: "GET" });
+  }
+
+  public async toolsEvaluateAccess(input: {
+    toolName: string;
+    agentId: string;
+    sessionId: string;
+    taskId?: string;
+    args?: Record<string, unknown>;
+  }): Promise<ToolAccessEvaluateResponse> {
+    return this.request("/api/v1/tools/access/evaluate", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  public async toolsListGrants(input?: {
+    scope?: "global" | "session" | "agent" | "task";
+    scopeRef?: string;
+    limit?: number;
+  }): Promise<{ items: ToolGrantRecord[] }> {
+    const query = new URLSearchParams();
+    if (input?.scope) {
+      query.set("scope", input.scope);
+    }
+    if (input?.scopeRef) {
+      query.set("scopeRef", input.scopeRef);
+    }
+    query.set("limit", String(input?.limit ?? 300));
+    return this.request(`/api/v1/tools/grants?${query.toString()}`, { method: "GET" });
+  }
+
+  public async toolsCreateGrant(input: {
+    toolPattern: string;
+    decision: "allow" | "deny";
+    scope: "global" | "session" | "agent" | "task";
+    scopeRef?: string;
+    grantType?: "one_time" | "ttl" | "persistent";
+    constraints?: Record<string, unknown>;
+    createdBy: string;
+    expiresAt?: string;
+    usesRemaining?: number;
+  }): Promise<ToolGrantRecord> {
+    return this.request("/api/v1/tools/grants", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async toolsRevokeGrant(grantId: string): Promise<{ revoked: boolean; grantId: string }> {
+    return this.request(`/api/v1/tools/grants/${encodeURIComponent(grantId)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async toolsInvoke(input: {
+    toolName: string;
+    args: Record<string, unknown>;
+    agentId: string;
+    sessionId: string;
+    taskId?: string;
+    dryRun?: boolean;
+    consentContext?: {
+      operatorId?: string;
+      source?: "ui" | "tui" | "agent";
+      reason?: string;
+    };
+  }): Promise<ToolInvokeResult> {
+    return this.request("/api/v1/tools/invoke", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
   }
 
   public streamHeaders(): Record<string, string> {

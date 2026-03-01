@@ -25,6 +25,12 @@ export interface ToolInvokeRequest {
   agentId: string;
   sessionId: string;
   taskId?: string;
+  consentContext?: {
+    operatorId?: string;
+    source?: "ui" | "tui" | "agent";
+    reason?: string;
+  };
+  dryRun?: boolean;
 }
 
 export interface ToolInvokeResult {

@@ -135,6 +135,9 @@
         "session.status",
         "memory.read",
         "browser.search",
+        "browser.navigate",
+        "browser.extract",
+        "browser.screenshot",
         "http.get",
         "citations.build"
       ],

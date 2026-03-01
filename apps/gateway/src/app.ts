@@ -24,6 +24,9 @@ import { memoryRoutes } from "./routes/memory.js";
 import { npuRoutes } from "./routes/npu.js";
 import { uiChangeRiskRoutes } from "./routes/ui-change-risk.js";
 import { agentsRoutes } from "./routes/agents.js";
+import { toolsRoutes } from "./routes/tools.js";
+import { commsRoutes } from "./routes/comms.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
 
 loadLocalEnvFile();
 
@@ -58,6 +61,9 @@ export async function buildApp() {
   await app.register(npuRoutes);
   await app.register(uiChangeRiskRoutes);
   await app.register(agentsRoutes);
+  await app.register(toolsRoutes);
+  await app.register(commsRoutes);
+  await app.register(knowledgeRoutes);
 
   return app;
 }

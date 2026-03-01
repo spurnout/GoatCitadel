@@ -54,6 +54,10 @@ async function main() {
     run("pnpm", ["--dir", appDir, "tui", ...rest]);
     return;
   }
+  if (command === "tools") {
+    run("pnpm", ["--dir", appDir, "tools", ...rest]);
+    return;
+  }
   if (command === "smoke") {
     run("pnpm", ["--dir", appDir, "smoke", ...rest]);
     return;
@@ -144,6 +148,7 @@ function printHelp() {
 
 Usage:
   goatcitadel <command>
+  gc <command>
 
 Commands:
   install    Install GoatCitadel from GitHub
@@ -153,6 +158,7 @@ Commands:
   ui         Start mission control UI only
   onboard    Run TUI onboarding wizard
   tui        Run terminal Mission Control
+  tools      Tool access CLI (catalog/grants/invoke)
   smoke      Run smoke tests
   npu        Run local NPU sidecar (Python)
   doctor     Show environment diagnostics

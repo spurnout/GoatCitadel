@@ -107,6 +107,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "agent_profiles_schema",
     up: createAgentProfilesSchema,
   },
+  {
+    version: 9,
+    name: "native_tools_expansion_schema",
+    up: createNativeToolsExpansionSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -627,5 +632,95 @@ function createAgentProfilesSchema(db: DatabaseSync): void {
       ON agent_profiles(lifecycle_status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_profiles_role_id
       ON agent_profiles(role_id);
+  `);
+}
+
+function createNativeToolsExpansionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_grants (
+      grant_id TEXT PRIMARY KEY,
+      tool_pattern TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      scope_ref TEXT NOT NULL,
+      grant_type TEXT NOT NULL,
+      constraints_json TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      revoked_at TEXT,
+      uses_remaining INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_grants_scope
+      ON tool_grants(scope, scope_ref, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_grants_pattern
+      ON tool_grants(tool_pattern, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tool_access_decisions (
+      decision_id TEXT PRIMARY KEY,
+      timestamp TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      task_id TEXT,
+      allowed INTEGER NOT NULL,
+      reason_codes_json TEXT NOT NULL,
+      matched_grant_id TEXT,
+      requires_approval INTEGER NOT NULL,
+      risk_level TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_access_decisions_tool_time
+      ON tool_access_decisions(tool_name, timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_access_decisions_agent_time
+      ON tool_access_decisions(agent_id, timestamp DESC);
+
+    CREATE TABLE IF NOT EXISTS knowledge_documents (
+      doc_id TEXT PRIMARY KEY,
+      namespace TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_ref TEXT NOT NULL,
+      title TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_knowledge_documents_namespace_time
+      ON knowledge_documents(namespace, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      chunk_id TEXT PRIMARY KEY,
+      doc_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      embedding_json TEXT,
+      token_estimate INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(doc_id) REFERENCES knowledge_documents(doc_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc_seq
+      ON knowledge_chunks(doc_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_created_at
+      ON knowledge_chunks(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS comms_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      channel_key TEXT NOT NULL,
+      target TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provider_msg_id TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_comms_deliveries_connection_time
+      ON comms_deliveries(connection_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_comms_deliveries_channel_time
+      ON comms_deliveries(channel_key, created_at DESC);
   `);
 }

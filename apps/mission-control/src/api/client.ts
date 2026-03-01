@@ -7,7 +7,17 @@ import type {
   ApprovalReplayEvent,
   ApprovalRequest,
   ChangeRiskEvaluationResponse,
+  ChannelSendInput,
+  DocsIngestInput,
+  EmbeddingIndexInput,
+  EmbeddingQueryInput,
+  GmailReadQuery,
+  GmailSendInput,
+  CalendarCreateEventInput,
+  CalendarListQuery,
   MemoryContextPack,
+  MemorySearchQuery,
+  MemoryWriteInput,
   MemoryQmdStatsResponse,
   NpuModelManifest,
   NpuRuntimeStatus,
@@ -16,6 +26,11 @@ import type {
   OnboardingState,
   PendingApprovalAction,
   SessionMeta,
+  ToolAccessEvaluateRequest,
+  ToolAccessEvaluateResponse,
+  ToolCatalogEntry,
+  ToolGrantCreateInput,
+  ToolGrantRecord,
   ToolInvokeResult,
 } from "@goatcitadel/contracts";
 
@@ -408,6 +423,136 @@ export async function runCheaper(): Promise<{ mode: string; actions: string[] }>
   return request<{ mode: string; actions: string[] }>("/api/v1/costs/run-cheaper", {
     method: "POST",
     body: JSON.stringify({}),
+  });
+}
+
+export async function fetchToolCatalog(): Promise<{ items: ToolCatalogEntry[] }> {
+  return request<{ items: ToolCatalogEntry[] }>("/api/v1/tools/catalog");
+}
+
+export async function evaluateToolAccess(input: ToolAccessEvaluateRequest): Promise<ToolAccessEvaluateResponse> {
+  return request<ToolAccessEvaluateResponse>("/api/v1/tools/access/evaluate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchToolGrants(input?: {
+  scope?: "global" | "session" | "agent" | "task";
+  scopeRef?: string;
+  limit?: number;
+}): Promise<{ items: ToolGrantRecord[] }> {
+  const search = new URLSearchParams();
+  if (input?.scope) {
+    search.set("scope", input.scope);
+  }
+  if (input?.scopeRef) {
+    search.set("scopeRef", input.scopeRef);
+  }
+  search.set("limit", String(input?.limit ?? 300));
+  return request<{ items: ToolGrantRecord[] }>(`/api/v1/tools/grants?${search.toString()}`);
+}
+
+export async function createToolGrant(input: ToolGrantCreateInput): Promise<ToolGrantRecord> {
+  return request<ToolGrantRecord>("/api/v1/tools/grants", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function revokeToolGrant(grantId: string): Promise<{ revoked: boolean; grantId: string }> {
+  return request<{ revoked: boolean; grantId: string }>(`/api/v1/tools/grants/${encodeURIComponent(grantId)}/revoke`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function invokeTool(input: {
+  toolName: string;
+  args: Record<string, unknown>;
+  agentId: string;
+  sessionId: string;
+  taskId?: string;
+  dryRun?: boolean;
+  consentContext?: {
+    operatorId?: string;
+    source?: "ui" | "tui" | "agent";
+    reason?: string;
+  };
+}): Promise<ToolInvokeResult> {
+  return request<ToolInvokeResult>("/api/v1/tools/invoke", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function commsSend(input: ChannelSendInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/comms/send", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function commsGmailRead(input: GmailReadQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/comms/gmail/read", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function commsGmailSend(input: GmailSendInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/comms/gmail/send", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function commsCalendarList(input: CalendarListQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/comms/calendar/list", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function commsCalendarCreate(input: CalendarCreateEventInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/comms/calendar/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function knowledgeMemoryWrite(input: MemoryWriteInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/knowledge/memory/write", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function knowledgeMemorySearch(input: MemorySearchQuery): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/knowledge/memory/search", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function knowledgeDocsIngest(input: DocsIngestInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/knowledge/docs/ingest", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function knowledgeEmbeddingsIndex(input: EmbeddingIndexInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/knowledge/embeddings/index", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function knowledgeEmbeddingsQuery(input: EmbeddingQueryInput): Promise<ToolInvokeResult | Record<string, unknown>> {
+  return request<ToolInvokeResult | Record<string, unknown>>("/api/v1/knowledge/embeddings/query", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

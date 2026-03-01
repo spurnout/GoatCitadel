@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.29.3",
   "bin": {
-    "goatcitadel": "./bin/goatcitadel.mjs"
+    "goatcitadel": "./bin/goatcitadel.mjs",
+    "gc": "./bin/goatcitadel.mjs"
   },
   "scripts": {
     "dev": "pnpm --parallel --filter @goatcitadel/gateway --filter @goatcitadel/mission-control dev",
@@ -16,6 +17,7 @@
     "smoke": "pnpm --filter @goatcitadel/gateway smoke",
     "onboarding:tui": "pnpm --filter @goatcitadel/gateway onboarding:tui",
     "tui": "pnpm --filter @goatcitadel/gateway tui",
+    "tools": "pnpm --filter @goatcitadel/gateway tools",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
