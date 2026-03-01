@@ -43,5 +43,9 @@ describe("PendingApprovalActionRepository", () => {
     const resolved = repo.markResolved("ap-1", "executed", { ok: true });
     assert.equal(resolved.resolutionStatus, "executed");
     assert.equal(resolved.result?.ok, true);
+
+    const secondResolve = repo.markResolved("ap-1", "failed", { ok: false });
+    assert.equal(secondResolve.resolutionStatus, "executed");
+    assert.equal(secondResolve.result?.ok, true);
   });
 });

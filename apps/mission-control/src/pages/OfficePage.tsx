@@ -1,4 +1,13 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useMemo,
+  useState,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import {
   connectEventStream,
   fetchAgents,
@@ -125,6 +134,42 @@ const OfficeCanvasScene = lazy(async () => {
   const module = await import("../components/OfficeCanvas");
   return { default: module.OfficeCanvas };
 });
+
+interface OfficeCanvasErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface OfficeCanvasErrorBoundaryState {
+  hasError: boolean;
+}
+
+class OfficeCanvasErrorBoundary extends Component<
+  OfficeCanvasErrorBoundaryProps,
+  OfficeCanvasErrorBoundaryState
+> {
+  public override state: OfficeCanvasErrorBoundaryState = {
+    hasError: false,
+  };
+
+  public static getDerivedStateFromError(): OfficeCanvasErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  public override componentDidCatch(_error: Error, _errorInfo: ErrorInfo): void {
+    // Keep the page interactive while isolating WebGL failures.
+  }
+
+  public override render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+          <p>Office scene failed to render. Reload the page or reduce motion settings.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function OfficePage(_props: { refreshKey?: number }) {
   const [directory, setDirectory] = useState<AgentDirectoryRecord[]>([]);
@@ -632,25 +677,27 @@ export function OfficePage(_props: { refreshKey?: number }) {
           <p>No agent roles are available yet.</p>
         ) : (
           <>
-            <Suspense
-              fallback={(
-                <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-                  <p>Loading office scene...</p>
-                </div>
-              )}
-            >
-              <OfficeCanvasScene
-                operator={operatorModel}
-                agents={officeAgents}
-                selectedEntityId={selectedEntityId}
-                onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
-                assetPack={assetPack}
-                motionMode={effectiveMotionMode}
-                showCollabOverlay={operatorPrefs.showCollabOverlay}
-                idleMillingEnabled={operatorPrefs.idleMillingEnabled}
-                collaborationEdges={collaborationEdges}
-              />
-            </Suspense>
+            <OfficeCanvasErrorBoundary>
+              <Suspense
+                fallback={(
+                  <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                    <p>Loading office scene...</p>
+                  </div>
+                )}
+              >
+                <OfficeCanvasScene
+                  operator={operatorModel}
+                  agents={officeAgents}
+                  selectedEntityId={selectedEntityId}
+                  onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
+                  assetPack={assetPack}
+                  motionMode={effectiveMotionMode}
+                  showCollabOverlay={operatorPrefs.showCollabOverlay}
+                  idleMillingEnabled={operatorPrefs.idleMillingEnabled}
+                  collaborationEdges={collaborationEdges}
+                />
+              </Suspense>
+            </OfficeCanvasErrorBoundary>
             <div className="office-desk-list">
               <button
                 className={selectedEntityId === "operator" ? "active" : ""}

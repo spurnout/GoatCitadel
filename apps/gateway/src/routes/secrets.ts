@@ -1,0 +1,56 @@
+import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
+
+const paramsSchema = z.object({
+  providerId: z.string().min(1),
+});
+
+const upsertSchema = z.object({
+  apiKey: z.string().min(1),
+});
+
+export const secretsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get("/api/v1/secrets/providers/:providerId/status", async (request, reply) => {
+    const parsed = paramsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    try {
+      return reply.send(fastify.gateway.getProviderSecretStatus(parsed.data.providerId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/secrets/providers/:providerId", async (request, reply) => {
+    const parsedParams = paramsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ error: parsedParams.error.flatten() });
+    }
+    const parsedBody = upsertSchema.safeParse(request.body);
+    if (!parsedBody.success) {
+      return reply.code(400).send({ error: parsedBody.error.flatten() });
+    }
+
+    try {
+      const status = fastify.gateway.saveProviderSecret(parsedParams.data.providerId, parsedBody.data.apiKey);
+      return reply.send(status);
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.delete("/api/v1/secrets/providers/:providerId", async (request, reply) => {
+    const parsed = paramsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    try {
+      return reply.send(fastify.gateway.deleteProviderSecret(parsed.data.providerId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+};

@@ -36,6 +36,7 @@ export class PendingApprovalActionRepository {
       UPDATE pending_approval_actions
       SET resolved_at = @resolvedAt, resolution_status = @resolutionStatus, result_json = @resultJson
       WHERE approval_id = @approvalId
+        AND resolution_status = 'pending'
     `);
   }
 
@@ -76,12 +77,20 @@ export class PendingApprovalActionRepository {
     resolutionStatus: NonNullable<PendingApprovalAction["resolutionStatus"]>,
     result?: Record<string, unknown>,
   ): PendingApprovalAction {
-    this.resolveStmt.run({
+    const update = this.resolveStmt.run({
       approvalId,
       resolvedAt: new Date().toISOString(),
       resolutionStatus,
       resultJson: result ? JSON.stringify(result) : null,
     });
+
+    if (update.changes === 0) {
+      const existing = this.find(approvalId);
+      if (existing) {
+        return existing;
+      }
+      throw new Error(`No pending action found for approval ${approvalId}`);
+    }
 
     return this.get(approvalId);
   }

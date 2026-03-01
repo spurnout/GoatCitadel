@@ -16,4 +16,24 @@ describe("isHostAllowed", () => {
     expect(isHostAllowed("evil.com", ["*.example.com"]))
       .toBe(false);
   });
+
+  it("blocks metadata host even when wildcard allowlist matches", () => {
+    expect(isHostAllowed("http://169.254.169.254/latest/meta-data", ["*"]))
+      .toBe(false);
+  });
+
+  it("blocks private RFC1918 host even when wildcard allowlist matches", () => {
+    expect(isHostAllowed("http://192.168.1.20/api", ["*"]))
+      .toBe(false);
+  });
+
+  it("allows explicit localhost loopback entry", () => {
+    expect(isHostAllowed("http://localhost:11434/v1/models", ["localhost"]))
+      .toBe(true);
+  });
+
+  it("blocks localhost when only wildcard pattern is present", () => {
+    expect(isHostAllowed("http://localhost:8787/health", ["*"]))
+      .toBe(false);
+  });
 });

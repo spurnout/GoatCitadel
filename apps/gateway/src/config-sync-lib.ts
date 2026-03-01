@@ -35,9 +35,11 @@ export async function syncUnifiedConfig(
   const createUnifiedIfMissing = options.createUnifiedIfMissing ?? false;
   let createdUnified = false;
   let unifiedRaw: string;
+  let unifiedMtimeMs = 0;
 
   try {
     unifiedRaw = await fs.readFile(unifiedPath, "utf8");
+    unifiedMtimeMs = (await fs.stat(unifiedPath)).mtimeMs;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
@@ -55,6 +57,7 @@ export async function syncUnifiedConfig(
     await writeJsonIfChanged(unifiedPath, initialUnified);
     createdUnified = true;
     unifiedRaw = JSON.stringify(initialUnified);
+    unifiedMtimeMs = Date.now();
   }
 
   const parsed = parseJson(unifiedRaw, unifiedPath);
@@ -71,6 +74,7 @@ export async function syncUnifiedConfig(
 
     const normalized = normalizeSection(sectionValue, target.filename);
     const outPath = path.join(configDir, target.filename);
+    await warnIfSplitIsNewer(outPath, unifiedPath, unifiedMtimeMs);
     const changed = await writeJsonIfChanged(outPath, normalized);
     if (changed) {
       syncedSections.push(target.filename);
@@ -163,10 +167,44 @@ async function writeJsonIfChanged(filePath: string, data: unknown): Promise<bool
     return false;
   }
 
-  await fs.writeFile(filePath, next, "utf8");
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await fs.writeFile(tempPath, next, "utf8");
+    await fs.rename(tempPath, filePath);
+  } finally {
+    try {
+      await fs.rm(tempPath, { force: true });
+    } catch {
+      // ignore temp cleanup failures
+    }
+  }
   return true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function warnIfSplitIsNewer(
+  splitPath: string,
+  unifiedPath: string,
+  unifiedMtimeMs: number,
+): Promise<void> {
+  let splitStat: Awaited<ReturnType<typeof fs.stat>> | undefined;
+  try {
+    splitStat = await fs.stat(splitPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (!splitStat || splitStat.mtimeMs <= unifiedMtimeMs) {
+    return;
+  }
+
+  console.warn(
+    `[goatcitadel:config] warning: ${path.basename(splitPath)} is newer than ${path.basename(unifiedPath)}; unified config values are being applied`,
+  );
 }

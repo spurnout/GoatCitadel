@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LlmConfigFile } from "@goatcitadel/contracts";
 import { LlmService } from "./llm-service.js";
+import { SecretStoreService } from "./secret-store-service.js";
 
 describe("LlmService", () => {
   it("blocks private metadata endpoints as provider baseUrl", () => {
@@ -17,7 +18,7 @@ describe("LlmService", () => {
       ],
     };
 
-    expect(() => new LlmService(config)).toThrowError(/blocked/i);
+    expect(() => new LlmService(config, process.env, { secretStore: createNoopSecretStore() })).toThrowError(/blocked/i);
   });
 
   it("allows loopback providers for local runtime", () => {
@@ -34,7 +35,7 @@ describe("LlmService", () => {
       ],
     };
 
-    const service = new LlmService(config);
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
     expect(service.getRuntimeConfig().activeProviderId).toBe("local");
   });
 
@@ -53,7 +54,7 @@ describe("LlmService", () => {
       ],
     };
 
-    const service = new LlmService(config);
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
     const exported = service.exportConfigFile();
     expect(exported.providers[0]?.apiKey).toBeUndefined();
   });
@@ -72,7 +73,7 @@ describe("LlmService", () => {
       ],
     };
 
-    const service = new LlmService(config);
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
     const provider = service.listProviders().find((item) => item.providerId === "glm");
     expect(provider?.baseUrl).toBe("https://api.z.ai/api/paas/v4");
   });
@@ -91,8 +92,39 @@ describe("LlmService", () => {
       ],
     };
 
-    const service = new LlmService(config);
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
     const provider = service.listProviders().find((item) => item.providerId === "custom");
     expect(provider?.baseUrl).toBe("https://example.com/v1");
   });
+
+  it("enforces network allowlist for outbound model calls", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "openai",
+      providers: [
+        {
+          providerId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "gpt-4.1-mini",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, {
+      secretStore: createNoopSecretStore(),
+      networkAllowlist: [],
+    });
+    await expect(service.listModels()).rejects.toThrowError(/allowlist/i);
+  });
 });
+
+function createNoopSecretStore(): SecretStoreService {
+  return {
+    isAvailable: () => false,
+    setProviderApiKey: () => undefined,
+    getProviderApiKey: () => undefined,
+    deleteProviderApiKey: () => undefined,
+    status: (providerId: string) => ({ providerId, hasSecret: false, source: "none" }),
+  } as unknown as SecretStoreService;
+}

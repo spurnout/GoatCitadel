@@ -104,6 +104,7 @@ import { ApprovalExplainerService } from "./approval-explainer-service.js";
 import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-catalog.js";
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
+import { SecretStoreService } from "./secret-store-service.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -230,6 +231,7 @@ export class GatewayService {
 
     this.eventIngestService = new EventIngestService(this.storage);
     this.policyEngine = new ToolPolicyEngine(config.toolPolicy, this.storage);
+    const secretStore = new SecretStoreService();
     this.skillsService = new SkillsService([
       { source: "extra", dir: path.join(config.rootDir, "skills", "extra") },
       { source: "bundled", dir: path.join(config.rootDir, "skills", "bundled") },
@@ -237,7 +239,10 @@ export class GatewayService {
       { source: "workspace", dir: path.join(config.rootDir, "skills", "workspace") },
     ]);
     this.orchestrationEngine = new OrchestrationEngine();
-    this.llmService = new LlmService(config.llm);
+    this.llmService = new LlmService(config.llm, process.env, {
+      networkAllowlist: config.toolPolicy.sandbox.networkAllowlist,
+      secretStore,
+    });
     this.memoryContextService = new MemoryContextService(
       this.storage,
       this.llmService,
@@ -1290,6 +1295,7 @@ export class GatewayService {
       this.config.toolPolicy.sandbox.networkAllowlist = input.networkAllowlist
         .map((host) => host.trim())
         .filter(Boolean);
+      this.llmService.updateNetworkAllowlist(this.config.toolPolicy.sandbox.networkAllowlist);
       persistToolPolicy = true;
     }
 
@@ -1842,6 +1848,39 @@ export class GatewayService {
 
   public listLlmProviders(): LlmRuntimeConfig["providers"] {
     return this.llmService.listProviders();
+  }
+
+  public getProviderSecretStatus(providerId: string): {
+    providerId: string;
+    hasSecret: boolean;
+    source: "none" | "keychain" | "env" | "inline";
+  } {
+    const status = this.llmService.getProviderSecretStatus(providerId);
+    return {
+      providerId: status.providerId,
+      hasSecret: status.hasApiKey,
+      source: status.apiKeySource,
+    };
+  }
+
+  public saveProviderSecret(providerId: string, apiKey: string): {
+    providerId: string;
+    hasSecret: boolean;
+    source: "none" | "keychain" | "env" | "inline";
+  } {
+    this.llmService.setProviderApiKey(providerId, apiKey);
+    this.llmService.clearInlineProviderApiKey(providerId);
+    this.persistLlmConfig();
+    return this.getProviderSecretStatus(providerId);
+  }
+
+  public deleteProviderSecret(providerId: string): {
+    providerId: string;
+    hasSecret: boolean;
+    source: "none" | "keychain" | "env" | "inline";
+  } {
+    this.llmService.deleteProviderApiKey(providerId);
+    return this.getProviderSecretStatus(providerId);
   }
 
   public getLlmConfig(): LlmRuntimeConfig {

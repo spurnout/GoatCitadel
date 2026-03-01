@@ -11,6 +11,11 @@ loadLocalEnvFile();
 const gatewayHost = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const gatewayPort = Number(process.env.GATEWAY_PORT ?? 8787);
 const pollMs = Number(process.env.GOATCITADEL_GATEWAY_WATCH_POLL_MS ?? 1200);
+const restartWindowMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_WINDOW_MS ?? 60_000);
+const restartMaxFailures = Number(process.env.GOATCITADEL_GATEWAY_RESTART_MAX_FAILURES ?? 5);
+const restartBaseBackoffMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_BASE_BACKOFF_MS ?? 1000);
+const restartMaxBackoffMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_MAX_BACKOFF_MS ?? 30_000);
+const restartCircuitOpenMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_CIRCUIT_MS ?? 60_000);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const gatewayDir = path.join(repoRoot, "apps", "gateway");
 
@@ -30,11 +35,17 @@ let shuttingDown = false;
 let restarting = false;
 let polling = false;
 let lastSignature = "";
+let restartTimer: NodeJS.Timeout | null = null;
+let circuitOpenUntil = 0;
+const failureTimestamps: number[] = [];
 
 async function main(): Promise<void> {
   console.log(`[gateway-supervisor] root: ${repoRoot}`);
   console.log(`[gateway-supervisor] watching for changes (${pollMs}ms poll)`);
   console.log(`[gateway-supervisor] target health: http://${gatewayHost}:${gatewayPort}/health`);
+  console.log(
+    `[gateway-supervisor] restart budget: max ${restartMaxFailures} failures per ${restartWindowMs}ms`,
+  );
 
   process.on("SIGINT", () => {
     void shutdown("SIGINT");
@@ -71,8 +82,18 @@ async function restartGateway(reason: string): Promise<void> {
   if (restarting || shuttingDown) {
     return;
   }
+  const now = Date.now();
+  if (now < circuitOpenUntil) {
+    const remaining = circuitOpenUntil - now;
+    console.warn(
+      `[gateway-supervisor] restart circuit is open for ${remaining}ms (reason=${reason})`,
+    );
+    scheduleRestartAfter(remaining, "circuit reopen");
+    return;
+  }
   restarting = true;
   try {
+    clearRestartTimer();
     console.log(`[gateway-supervisor] restarting gateway (${reason})`);
     await stopChild("restart");
     await startChild();
@@ -109,18 +130,27 @@ async function startChild(): Promise<void> {
     if (shuttingDown || restarting) {
       return;
     }
-    console.log(
+    console.warn(
       `[gateway-supervisor] gateway exited (pid=${currentPid}, code=${code ?? "null"}, signal=${signal ?? "null"}). Waiting for file changes...`,
     );
+    const delay = registerFailureAndGetDelay("process_exit");
+    if (delay !== null) {
+      scheduleRestartAfter(delay, "process exit");
+    }
   });
 
   const healthy = await waitForGatewayHealth(15_000);
   if (healthy) {
+    resetFailureBudget();
     console.log(`[gateway-supervisor] gateway online (pid=${currentPid})`);
     return;
   }
 
-  console.log("[gateway-supervisor] gateway did not become healthy in time; waiting for next change");
+  console.warn("[gateway-supervisor] gateway did not become healthy in time");
+  const delay = registerFailureAndGetDelay("health_timeout");
+  if (delay !== null) {
+    scheduleRestartAfter(delay, "health timeout");
+  }
 }
 
 function buildGatewayStartCommand(): { command: string; args: string[] } {
@@ -171,7 +201,12 @@ async function stopChild(reason: string): Promise<void> {
   }
 
   child = null;
-  await waitForPortClosed(10_000);
+  const portClosed = await waitForPortClosed(10_000);
+  if (!portClosed) {
+    console.warn(
+      `[gateway-supervisor] warning: gateway port ${gatewayHost}:${gatewayPort} did not release before timeout`,
+    );
+  }
 }
 
 async function waitForGatewayHealth(timeoutMs: number): Promise<boolean> {
@@ -185,15 +220,16 @@ async function waitForGatewayHealth(timeoutMs: number): Promise<boolean> {
   return false;
 }
 
-async function waitForPortClosed(timeoutMs: number): Promise<void> {
+async function waitForPortClosed(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const open = await isPortOpen();
     if (!open) {
-      return;
+      return true;
     }
     await sleep(250);
   }
+  return false;
 }
 
 async function isGatewayHealthy(): Promise<boolean> {
@@ -278,9 +314,63 @@ async function shutdown(signal: string): Promise<void> {
     return;
   }
   shuttingDown = true;
+  clearRestartTimer();
   console.log(`[gateway-supervisor] shutdown signal: ${signal}`);
   await stopChild(signal);
   process.exitCode = 0;
+}
+
+function registerFailureAndGetDelay(reason: string): number | null {
+  const now = Date.now();
+  pruneFailures(now);
+  failureTimestamps.push(now);
+  const failures = failureTimestamps.length;
+  const computedDelay = Math.min(
+    restartMaxBackoffMs,
+    Math.round(restartBaseBackoffMs * (2 ** Math.max(0, failures - 1))),
+  );
+
+  if (failures > restartMaxFailures) {
+    circuitOpenUntil = now + restartCircuitOpenMs;
+    console.error(
+      `[gateway-supervisor] restart budget exceeded (${failures}/${restartMaxFailures}) after ${reason}; circuit open for ${restartCircuitOpenMs}ms`,
+    );
+    return restartCircuitOpenMs;
+  }
+
+  return computedDelay;
+}
+
+function scheduleRestartAfter(delayMs: number, reason: string): void {
+  if (shuttingDown || restarting || restartTimer) {
+    return;
+  }
+  const delay = Math.max(100, delayMs);
+  console.log(`[gateway-supervisor] scheduling restart in ${delay}ms (${reason})`);
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    void restartGateway(reason);
+  }, delay);
+  restartTimer.unref();
+}
+
+function clearRestartTimer(): void {
+  if (!restartTimer) {
+    return;
+  }
+  clearTimeout(restartTimer);
+  restartTimer = null;
+}
+
+function pruneFailures(now = Date.now()): void {
+  while (failureTimestamps.length > 0 && (now - (failureTimestamps[0] ?? now)) > restartWindowMs) {
+    failureTimestamps.shift();
+  }
+}
+
+function resetFailureBudget(): void {
+  failureTimestamps.length = 0;
+  circuitOpenUntil = 0;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -29,6 +29,7 @@ import type {
   SessionMeta,
   SessionSummary,
   SessionTimelineItem,
+  SseTokenIssueResponse,
   ToolAccessEvaluateRequest,
   ToolAccessEvaluateResponse,
   ToolCatalogEntry,
@@ -42,6 +43,14 @@ export type { SessionSummary, SessionTimelineItem };
 
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:8787";
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
+
+interface GatewayAuthState {
+  mode?: "none" | "token" | "basic";
+  token?: string;
+  username?: string;
+  password?: string;
+  tokenQueryParam?: string;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const authHeaders = readGatewayAuthHeaders(path);
@@ -91,44 +100,46 @@ export async function runUiAction<T>(operation: () => Promise<T>): Promise<UiAct
   }
 }
 
-function readGatewayAuthHeaders(path: string): Record<string, string> {
-  if (typeof window === "undefined") {
+function readGatewayAuthHeaders(_path: string): Record<string, string> {
+  const auth = readGatewayAuthState();
+  if (!auth) {
     return {};
+  }
+
+  if (auth.mode === "token" && auth.token?.trim()) {
+    return {
+      Authorization: `Bearer ${auth.token.trim()}`,
+    };
+  }
+  if (auth.mode === "basic" && auth.username && auth.password) {
+    const encoded = btoa(`${auth.username}:${auth.password}`);
+    return {
+      Authorization: `Basic ${encoded}`,
+    };
+  }
+
+  if (auth.token?.trim()) {
+    return {
+      Authorization: `Bearer ${auth.token.trim()}`,
+    };
+  }
+  return {};
+}
+
+function readGatewayAuthState(): GatewayAuthState | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
   }
   try {
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) {
-      return {};
+      return undefined;
     }
-    const parsed = JSON.parse(raw) as {
-      mode?: "none" | "token" | "basic";
-      token?: string;
-      username?: string;
-      password?: string;
-      tokenQueryParam?: string;
-    };
-
-    if (parsed.mode === "token" && parsed.token?.trim()) {
-      return {
-        Authorization: `Bearer ${parsed.token.trim()}`,
-      };
-    }
-    if (parsed.mode === "basic" && parsed.username && parsed.password) {
-      const encoded = btoa(`${parsed.username}:${parsed.password}`);
-      return {
-        Authorization: `Basic ${encoded}`,
-      };
-    }
-
-    if (parsed.token?.trim()) {
-      return {
-        Authorization: `Bearer ${parsed.token.trim()}`,
-      };
-    }
+    return JSON.parse(raw) as GatewayAuthState;
   } catch {
     // ignore auth parse errors
   }
-  return {};
+  return undefined;
 }
 
 export interface SessionsResponse {
@@ -310,7 +321,9 @@ export interface RuntimeSettingsResponse {
       apiStyle: "openai-chat-completions";
       defaultModel: string;
       hasApiKey: boolean;
-      apiKeySource: "inline" | "env" | "none";
+      apiKeySource: "inline" | "env" | "keychain" | "none";
+      hasKeychainSecret?: boolean;
+      apiKeyRef?: string;
     }>;
   };
   mesh: {
@@ -1102,6 +1115,30 @@ export async function createLlmChatCompletion(input: {
   });
 }
 
+export interface ProviderSecretStatus {
+  providerId: string;
+  hasSecret: boolean;
+  source: "none" | "keychain" | "env" | "inline";
+}
+
+export async function fetchProviderSecretStatus(providerId: string): Promise<ProviderSecretStatus> {
+  return request<ProviderSecretStatus>(`/api/v1/secrets/providers/${encodeURIComponent(providerId)}/status`);
+}
+
+export async function saveProviderSecret(providerId: string, apiKey: string): Promise<ProviderSecretStatus> {
+  return request<ProviderSecretStatus>(`/api/v1/secrets/providers/${encodeURIComponent(providerId)}`, {
+    method: "POST",
+    body: JSON.stringify({ apiKey }),
+  });
+}
+
+export async function deleteProviderSecret(providerId: string): Promise<ProviderSecretStatus> {
+  return request<ProviderSecretStatus>(`/api/v1/secrets/providers/${encodeURIComponent(providerId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function fetchMeshStatus(): Promise<MeshStatusResponse> {
   return request<MeshStatusResponse>("/api/v1/mesh/status");
 }
@@ -1180,6 +1217,8 @@ const eventStreamSubscribers = new Set<EventStreamSubscriber>();
 let sharedEventSource: EventSource | null = null;
 let eventReconnectTimer: number | null = null;
 let eventConnectionState: EventStreamConnectionState = "closed";
+let eventConnectAttempt = 0;
+let eventConnectInFlight = false;
 let reconnectAttempts = 0;
 let lastEventAt: string | undefined;
 let lastErrorAt: string | undefined;
@@ -1193,11 +1232,12 @@ export function connectEventStream(
   eventStreamSubscribers.add(subscriber);
   notifyEventStreamState(subscriber, eventConnectionState);
   notifyEventStreamStatus(subscriber, buildEventStreamStatus());
-  ensureEventStreamConnected();
+  void ensureEventStreamConnected();
 
   return () => {
     eventStreamSubscribers.delete(subscriber);
     if (eventStreamSubscribers.size === 0) {
+      eventConnectAttempt += 1;
       closeSharedEventSource();
       clearReconnectTimer();
       setEventConnectionState("closed");
@@ -1208,45 +1248,60 @@ export function connectEventStream(
   };
 }
 
-function buildEventStreamUrl(): string {
+async function buildEventStreamUrl(): Promise<string> {
   const url = new URL(`${API_BASE}/api/v1/events/stream`);
   url.searchParams.set("replay", "20");
 
-  if (typeof window === "undefined") {
+  const auth = readGatewayAuthState();
+  if (!auth) {
     return url.toString();
   }
 
-  try {
-    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!raw) {
-      return url.toString();
-    }
-    const parsed = JSON.parse(raw) as {
-      mode?: "none" | "token" | "basic";
-      token?: string;
-      username?: string;
-      password?: string;
-      tokenQueryParam?: string;
-    };
-    if (parsed.mode === "token" && parsed.token?.trim()) {
-      url.searchParams.set(parsed.tokenQueryParam?.trim() || "access_token", parsed.token.trim());
-    } else if (parsed.mode === "basic" && parsed.username && parsed.password) {
-      url.searchParams.set("basic_auth", btoa(`${parsed.username}:${parsed.password}`));
-    }
-  } catch {
-    // ignore auth parse errors
+  if (auth.mode === "token" && auth.token?.trim()) {
+    url.searchParams.set(auth.tokenQueryParam?.trim() || "access_token", auth.token.trim());
+    return url.toString();
+  }
+
+  if (auth.mode === "basic" && auth.username && auth.password) {
+    const issued = await request<SseTokenIssueResponse>("/api/v1/auth/sse-token", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    url.searchParams.set("sse_token", issued.token);
   }
 
   return url.toString();
 }
 
-function ensureEventStreamConnected(): void {
-  if (sharedEventSource || eventStreamSubscribers.size === 0 || typeof window === "undefined") {
+async function ensureEventStreamConnected(): Promise<void> {
+  if (sharedEventSource || eventConnectInFlight || eventStreamSubscribers.size === 0 || typeof window === "undefined") {
     return;
   }
 
+  eventConnectInFlight = true;
+  const connectAttempt = ++eventConnectAttempt;
   setEventConnectionState("connecting");
-  const source = new EventSource(buildEventStreamUrl());
+
+  let streamUrl = "";
+  try {
+    streamUrl = await buildEventStreamUrl();
+  } catch {
+    eventConnectInFlight = false;
+    if (connectAttempt !== eventConnectAttempt || eventStreamSubscribers.size === 0) {
+      return;
+    }
+    lastErrorAt = new Date().toISOString();
+    setEventConnectionState("error");
+    scheduleReconnect();
+    return;
+  }
+
+  eventConnectInFlight = false;
+  if (connectAttempt !== eventConnectAttempt || eventStreamSubscribers.size === 0) {
+    return;
+  }
+
+  const source = new EventSource(streamUrl);
   sharedEventSource = source;
 
   source.onopen = () => {
@@ -1286,14 +1341,16 @@ function scheduleReconnect(): void {
 
   reconnectAttempts += 1;
   setEventConnectionState("retrying");
+  const delay = computeReconnectDelay(reconnectAttempts);
 
   eventReconnectTimer = window.setTimeout(() => {
     eventReconnectTimer = null;
-    ensureEventStreamConnected();
-  }, 2000);
+    void ensureEventStreamConnected();
+  }, delay);
 }
 
 function closeSharedEventSource(): void {
+  eventConnectInFlight = false;
   if (!sharedEventSource) {
     return;
   }
@@ -1319,6 +1376,13 @@ function setEventConnectionState(state: EventStreamConnectionState): void {
 
 function notifyEventStreamState(subscriber: EventStreamSubscriber, state: EventStreamConnectionState): void {
   subscriber.onStateChange?.(state);
+}
+
+function computeReconnectDelay(attempt: number): number {
+  const clampedAttempt = Math.max(1, attempt);
+  const base = Math.min(30_000, 1000 * (2 ** (clampedAttempt - 1)));
+  const jitter = Math.floor(Math.random() * 500);
+  return Math.min(30_000, base + jitter);
 }
 
 function notifyEventStreamStatusToAll(): void {

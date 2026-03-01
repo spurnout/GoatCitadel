@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { assertHostAllowed } from "@goatcitadel/policy-engine";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -8,6 +9,7 @@ import type {
   LlmProviderSummary,
   LlmRuntimeConfig,
 } from "@goatcitadel/contracts";
+import { SecretStoreService, SecretStoreUnavailableError } from "./secret-store-service.js";
 
 export interface LlmRuntimeUpdateInput {
   activeProviderId?: string;
@@ -28,6 +30,19 @@ interface ResolvedProvider {
   apiKey?: string;
 }
 
+export interface LlmServiceOptions {
+  networkAllowlist?: string[];
+  secretStore?: SecretStoreService;
+}
+
+export interface LlmProviderSecretStatus {
+  providerId: string;
+  hasApiKey: boolean;
+  apiKeySource: "inline" | "env" | "keychain" | "none";
+  hasKeychainSecret: boolean;
+  apiKeyRef?: string;
+}
+
 const DISALLOWED_BASE_HOSTS = new Set([
   "0.0.0.0",
   "169.254.169.254",
@@ -37,10 +52,19 @@ const DISALLOWED_BASE_HOSTS = new Set([
 
 export class LlmService {
   private readonly providers = new Map<string, LlmProviderConfig>();
+  private readonly secretStore: SecretStoreService;
+  private networkAllowlist: string[];
   private activeProviderId: string;
   private activeModel: string;
 
-  public constructor(config: LlmConfigFile, private readonly env: NodeJS.ProcessEnv = process.env) {
+  public constructor(
+    config: LlmConfigFile,
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    options: LlmServiceOptions = {},
+  ) {
+    this.secretStore = options.secretStore ?? new SecretStoreService();
+    this.networkAllowlist = [...(options.networkAllowlist ?? [])];
+
     for (const provider of config.providers) {
       this.providers.set(provider.providerId, normalizeProvider(provider));
     }
@@ -54,17 +78,23 @@ export class LlmService {
     this.activeModel = active.defaultModel;
   }
 
+  public updateNetworkAllowlist(allowlist: string[]): void {
+    this.networkAllowlist = [...allowlist];
+  }
+
   public listProviders(): LlmProviderSummary[] {
     return Array.from(this.providers.values()).map((provider) => {
-      const apiKey = this.resolveApiKey(provider);
+      const status = this.getProviderSecretStatus(provider.providerId);
       return {
         providerId: provider.providerId,
         label: provider.label,
         baseUrl: provider.baseUrl,
         apiStyle: provider.apiStyle,
         defaultModel: provider.defaultModel,
-        hasApiKey: Boolean(apiKey),
-        apiKeySource: provider.apiKey ? "inline" : provider.apiKeyEnv ? (this.env[provider.apiKeyEnv] ? "env" : "none") : "none",
+        hasApiKey: status.hasApiKey,
+        apiKeySource: status.apiKeySource,
+        hasKeychainSecret: status.hasKeychainSecret,
+        apiKeyRef: status.apiKeyRef,
       };
     });
   }
@@ -80,13 +110,18 @@ export class LlmService {
   public updateRuntimeConfig(input: LlmRuntimeUpdateInput): LlmRuntimeConfig {
     if (input.upsertProvider) {
       const existing = this.providers.get(input.upsertProvider.providerId);
+      const submittedApiKey = input.upsertProvider.apiKey?.trim();
+      if (submittedApiKey) {
+        this.setProviderApiKey(input.upsertProvider.providerId, submittedApiKey);
+      }
+
       const merged: LlmProviderConfig = normalizeProvider({
         providerId: input.upsertProvider.providerId,
         label: input.upsertProvider.label ?? existing?.label ?? input.upsertProvider.providerId,
         baseUrl: input.upsertProvider.baseUrl ?? existing?.baseUrl ?? "http://127.0.0.1:1234/v1",
         apiStyle: "openai-chat-completions",
         defaultModel: input.upsertProvider.defaultModel ?? existing?.defaultModel ?? "gpt-4o-mini",
-        apiKey: input.upsertProvider.apiKey ?? existing?.apiKey,
+        apiKey: submittedApiKey ? undefined : (input.upsertProvider.apiKey ?? existing?.apiKey),
         apiKeyEnv: input.upsertProvider.apiKeyEnv ?? existing?.apiKeyEnv,
         headers: input.upsertProvider.headers ?? existing?.headers,
       });
@@ -111,6 +146,93 @@ export class LlmService {
     return this.getRuntimeConfig();
   }
 
+  public getProviderSecretStatus(providerId: string): LlmProviderSecretStatus {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`Unknown LLM provider: ${providerId}`);
+    }
+
+    const keychainSecret = this.readKeychainApiKey(provider.providerId);
+    const envSecret = provider.apiKeyEnv ? this.env[provider.apiKeyEnv]?.trim() : undefined;
+    const inlineSecret = provider.apiKey?.trim();
+
+    if (keychainSecret) {
+      return {
+        providerId: provider.providerId,
+        hasApiKey: true,
+        apiKeySource: "keychain",
+        hasKeychainSecret: true,
+        apiKeyRef: `keychain:goatcitadel:provider:${provider.providerId}`,
+      };
+    }
+    if (envSecret) {
+      return {
+        providerId: provider.providerId,
+        hasApiKey: true,
+        apiKeySource: "env",
+        hasKeychainSecret: false,
+        apiKeyRef: provider.apiKeyEnv,
+      };
+    }
+    if (inlineSecret) {
+      return {
+        providerId: provider.providerId,
+        hasApiKey: true,
+        apiKeySource: "inline",
+        hasKeychainSecret: false,
+      };
+    }
+    return {
+      providerId: provider.providerId,
+      hasApiKey: false,
+      apiKeySource: "none",
+      hasKeychainSecret: false,
+      apiKeyRef: provider.apiKeyEnv,
+    };
+  }
+
+  public setProviderApiKey(providerId: string, apiKey: string): void {
+    if (!this.providers.has(providerId)) {
+      throw new Error(`Unknown LLM provider: ${providerId}`);
+    }
+    try {
+      this.secretStore.setProviderApiKey(providerId, apiKey);
+    } catch (error) {
+      if (error instanceof SecretStoreUnavailableError) {
+        throw new Error("Secure keychain is unavailable on this host. Use apiKeyEnv for env-backed secrets.");
+      }
+      throw error;
+    }
+  }
+
+  public deleteProviderApiKey(providerId: string): void {
+    if (!this.providers.has(providerId)) {
+      throw new Error(`Unknown LLM provider: ${providerId}`);
+    }
+    try {
+      this.secretStore.deleteProviderApiKey(providerId);
+    } catch (error) {
+      if (error instanceof SecretStoreUnavailableError) {
+        throw new Error("Secure keychain is unavailable on this host.");
+      }
+      throw error;
+    }
+  }
+
+  public clearInlineProviderApiKey(providerId: string): void {
+    const provider = this.providers.get(providerId);
+    if (!provider) {
+      throw new Error(`Unknown LLM provider: ${providerId}`);
+    }
+    if (!provider.apiKey) {
+      return;
+    }
+    this.providers.set(providerId, {
+      ...provider,
+      apiKey: undefined,
+    });
+  }
+
   public exportConfigFile(): LlmConfigFile {
     return {
       activeProviderId: this.activeProviderId,
@@ -123,6 +245,7 @@ export class LlmService {
 
   public async listModels(providerId?: string): Promise<LlmModelRecord[]> {
     const resolved = this.resolveProvider(providerId);
+    this.assertProviderHostAllowed(resolved.provider.baseUrl);
     const response = await fetch(`${resolved.provider.baseUrl}/models`, {
       method: "GET",
       headers: this.buildHeaders(resolved),
@@ -152,6 +275,7 @@ export class LlmService {
     }
 
     const resolved = this.resolveProvider(request.providerId);
+    this.assertProviderHostAllowed(resolved.provider.baseUrl);
     const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
 
     const payload: Record<string, unknown> = {
@@ -199,8 +323,9 @@ export class LlmService {
   }
 
   private resolveApiKey(provider: LlmProviderConfig): string | undefined {
-    if (provider.apiKey && provider.apiKey.trim()) {
-      return provider.apiKey.trim();
+    const keychain = this.readKeychainApiKey(provider.providerId);
+    if (keychain) {
+      return keychain;
     }
     if (provider.apiKeyEnv) {
       const envValue = this.env[provider.apiKeyEnv];
@@ -208,7 +333,25 @@ export class LlmService {
         return envValue.trim();
       }
     }
+    if (provider.apiKey && provider.apiKey.trim()) {
+      return provider.apiKey.trim();
+    }
     return undefined;
+  }
+
+  private readKeychainApiKey(providerId: string): string | undefined {
+    try {
+      return this.secretStore.getProviderApiKey(providerId);
+    } catch (error) {
+      if (error instanceof SecretStoreUnavailableError) {
+        return undefined;
+      }
+      return undefined;
+    }
+  }
+
+  private assertProviderHostAllowed(baseUrl: string): void {
+    assertHostAllowed(baseUrl, this.networkAllowlist);
   }
 
   private buildHeaders(resolved: ResolvedProvider): Record<string, string> {

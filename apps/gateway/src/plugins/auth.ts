@@ -1,7 +1,38 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import type { SseTokenIssueResponse } from "@goatcitadel/contracts";
 import fp from "fastify-plugin";
 
+declare module "fastify" {
+  interface FastifyInstance {
+    issueSseToken: (scope: "events:stream", ttlMs?: number) => SseTokenIssueResponse;
+  }
+}
+
+interface SseTokenRecord {
+  token: string;
+  scope: "events:stream";
+  expiresAt: number;
+}
+
 export const authPlugin = fp(async (fastify) => {
+  const sseTokens = new Map<string, SseTokenRecord>();
+
+  fastify.decorate("issueSseToken", (scope: "events:stream", ttlMs = 2 * 60 * 1000) => {
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = Date.now() + Math.max(30_000, Math.min(10 * 60 * 1000, ttlMs));
+    sseTokens.set(token, {
+      token,
+      scope,
+      expiresAt,
+    });
+    purgeExpiredSseTokens(sseTokens);
+    return {
+      token,
+      expiresAt: new Date(expiresAt).toISOString(),
+      scope,
+    };
+  });
+
   fastify.addHook("onRequest", async (request, reply) => {
     if (request.method === "OPTIONS") {
       return;
@@ -23,6 +54,14 @@ export const authPlugin = fp(async (fastify) => {
       && isLoopbackAddress(remoteAddress)
     ) {
       return;
+    }
+
+    // SSE bridge token for EventSource, regardless of auth mode.
+    if (request.url.startsWith("/api/v1/events/stream")) {
+      const sseToken = readQueryToken(request.query, "sse_token");
+      if (sseToken && validateSseToken(sseToken, "events:stream", sseTokens)) {
+        return;
+      }
     }
 
     if (auth.mode === "token") {
@@ -55,8 +94,7 @@ export const authPlugin = fp(async (fastify) => {
         });
       }
 
-      const credentials = readBasicCredentials(request.headers.authorization)
-        ?? readBasicCredentialsFromQuery(request.query);
+      const credentials = readBasicCredentials(request.headers.authorization);
       if (
         !credentials
         || !timingSafeStringEqual(credentials.username, username)
@@ -128,39 +166,47 @@ function readBasicCredentials(header: string | string[] | undefined): { username
   }
 }
 
-function readBasicCredentialsFromQuery(query: unknown): { username: string; password: string } | undefined {
-  if (!query || typeof query !== "object") {
-    return undefined;
-  }
-  const raw = (query as Record<string, unknown>).basic_auth;
-  if (typeof raw !== "string" || !raw.trim()) {
-    return undefined;
-  }
-  try {
-    const decoded = Buffer.from(raw, "base64").toString("utf8");
-    const separator = decoded.indexOf(":");
-    if (separator <= 0) {
-      return undefined;
-    }
-    return {
-      username: decoded.slice(0, separator),
-      password: decoded.slice(separator + 1),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 function isLoopbackAddress(ip: string): boolean {
   const normalized = ip.replace("::ffff:", "");
   return normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function timingSafeStringEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
+  const leftBuffer = Buffer.alloc(256);
+  const rightBuffer = Buffer.alloc(256);
+  const leftSource = Buffer.from(left);
+  const rightSource = Buffer.from(right);
+  leftSource.copy(leftBuffer, 0, 0, Math.min(leftSource.length, leftBuffer.length));
+  rightSource.copy(rightBuffer, 0, 0, Math.min(rightSource.length, rightBuffer.length));
+  const equal = timingSafeEqual(leftBuffer, rightBuffer);
+  return equal && leftSource.length === rightSource.length && left === right;
+}
+
+function validateSseToken(
+  provided: string,
+  scope: "events:stream",
+  store: Map<string, SseTokenRecord>,
+): boolean {
+  purgeExpiredSseTokens(store);
+  for (const record of store.values()) {
+    if (
+      record.scope === scope
+      && record.expiresAt > Date.now()
+      && timingSafeStringEqual(record.token, provided)
+    ) {
+      // One-time use token.
+      store.delete(record.token);
+      return true;
+    }
   }
-  return timingSafeEqual(leftBuffer, rightBuffer);
+  return false;
+}
+
+function purgeExpiredSseTokens(store: Map<string, SseTokenRecord>): void {
+  const now = Date.now();
+  for (const [key, record] of store.entries()) {
+    if (record.expiresAt <= now) {
+      store.delete(key);
+    }
+  }
 }

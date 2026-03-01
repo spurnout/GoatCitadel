@@ -33,6 +33,7 @@ async function run(): Promise<void> {
       await smokeApprovals(app);
       await smokeAgents(app);
       await smokeIntegrations(app);
+      await smokeSecrets(app);
       await smokeMesh(app);
       await smokeNpu(app);
       await smokeOnboarding(app);
@@ -343,6 +344,17 @@ async function smokeIntegrations(app: Awaited<ReturnType<typeof buildApp>>): Pro
   assert.equal(pathSuggestionsRes.statusCode, 200);
   const suggestionsBody = JSON.parse(pathSuggestionsRes.body) as { items: string[] };
   assert.equal(Array.isArray(suggestionsBody.items), true);
+}
+
+async function smokeSecrets(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const statusRes = await app.inject({
+    method: "GET",
+    url: "/api/v1/secrets/providers/openai/status",
+  });
+  assert.equal(statusRes.statusCode, 200);
+  const body = JSON.parse(statusRes.body) as { providerId: string; hasSecret: boolean; source: string };
+  assert.equal(body.providerId, "openai");
+  assert.equal(typeof body.hasSecret, "boolean");
 }
 
 async function smokeAgents(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

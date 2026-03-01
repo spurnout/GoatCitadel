@@ -23,7 +23,9 @@ export interface LlmProviderSummary {
   apiStyle: LlmApiStyle;
   defaultModel: string;
   hasApiKey: boolean;
-  apiKeySource: "inline" | "env" | "none";
+  apiKeySource: "inline" | "env" | "keychain" | "none";
+  hasKeychainSecret?: boolean;
+  apiKeyRef?: string;
 }
 
 export interface LlmRuntimeConfig {

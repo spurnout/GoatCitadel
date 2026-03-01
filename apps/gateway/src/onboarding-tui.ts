@@ -106,6 +106,9 @@ async function run(): Promise<void> {
     );
     const activeModel = await ask(rl, "Active model", initialState.settings.llm.activeModel || providerDefaultModel);
     const providerApiKey = await ask(rl, "Provider API key (optional)", "");
+    const saveProviderApiKeyToSecureStore = providerApiKey
+      ? await askYesNo(rl, "Save provider key to OS secure store?", true)
+      : false;
     const providerApiKeyEnv = await ask(rl, "Provider API key env var (optional)", "");
 
     const defaultToolProfile = await askChoice(
@@ -178,7 +181,7 @@ async function run(): Promise<void> {
               label: providerLabel,
               baseUrl: providerBaseUrl,
               defaultModel: providerDefaultModel,
-              apiKey: providerApiKey || undefined,
+              apiKey: saveProviderApiKeyToSecureStore ? (providerApiKey || undefined) : undefined,
               apiKeyEnv: providerApiKeyEnv || undefined,
             },
           },
@@ -203,6 +206,9 @@ async function run(): Promise<void> {
     output.write(`- completed: ${bootstrap.state.completed ? "yes" : "no"}\n`);
     for (const item of bootstrap.state.checklist) {
       output.write(`- ${item.label}: ${item.status}\n`);
+    }
+    if (providerApiKey && !saveProviderApiKeyToSecureStore) {
+      output.write("- provider key was not saved to secure store; set an env var if needed.\n");
     }
 
     output.write("\nDone.\n");

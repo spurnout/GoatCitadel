@@ -27,14 +27,27 @@ import { agentsRoutes } from "./routes/agents.js";
 import { toolsRoutes } from "./routes/tools.js";
 import { commsRoutes } from "./routes/comms.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
+import { authRoutes } from "./routes/auth.js";
+import { secretsRoutes } from "./routes/secrets.js";
 
 loadLocalEnvFile();
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
+  const allowedOrigins = resolveAllowedOrigins();
 
   await app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      if (!origin) {
+        cb(null, true);
+        return;
+      }
+      if (allowedOrigins.has(origin)) {
+        cb(null, true);
+        return;
+      }
+      cb(new Error("Origin not allowed by CORS policy"), false);
+    },
   });
 
   await app.register(gatewayPlugin);
@@ -42,6 +55,8 @@ export async function buildApp() {
   await app.register(idempotencyHeaderPlugin);
 
   await app.register(healthRoute);
+  await app.register(authRoutes);
+  await app.register(secretsRoutes);
   await app.register(gatewayEventsRoute);
   await app.register(sessionsListRoute);
   await app.register(toolsInvokeRoute);
@@ -66,4 +81,23 @@ export async function buildApp() {
   await app.register(knowledgeRoutes);
 
   return app;
+}
+
+function resolveAllowedOrigins(): Set<string> {
+  const defaults = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "http://127.0.0.1:8787",
+  ];
+  const envRaw = process.env.GOATCITADEL_ALLOWED_ORIGINS;
+  if (!envRaw?.trim()) {
+    return new Set(defaults);
+  }
+  const fromEnv = envRaw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return new Set(fromEnv.length > 0 ? fromEnv : defaults);
 }

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   createLlmChatCompletion,
+  deleteProviderSecret,
   evaluateUiChangeRisk,
   fetchLlmModels,
+  fetchProviderSecretStatus,
   fetchSettings,
   patchSettings,
+  saveProviderSecret,
+  type ProviderSecretStatus,
   type RuntimeSettingsResponse,
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
@@ -179,6 +183,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [providerDefaultModel, setProviderDefaultModel] = useState("local-model");
   const [providerApiKey, setProviderApiKey] = useState("");
   const [providerApiKeyEnv, setProviderApiKeyEnv] = useState("");
+  const [providerSecretStatus, setProviderSecretStatus] = useState<ProviderSecretStatus | null>(null);
   const [authMode, setAuthMode] = useState<"none" | "token" | "basic">("none");
   const [allowLoopbackBypass, setAllowLoopbackBypass] = useState(false);
   const [authToken, setAuthToken] = useState("");
@@ -257,6 +262,9 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           setProviderLabel(activeProvider.label);
           setProviderBaseUrl(activeProvider.baseUrl);
           setProviderDefaultModel(activeProvider.defaultModel);
+          if (activeProvider.apiKeySource === "env" && activeProvider.apiKeyRef) {
+            setProviderApiKeyEnv(activeProvider.apiKeyRef);
+          }
         }
 
         setChatPromptPresetId("hello");
@@ -305,6 +313,17 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         });
       });
   }, [settings, profile, budgetMode, networkAllowlistText, authMode, providerId, providerBaseUrl]);
+
+  useEffect(() => {
+    const normalized = providerId.trim();
+    if (!normalized) {
+      setProviderSecretStatus(null);
+      return;
+    }
+    void fetchProviderSecretStatus(normalized)
+      .then((status) => setProviderSecretStatus(status))
+      .catch(() => setProviderSecretStatus(null));
+  }, [providerId, settings]);
 
   const onSaveRuntime = async () => {
     if (changeReview.overall === "critical" && !criticalConfirmed) {
@@ -358,11 +377,43 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             label: providerLabel || undefined,
             baseUrl: providerBaseUrl || undefined,
             defaultModel: providerDefaultModel || undefined,
-            apiKey: providerApiKey || undefined,
             apiKeyEnv: providerApiKeyEnv || undefined,
           },
         },
       });
+      setSettings(next);
+      if (providerApiKey.trim()) {
+        const status = await saveProviderSecret(providerId, providerApiKey.trim());
+        setProviderSecretStatus(status);
+        setProviderApiKey("");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onSaveProviderKeyToSecureStore = async () => {
+    const trimmed = providerApiKey.trim();
+    if (!trimmed) {
+      setError("Enter a provider API key first.");
+      return;
+    }
+    try {
+      const status = await saveProviderSecret(providerId, trimmed);
+      setProviderSecretStatus(status);
+      setProviderApiKey("");
+      const next = await fetchSettings();
+      setSettings(next);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const onDeleteProviderKeyFromSecureStore = async () => {
+    try {
+      const status = await deleteProviderSecret(providerId);
+      setProviderSecretStatus(status);
+      const next = await fetchSettings();
       setSettings(next);
     } catch (err) {
       setError((err as Error).message);
@@ -725,6 +776,17 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 value={providerApiKey}
                 onChange={(event) => setProviderApiKey(event.target.value)}
               />
+            </div>
+            <p className="office-subtitle">
+              Key source: {providerSecretStatus?.source ?? providerOptions.find((provider) => provider.providerId === providerId)?.apiKeySource ?? "none"}
+            </p>
+            <div className="controls-row">
+              <button onClick={onSaveProviderKeyToSecureStore} disabled={!providerApiKey.trim()}>
+                Save Key to Secure Store
+              </button>
+              <button onClick={onDeleteProviderKeyFromSecureStore}>
+                Remove Secure Key
+              </button>
             </div>
             <div className="controls-row">
               <label htmlFor="providerApiKeyEnv">API Key Env (optional)</label>
