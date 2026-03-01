@@ -83,3 +83,25 @@ export interface GatewayEventResult {
   session: SessionMeta;
   transcriptOffset: number;
 }
+
+export interface SessionSummary {
+  session: SessionMeta;
+  transcriptEventCount: number;
+  latestEventAt?: string;
+  latestEventType?: string;
+  lastMessagePreview?: string;
+  countsByType: Record<string, number>;
+}
+
+export interface SessionTimelineItem {
+  eventId: string;
+  timestamp: string;
+  type: TranscriptEvent["type"];
+  actorType: TranscriptEvent["actorType"];
+  actorId: string;
+  preview: string;
+  payload: Record<string, unknown>;
+  tokenInput?: number;
+  tokenOutput?: number;
+  costUsd?: number;
+}

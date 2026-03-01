@@ -25,14 +25,20 @@ import type {
   OnboardingBootstrapResult,
   OnboardingState,
   PendingApprovalAction,
+  IntegrationFormSchema,
   SessionMeta,
+  SessionSummary,
+  SessionTimelineItem,
   ToolAccessEvaluateRequest,
   ToolAccessEvaluateResponse,
   ToolCatalogEntry,
   ToolGrantCreateInput,
   ToolGrantRecord,
   ToolInvokeResult,
+  UiActionState,
 } from "@goatcitadel/contracts";
+
+export type { SessionSummary, SessionTimelineItem };
 
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:8787";
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
@@ -55,6 +61,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await res.json()) as T;
+}
+
+export interface UiActionResult<T> {
+  state: UiActionState;
+  startedAt: string;
+  finishedAt: string;
+  data?: T;
+  error?: string;
+}
+
+export async function runUiAction<T>(operation: () => Promise<T>): Promise<UiActionResult<T>> {
+  const startedAt = new Date().toISOString();
+  try {
+    const data = await operation();
+    return {
+      state: "success",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      data,
+    };
+  } catch (error) {
+    return {
+      state: "error",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      error: (error as Error).message,
+    };
+  }
 }
 
 function readGatewayAuthHeaders(path: string): Record<string, string> {
@@ -310,6 +344,7 @@ export interface IntegrationCatalogEntry {
   authMethods: string[];
   capabilities: string[];
   docsUrl?: string;
+  formSchema?: IntegrationFormSchema;
 }
 
 export interface IntegrationConnection {
@@ -390,6 +425,16 @@ export interface MeshReplicationOffsetRecord {
 
 export async function fetchSessions(): Promise<SessionsResponse> {
   return request<SessionsResponse>("/api/v1/sessions?limit=50");
+}
+
+export async function fetchSessionSummary(sessionId: string): Promise<SessionSummary> {
+  return request<SessionSummary>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/summary`);
+}
+
+export async function fetchSessionTimeline(sessionId: string, limit = 200): Promise<{ items: SessionTimelineItem[] }> {
+  return request<{ items: SessionTimelineItem[] }>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${Math.max(1, Math.min(limit, 1000))}`,
+  );
 }
 
 export async function fetchApprovals(status = "pending"): Promise<ApprovalsResponse> {
@@ -783,6 +828,15 @@ export async function fetchFilesList(
   );
 }
 
+export async function fetchPathSuggestions(
+  root = ".",
+  limit = 150,
+): Promise<{ items: string[] }> {
+  return request<{ items: string[] }>(
+    `/api/v1/files/path-suggestions?root=${encodeURIComponent(root)}&limit=${Math.max(1, Math.min(limit, 500))}`,
+  );
+}
+
 export interface FileTemplate {
   templateId: string;
   title: string;
@@ -967,6 +1021,12 @@ export async function fetchIntegrationCatalog(
   return request(`/api/v1/integrations/catalog${query}`);
 }
 
+export async function fetchIntegrationFormSchema(catalogId: string): Promise<IntegrationFormSchema> {
+  return request<IntegrationFormSchema>(
+    `/api/v1/integrations/catalog/${encodeURIComponent(catalogId)}/form-schema`,
+  );
+}
+
 export async function fetchIntegrationConnections(
   kind?: IntegrationConnection["kind"],
 ): Promise<{ items: IntegrationConnection[] }> {
@@ -1101,25 +1161,38 @@ export async function evaluateUiChangeRisk(input: {
   });
 }
 
-export type EventStreamConnectionState = "connecting" | "open" | "error" | "closed";
+export type EventStreamConnectionState = "connecting" | "open" | "retrying" | "error" | "closed";
+
+export interface EventStreamStatus {
+  state: EventStreamConnectionState;
+  reconnectAttempts: number;
+  lastEventAt?: string;
+  lastErrorAt?: string;
+}
 
 interface EventStreamSubscriber {
   onEvent: (event: RealtimeEvent) => void;
   onStateChange?: (state: EventStreamConnectionState) => void;
+  onStatusChange?: (status: EventStreamStatus) => void;
 }
 
 const eventStreamSubscribers = new Set<EventStreamSubscriber>();
 let sharedEventSource: EventSource | null = null;
 let eventReconnectTimer: number | null = null;
 let eventConnectionState: EventStreamConnectionState = "closed";
+let reconnectAttempts = 0;
+let lastEventAt: string | undefined;
+let lastErrorAt: string | undefined;
 
 export function connectEventStream(
   onEvent: (event: RealtimeEvent) => void,
   onStateChange?: (state: EventStreamConnectionState) => void,
+  onStatusChange?: (status: EventStreamStatus) => void,
 ): () => void {
-  const subscriber: EventStreamSubscriber = { onEvent, onStateChange };
+  const subscriber: EventStreamSubscriber = { onEvent, onStateChange, onStatusChange };
   eventStreamSubscribers.add(subscriber);
   notifyEventStreamState(subscriber, eventConnectionState);
+  notifyEventStreamStatus(subscriber, buildEventStreamStatus());
   ensureEventStreamConnected();
 
   return () => {
@@ -1128,6 +1201,9 @@ export function connectEventStream(
       closeSharedEventSource();
       clearReconnectTimer();
       setEventConnectionState("closed");
+      reconnectAttempts = 0;
+      lastEventAt = undefined;
+      lastErrorAt = undefined;
     }
   };
 }
@@ -1174,12 +1250,15 @@ function ensureEventStreamConnected(): void {
   sharedEventSource = source;
 
   source.onopen = () => {
+    reconnectAttempts = 0;
     setEventConnectionState("open");
   };
 
   source.onmessage = (evt) => {
     try {
       const event = JSON.parse(evt.data) as RealtimeEvent;
+      lastEventAt = event.timestamp || new Date().toISOString();
+      notifyEventStreamStatusToAll();
       for (const subscriber of eventStreamSubscribers) {
         subscriber.onEvent(event);
       }
@@ -1194,6 +1273,7 @@ function ensureEventStreamConnected(): void {
       setEventConnectionState("closed");
       return;
     }
+    lastErrorAt = new Date().toISOString();
     setEventConnectionState("error");
     scheduleReconnect();
   };
@@ -1203,6 +1283,9 @@ function scheduleReconnect(): void {
   if (eventReconnectTimer !== null || typeof window === "undefined") {
     return;
   }
+
+  reconnectAttempts += 1;
+  setEventConnectionState("retrying");
 
   eventReconnectTimer = window.setTimeout(() => {
     eventReconnectTimer = null;
@@ -1230,9 +1313,30 @@ function setEventConnectionState(state: EventStreamConnectionState): void {
   eventConnectionState = state;
   for (const subscriber of eventStreamSubscribers) {
     notifyEventStreamState(subscriber, state);
+    notifyEventStreamStatus(subscriber, buildEventStreamStatus());
   }
 }
 
 function notifyEventStreamState(subscriber: EventStreamSubscriber, state: EventStreamConnectionState): void {
   subscriber.onStateChange?.(state);
+}
+
+function notifyEventStreamStatusToAll(): void {
+  const status = buildEventStreamStatus();
+  for (const subscriber of eventStreamSubscribers) {
+    notifyEventStreamStatus(subscriber, status);
+  }
+}
+
+function notifyEventStreamStatus(subscriber: EventStreamSubscriber, status: EventStreamStatus): void {
+  subscriber.onStatusChange?.(status);
+}
+
+function buildEventStreamStatus(): EventStreamStatus {
+  return {
+    state: eventConnectionState,
+    reconnectAttempts,
+    lastEventAt,
+    lastErrorAt,
+  };
 }

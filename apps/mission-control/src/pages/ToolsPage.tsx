@@ -9,6 +9,7 @@ import {
   revokeToolGrant,
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { CardSkeleton } from "../components/CardSkeleton";
 
 interface ToolsPageProps {
   refreshKey: number;
@@ -172,7 +173,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
       />
 
       {error ? <p className="error">{error}</p> : null}
-      {loading ? <p>Loading tool catalog and grants...</p> : null}
+      {loading ? <CardSkeleton lines={8} /> : null}
 
       <div className="split-grid">
         <div className="card">

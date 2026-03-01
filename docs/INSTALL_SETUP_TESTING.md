@@ -17,14 +17,7 @@ corepack enable
 corepack prepare pnpm@10.29.3 --activate
 pnpm install
 Copy-Item .env.example .env -Force
-pnpm dev:gateway:watch
-```
-
-In a second terminal:
-
-```powershell
-cd F:\code\personal-ai
-pnpm dev:ui
+pnpm dev
 ```
 
 Run all commands from:
@@ -90,16 +83,28 @@ You can skip this if using local OpenAI-compatible endpoints only.
 
 ## 4) Start GoatCitadel
 
-Use two terminals.
+Single-command start (recommended):
 
-Terminal A (gateway):
+```powershell
+cd F:\code\personal-ai
+pnpm dev
+```
+
+This starts both:
+
+- Gateway (Fastify)
+- Mission Control (Vite)
+
+Optional split mode (useful for focused logs/troubleshooting):
+
+Terminal A:
 
 ```powershell
 cd F:\code\personal-ai
 pnpm dev:gateway
 ```
 
-Terminal B (web UI):
+Terminal B:
 
 ```powershell
 cd F:\code\personal-ai

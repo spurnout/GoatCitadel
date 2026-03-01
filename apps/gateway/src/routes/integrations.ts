@@ -57,6 +57,10 @@ const connectionParamsSchema = z.object({
   connectionId: z.string().uuid(),
 });
 
+const catalogParamsSchema = z.object({
+  catalogId: z.string().min(3),
+});
+
 export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/integrations/catalog", async (request, reply) => {
     const parsed = catalogQuerySchema.safeParse(request.query);
@@ -64,6 +68,18 @@ export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     return reply.send({ items: fastify.gateway.listIntegrationCatalog(parsed.data.kind) });
+  });
+
+  fastify.get("/api/v1/integrations/catalog/:catalogId/form-schema", async (request, reply) => {
+    const params = catalogParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getIntegrationFormSchema(params.data.catalogId));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
   });
 
   fastify.get("/api/v1/integrations/connections", async (request, reply) => {

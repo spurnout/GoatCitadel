@@ -7,11 +7,16 @@ import {
   type ApprovalsResponse,
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { ConfirmModal } from "../components/ConfirmModal";
+import { CardSkeleton } from "../components/CardSkeleton";
+import { useAction } from "../hooks/useAction";
 
 export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
   const [replayById, setReplayById] = useState<Record<string, ApprovalReplayResponse>>({});
+  const [pendingDecision, setPendingDecision] = useState<{ approvalId: string; decision: "approve" | "reject" } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const resolveAction = useAction();
 
   const load = () => {
     void fetchApprovals("pending")
@@ -24,17 +29,8 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }, [refreshKey]);
 
   const onResolve = async (approvalId: string, decision: "approve" | "reject") => {
-    const confirmed = window.confirm(
-      decision === "approve"
-        ? "Approve this action and execute it now?"
-        : "Reject this approval request?",
-    );
-    if (!confirmed) {
-      return;
-    }
-
     try {
-      const result = await resolveApproval(approvalId, decision);
+      const result = await resolveAction.run(async () => resolveApproval(approvalId, decision));
       if (result.executedAction) {
         setError(
           `Approval ${approvalId} resolved and action ${result.executedAction.outcome}: ${result.executedAction.policyReason}`,
@@ -58,7 +54,7 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   if (!data) {
-    return <p>Loading gatehouse queue...</p>;
+    return <CardSkeleton lines={7} />;
   }
 
   return (
@@ -146,8 +142,8 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
             <pre>{JSON.stringify(approval.preview, null, 2)}</pre>
             <div className="actions">
-              <button onClick={() => onResolve(approval.approvalId, "approve")}>Approve</button>
-              <button className="danger" onClick={() => onResolve(approval.approvalId, "reject")}>Reject</button>
+              <button onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "approve" })}>Approve</button>
+              <button className="danger" onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "reject" })}>Reject</button>
               <button onClick={() => onReplay(approval.approvalId)}>Replay</button>
             </div>
             {replay ? (
@@ -168,6 +164,26 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           </article>
         );
       })}
+      <ConfirmModal
+        open={Boolean(pendingDecision)}
+        title={pendingDecision?.decision === "approve" ? "Approve Action" : "Reject Approval"}
+        message={
+          pendingDecision?.decision === "approve"
+            ? "Approve this action and execute it now?"
+            : "Reject this approval request?"
+        }
+        confirmLabel={resolveAction.pending ? "Applying..." : (pendingDecision?.decision === "approve" ? "Approve" : "Reject")}
+        danger={pendingDecision?.decision === "reject"}
+        onCancel={() => setPendingDecision(null)}
+        onConfirm={() => {
+          if (!pendingDecision) {
+            return;
+          }
+          void onResolve(pendingDecision.approvalId, pendingDecision.decision).finally(() => {
+            setPendingDecision(null);
+          });
+        }}
+      />
     </section>
   );
 }

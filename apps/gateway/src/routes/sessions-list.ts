@@ -6,6 +6,10 @@ const querySchema = z.object({
   cursor: z.string().optional(),
 });
 
+const timelineQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).default(200),
+});
+
 export const sessionsListRoute: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/sessions", async (request, reply) => {
     const parsed = querySchema.safeParse(request.query);
@@ -31,5 +35,19 @@ export const sessionsListRoute: FastifyPluginAsync = async (fastify) => {
     const sessionId = (request.params as { sessionId: string }).sessionId;
     const events = await fastify.gateway.getTranscript(sessionId);
     return reply.send({ items: events });
+  });
+
+  fastify.get("/api/v1/sessions/:sessionId/summary", async (request, reply) => {
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    return reply.send(await fastify.gateway.getSessionSummary(sessionId));
+  });
+
+  fastify.get("/api/v1/sessions/:sessionId/timeline", async (request, reply) => {
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    const parsed = timelineQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send({ items: await fastify.gateway.listSessionTimeline(sessionId, parsed.data.limit) });
   });
 };

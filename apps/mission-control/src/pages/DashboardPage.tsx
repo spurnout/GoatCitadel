@@ -11,8 +11,17 @@ import {
   type SystemVitalsResponse,
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { CardSkeleton } from "../components/CardSkeleton";
 
-export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
+type DashboardTab = "approvals" | "tasks" | "sessions" | "settings" | "integrations" | "office";
+
+export function DashboardPage({
+  refreshKey = 0,
+  onNavigate,
+}: {
+  refreshKey?: number;
+  onNavigate?: (tab: DashboardTab) => void;
+}) {
   const [state, setState] = useState<DashboardStateResponse | null>(null);
   const [vitals, setVitals] = useState<SystemVitalsResponse | null>(null);
   const [cron, setCron] = useState<CronJobsResponse | null>(null);
@@ -48,7 +57,15 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }
 
   if (!state || !vitals || !cron || !operators) {
-    return <p>Loading summit overview...</p>;
+    return (
+      <section>
+        <h2>Summit</h2>
+        <div className="metric-grid">
+          <CardSkeleton lines={5} />
+          <CardSkeleton lines={5} />
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -69,6 +86,19 @@ export function DashboardPage({ refreshKey = 0 }: { refreshKey?: number }) {
         ]}
       />
       {error ? <p className="error">{error}</p> : null}
+
+      <article className="card">
+        <h3>Quick Actions</h3>
+        <p className="office-subtitle">Jump to the most common operator workflows.</p>
+        <div className="actions">
+          <button type="button" onClick={() => onNavigate?.("approvals")}>Review Approvals</button>
+          <button type="button" onClick={() => onNavigate?.("tasks")}>Open Trailboard</button>
+          <button type="button" onClick={() => onNavigate?.("sessions")}>Inspect Runs</button>
+          <button type="button" onClick={() => onNavigate?.("office")}>Open Herd HQ</button>
+          <button type="button" onClick={() => onNavigate?.("settings")}>Tune Forge Settings</button>
+          <button type="button" onClick={() => onNavigate?.("integrations")}>Configure Connections</button>
+        </div>
+      </article>
 
       <div className="metric-grid">
         <article className="card">

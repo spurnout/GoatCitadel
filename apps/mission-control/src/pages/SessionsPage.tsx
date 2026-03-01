@@ -1,18 +1,47 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchSessions, type SessionsResponse } from "../api/client";
-import { SelectOrCustom } from "../components/SelectOrCustom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  fetchSessionSummary,
+  fetchSessionTimeline,
+  fetchSessions,
+  type SessionSummary,
+  type SessionTimelineItem,
+  type SessionsResponse,
+} from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { SelectOrCustom } from "../components/SelectOrCustom";
+import { CardSkeleton } from "../components/CardSkeleton";
+import { TableSkeleton } from "../components/TableSkeleton";
 
 export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [search, setSearch] = useState("");
   const [healthFilter, setHealthFilter] = useState<"all" | "healthy" | "degraded" | "blocked">("all");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [summary, setSummary] = useState<SessionSummary | null>(null);
+  const [timeline, setTimeline] = useState<SessionTimelineItem[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<"split" | "table">("split");
   const [error, setError] = useState<string | null>(null);
+  const detailsRequestSeq = useRef(0);
 
   useEffect(() => {
+    let cancelled = false;
     void fetchSessions()
-      .then(setData)
-      .catch((err: Error) => setError(err.message));
+      .then((next) => {
+        if (cancelled) {
+          return;
+        }
+        setData(next);
+        setSelectedSessionId((current) => current ?? next.items[0]?.sessionId ?? null);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) {
+          setError(err.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey]);
 
   const items = data?.items ?? [];
@@ -30,6 +59,37 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     });
   }, [healthFilter, items, search]);
 
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setSummary(null);
+      setTimeline([]);
+      return;
+    }
+    const requestId = ++detailsRequestSeq.current;
+    setDetailsLoading(true);
+    void Promise.all([
+      fetchSessionSummary(selectedSessionId),
+      fetchSessionTimeline(selectedSessionId, 160),
+    ])
+      .then(([summaryRes, timelineRes]) => {
+        if (requestId !== detailsRequestSeq.current) {
+          return;
+        }
+        setSummary(summaryRes);
+        setTimeline(timelineRes.items);
+      })
+      .catch((err: Error) => {
+        if (requestId === detailsRequestSeq.current) {
+          setError(err.message);
+        }
+      })
+      .finally(() => {
+        if (requestId === detailsRequestSeq.current) {
+          setDetailsLoading(false);
+        }
+      });
+  }, [selectedSessionId]);
+
   const totalTokens = filtered.reduce((sum, session) => sum + session.tokenTotal, 0);
   const totalCost = filtered.reduce((sum, session) => sum + session.costUsdTotal, 0);
 
@@ -44,12 +104,21 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return [...values].filter(Boolean).map((value) => ({ value, label: value }));
   }, [items]);
 
-  if (error) {
+  const selected = filtered.find((session) => session.sessionId === selectedSessionId)
+    ?? filtered[0]
+    ?? null;
+
+  if (error && !data) {
     return <p className="error">{error}</p>;
   }
 
   if (!data) {
-    return <p>Loading herd runs...</p>;
+    return (
+      <section>
+        <h2>Runs</h2>
+        <CardSkeleton lines={5} />
+      </section>
+    );
   }
 
   return (
@@ -57,18 +126,19 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <h2>Runs</h2>
       <p className="office-subtitle">Live session health, token usage, and feed-cost visibility.</p>
       <PageGuideCard
-        what="Summarizes session health and usage across current runs."
-        when="Use this to monitor operational health, not detailed chat history."
+        what="Summarizes session health and usage across current runs and lets you inspect each run in detail."
+        when="Use this to monitor active conversations and drill into event timelines."
         actions={[
-          "Filter by health to find blocked or degraded sessions.",
-          "Use token/cost totals to identify expensive runs.",
-          "Use session keys to map channels and routes.",
+          "Filter sessions by health/search.",
+          "Select a run from the left panel.",
+          "Inspect summary and timeline on the right panel.",
         ]}
         terms={[
-          { term: "Session", meaning: "A routed conversation context keyed by channel/account/peer or room/thread." },
-          { term: "Health", meaning: "High-level status for whether a session is operating normally." },
+          { term: "Session", meaning: "A routed conversation keyed by channel/account/peer or room/thread." },
+          { term: "Timeline", meaning: "Chronological transcript events for the selected run." },
         ]}
       />
+      {error ? <p className="error">{error}</p> : null}
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
@@ -110,30 +180,91 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <option value="degraded">degraded</option>
           <option value="blocked">blocked</option>
         </select>
+        <button type="button" onClick={() => setViewMode((current) => (current === "split" ? "table" : "split"))}>
+          {viewMode === "split" ? "Switch to table view" : "Switch to split view"}
+        </button>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Session Key</th>
-            <th>Health</th>
-            <th>Updated</th>
-            <th>Tokens</th>
-            <th>Cost (USD)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((session) => (
-            <tr key={session.sessionId}>
-              <td>{session.sessionKey}</td>
-              <td><span className={`token-chip`}>{session.health}</span></td>
-              <td>{new Date(session.updatedAt).toLocaleString()}</td>
-              <td>{session.tokenTotal}</td>
-              <td>{session.costUsdTotal.toFixed(4)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {viewMode === "table" ? (
+        <article className="card">
+          <h3>Sessions Table</h3>
+          {detailsLoading ? <TableSkeleton rows={6} cols={5} /> : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Session Key</th>
+                  <th>Health</th>
+                  <th>Updated</th>
+                  <th>Tokens</th>
+                  <th>Cost (USD)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((session) => (
+                  <tr key={session.sessionId}>
+                    <td>{session.sessionKey}</td>
+                    <td><span className="token-chip">{session.health}</span></td>
+                    <td>{new Date(session.updatedAt).toLocaleString()}</td>
+                    <td>{session.tokenTotal}</td>
+                    <td>{session.costUsdTotal.toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </article>
+      ) : (
+        <div className="split-grid">
+          <article className="card">
+            <h3>Run List</h3>
+            <ul className="compact-list">
+              {filtered.map((session) => (
+                <li key={session.sessionId}>
+                  <button
+                    type="button"
+                    className={session.sessionId === selected?.sessionId ? "active" : ""}
+                    onClick={() => setSelectedSessionId(session.sessionId)}
+                  >
+                    {session.sessionKey}
+                  </button>
+                  <p className="office-subtitle">
+                    {session.health} | {new Date(session.updatedAt).toLocaleString()} | ${session.costUsdTotal.toFixed(4)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </article>
+
+          <article className="card">
+            <h3>Run Detail</h3>
+            {!selected ? <p className="office-subtitle">Select a session to inspect details.</p> : null}
+            {detailsLoading ? <CardSkeleton lines={7} /> : null}
+            {selected && !detailsLoading ? (
+              <>
+                <p><strong>{selected.sessionKey}</strong></p>
+                <p className="office-subtitle">
+                  Session ID: {selected.sessionId}
+                </p>
+                <p className="office-subtitle">
+                  Last message: {summary?.lastMessagePreview ?? "(none yet)"}
+                </p>
+                <p className="office-subtitle">
+                  Timeline events: {summary?.transcriptEventCount ?? 0}
+                </p>
+                <h4>Recent Timeline</h4>
+                <ul className="compact-list">
+                  {timeline.length === 0 ? <li>No transcript events yet.</li> : timeline.slice(0, 40).map((item) => (
+                    <li key={item.eventId}>
+                      <strong>{item.type}</strong> [{item.actorType}] {new Date(item.timestamp).toLocaleString()}
+                      <p className="office-subtitle">{item.preview}</p>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </article>
+        </div>
+      )}
     </section>
   );
 }

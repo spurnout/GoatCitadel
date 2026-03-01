@@ -1,0 +1,143 @@
+import { useMemo, useState } from "react";
+import type { IntegrationFieldSchema, IntegrationFormSchema } from "@goatcitadel/contracts";
+import { SelectOrCustom } from "./SelectOrCustom";
+
+interface ConfigFormBuilderProps {
+  schema?: IntegrationFormSchema;
+  value: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+}
+
+export function ConfigFormBuilder({ schema, value, onChange }: ConfigFormBuilderProps) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const fields = useMemo(() => {
+    if (!schema) {
+      return [];
+    }
+    return schema.fields.filter((field) => (showAdvanced ? true : !field.advanced));
+  }, [schema, showAdvanced]);
+
+  if (!schema) {
+    return <p className="office-subtitle">No guided schema available. Use advanced JSON.</p>;
+  }
+
+  const setField = (field: IntegrationFieldSchema, nextValue: unknown) => {
+    onChange({
+      ...value,
+      [field.key]: nextValue,
+    });
+  };
+
+  return (
+    <article className="card">
+      <h4>{schema.title}</h4>
+      {schema.description ? <p className="office-subtitle">{schema.description}</p> : null}
+      {schema.fields.some((field) => field.advanced) ? (
+        <button type="button" onClick={() => setShowAdvanced((current) => !current)}>
+          {showAdvanced ? "Hide Advanced Fields" : "Show Advanced Fields"}
+        </button>
+      ) : null}
+      {fields.map((field) => (
+        <div key={field.key} className="controls-row">
+          <label htmlFor={`integration-field-${field.key}`}>
+            {field.label}
+            {field.required ? " *" : ""}
+          </label>
+          <FieldInput
+            field={field}
+            value={value[field.key] ?? field.defaultValue}
+            onChange={(nextValue) => setField(field, nextValue)}
+          />
+          {field.secretRef ? <span className="token-chip">ENV Ref</span> : null}
+          {field.description ? <p className="office-subtitle">{field.description}</p> : null}
+        </div>
+      ))}
+    </article>
+  );
+}
+
+function FieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: IntegrationFieldSchema;
+  value: unknown;
+  onChange: (next: unknown) => void;
+}) {
+  if (field.type === "boolean") {
+    return (
+      <label>
+        <input
+          id={`integration-field-${field.key}`}
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={(event) => onChange(event.target.checked)}
+        />{" "}
+        enabled
+      </label>
+    );
+  }
+
+  if (field.type === "select") {
+    const options = field.options ?? [];
+    return (
+      <SelectOrCustom
+        id={`integration-field-${field.key}`}
+        value={String(value ?? "")}
+        onChange={(next) => onChange(next)}
+        options={options.map((option) => ({ value: option.value, label: option.label }))}
+        customPlaceholder={field.placeholder ?? "Custom value"}
+      />
+    );
+  }
+
+  if (field.type === "textarea" || field.type === "json") {
+    return (
+      <textarea
+        id={`integration-field-${field.key}`}
+        className="full-textarea"
+        rows={field.type === "json" ? 6 : 4}
+        value={stringifyValue(value)}
+        placeholder={field.placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    );
+  }
+
+  const inputType = field.type === "password" ? "password" : field.type === "number" ? "number" : "text";
+  return (
+    <input
+      id={`integration-field-${field.key}`}
+      type={inputType}
+      value={stringifyValue(value)}
+      placeholder={field.placeholder}
+      onChange={(event) => {
+        if (field.type === "number") {
+          const parsed = Number(event.target.value);
+          onChange(Number.isFinite(parsed) ? parsed : undefined);
+          return;
+        }
+        onChange(event.target.value);
+      }}
+    />
+  );
+}
+
+function stringifyValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}

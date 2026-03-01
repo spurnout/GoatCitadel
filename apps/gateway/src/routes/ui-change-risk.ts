@@ -86,7 +86,35 @@ function evaluateItem(pageId: string, field: string, from: unknown, to: unknown)
     };
   }
 
-  if (pageId === "files" && normalizedField.includes("path")) {
+  if (normalizedField.startsWith("auth.") && normalizedField.includes("password")) {
+    return {
+      field,
+      level: "critical",
+      reasonCodes: ["auth_secret_change"],
+      hint: "Credential changes can lock out clients. Confirm intended update.",
+    };
+  }
+
+  if (normalizedField.startsWith("integration.") && normalizedField.includes("config")) {
+    if (next.includes("http://") && !next.includes("127.0.0.1") && !next.includes("localhost")) {
+      return {
+        field,
+        level: "critical",
+        reasonCodes: ["integration_plain_http"],
+        hint: "Remote plain HTTP endpoint detected. Use HTTPS for production safety.",
+      };
+    }
+    if (next.toLowerCase().includes("token") || next.toLowerCase().includes("secret")) {
+      return {
+        field,
+        level: "warning",
+        reasonCodes: ["integration_secret_inline"],
+        hint: "Prefer ENV-backed secret references instead of inline credential values.",
+      };
+    }
+  }
+
+  if ((pageId === "files" || normalizedField.startsWith("paths.") || normalizedField.includes("path")) && normalizedField.includes("path")) {
     if (next.includes("..")) {
       return {
         field,
@@ -171,4 +199,3 @@ function stringifyValue(value: unknown): string {
     return String(value);
   }
 }
-

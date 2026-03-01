@@ -151,10 +151,17 @@ pnpm install
 
 ## Run Locally
 
-Start gateway:
+Start both gateway + UI (recommended):
+
+```bash
+pnpm dev
+```
+
+Optional split mode:
 
 ```bash
 pnpm dev:gateway
+pnpm dev:ui
 ```
 
 `pnpm dev:gateway` runs the gateway supervisor for reliable restart-on-change.

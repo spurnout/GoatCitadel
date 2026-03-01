@@ -12,7 +12,9 @@ import {
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { ConfirmModal } from "../components/ConfirmModal";
 import { buildAgentDirectory, BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
+import { useAction } from "../hooks/useAction";
 
 type AgentView = "active" | "archived" | "all";
 
@@ -47,6 +49,11 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<AgentFormState>(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<
+    | { type: "archive"; name: string }
+    | { type: "hardDelete"; name: string }
+    | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [criticalConfirmed, setCriticalConfirmed] = useState(false);
@@ -57,6 +64,8 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     overall: "safe",
     items: [],
   });
+  const archiveAction = useAction();
+  const hardDeleteAction = useAction();
 
   const selected = useMemo(
     () => agentsResponse.items.find((agent) => agent.agentId === selectedAgentId),
@@ -210,15 +219,11 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!selected) {
       return;
     }
-    const confirmed = window.confirm(`Archive agent "${selected.name}"?`);
-    if (!confirmed) {
-      return;
-    }
     try {
-      const archived = await archiveAgentProfile(selected.agentId, {
+      const archived = await archiveAction.run(async () => archiveAgentProfile(selected.agentId, {
         archivedBy: "mission-control",
         archiveReason: "Operator archived from Goat Crew.",
-      });
+      }));
       setInfo(`Archived "${archived.name}".`);
       load();
     } catch (err) {
@@ -243,12 +248,8 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!selected || selected.isBuiltin) {
       return;
     }
-    const confirmed = window.confirm(`Permanently delete "${selected.name}"? This cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
     try {
-      await hardDeleteAgentProfile(selected.agentId);
+      await hardDeleteAction.run(async () => hardDeleteAgentProfile(selected.agentId));
       setInfo(`Deleted "${selected.name}".`);
       setSelectedAgentId(null);
       setCreating(false);
@@ -455,13 +456,17 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   {saving ? "Saving..." : creating ? "Create Agent" : "Save Changes"}
                 </button>
                 {!creating && selected && selected.lifecycleStatus === "active" ? (
-                  <button onClick={() => void onArchive()}>Archive</button>
+                  <button onClick={() => setConfirmAction({ type: "archive", name: selected.name })}>
+                    Archive
+                  </button>
                 ) : null}
                 {!creating && selected && selected.lifecycleStatus === "archived" ? (
                   <button onClick={() => void onRestore()}>Restore</button>
                 ) : null}
                 {!creating && selected && !selected.isBuiltin ? (
-                  <button className="danger" onClick={() => void onHardDelete()}>Delete Permanently</button>
+                  <button className="danger" onClick={() => setConfirmAction({ type: "hardDelete", name: selected.name })}>
+                    Delete Permanently
+                  </button>
                 ) : null}
               </div>
             </>
@@ -470,6 +475,30 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           )}
         </article>
       </div>
+      <ConfirmModal
+        open={Boolean(confirmAction)}
+        title={confirmAction?.type === "archive" ? "Archive Agent" : "Delete Agent Permanently"}
+        message={
+          confirmAction?.type === "archive"
+            ? `Archive "${confirmAction?.name ?? "this agent"}"?`
+            : `Permanently delete "${confirmAction?.name}"? This cannot be undone.`
+        }
+        confirmLabel={
+          confirmAction?.type === "archive"
+            ? (archiveAction.pending ? "Archiving..." : "Archive")
+            : (hardDeleteAction.pending ? "Deleting..." : "Delete Permanently")
+        }
+        danger={confirmAction?.type === "hardDelete"}
+        onCancel={() => setConfirmAction(null)}
+        onConfirm={() => {
+          const action = confirmAction;
+          setConfirmAction(null);
+          if (!action) {
+            return;
+          }
+          void (action.type === "archive" ? onArchive() : onHardDelete());
+        }}
+      />
     </section>
   );
 }

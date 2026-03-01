@@ -99,6 +99,29 @@ async function smokeSessions(app: Awaited<ReturnType<typeof buildApp>>): Promise
   assert.equal(body.items.length >= 1, true);
   assert.equal(typeof body.items[0]?.sessionId, "string");
   assert.equal(typeof body.items[0]?.tokenTotal, "number");
+
+  const firstSessionId = body.items[0]?.sessionId;
+  assert.ok(firstSessionId, "session id should exist");
+
+  const summaryRes = await app.inject({
+    method: "GET",
+    url: `/api/v1/sessions/${firstSessionId}/summary`,
+  });
+  assert.equal(summaryRes.statusCode, 200);
+  const summaryBody = JSON.parse(summaryRes.body) as {
+    session: { sessionId: string };
+    transcriptEventCount: number;
+  };
+  assert.equal(summaryBody.session.sessionId, firstSessionId);
+  assert.equal(typeof summaryBody.transcriptEventCount, "number");
+
+  const timelineRes = await app.inject({
+    method: "GET",
+    url: `/api/v1/sessions/${firstSessionId}/timeline?limit=10`,
+  });
+  assert.equal(timelineRes.statusCode, 200);
+  const timelineBody = JSON.parse(timelineRes.body) as { items: Array<{ eventId: string }> };
+  assert.equal(Array.isArray(timelineBody.items), true);
 }
 
 async function smokeTools(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
@@ -288,6 +311,15 @@ async function smokeIntegrations(app: Awaited<ReturnType<typeof buildApp>>): Pro
   const first = catalog.items[0];
   assert.ok(first, "catalog should return at least one entry");
 
+  const schemaRes = await app.inject({
+    method: "GET",
+    url: `/api/v1/integrations/catalog/${encodeURIComponent(first.catalogId)}/form-schema`,
+  });
+  assert.equal(schemaRes.statusCode, 200);
+  const schemaBody = JSON.parse(schemaRes.body) as { catalogId: string; fields: unknown[] };
+  assert.equal(schemaBody.catalogId, first.catalogId);
+  assert.equal(Array.isArray(schemaBody.fields), true);
+
   const created = await postJson(
     app,
     "/api/v1/integrations/connections",
@@ -303,6 +335,14 @@ async function smokeIntegrations(app: Awaited<ReturnType<typeof buildApp>>): Pro
     },
   );
   assert.equal(created.statusCode, 201);
+
+  const pathSuggestionsRes = await app.inject({
+    method: "GET",
+    url: "/api/v1/files/path-suggestions?root=.&limit=25",
+  });
+  assert.equal(pathSuggestionsRes.statusCode, 200);
+  const suggestionsBody = JSON.parse(pathSuggestionsRes.body) as { items: string[] };
+  assert.equal(Array.isArray(suggestionsBody.items), true);
 }
 
 async function smokeAgents(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

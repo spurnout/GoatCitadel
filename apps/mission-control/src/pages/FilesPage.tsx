@@ -12,14 +12,7 @@ import { ChangeBadge, type UiRiskLevel } from "../components/ChangeBadge";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
-
-const UPLOAD_PATH_SUGGESTIONS = [
-  "notes/example.txt",
-  "memory/daily-log.md",
-  "docs/quick-notes.md",
-  "artifacts/output.txt",
-  "workspace/todo.md",
-].map((value) => ({ value, label: value }));
+import { SmartPathInput } from "../components/SmartPathInput";
 
 export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [files, setFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
@@ -120,12 +113,6 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
     () => files.find((file) => file.relativePath === selectedPath),
     [files, selectedPath],
   );
-
-  const uploadPathOptions = useMemo(() => {
-    const dynamic = files.slice(0, 100).map((file) => file.relativePath);
-    return [...new Set([...UPLOAD_PATH_SUGGESTIONS.map((item) => item.value), ...dynamic])]
-      .map((value) => ({ value, label: value }));
-  }, [files]);
 
   const searchOptions = useMemo(() => {
     const dynamic = files
@@ -261,14 +248,16 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       <article className="card">
         <h3>Save / Upload File</h3>
-        <div className="controls-row">
-          <SelectOrCustom
-            value={uploadPath}
-            onChange={setUploadPath}
-            options={uploadPathOptions}
-            customPlaceholder="Custom workspace path"
-            customLabel="Save path"
-          />
+        <SmartPathInput
+          label="Save path"
+          value={uploadPath}
+          onChange={setUploadPath}
+          root="."
+          riskLevel={pathRisk.overall}
+          placeholder="Custom workspace path"
+          helpText="Pick a suggested path or use custom mode for advanced locations."
+        />
+        <div className="actions">
           <button onClick={() => void onSaveFile()}>Save File</button>
         </div>
         <div className="controls-row">
@@ -299,4 +288,3 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
     </section>
   );
 }
-

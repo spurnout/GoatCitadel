@@ -20,6 +20,11 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(5000).default(1000),
 });
 
+const suggestionsQuerySchema = z.object({
+  root: z.string().default("."),
+  limit: z.coerce.number().int().positive().max(500).default(150),
+});
+
 const createTemplateParamsSchema = z.object({
   templateId: z.string().min(1),
 });
@@ -63,6 +68,23 @@ export const filesRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       const items = await fastify.gateway.listWorkspaceFiles(parsed.data.dir, parsed.data.limit);
+      return reply.send({ items });
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/files/path-suggestions", async (request, reply) => {
+    const parsed = suggestionsQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    try {
+      const items = await fastify.gateway.listWorkspacePathSuggestions(
+        parsed.data.root,
+        parsed.data.limit,
+      );
       return reply.send({ items });
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });

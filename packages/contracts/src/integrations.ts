@@ -1,3 +1,5 @@
+import type { IntegrationFormSchema } from "./ui-forms.js";
+
 export type AuthMode = "none" | "token" | "basic";
 
 export interface AuthRuntimeSettings {
@@ -35,6 +37,7 @@ export interface IntegrationCatalogEntry {
   authMethods: string[];
   capabilities: string[];
   docsUrl?: string;
+  formSchema?: IntegrationFormSchema;
 }
 
 export interface IntegrationConnection {

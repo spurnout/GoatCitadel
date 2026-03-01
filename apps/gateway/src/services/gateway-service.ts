@@ -40,6 +40,7 @@ import type {
   GatewayEventInput,
   GatewayEventResult,
   IntegrationCatalogEntry,
+  IntegrationFormSchema,
   IntegrationConnection,
   IntegrationConnectionCreateInput,
   IntegrationConnectionUpdateInput,
@@ -70,6 +71,8 @@ import type {
   OrchestrationRun,
   PendingApprovalAction,
   RealtimeEvent,
+  SessionSummary,
+  SessionTimelineItem,
   SkillResolveInput,
   SystemVitals,
   TaskActivityCreateInput,
@@ -98,7 +101,7 @@ import type { GatewayRuntimeConfig } from "../config.js";
 import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
-import { INTEGRATION_CATALOG } from "./integration-catalog.js";
+import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-catalog.js";
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
 
@@ -328,6 +331,50 @@ export class GatewayService {
 
   public async getTranscript(sessionId: string) {
     return this.storage.transcripts.read(sessionId);
+  }
+
+  public async getSessionSummary(sessionId: string): Promise<SessionSummary> {
+    const session = this.getSession(sessionId);
+    const events = await this.readTranscriptOrEmpty(sessionId);
+    const latest = events.at(-1);
+    const countsByType: Record<string, number> = {};
+    let lastMessagePreview: string | undefined;
+
+    for (const event of events) {
+      countsByType[event.type] = (countsByType[event.type] ?? 0) + 1;
+      if (event.type === "message.user" || event.type === "message.assistant") {
+        const content = this.extractMessagePreview(event.payload);
+        if (content) {
+          lastMessagePreview = content;
+        }
+      }
+    }
+
+    return {
+      session,
+      transcriptEventCount: events.length,
+      latestEventAt: latest?.timestamp,
+      latestEventType: latest?.type,
+      lastMessagePreview,
+      countsByType,
+    };
+  }
+
+  public async listSessionTimeline(sessionId: string, limit = 200): Promise<SessionTimelineItem[]> {
+    const events = await this.readTranscriptOrEmpty(sessionId);
+    const bounded = events.slice(-Math.max(1, Math.min(limit, 1000)));
+    return bounded.reverse().map((event) => ({
+      eventId: event.eventId,
+      timestamp: event.timestamp,
+      type: event.type,
+      actorType: event.actorType,
+      actorId: event.actorId,
+      preview: this.extractMessagePreview(event.payload),
+      payload: event.payload,
+      tokenInput: event.tokenInput,
+      tokenOutput: event.tokenOutput,
+      costUsd: event.costUsd,
+    }));
   }
 
   public async invokeTool(request: ToolInvokeRequest): Promise<ToolInvokeResult> {
@@ -865,6 +912,36 @@ export class GatewayService {
     return out;
   }
 
+  public async listWorkspacePathSuggestions(root = ".", limit = 150): Promise<string[]> {
+    const maxItems = Math.max(limit * 3, 200);
+    const files = await this.listWorkspaceFiles(root, maxItems);
+    const suggestions = new Set<string>();
+
+    const normalizedRoot = root === "." ? "" : this.normalizeRelativePath(root);
+    if (normalizedRoot) {
+      suggestions.add(normalizedRoot.endsWith("/") ? normalizedRoot : `${normalizedRoot}/`);
+    } else {
+      suggestions.add("memory/");
+      suggestions.add("notes/");
+      suggestions.add("artifacts/");
+      suggestions.add("docs/");
+      suggestions.add("workspace/");
+    }
+
+    for (const file of files) {
+      suggestions.add(file.relativePath);
+      const dir = path.posix.dirname(file.relativePath);
+      if (dir && dir !== ".") {
+        suggestions.add(dir.endsWith("/") ? dir : `${dir}/`);
+      }
+      if (suggestions.size >= limit * 4) {
+        break;
+      }
+    }
+
+    return [...suggestions].slice(0, limit);
+  }
+
   public async composeMemoryContext(input: MemoryContextComposeRequest): Promise<MemoryContextPack> {
     return this.memoryContextService.compose(input);
   }
@@ -1375,6 +1452,14 @@ export class GatewayService {
       return INTEGRATION_CATALOG;
     }
     return INTEGRATION_CATALOG.filter((entry) => entry.kind === kind);
+  }
+
+  public getIntegrationFormSchema(catalogId: string): IntegrationFormSchema {
+    const schema = getIntegrationFormSchema(catalogId);
+    if (!schema) {
+      throw new Error(`Unknown integration catalog id: ${catalogId}`);
+    }
+    return schema;
   }
 
   public listIntegrationConnections(kind?: IntegrationKind, limit = 300): IntegrationConnection[] {
@@ -2189,6 +2274,32 @@ export class GatewayService {
 
     this.backgroundTasks.add(task);
     void task;
+  }
+
+  private async readTranscriptOrEmpty(sessionId: string) {
+    try {
+      return await this.storage.transcripts.read(sessionId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  private extractMessagePreview(payload: Record<string, unknown>): string {
+    const content = payload.content;
+    if (typeof content === "string") {
+      return content.slice(0, 240);
+    }
+    if (Array.isArray(content)) {
+      return JSON.stringify(content).slice(0, 240);
+    }
+    const message = payload.message;
+    if (typeof message === "string") {
+      return message.slice(0, 240);
+    }
+    return JSON.stringify(payload).slice(0, 240);
   }
 
   private getGitHead(): string | undefined {

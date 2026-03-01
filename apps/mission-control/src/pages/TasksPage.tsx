@@ -21,7 +21,10 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { ConfirmModal } from "../components/ConfirmModal";
+import { TableSkeleton } from "../components/TableSkeleton";
 import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
+import { useAction } from "../hooks/useAction";
 
 const statuses: TaskRecord["status"][] = [
   "inbox",
@@ -81,10 +84,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [subagentName, setSubagentName] = useState(BUILTIN_AGENT_ROSTER[0]?.name ?? "");
   const [agentProfiles, setAgentProfiles] = useState<Array<{ roleId: string; name: string; title: string }>>([]);
   const [sessionHints, setSessionHints] = useState<string[]>([]);
+  const [loadingTasks, setLoadingTasks] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{
+    task: TaskRecord;
+    mode: "soft" | "hard";
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const detailRequestSeq = useRef(0);
+  const deleteAction = useAction();
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.taskId === selectedTaskId),
@@ -94,6 +103,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const isSelectedTaskDeleted = Boolean(selectedTask?.deletedAt);
 
   const loadTasks = () => {
+    setLoadingTasks(true);
     void fetchTasksByView(viewFilter)
       .then((res) => {
         setTasks(res.items);
@@ -104,7 +114,8 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
           return res.items[0]?.taskId;
         });
       })
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoadingTasks(false));
   };
 
   const loadTaskDetail = (taskId: string) => {
@@ -257,16 +268,12 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onMoveToTrash = async (task: TaskRecord) => {
-    const confirmed = window.confirm(`Move "${task.title}" to Trash?`);
-    if (!confirmed) {
-      return;
-    }
     try {
-      await deleteTask(task.taskId, {
+      await deleteAction.run(async () => deleteTask(task.taskId, {
         mode: "soft",
         deletedBy: "mission-control",
         deleteReason: "Operator requested cleanup",
-      });
+      }));
       setInfo("Task moved to Trash.");
       loadTasks();
     } catch (err) {
@@ -285,15 +292,11 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onPermanentDelete = async (task: TaskRecord) => {
-    const confirmed = window.confirm(`Permanently delete "${task.title}"? This cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
     try {
-      await deleteTask(task.taskId, {
+      await deleteAction.run(async () => deleteTask(task.taskId, {
         mode: "hard",
         confirmToken: "PERMANENT_DELETE",
-      });
+      }));
       setInfo("Task permanently deleted.");
       loadTasks();
     } catch (err) {
@@ -372,6 +375,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <button onClick={onCreateTask}>Create Task</button>
       </div>
 
+      {loadingTasks ? <TableSkeleton rows={6} cols={5} /> : null}
       <div className="split-grid">
         <div>
           <table>
@@ -399,11 +403,15 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <td onClick={() => setSelectedTaskId(task.taskId)}>{new Date(task.updatedAt).toLocaleString()}</td>
                   <td className="actions">
                     {!task.deletedAt ? (
-                      <button onClick={() => void onMoveToTrash(task)}>Move to Trash</button>
+                      <button onClick={() => setConfirmDelete({ task, mode: "soft" })}>Move to Trash</button>
                     ) : (
                       <button onClick={() => void onRestore(task)}>Restore</button>
                     )}
-                    <button className="danger" onClick={() => void onPermanentDelete(task)}>
+                    <button
+                      className="danger"
+                      onClick={() => setConfirmDelete({ task, mode: "hard" })}
+                      disabled={deleteAction.pending}
+                    >
                       Delete Permanently
                     </button>
                   </td>
@@ -544,6 +552,27 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
           ) : null}
         </div>
       </div>
+      <ConfirmModal
+        open={Boolean(confirmDelete)}
+        title={confirmDelete?.mode === "soft" ? "Move Task To Trash" : "Delete Task Permanently"}
+        message={
+          confirmDelete?.mode === "soft"
+            ? `Move "${confirmDelete?.task.title ?? "this task"}" to Trash?`
+            : `Permanently delete "${confirmDelete?.task.title}"? This cannot be undone.`
+        }
+        confirmLabel={deleteAction.pending ? "Applying..." : (confirmDelete?.mode === "soft" ? "Move to Trash" : "Delete Permanently")}
+        danger={confirmDelete?.mode === "hard"}
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => {
+          if (!confirmDelete) {
+            return;
+          }
+          const task = confirmDelete.task;
+          const mode = confirmDelete.mode;
+          setConfirmDelete(null);
+          void (mode === "soft" ? onMoveToTrash(task) : onPermanentDelete(task));
+        }}
+      />
     </section>
   );
 }

@@ -1,5 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
-import { connectEventStream, fetchOnboardingState, type EventStreamConnectionState } from "./api/client";
+import {
+  connectEventStream,
+  fetchOnboardingState,
+  type EventStreamConnectionState,
+  type EventStreamStatus,
+} from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SystemPage } from "./pages/SystemPage";
 import { FilesPage } from "./pages/FilesPage";
@@ -18,6 +23,7 @@ import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NpuPage } from "./pages/NpuPage";
+import { CommandPalette } from "./components/CommandPalette";
 
 const OfficePage = lazy(async () => {
   const module = await import("./pages/OfficePage");
@@ -89,6 +95,35 @@ const navItems: Array<{ id: Tab; label: string; code: string }> = [
   { id: "npu", label: "NPU", code: "NPU" },
 ];
 
+const navSections: Array<{ label: string; items: Tab[] }> = [
+  { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
+  { label: "Operate", items: ["dashboard", "tasks", "agents", "office", "approvals", "sessions"] },
+  { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
+  { label: "Admin", items: ["skills"] },
+];
+
+const nextStepByTab: Record<Tab, string> = {
+  onboarding: "Complete Launch Wizard, then move to Summit or Forge.",
+  dashboard: "Use Quick Actions to jump into approvals, tasks, or sessions.",
+  system: "Check host vitals and resolve resource issues if any metric spikes.",
+  files: "Create or edit an artifact, then verify the path/risk badges before saving.",
+  memory: "Inspect memory health and run a context compose test if quality drops.",
+  agents: "Review active roster and archive unused roles to keep assignments clean.",
+  office: "Select a goat desk to inspect current thought/action telemetry.",
+  activity: "Watch event flow while testing one action in another tab.",
+  cron: "Confirm schedules and last-run outcomes before enabling more automation.",
+  sessions: "Pick a run in split view and inspect timeline for recent behavior.",
+  skills: "Reload skills after adding/updating SKILL.md definitions.",
+  costs: "Check burn rate and apply run-cheaper mode if warnings appear.",
+  settings: "Apply runtime profile and provider safely with change review.",
+  tools: "Create scoped grants and dry-run risky tools before live execution.",
+  approvals: "Resolve pending approvals to unblock agent progress.",
+  tasks: "Keep statuses current and move stale work to Trash/restore as needed.",
+  integrations: "Start with guided form fields; use Advanced JSON only when needed.",
+  mesh: "Validate node health and leases before enabling distributed execution.",
+  npu: "Verify sidecar status and model readiness before selecting npu-local.",
+};
+
 function isTab(value: string | null): value is Tab {
   if (!value) {
     return false;
@@ -122,7 +157,12 @@ export function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [clock, setClock] = useState(() => new Date().toLocaleTimeString());
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
+  const [streamStatus, setStreamStatus] = useState<EventStreamStatus>({
+    state: "connecting",
+    reconnectAttempts: 0,
+  });
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const handleOnboardingCompleted = useCallback(() => {
     setOnboardingComplete(true);
@@ -136,6 +176,7 @@ export function App() {
         setRefreshKey((value) => value + 1);
       },
       setStreamState,
+      setStreamStatus,
     );
 
     return () => {
@@ -182,12 +223,38 @@ export function App() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((current) => !current);
+      }
+      if (event.key === "Escape") {
+        setPaletteOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const navById = useMemo(() => new Map(navItems.map((item) => [item.id, item])), []);
+  const commandItems = useMemo(
+    () =>
+      navItems.map((item) => ({
+        id: `tab:${item.id}`,
+        label: `Go to ${item.label}`,
+        keywords: [item.id, item.code],
+        run: () => setTab(item.id),
+      })),
+    [],
+  );
+
   const content = useMemo(() => {
     if (tab === "onboarding") {
       return <OnboardingPage onCompleted={handleOnboardingCompleted} />;
     }
     if (tab === "dashboard") {
-      return <DashboardPage refreshKey={refreshKey} />;
+      return <DashboardPage refreshKey={refreshKey} onNavigate={(next) => setTab(next as Tab)} />;
     }
     if (tab === "system") {
       return <SystemPage refreshKey={refreshKey} />;
@@ -249,21 +316,38 @@ export function App() {
       <aside className="sidebar">
         <h1>GoatCitadel</h1>
         <p className="sidebar-subtitle">Herd-Orchestrated Mission Control</p>
+        <button type="button" onClick={() => setPaletteOpen(true)}>Quick Actions (Ctrl/Cmd+K)</button>
         <nav>
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              className={tab === item.id ? "active" : ""}
-            >
-              <span className="nav-code">{item.code}</span>
-              <span className="nav-label">{item.label}</span>
-            </button>
+          {navSections.map((section) => (
+            <div key={section.label} className="sidebar-section">
+              <h4>{section.label}</h4>
+              {section.items.map((tabId) => {
+                const item = navById.get(tabId);
+                if (!item) {
+                  return null;
+                }
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setTab(item.id)}
+                    className={tab === item.id ? "active" : ""}
+                  >
+                    <span className="nav-code">{item.code}</span>
+                    <span className="nav-label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </nav>
         <footer className="sidebar-footer">
+          <p className={`stream-pill ${streamStatus.state}`}>
+            Stream {streamStatus.state}
+          </p>
           <p>Stream: {streamState}</p>
           <p>Onboarding: {onboardingComplete === null ? "unknown" : onboardingComplete ? "complete" : "required"}</p>
+          <p>Reconnects: {streamStatus.reconnectAttempts}</p>
+          <p>Last event: {streamStatus.lastEventAt ? new Date(streamStatus.lastEventAt).toLocaleTimeString() : "n/a"}</p>
           <p>Mode: local herd</p>
           <p>{clock}</p>
         </footer>
@@ -274,8 +358,17 @@ export function App() {
             Live stream is {streamState}. Mission Control will reconnect automatically.
           </div>
         ) : null}
+        <article className="card">
+          <h3>Next Step</h3>
+          <p className="office-subtitle">{nextStepByTab[tab]}</p>
+        </article>
         {content}
       </main>
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        items={commandItems}
+      />
     </div>
   );
 }

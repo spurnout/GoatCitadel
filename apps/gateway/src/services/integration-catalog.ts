@@ -1,4 +1,95 @@
-import type { IntegrationCatalogEntry } from "@goatcitadel/contracts";
+import type {
+  IntegrationCatalogEntry,
+  IntegrationFormSchema,
+  IntegrationFieldSchema,
+} from "@goatcitadel/contracts";
+
+const FORM_SCHEMA_OVERRIDES: Record<string, IntegrationFormSchema> = {
+  "channel.discord": {
+    catalogId: "channel.discord",
+    title: "Discord Connection",
+    description: "Connect a Discord bot token and default send target.",
+    allowAdvancedJson: true,
+    fields: [
+      text("label", "Connection Label", { defaultValue: "Discord" }),
+      text("botTokenEnv", "Bot Token ENV Var", {
+        placeholder: "DISCORD_BOT_TOKEN",
+        required: true,
+        secretRef: true,
+      }),
+      text("defaultChannelId", "Default Channel ID", { required: true }),
+      text("defaultGuildId", "Default Guild ID", { advanced: true }),
+      bool("enabled", "Enabled", true),
+    ],
+  },
+  "channel.slack": {
+    catalogId: "channel.slack",
+    title: "Slack Connection",
+    description: "Connect a Slack bot token and default destination.",
+    allowAdvancedJson: true,
+    fields: [
+      text("label", "Connection Label", { defaultValue: "Slack" }),
+      text("botTokenEnv", "Bot Token ENV Var", {
+        placeholder: "SLACK_BOT_TOKEN",
+        required: true,
+        secretRef: true,
+      }),
+      text("defaultChannel", "Default Channel", { placeholder: "#general" }),
+      bool("enabled", "Enabled", true),
+    ],
+  },
+  "automation.webhooks": {
+    catalogId: "automation.webhooks",
+    title: "Webhook Connection",
+    description: "Configure outbound webhook endpoint and optional signing secret.",
+    allowAdvancedJson: true,
+    fields: [
+      text("label", "Connection Label", { defaultValue: "Webhook" }),
+      url("baseUrl", "Webhook Base URL", {
+        required: true,
+        placeholder: "https://example.com/webhooks",
+      }),
+      select("method", "HTTP Method", ["POST", "PUT"], "POST"),
+      text("signingSecretEnv", "Signing Secret ENV Var", {
+        placeholder: "WEBHOOK_SIGNING_SECRET",
+        secretRef: true,
+        advanced: true,
+      }),
+      bool("enabled", "Enabled", true),
+    ],
+  },
+  "automation.gmail": {
+    catalogId: "automation.gmail",
+    title: "Gmail Connection",
+    description: "Configure Gmail integration using OAuth token handles or env references.",
+    allowAdvancedJson: true,
+    fields: [
+      text("label", "Connection Label", { defaultValue: "Gmail" }),
+      select("authMode", "Auth Mode", ["oauth", "env"], "oauth"),
+      text("clientIdEnv", "Client ID ENV Var", {
+        placeholder: "GMAIL_CLIENT_ID",
+        secretRef: true,
+        advanced: true,
+      }),
+      text("clientSecretEnv", "Client Secret ENV Var", {
+        placeholder: "GMAIL_CLIENT_SECRET",
+        secretRef: true,
+        advanced: true,
+      }),
+      text("refreshTokenHandle", "Refresh Token Handle", {
+        placeholder: "gmail-primary",
+        required: true,
+      }),
+      bool("enabled", "Enabled", true),
+    ],
+  },
+  "model_provider.openai": providerSchema("model_provider.openai", "OpenAI", "OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4.1-mini"),
+  "model_provider.openrouter": providerSchema("model_provider.openrouter", "OpenRouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "openai/gpt-4.1-mini"),
+  "model_provider.glm": providerSchema("model_provider.glm", "GLM (Z.AI)", "GLM_API_KEY", "https://api.z.ai/api/paas/v4", "glm-5"),
+  "model_provider.moonshot": providerSchema("model_provider.moonshot", "Moonshot", "MOONSHOT_API_KEY", "https://api.moonshot.ai/v1", "kimi-k2.5"),
+  "model_provider.lmstudio": providerSchema("model_provider.lmstudio", "LM Studio", "", "http://127.0.0.1:1234/v1", "local-model", true),
+  "model_provider.local-models": providerSchema("model_provider.local-models", "Local Models", "", "http://127.0.0.1:1234/v1", "local-model", true),
+};
 
 export const INTEGRATION_CATALOG: IntegrationCatalogEntry[] = [
   // Channels
@@ -61,6 +152,12 @@ export const INTEGRATION_CATALOG: IntegrationCatalogEntry[] = [
   entry("platform", "linux-native", "Linux Native", "Linux native platform support.", "native", ["local"], ["desktop"]),
 ];
 
+validateCatalogSchemas(INTEGRATION_CATALOG);
+
+export function getIntegrationFormSchema(catalogId: string): IntegrationFormSchema | undefined {
+  return INTEGRATION_CATALOG.find((entry) => entry.catalogId === catalogId)?.formSchema;
+}
+
 function entry(
   kind: IntegrationCatalogEntry["kind"],
   key: string,
@@ -70,8 +167,9 @@ function entry(
   authMethods: string[],
   capabilities: string[],
 ): IntegrationCatalogEntry {
+  const catalogId = `${kind}.${key}`;
   return {
-    catalogId: `${kind}.${key}`,
+    catalogId,
     kind,
     key,
     label,
@@ -79,5 +177,137 @@ function entry(
     maturity,
     authMethods,
     capabilities,
+    formSchema: FORM_SCHEMA_OVERRIDES[catalogId] ?? buildDefaultFormSchema(catalogId, label, kind, key),
+  };
+}
+
+function buildDefaultFormSchema(
+  catalogId: string,
+  label: string,
+  kind: IntegrationCatalogEntry["kind"],
+  key: string,
+): IntegrationFormSchema {
+  const fields: IntegrationFieldSchema[] = [
+    text("label", "Connection Label", { defaultValue: label }),
+    bool("enabled", "Enabled", true),
+  ];
+
+  if (kind === "model_provider") {
+    fields.push(
+      url("baseUrl", "Base URL", { placeholder: "https://api.example.com/v1", required: true }),
+      text("model", "Default Model", { placeholder: "model-name", required: true }),
+      text("apiKeyEnv", "API Key ENV Var", {
+        placeholder: `${key.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+        secretRef: true,
+      }),
+    );
+  } else if (kind === "channel") {
+    fields.push(
+      text("target", "Default Target", { placeholder: "channel/thread/peer id" }),
+      text("tokenEnv", "Token ENV Var", {
+        placeholder: `${key.toUpperCase().replaceAll("-", "_")}_TOKEN`,
+        secretRef: true,
+        advanced: true,
+      }),
+    );
+  } else if (kind === "automation") {
+    fields.push(
+      text("endpoint", "Endpoint", { placeholder: "Optional endpoint override" }),
+      text("apiKeyEnv", "API Key ENV Var", {
+        placeholder: `${key.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+        secretRef: true,
+        advanced: true,
+      }),
+    );
+  }
+
+  fields.push(text("notes", "Notes", { advanced: true, placeholder: "Optional operator note" }));
+
+  return {
+    catalogId,
+    title: `${label} Connection`,
+    description: "Guided setup form. Advanced JSON is available for non-standard options.",
+    allowAdvancedJson: true,
+    fields,
+  };
+}
+
+function validateCatalogSchemas(entries: IntegrationCatalogEntry[]): void {
+  const keyPattern = /^[a-zA-Z0-9_.-]+$/;
+  for (const entry of entries) {
+    const schema = entry.formSchema;
+    if (!schema) {
+      continue;
+    }
+    for (const field of schema.fields) {
+      if (!keyPattern.test(field.key)) {
+        throw new Error(
+          `Invalid integration form key "${field.key}" for catalog "${entry.catalogId}".`,
+        );
+      }
+    }
+  }
+}
+
+function providerSchema(
+  catalogId: string,
+  label: string,
+  apiKeyEnvDefault: string,
+  baseUrl: string,
+  defaultModel: string,
+  localNoKey = false,
+): IntegrationFormSchema {
+  return {
+    catalogId,
+    title: `${label} Provider`,
+    description: "Register model provider connection settings.",
+    allowAdvancedJson: true,
+    fields: [
+      text("label", "Connection Label", { defaultValue: label }),
+      url("baseUrl", "Base URL", { defaultValue: baseUrl, required: true }),
+      text("model", "Default Model", { defaultValue: defaultModel, required: true }),
+      text("apiKeyEnv", "API Key ENV Var", {
+        defaultValue: apiKeyEnvDefault || undefined,
+        placeholder: localNoKey ? "Not required for local runtime" : "OPENAI_API_KEY",
+        required: !localNoKey,
+        secretRef: true,
+      }),
+      bool("enabled", "Enabled", true),
+    ],
+  };
+}
+
+function text(
+  key: string,
+  label: string,
+  options: Partial<IntegrationFieldSchema> = {},
+): IntegrationFieldSchema {
+  return { key, label, type: "text", ...options };
+}
+
+function url(
+  key: string,
+  label: string,
+  options: Partial<IntegrationFieldSchema> = {},
+): IntegrationFieldSchema {
+  return { key, label, type: "url", ...options };
+}
+
+function bool(key: string, label: string, defaultValue = false): IntegrationFieldSchema {
+  return { key, label, type: "boolean", defaultValue };
+}
+
+function select(
+  key: string,
+  label: string,
+  values: string[],
+  defaultValue?: string,
+): IntegrationFieldSchema {
+  return {
+    key,
+    label,
+    type: "select",
+    options: values.map((value) => ({ value, label: value })),
+    defaultValue,
   };
 }

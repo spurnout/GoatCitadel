@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 export interface SelectOption {
   value: string;
@@ -18,14 +18,18 @@ interface SelectOrCustomProps {
   allowCustom?: boolean;
   autoSelectFirstOption?: boolean;
   onCustomModeChange?: (customMode: boolean) => void;
+  suggestedModeLabel?: string;
+  customModeLabel?: string;
+  forceCustomMode?: boolean;
 }
 
 export function SelectOrCustom(props: SelectOrCustomProps) {
   const dedupedOptions = useMemo(() => dedupeOptions(props.options), [props.options]);
   const isKnownValue = dedupedOptions.some((option) => option.value === props.value);
-  const [isCustomMode, setIsCustomMode] = useState<boolean>(Boolean(props.value && !isKnownValue));
   const allowCustom = props.allowCustom ?? true;
   const autoSelectFirstOption = props.autoSelectFirstOption ?? false;
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(Boolean(props.forceCustomMode));
+  const hasUnknownValue = Boolean(props.value) && !isKnownValue;
 
   const selectValue = isKnownValue
     ? props.value
@@ -33,29 +37,37 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
       ? dedupedOptions[0]?.value ?? ""
       : "";
 
-  useEffect(() => {
-    if (!allowCustom && isCustomMode) {
-      setIsCustomMode(false);
-      props.onCustomModeChange?.(false);
-      return;
-    }
-
-    if (!props.value.trim() && isCustomMode) {
-      setIsCustomMode(false);
-      props.onCustomModeChange?.(false);
-      return;
-    }
-
-    if (props.value && !isKnownValue && allowCustom && !isCustomMode) {
-      setIsCustomMode(true);
-      props.onCustomModeChange?.(true);
-      return;
-    }
-
-  }, [allowCustom, isCustomMode, isKnownValue, props.onCustomModeChange, props.value]);
-
   return (
     <div className="select-or-custom">
+      {allowCustom ? (
+        <div className="mode-switch" role="tablist" aria-label="Input mode">
+          <button
+            type="button"
+            className={!isCustomMode ? "active" : ""}
+            disabled={props.disabled}
+            onClick={() => {
+              setIsCustomMode(false);
+              props.onCustomModeChange?.(false);
+              if (!isKnownValue && autoSelectFirstOption && dedupedOptions[0]) {
+                props.onChange(dedupedOptions[0].value);
+              }
+            }}
+          >
+            {props.suggestedModeLabel ?? "Suggested"}
+          </button>
+          <button
+            type="button"
+            className={isCustomMode ? "active" : ""}
+            disabled={props.disabled}
+            onClick={() => {
+              setIsCustomMode(true);
+              props.onCustomModeChange?.(true);
+            }}
+          >
+            {props.customModeLabel ?? "Custom"}
+          </button>
+        </div>
+      ) : null}
       <select
         id={props.id}
         value={isCustomMode ? (isKnownValue ? props.value : dedupedOptions[0]?.value ?? "") : selectValue}
@@ -76,23 +88,10 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
         ))}
       </select>
 
-      {allowCustom ? (
-        <div className="controls-row">
-          <button
-            type="button"
-            onClick={() => {
-              const nextMode = !isCustomMode;
-              setIsCustomMode(nextMode);
-              props.onCustomModeChange?.(nextMode);
-              if (!nextMode && autoSelectFirstOption && !isKnownValue && dedupedOptions[0]) {
-                props.onChange(dedupedOptions[0].value);
-              }
-            }}
-            disabled={props.disabled}
-          >
-            {isCustomMode ? "Use suggested values" : (props.customOptionLabel ?? "Use custom value")}
-          </button>
-        </div>
+      {hasUnknownValue && !isCustomMode && allowCustom ? (
+        <p className="office-subtitle">
+          Current value is custom. Switch to Custom mode to edit it.
+        </p>
       ) : null}
 
       {isCustomMode ? (

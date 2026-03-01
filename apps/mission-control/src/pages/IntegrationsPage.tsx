@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createIntegrationConnection,
   deleteIntegrationConnection,
   evaluateUiChangeRisk,
   fetchIntegrationCatalog,
   fetchIntegrationConnections,
+  fetchIntegrationFormSchema,
   updateIntegrationConnection,
   type IntegrationCatalogEntry,
   type IntegrationConnection,
@@ -12,6 +13,10 @@ import {
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { ConfigFormBuilder } from "../components/ConfigFormBuilder";
+import { ConfirmModal } from "../components/ConfirmModal";
+import { CardSkeleton } from "../components/CardSkeleton";
+import { useAction } from "../hooks/useAction";
 
 type IntegrationKind = IntegrationCatalogEntry["kind"] | "all";
 type UiRiskLevel = "safe" | "warning" | "critical";
@@ -34,21 +39,34 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [label, setLabel] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [status, setStatus] = useState<IntegrationConnection["status"]>("connected");
+  const [showAdvancedJson, setShowAdvancedJson] = useState(false);
   const [configJson, setConfigJson] = useState("{}");
+  const [guidedConfig, setGuidedConfig] = useState<Record<string, unknown>>({});
+  const [formSchema, setFormSchema] = useState<IntegrationCatalogEntry["formSchema"]>();
   const [criticalConfirmed, setCriticalConfirmed] = useState(false);
   const [changeReview, setChangeReview] = useState<{ overall: UiRiskLevel; items: UiRiskItem[] }>({
     overall: "safe",
     items: [],
   });
+  const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSeq = useRef(0);
+  const createAction = useAction();
+  const deleteAction = useAction();
 
   const load = () => {
     const kind = kindFilter === "all" ? undefined : kindFilter;
+    const requestId = ++requestSeq.current;
+    setLoading(true);
     void Promise.all([
       fetchIntegrationCatalog(kind),
       fetchIntegrationConnections(kind),
     ])
       .then(([catalogRes, connectionRes]) => {
+        if (requestId !== requestSeq.current) {
+          return;
+        }
         const nextCatalog = catalogRes.items;
         setCatalog(nextCatalog);
         setConnections(connectionRes.items);
@@ -60,16 +78,55 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           ? selectedCatalogId
           : (nextCatalog[0]?.catalogId ?? "");
 
-        if (nextSelection !== selectedCatalogId) {
-          setSelectedCatalogId(nextSelection);
+        setSelectedCatalogId(nextSelection);
+        setError(null);
+      })
+      .catch((err: Error) => {
+        if (requestId === requestSeq.current) {
+          setError(err.message);
         }
       })
-      .catch((err: Error) => setError(err.message));
+      .finally(() => {
+        if (requestId === requestSeq.current) {
+          setLoading(false);
+        }
+      });
   };
 
   useEffect(() => {
     load();
   }, [kindFilter, refreshKey]);
+
+  useEffect(() => {
+    if (!selectedCatalogId) {
+      setFormSchema(undefined);
+      setGuidedConfig({});
+      return;
+    }
+    let cancelled = false;
+    void fetchIntegrationFormSchema(selectedCatalogId)
+      .then((schema) => {
+        if (cancelled) {
+          return;
+        }
+        setFormSchema(schema);
+        const defaults = Object.fromEntries(
+          schema.fields
+            .filter((field) => field.defaultValue !== undefined)
+            .map((field) => [field.key, field.defaultValue]),
+        );
+        setGuidedConfig(defaults);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFormSchema(undefined);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCatalogId]);
 
   const selectedCatalog = useMemo(
     () => catalog.find((entry) => entry.catalogId === selectedCatalogId),
@@ -84,11 +141,22 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     [catalog],
   );
 
+  const effectiveConfig = useMemo(() => {
+    if (showAdvancedJson) {
+      try {
+        return JSON.parse(configJson) as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    }
+    return guidedConfig;
+  }, [configJson, guidedConfig, showAdvancedJson]);
+
   useEffect(() => {
     const localReview = evaluateLocalRisk({
       selectedCatalog,
       selectedCatalogId,
-      configJson,
+      configJson: JSON.stringify(effectiveConfig),
       status,
       enabled,
     });
@@ -100,7 +168,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         { field: "integration.catalogId", from: "", to: selectedCatalogId },
         { field: "integration.status", from: "connected", to: status },
         { field: "integration.enabled", from: true, to: enabled },
-        { field: "integration.configJson", from: "{}", to: configJson },
+        { field: "integration.configJson", from: "{}", to: JSON.stringify(effectiveConfig) },
       ],
     })
       .then((remoteReview) => {
@@ -123,7 +191,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           items: localReview.items,
         });
       });
-  }, [kindFilter, selectedCatalogId, selectedCatalog, status, enabled, configJson]);
+  }, [kindFilter, selectedCatalogId, selectedCatalog, status, enabled, effectiveConfig]);
 
   const onCreate = async () => {
     if (changeReview.overall === "critical" && !criticalConfirmed) {
@@ -134,23 +202,35 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setError("Select a catalog entry first.");
       return;
     }
-    let parsedConfig: Record<string, unknown> | undefined;
-    try {
-      parsedConfig = JSON.parse(configJson) as Record<string, unknown>;
-    } catch {
-      setError("Connection config JSON is invalid.");
-      return;
+    let parsedConfig: Record<string, unknown>;
+    if (showAdvancedJson) {
+      try {
+        parsedConfig = JSON.parse(configJson) as Record<string, unknown>;
+      } catch {
+        setError("Connection config JSON is invalid.");
+        return;
+      }
+    } else {
+      parsedConfig = sanitizeGuidedConfig(guidedConfig);
+      setConfigJson(JSON.stringify(parsedConfig, null, 2));
     }
 
+    const derivedLabel = label.trim() || (typeof parsedConfig.label === "string" ? parsedConfig.label : "");
+    const derivedEnabled = typeof parsedConfig.enabled === "boolean" ? parsedConfig.enabled : enabled;
+    const { label: _omitLabel, enabled: _omitEnabled, ...normalizedConfig } = parsedConfig;
+
     try {
-      await createIntegrationConnection({
-        catalogId: selectedCatalogId,
-        label: label || undefined,
-        enabled,
-        status,
-        config: parsedConfig,
+      await createAction.run(async () => {
+        await createIntegrationConnection({
+          catalogId: selectedCatalogId,
+          label: derivedLabel || undefined,
+          enabled: derivedEnabled,
+          status,
+          config: normalizedConfig,
+        });
       });
       setLabel("");
+      setGuidedConfig({});
       setConfigJson("{}");
       setCriticalConfirmed(false);
       setError(null);
@@ -172,14 +252,15 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
-  const onDelete = async (connectionId: string) => {
-    const confirmed = window.confirm("Remove this integration connection and its saved configuration?");
-    if (!confirmed) {
+  const onDeleteConfirmed = async () => {
+    if (!deleteTarget) {
       return;
     }
-
     try {
-      await deleteIntegrationConnection(connectionId);
+      await deleteAction.run(async () => {
+        await deleteIntegrationConnection(deleteTarget.connectionId);
+      });
+      setDeleteTarget(null);
       load();
     } catch (err) {
       setError((err as Error).message);
@@ -199,12 +280,12 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         when="Use this to add, pause, or remove channel/model/productivity integrations."
         actions={[
           "Pick a scope and choose a catalog entry.",
-          "Set connection status/config and create the connection.",
+          "Use guided fields first, then advanced JSON only if needed.",
           "Pause, resume, or remove active connections.",
         ]}
         terms={[
           { term: "Catalog entry", meaning: "Built-in integration definition with capabilities and auth hints." },
-          { term: "Connection config", meaning: "JSON settings used by that integration instance." },
+          { term: "Connection config", meaning: "Settings for this integration instance." },
         ]}
       />
       {error ? <p className="error">{error}</p> : null}
@@ -218,6 +299,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             onChange={(event) => {
               setKindFilter(event.target.value as IntegrationKind);
               setSelectedCatalogId("");
+              setFormSchema(undefined);
             }}
           >
             {KIND_OPTIONS.map((option) => (
@@ -240,56 +322,79 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       <article className="card">
         <h3>Add Connection</h3>
-        <div className="controls-row">
-          <label>Catalog entry</label>
-          <SelectOrCustom
-            value={selectedCatalogId}
-            onChange={setSelectedCatalogId}
-            options={catalogOptions}
-            customPlaceholder="Select a catalog entry"
-            customLabel="Catalog id"
-            customOptionLabel="Use custom catalog id"
-          />
-        </div>
-        <div className="controls-row">
-          <label>Connection label</label>
-          <input
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
-            placeholder={selectedCatalog?.label ?? "Connection label"}
-          />
-          <label>Status</label>
-          <select value={status} onChange={(event) => setStatus(event.target.value as IntegrationConnection["status"])}>
-            <option value="connected">connected</option>
-            <option value="disconnected">disconnected</option>
-            <option value="paused">paused</option>
-            <option value="error">error</option>
-          </select>
-          <label>
-            <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /> enabled
-          </label>
-        </div>
-        {selectedCatalog ? (
-          <div className="card">
-            <p><strong>{selectedCatalog.label}</strong> [{selectedCatalog.maturity}]</p>
-            <p>{selectedCatalog.description}</p>
-            <p className="office-subtitle">Auth: {selectedCatalog.authMethods.join(", ") || "-"}</p>
-            <div className="token-row">
-              {selectedCatalog.capabilities.map((capability) => (
-                <span key={capability} className="token-chip">{capability}</span>
-              ))}
+        {loading ? <CardSkeleton lines={5} /> : null}
+        {!loading ? (
+          <>
+            <div className="controls-row">
+              <label>Catalog entry</label>
+              <SelectOrCustom
+                value={selectedCatalogId}
+                onChange={setSelectedCatalogId}
+                options={catalogOptions}
+                customPlaceholder="Select a catalog entry"
+                customLabel="Catalog id"
+                customOptionLabel="Use custom catalog id"
+              />
             </div>
-          </div>
+            <div className="controls-row">
+              <label>Connection label</label>
+              <input
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+                placeholder={selectedCatalog?.label ?? "Connection label"}
+              />
+              <label>Status</label>
+              <select value={status} onChange={(event) => setStatus(event.target.value as IntegrationConnection["status"])}>
+                <option value="connected">connected</option>
+                <option value="disconnected">disconnected</option>
+                <option value="paused">paused</option>
+                <option value="error">error</option>
+              </select>
+              <label>
+                <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /> enabled
+              </label>
+            </div>
+            {selectedCatalog ? (
+              <div className="card">
+                <p><strong>{selectedCatalog.label}</strong> [{selectedCatalog.maturity}]</p>
+                <p>{selectedCatalog.description}</p>
+                <p className="office-subtitle">Auth: {selectedCatalog.authMethods.join(", ") || "-"}</p>
+                <div className="token-row">
+                  {selectedCatalog.capabilities.map((capability) => (
+                    <span key={capability} className="token-chip">{capability}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="controls-row">
+              <button type="button" onClick={() => setShowAdvancedJson((current) => !current)}>
+                {showAdvancedJson ? "Use Guided Form" : "Use Advanced JSON"}
+              </button>
+            </div>
+            {!showAdvancedJson ? (
+              <ConfigFormBuilder
+                schema={formSchema}
+                value={guidedConfig}
+                onChange={setGuidedConfig}
+              />
+            ) : (
+              <>
+                <label htmlFor="connectionConfig">Connection config (JSON)</label>
+                <textarea
+                  id="connectionConfig"
+                  rows={8}
+                  className="full-textarea"
+                  value={configJson}
+                  onChange={(event) => setConfigJson(event.target.value)}
+                />
+              </>
+            )}
+            <button onClick={() => void onCreate()} disabled={blockCreate || createAction.pending}>
+              {createAction.pending ? "Creating..." : "Create Connection"}
+            </button>
+          </>
         ) : null}
-        <label htmlFor="connectionConfig">Connection config (JSON)</label>
-        <textarea
-          id="connectionConfig"
-          rows={6}
-          className="full-textarea"
-          value={configJson}
-          onChange={(event) => setConfigJson(event.target.value)}
-        />
-        <button onClick={onCreate} disabled={blockCreate}>Create Connection</button>
       </article>
 
       <article className="card">
@@ -320,10 +425,14 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <td>{connection.enabled ? "yes" : "no"}</td>
                 <td>{new Date(connection.updatedAt).toLocaleString()}</td>
                 <td className="actions">
-                  <button onClick={() => onToggle(connection)}>
+                  <button onClick={() => void onToggle(connection)}>
                     {connection.enabled ? "Pause" : "Enable"}
                   </button>
-                  <button className="danger" onClick={() => onDelete(connection.connectionId)}>
+                  <button
+                    className="danger"
+                    onClick={() => setDeleteTarget(connection)}
+                    disabled={deleteAction.pending}
+                  >
                     Remove
                   </button>
                 </td>
@@ -332,7 +441,31 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           </tbody>
         </table>
       </article>
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Remove Integration Connection"
+        message={`Remove "${deleteTarget?.label ?? "this connection"}" and its saved configuration?`}
+        confirmLabel={deleteAction.pending ? "Removing..." : "Remove"}
+        danger
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void onDeleteConfirmed()}
+      />
     </section>
+  );
+}
+
+function sanitizeGuidedConfig(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => {
+      if (value === null || value === undefined) {
+        return false;
+      }
+      if (typeof value === "string") {
+        return value.trim().length > 0;
+      }
+      return true;
+    }),
   );
 }
 

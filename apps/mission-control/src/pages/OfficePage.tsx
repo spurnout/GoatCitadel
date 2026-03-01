@@ -22,6 +22,7 @@ import {
 } from "../components/OfficeCanvas";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { CardSkeleton } from "../components/CardSkeleton";
 
 const INITIAL_EVENT_LIMIT = 300;
 const MAX_EVENTS = 500;
@@ -202,7 +203,12 @@ export function OfficePage(_props: { refreshKey?: number }) {
   }), [activeAgents, blockedAgents, eventFlow, operatorPrefs.name, operatorPrefs.preset, pendingApprovals.length]);
 
   if (loading) {
-    return <p>Loading Herd HQ...</p>;
+    return (
+      <section className="office-v3">
+        <h2>Herd HQ</h2>
+        <CardSkeleton lines={10} />
+      </section>
+    );
   }
 
   return (

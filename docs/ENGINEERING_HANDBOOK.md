@@ -618,6 +618,9 @@ Commands:
 
 ```bash
 pnpm install
+pnpm dev
+pnpm dev:all
+pnpm up
 pnpm dev:gateway
 pnpm dev:gateway:watch
 pnpm dev:ui
