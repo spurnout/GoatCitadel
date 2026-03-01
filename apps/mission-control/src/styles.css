@@ -369,6 +369,37 @@ textarea {
   width: 100%;
 }
 
+.chat-composer {
+  position: relative;
+  border-radius: 10px;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.chat-composer.drop-active {
+  background: rgba(255, 212, 120, 0.12);
+  box-shadow: 0 0 0 1px rgba(255, 212, 120, 0.58) inset, 0 0 0 2px rgba(255, 212, 120, 0.24);
+}
+
+.chat-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--line-strong);
+  border-radius: 10px;
+  background: rgba(20, 13, 8, 0.58);
+  color: var(--accent-soft);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.chat-attach-hint {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));

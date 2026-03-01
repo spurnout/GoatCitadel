@@ -740,6 +740,7 @@ async function consumeSseResponse(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let streamError: string | null = null;
   while (true) {
     const { value, done } = await reader.read();
     if (done) {
@@ -764,10 +765,16 @@ async function consumeSseResponse(
       try {
         const parsed = JSON.parse(dataText) as ChatStreamChunk;
         onChunk(parsed);
+        if (parsed.type === "error") {
+          streamError = parsed.error || "Streaming request failed.";
+        }
       } catch {
         // ignore parse noise
       }
     }
+  }
+  if (streamError) {
+    throw new Error(streamError);
   }
 }
 

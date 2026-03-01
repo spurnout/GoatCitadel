@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 import {
   archiveChatProject,
   archiveChatSession,
@@ -58,6 +58,9 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [integrationConnectionId, setIntegrationConnectionId] = useState("");
   const [integrationTarget, setIntegrationTarget] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const initializedRef = useRef(false);
+  const dragDepthRef = useRef(0);
+  const [isDragActive, setIsDragActive] = useState(false);
 
   const loadSidebar = useCallback(async () => {
     const [nextProjects, nextSessions] = await Promise.all([
@@ -107,10 +110,25 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
+          initializedRef.current = true;
         }
       });
     return () => {
       cancelled = true;
+    };
+  }, [loadSidebar]);
+
+  useEffect(() => {
+    if (!initializedRef.current) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadSidebar().catch((err: Error) => {
+        setError(err.message);
+      });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
     };
   }, [loadSidebar, refreshKey]);
 
@@ -207,15 +225,15 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [loadSidebar, selectedProjectId]);
 
-  const handleAttachFiles = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) {
+  const uploadAttachments = useCallback(async (files: File[]) => {
+    if (files.length === 0) {
       return;
     }
     setSending(true);
     try {
       const session = await ensureSession();
       const uploaded: ChatAttachmentRecord[] = [];
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         uploaded.push(await uploadChatAttachment({
           sessionId: session.sessionId,
           projectId: session.projectId,
@@ -234,21 +252,90 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [ensureSession]);
 
+  const handleAttachFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) {
+      return;
+    }
+    await uploadAttachments(Array.from(files));
+  }, [uploadAttachments]);
+
+  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragActive(true);
+  }, []);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragActive(false);
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length > 0) {
+      void uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
+
+  const handleComposerPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files ?? []);
+    if (files.length > 0) {
+      event.preventDefault();
+      void uploadAttachments(files);
+      return;
+    }
+
+    const itemFiles = Array.from(event.clipboardData.items ?? [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (itemFiles.length > 0) {
+      event.preventDefault();
+      void uploadAttachments(itemFiles);
+    }
+  }, [uploadAttachments]);
+
   const handleSend = useCallback(async () => {
     const content = draft.trim();
     if (!content || sending) {
       return;
     }
     setSending(true);
+    let placeholderId: string | null = null;
     try {
       const session = await ensureSession();
       const attachmentIds = pendingAttachments.map((item) => item.attachmentId);
       if (streamEnabled) {
-        const placeholderId = `stream-${Date.now()}`;
+        const streamMessageId = `stream-${Date.now()}`;
+        placeholderId = streamMessageId;
         setMessages((current) => [
           ...current,
           {
-            messageId: placeholderId,
+            messageId: streamMessageId,
             sessionId: session.sessionId,
             role: "assistant",
             actorType: "agent",
@@ -266,9 +353,19 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
           },
           (chunk) => {
             if (chunk.type === "delta" && chunk.delta) {
-              setMessages((current) => current.map((item) => item.messageId === placeholderId
+              setMessages((current) => current.map((item) => item.messageId === streamMessageId
                 ? { ...item, content: `${item.content}${chunk.delta}` }
                 : item));
+              return;
+            }
+            if (chunk.type === "message_done") {
+              setMessages((current) => current.map((item) => item.messageId === streamMessageId
+                ? { ...item, content: chunk.content || item.content }
+                : item));
+              return;
+            }
+            if (chunk.type === "error") {
+              setError(chunk.error || "Streaming request failed.");
             }
           },
         );
@@ -284,6 +381,9 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       await Promise.all([loadSidebar(), loadMessages(session.sessionId)]);
       setError(null);
     } catch (err) {
+      if (placeholderId) {
+        setMessages((current) => current.filter((item) => item.messageId !== placeholderId));
+      }
       setError((err as Error).message);
     } finally {
       setSending(false);
@@ -633,13 +733,30 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 </ul>
               )}
 
-              <div className="chat-composer">
+              <div
+                className={`chat-composer${isDragActive ? " drop-active" : ""}`}
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                {isDragActive ? (
+                  <div className="chat-drop-overlay">
+                    Drop files to attach
+                  </div>
+                ) : null}
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onPaste={handleComposerPaste}
                   placeholder="Type your message..."
                   rows={4}
                 />
+                {error ? (
+                  <div className="status-banner warning">
+                    {error}
+                  </div>
+                ) : null}
                 <div className="actions">
                   <input
                     ref={fileInputRef}
@@ -649,6 +766,9 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   />
                   <ActionButton label="Send" pending={sending} onClick={handleSend} />
                 </div>
+                <p className="office-subtitle chat-attach-hint">
+                  Drag files into this box or paste screenshots/images to attach.
+                </p>
                 {pendingAttachments.length > 0 ? (
                   <div className="actions">
                     {pendingAttachments.map((item) => (

@@ -36,4 +36,18 @@ describe("isHostAllowed", () => {
     expect(isHostAllowed("http://localhost:8787/health", ["*"]))
       .toBe(false);
   });
+
+  it("allows public hosts when allowlist is empty", () => {
+    expect(isHostAllowed("https://api.openai.com/v1/chat/completions", []))
+      .toBe(true);
+  });
+
+  it("blocks private and metadata hosts when allowlist is empty", () => {
+    expect(isHostAllowed("http://192.168.1.20/api", []))
+      .toBe(false);
+    expect(isHostAllowed("http://169.254.169.254/latest/meta-data", []))
+      .toBe(false);
+    expect(isHostAllowed("http://localhost:8787/health", []))
+      .toBe(false);
+  });
 });

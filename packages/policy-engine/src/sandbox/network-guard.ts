@@ -15,13 +15,15 @@ function wildcardToRegex(pattern: string): RegExp {
 }
 
 export function isHostAllowed(hostOrUrl: string, allowlist: string[]): boolean {
-  if (allowlist.length === 0) {
-    return false;
-  }
-
   const parsed = parseHost(hostOrUrl);
   const host = parsed.host.toLowerCase();
   const hostname = parsed.hostname.toLowerCase();
+  const isPrivateOrReserved = isPrivateOrReservedHost(hostname);
+
+  if (allowlist.length === 0) {
+    // Default-open for public hosts, default-deny for private/reserved ranges.
+    return !isPrivateOrReserved;
+  }
 
   const matched = allowlist.some((pattern) => {
     const regex = wildcardToRegex(pattern);
@@ -31,7 +33,7 @@ export function isHostAllowed(hostOrUrl: string, allowlist: string[]): boolean {
     return false;
   }
 
-  if (!isPrivateOrReservedHost(hostname)) {
+  if (!isPrivateOrReserved) {
     return true;
   }
 
