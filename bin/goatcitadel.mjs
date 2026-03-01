@@ -58,6 +58,10 @@ async function main() {
     run("pnpm", ["--dir", appDir, "tools", ...rest]);
     return;
   }
+  if (command === "admin") {
+    run("pnpm", ["--dir", appDir, "admin", ...rest]);
+    return;
+  }
   if (command === "smoke") {
     run("pnpm", ["--dir", appDir, "smoke", ...rest]);
     return;
@@ -159,6 +163,7 @@ Commands:
   onboard    Run TUI onboarding wizard
   tui        Run terminal Mission Control
   tools      Tool access CLI (catalog/grants/invoke)
+  admin      Backup/retention admin CLI
   smoke      Run smoke tests
   npu        Run local NPU sidecar (Python)
   doctor     Show environment diagnostics

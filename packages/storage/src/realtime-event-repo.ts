@@ -14,6 +14,7 @@ export class RealtimeEventRepository {
   private readonly insertStmt;
   private readonly listStmt;
   private readonly pruneStmt;
+  private readonly pruneOlderThanStmt;
   private appendCount = 0;
 
   public constructor(private readonly db: DatabaseSync) {
@@ -43,6 +44,10 @@ export class RealtimeEventRepository {
         ORDER BY created_at DESC, event_id DESC
         LIMIT -1 OFFSET @maxRows
       )
+    `);
+    this.pruneOlderThanStmt = db.prepare(`
+      DELETE FROM realtime_events
+      WHERE created_at < @cutoff
     `);
   }
 
@@ -89,6 +94,17 @@ export class RealtimeEventRepository {
       timestamp: row.created_at,
       payload: JSON.parse(row.payload_json) as Record<string, unknown>,
     }));
+  }
+
+  public pruneOlderThan(cutoffIso: string): number {
+    const before = this.db.prepare("SELECT COUNT(*) AS count FROM realtime_events WHERE created_at < ?")
+      .get(cutoffIso) as { count: number } | undefined;
+    const count = Number(before?.count ?? 0);
+    if (count <= 0) {
+      return 0;
+    }
+    this.pruneOlderThanStmt.run({ cutoff: cutoffIso });
+    return count;
   }
 }
 

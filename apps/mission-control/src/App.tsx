@@ -13,6 +13,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { CronPage } from "./pages/CronPage";
 import { SessionsPage } from "./pages/SessionsPage";
+import { ChatPage } from "./pages/ChatPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { CostConsolePage } from "./pages/CostConsolePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -42,6 +43,7 @@ type Tab =
   | "activity"
   | "cron"
   | "sessions"
+  | "chat"
   | "skills"
   | "costs"
   | "settings"
@@ -63,6 +65,7 @@ const allTabs: Tab[] = [
   "activity",
   "cron",
   "sessions",
+  "chat",
   "skills",
   "costs",
   "settings",
@@ -239,6 +242,9 @@ export function App() {
     }
     if (tab === "sessions") {
       return <SessionsPage refreshKey={refreshKey} />;
+    }
+    if (tab === "chat") {
+      return <ChatPage refreshKey={refreshKey} />;
     }
     if (tab === "skills") {
       return <SkillsPage refreshKey={refreshKey} />;

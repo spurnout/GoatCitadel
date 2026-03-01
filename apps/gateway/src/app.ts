@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { loadLocalEnvFile } from "./env-file.js";
 import { gatewayPlugin } from "./plugins/sqlite.js";
 import { authPlugin } from "./plugins/auth.js";
@@ -29,12 +30,16 @@ import { commsRoutes } from "./routes/comms.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { authRoutes } from "./routes/auth.js";
 import { secretsRoutes } from "./routes/secrets.js";
+import { chatRoutes } from "./routes/chat.js";
+import { adminRoutes } from "./routes/admin.js";
+import { docsRoutes } from "./routes/docs.js";
 
 loadLocalEnvFile();
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
   const allowedOrigins = resolveAllowedOrigins();
+  const rateLimitConfig = resolveRateLimitConfig();
 
   await app.register(cors, {
     origin: (origin, cb) => {
@@ -49,6 +54,40 @@ export async function buildApp() {
       cb(new Error("Origin not allowed by CORS policy"), false);
     },
   });
+
+  if (rateLimitConfig.enabled) {
+    await app.register(rateLimit, {
+      global: false,
+      timeWindow: "1 minute",
+      keyGenerator: (request) => request.ip,
+      allowList: ["127.0.0.1", "::1", "::ffff:127.0.0.1"],
+      max: rateLimitConfig.maxGeneral,
+      skipOnError: true,
+      addHeaders: {
+        "x-ratelimit-limit": true,
+        "x-ratelimit-remaining": true,
+        "x-ratelimit-reset": true,
+      },
+    });
+
+    app.addHook("onRoute", (routeOptions) => {
+      const bucket = classifyRateLimitBucket(routeOptions.url, routeOptions.method);
+      const max = bucket === "auth"
+        ? rateLimitConfig.maxAuth
+        : bucket === "mutation"
+          ? rateLimitConfig.maxMutation
+          : bucket === "sse"
+            ? rateLimitConfig.maxSseConnect
+            : rateLimitConfig.maxGeneral;
+      const currentConfig = (routeOptions.config ?? {}) as Record<string, unknown>;
+      routeOptions.config = {
+        ...currentConfig,
+        rateLimit: {
+          max,
+        },
+      };
+    });
+  }
 
   await app.register(gatewayPlugin);
   await app.register(authPlugin);
@@ -79,6 +118,9 @@ export async function buildApp() {
   await app.register(toolsRoutes);
   await app.register(commsRoutes);
   await app.register(knowledgeRoutes);
+  await app.register(chatRoutes);
+  await app.register(adminRoutes);
+  await app.register(docsRoutes);
 
   return app;
 }
@@ -100,4 +142,54 @@ function resolveAllowedOrigins(): Set<string> {
     .map((item) => item.trim())
     .filter(Boolean);
   return new Set(fromEnv.length > 0 ? fromEnv : defaults);
+}
+
+function resolveRateLimitConfig(): {
+  enabled: boolean;
+  maxGeneral: number;
+  maxMutation: number;
+  maxAuth: number;
+  maxSseConnect: number;
+} {
+  const enabledRaw = process.env.GOATCITADEL_RATE_LIMIT_ENABLED?.trim().toLowerCase();
+  const enabled = enabledRaw === undefined ? true : enabledRaw === "1" || enabledRaw === "true";
+  return {
+    enabled,
+    maxGeneral: parsePositiveInt(process.env.GOATCITADEL_RATE_LIMIT_MAX_GENERAL, 500),
+    maxMutation: parsePositiveInt(process.env.GOATCITADEL_RATE_LIMIT_MAX_MUTATION, 180),
+    maxAuth: parsePositiveInt(process.env.GOATCITADEL_RATE_LIMIT_MAX_AUTH, 60),
+    maxSseConnect: parsePositiveInt(process.env.GOATCITADEL_RATE_LIMIT_MAX_SSE_CONNECT, 45),
+  };
+}
+
+function classifyRateLimitBucket(
+  url: string,
+  method: string | string[],
+): "general" | "mutation" | "auth" | "sse" {
+  const normalizedUrl = url.toLowerCase();
+  const normalizedMethod = Array.isArray(method) ? method[0]?.toUpperCase() ?? "GET" : method.toUpperCase();
+  if (normalizedUrl.includes("/events/stream")) {
+    return "sse";
+  }
+  if (
+    normalizedUrl.startsWith("/api/v1/auth")
+    || normalizedUrl.startsWith("/api/v1/secrets")
+  ) {
+    return "auth";
+  }
+  if (normalizedMethod === "GET" || normalizedMethod === "HEAD" || normalizedMethod === "OPTIONS") {
+    return "general";
+  }
+  return "mutation";
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }

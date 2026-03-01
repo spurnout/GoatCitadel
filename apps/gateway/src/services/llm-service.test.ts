@@ -117,6 +117,56 @@ describe("LlmService", () => {
     });
     await expect(service.listModels()).rejects.toThrowError(/allowlist/i);
   });
+
+  it("probes keychain only for the active provider when building runtime settings", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "openai",
+      providers: [
+        {
+          providerId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "gpt-4.1-mini",
+        },
+        {
+          providerId: "moonshot",
+          label: "Moonshot",
+          baseUrl: "https://api.moonshot.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "kimi-k2.5",
+        },
+      ],
+    };
+
+    const secretStore = createTrackedSecretStore({
+      openai: "openai-secret",
+      moonshot: "moonshot-secret",
+    });
+    const service = new LlmService(config, process.env, { secretStore });
+
+    const first = service.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
+    expect(secretStore.getCalls()).toBe(1);
+    expect(first.providers.find((provider) => provider.providerId === "openai")?.apiKeySource).toBe("keychain");
+    expect(first.providers.find((provider) => provider.providerId === "moonshot")?.apiKeySource).toBe("none");
+
+    const second = service.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
+    expect(secretStore.getCalls()).toBe(1);
+    expect(second.providers.find((provider) => provider.providerId === "openai")?.apiKeySource).toBe("keychain");
+
+    const explicitMoonshot = service.getProviderSecretStatus("moonshot", {
+      includeKeychain: true,
+      useCache: false,
+    });
+    expect(secretStore.getCalls()).toBe(2);
+    expect(explicitMoonshot.apiKeySource).toBe("keychain");
+  });
 });
 
 function createNoopSecretStore(): SecretStoreService {
@@ -127,4 +177,31 @@ function createNoopSecretStore(): SecretStoreService {
     deleteProviderApiKey: () => undefined,
     status: (providerId: string) => ({ providerId, hasSecret: false, source: "none" }),
   } as unknown as SecretStoreService;
+}
+
+function createTrackedSecretStore(initial: Record<string, string>): SecretStoreService & {
+  getCalls: () => number;
+} {
+  const secrets = new Map<string, string>(Object.entries(initial));
+  let gets = 0;
+
+  return {
+    isAvailable: () => true,
+    setProviderApiKey: (providerId: string, apiKey: string) => {
+      secrets.set(providerId, apiKey);
+    },
+    getProviderApiKey: (providerId: string) => {
+      gets += 1;
+      return secrets.get(providerId);
+    },
+    deleteProviderApiKey: (providerId: string) => {
+      secrets.delete(providerId);
+    },
+    status: (providerId: string) => ({
+      providerId,
+      hasSecret: secrets.has(providerId),
+      source: secrets.has(providerId) ? "keychain" : "none",
+    }),
+    getCalls: () => gets,
+  } as unknown as SecretStoreService & { getCalls: () => number };
 }

@@ -9,6 +9,7 @@ export type TabId =
   | "activity"
   | "cron"
   | "sessions"
+  | "chat"
   | "skills"
   | "costs"
   | "settings"

@@ -28,6 +28,7 @@ async function run(): Promise<void> {
       await smokeHealth(app);
       await smokeGatewayEvents(app);
       await smokeSessions(app);
+      await smokeChat(app);
       await smokeTools(app);
       await smokeNativeToolsExpansion(app);
       await smokeApprovals(app);
@@ -49,6 +50,83 @@ async function run(): Promise<void> {
     }
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+async function smokeChat(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {
+  const projectsBefore = await app.inject({
+    method: "GET",
+    url: "/api/v1/chat/projects?view=all&limit=20",
+  });
+  assert.equal(projectsBefore.statusCode, 200);
+
+  const createdProject = await postJson<{ projectId: string; name: string }>(
+    app,
+    "/api/v1/chat/projects",
+    {
+      name: "Smoke Project",
+      workspacePath: "chat/smoke",
+    },
+    {
+      "Idempotency-Key": "smoke-chat-project-create-1",
+    },
+  );
+  assert.equal(createdProject.statusCode, 201);
+  const projectId = createdProject.body.projectId;
+
+  const createdSession = await postJson<{ sessionId: string; projectId?: string }>(
+    app,
+    "/api/v1/chat/sessions",
+    {
+      title: "Smoke Chat Session",
+      projectId,
+    },
+    {
+      "Idempotency-Key": "smoke-chat-session-create-1",
+    },
+  );
+  assert.equal(createdSession.statusCode, 201);
+  const sessionId = createdSession.body.sessionId;
+  assert.ok(sessionId, "chat session id should be returned");
+
+  const sessionsRes = await app.inject({
+    method: "GET",
+    url: `/api/v1/chat/sessions?scope=all&view=all&projectId=${encodeURIComponent(projectId)}&limit=20`,
+  });
+  assert.equal(sessionsRes.statusCode, 200);
+  const sessionsBody = JSON.parse(sessionsRes.body) as { items: Array<{ sessionId: string }> };
+  assert.equal(sessionsBody.items.some((item) => item.sessionId === sessionId), true);
+
+  const messagesRes = await app.inject({
+    method: "GET",
+    url: `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages?limit=20`,
+  });
+  assert.equal(messagesRes.statusCode, 200);
+  const messagesBody = JSON.parse(messagesRes.body) as { items: unknown[] };
+  assert.equal(Array.isArray(messagesBody.items), true);
+
+  const uploaded = await postJson<{ attachmentId: string; fileName: string }>(
+    app,
+    "/api/v1/chat/attachments",
+    {
+      sessionId,
+      projectId,
+      fileName: "smoke-note.txt",
+      mimeType: "text/plain",
+      bytesBase64: Buffer.from("hello from smoke").toString("base64"),
+    },
+    {
+      "Idempotency-Key": "smoke-chat-attachment-create-1",
+    },
+  );
+  assert.equal(uploaded.statusCode, 201);
+  const attachmentId = uploaded.body.attachmentId;
+  assert.equal(typeof attachmentId, "string");
+
+  const attachmentMeta = await app.inject({
+    method: "GET",
+    url: `/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}`,
+  });
+  assert.equal(attachmentMeta.statusCode, 200);
 }
 
 async function smokeHealth(app: Awaited<ReturnType<typeof buildApp>>): Promise<void> {

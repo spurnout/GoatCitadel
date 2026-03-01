@@ -8,6 +8,14 @@ import type {
   ApprovalRequest,
   ChangeRiskEvaluationResponse,
   ChannelSendInput,
+  ChatAttachmentRecord,
+  ChatMessageRecord,
+  ChatProjectRecord,
+  ChatSendMessageRequest,
+  ChatSendMessageResponse,
+  ChatSessionBindingRecord,
+  ChatSessionRecord,
+  ChatStreamChunk,
   DocsIngestInput,
   EmbeddingIndexInput,
   EmbeddingQueryInput,
@@ -37,6 +45,10 @@ import type {
   ToolGrantRecord,
   ToolInvokeResult,
   UiActionState,
+  BackupCreateResponse,
+  BackupManifestRecord,
+  RetentionPolicy,
+  RetentionPruneResult,
 } from "@goatcitadel/contracts";
 
 export type { SessionSummary, SessionTimelineItem };
@@ -448,6 +460,315 @@ export async function fetchSessionTimeline(sessionId: string, limit = 200): Prom
   return request<{ items: SessionTimelineItem[] }>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${Math.max(1, Math.min(limit, 1000))}`,
   );
+}
+
+export interface ChatProjectsResponse {
+  items: ChatProjectRecord[];
+  view?: "active" | "archived" | "all";
+}
+
+export interface ChatSessionsResponse {
+  items: ChatSessionRecord[];
+  nextCursor?: string;
+}
+
+export interface ChatMessagesResponse {
+  items: ChatMessageRecord[];
+}
+
+export async function fetchChatProjects(view: "active" | "archived" | "all" = "active", limit = 300): Promise<ChatProjectsResponse> {
+  return request<ChatProjectsResponse>(`/api/v1/chat/projects?view=${encodeURIComponent(view)}&limit=${limit}`);
+}
+
+export async function createChatProject(input: {
+  name: string;
+  description?: string;
+  workspacePath: string;
+  color?: string;
+}): Promise<ChatProjectRecord> {
+  return request<ChatProjectRecord>("/api/v1/chat/projects", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateChatProject(projectId: string, input: {
+  name?: string;
+  description?: string;
+  workspacePath?: string;
+  color?: string;
+}): Promise<ChatProjectRecord> {
+  return request<ChatProjectRecord>(`/api/v1/chat/projects/${encodeURIComponent(projectId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function archiveChatProject(projectId: string): Promise<ChatProjectRecord> {
+  return request<ChatProjectRecord>(`/api/v1/chat/projects/${encodeURIComponent(projectId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function restoreChatProject(projectId: string): Promise<ChatProjectRecord> {
+  return request<ChatProjectRecord>(`/api/v1/chat/projects/${encodeURIComponent(projectId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function hardDeleteChatProject(projectId: string): Promise<{ deleted: boolean; projectId: string; mode: "hard" }> {
+  return request<{ deleted: boolean; projectId: string; mode: "hard" }>(
+    `/api/v1/chat/projects/${encodeURIComponent(projectId)}?mode=hard`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function fetchChatSessions(input?: {
+  scope?: "mission" | "external" | "all";
+  projectId?: string;
+  q?: string;
+  view?: "active" | "archived" | "all";
+  limit?: number;
+  cursor?: string;
+}): Promise<ChatSessionsResponse> {
+  const query = new URLSearchParams();
+  if (input?.scope) query.set("scope", input.scope);
+  if (input?.projectId) query.set("projectId", input.projectId);
+  if (input?.q) query.set("q", input.q);
+  if (input?.view) query.set("view", input.view);
+  query.set("limit", String(input?.limit ?? 200));
+  if (input?.cursor) query.set("cursor", input.cursor);
+  return request<ChatSessionsResponse>(`/api/v1/chat/sessions?${query.toString()}`);
+}
+
+export async function createChatSession(input?: { title?: string; projectId?: string }): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>("/api/v1/chat/sessions", {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function updateChatSession(sessionId: string, input: { title?: string }): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function pinChatSession(sessionId: string): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/pin`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function unpinChatSession(sessionId: string): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/unpin`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function archiveChatSession(sessionId: string): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function restoreChatSession(sessionId: string): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function assignChatSessionProject(sessionId: string, projectId?: string): Promise<ChatSessionRecord> {
+  return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/project`, {
+    method: "POST",
+    body: JSON.stringify({ projectId }),
+  });
+}
+
+export async function setChatSessionBinding(sessionId: string, input: {
+  transport: "llm" | "integration";
+  connectionId?: string;
+  target?: string;
+  writable?: boolean;
+}): Promise<ChatSessionBindingRecord> {
+  return request<ChatSessionBindingRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/binding`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchChatSessionBinding(sessionId: string): Promise<{ item: ChatSessionBindingRecord | null }> {
+  return request<{ item: ChatSessionBindingRecord | null }>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/binding`);
+}
+
+export async function fetchChatMessages(sessionId: string, limit = 200, cursor?: string): Promise<ChatMessagesResponse> {
+  const query = new URLSearchParams();
+  query.set("limit", String(Math.max(1, Math.min(limit, 1000))));
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  return request<ChatMessagesResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`,
+  );
+}
+
+export async function sendChatMessage(sessionId: string, input: ChatSendMessageRequest): Promise<ChatSendMessageResponse> {
+  return request<ChatSendMessageResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function streamChatMessage(
+  sessionId: string,
+  input: ChatSendMessageRequest,
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`);
+  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+      ...authHeaders,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+  await consumeSseResponse(response.body, onChunk);
+}
+
+export async function uploadChatAttachment(input: {
+  sessionId: string;
+  projectId?: string;
+  file: File;
+}): Promise<ChatAttachmentRecord> {
+  const bytes = new Uint8Array(await input.file.arrayBuffer());
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  const bytesBase64 = btoa(binary);
+  return request<ChatAttachmentRecord>("/api/v1/chat/attachments", {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId: input.sessionId,
+      projectId: input.projectId,
+      fileName: input.file.name,
+      mimeType: input.file.type || "application/octet-stream",
+      bytesBase64,
+    }),
+  });
+}
+
+export async function fetchChatAttachment(attachmentId: string): Promise<ChatAttachmentRecord> {
+  return request<ChatAttachmentRecord>(`/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}`);
+}
+
+export async function downloadChatAttachment(attachmentId: string): Promise<{ blob: Blob; fileName: string; mimeType: string }> {
+  const meta = await fetchChatAttachment(attachmentId);
+  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}/content`);
+  const response = await fetch(`${API_BASE}/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}/content?disposition=attachment`, {
+    headers: authHeaders,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    fileName: meta.fileName,
+    mimeType: meta.mimeType,
+  };
+}
+
+export async function fetchRetentionPolicy(): Promise<RetentionPolicy> {
+  return request<RetentionPolicy>("/api/v1/admin/retention");
+}
+
+export async function updateRetentionPolicy(input: Partial<RetentionPolicy>): Promise<RetentionPolicy> {
+  return request<RetentionPolicy>("/api/v1/admin/retention", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function pruneRetention(dryRun = true): Promise<RetentionPruneResult> {
+  return request<RetentionPruneResult>("/api/v1/admin/retention/prune", {
+    method: "POST",
+    body: JSON.stringify({ dryRun }),
+  });
+}
+
+export async function listBackups(limit = 50): Promise<{ items: BackupManifestRecord[] }> {
+  return request<{ items: BackupManifestRecord[] }>(`/api/v1/admin/backups?limit=${limit}`);
+}
+
+export async function createBackup(input?: { name?: string; outputPath?: string }): Promise<BackupCreateResponse> {
+  return request<BackupCreateResponse>("/api/v1/admin/backups/create", {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function restoreBackup(filePath: string, confirm = false): Promise<{ restored: boolean; backupId?: string; filesRestored: number }> {
+  return request<{ restored: boolean; backupId?: string; filesRestored: number }>("/api/v1/admin/backups/restore", {
+    method: "POST",
+    body: JSON.stringify({ filePath, confirm }),
+  });
+}
+
+async function consumeSseResponse(
+  body: ReadableStream<Uint8Array>,
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const separatorIndex = buffer.indexOf("\n\n");
+      if (separatorIndex < 0) {
+        break;
+      }
+      const rawEvent = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      const dataLines = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+      if (dataLines.length === 0) {
+        continue;
+      }
+      const dataText = dataLines.join("\n");
+      try {
+        const parsed = JSON.parse(dataText) as ChatStreamChunk;
+        onChunk(parsed);
+      } catch {
+        // ignore parse noise
+      }
+    }
+  }
 }
 
 export async function fetchApprovals(status = "pending"): Promise<ApprovalsResponse> {
@@ -1305,11 +1626,18 @@ async function ensureEventStreamConnected(): Promise<void> {
   sharedEventSource = source;
 
   source.onopen = () => {
+    if (sharedEventSource !== source) {
+      return;
+    }
+    clearReconnectTimer();
     reconnectAttempts = 0;
     setEventConnectionState("open");
   };
 
   source.onmessage = (evt) => {
+    if (sharedEventSource !== source) {
+      return;
+    }
     try {
       const event = JSON.parse(evt.data) as RealtimeEvent;
       lastEventAt = event.timestamp || new Date().toISOString();
@@ -1323,6 +1651,9 @@ async function ensureEventStreamConnected(): Promise<void> {
   };
 
   source.onerror = () => {
+    if (sharedEventSource !== source) {
+      return;
+    }
     closeSharedEventSource();
     if (eventStreamSubscribers.size === 0) {
       setEventConnectionState("closed");

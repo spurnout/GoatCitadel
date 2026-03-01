@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { EventIngestService } from "@goatcitadel/gateway-core";
 import { MeshService } from "@goatcitadel/mesh-core";
 import { OrchestrationEngine } from "@goatcitadel/orchestration";
@@ -15,6 +16,9 @@ import type {
   AgentProfileCreateInput,
   AgentProfileRecord,
   AgentProfileUpdateInput,
+  BackupCreateResponse,
+  BackupManifestFileRecord,
+  BackupManifestRecord,
   AuthRuntimeSettings,
   AuthSettingsUpdateInput,
   ApprovalCreateInput,
@@ -25,6 +29,13 @@ import type {
   CalendarListQuery,
   ChannelSendInput,
   ChannelInboundMessageInput,
+  ChatAttachmentRecord,
+  ChatMessageRecord,
+  ChatProjectRecord,
+  ChatSendMessageResponse,
+  ChatSessionBindingRecord,
+  ChatSessionRecord,
+  ChatStreamChunk,
   DocsIngestInput,
   EmbeddingIndexInput,
   EmbeddingQueryInput,
@@ -71,6 +82,10 @@ import type {
   OrchestrationRun,
   PendingApprovalAction,
   RealtimeEvent,
+  RetentionPolicy,
+  RetentionPruneResult,
+  SessionMeta,
+  TranscriptEvent,
   SessionSummary,
   SessionTimelineItem,
   SkillResolveInput,
@@ -194,6 +209,23 @@ export interface RuntimeSettings {
     sidecarUrl: string;
     status: NpuRuntimeStatus;
   };
+}
+
+const RETENTION_SETTINGS_KEY = "retention_policy";
+const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
+  realtimeEventsDays: 14,
+  backupsKeep: 20,
+  transcriptsDays: undefined,
+  auditDays: undefined,
+};
+
+interface ChatSessionListQuery {
+  scope?: "mission" | "external" | "all";
+  projectId?: string;
+  q?: string;
+  view?: "active" | "archived" | "all";
+  limit?: number;
+  cursor?: string;
 }
 
 interface RealtimeListener {
@@ -380,6 +412,811 @@ export class GatewayService {
       tokenOutput: event.tokenOutput,
       costUsd: event.costUsd,
     }));
+  }
+
+  public listChatProjects(view: "active" | "archived" | "all" = "active", limit = 300): ChatProjectRecord[] {
+    return this.storage.chatProjects.list(view, limit);
+  }
+
+  public createChatProject(input: {
+    name: string;
+    description?: string;
+    workspacePath: string;
+    color?: string;
+  }): ChatProjectRecord {
+    const created = this.storage.chatProjects.create(input);
+    this.publishRealtime("system", "chat", {
+      type: "chat_project_created",
+      projectId: created.projectId,
+      name: created.name,
+    });
+    return created;
+  }
+
+  public updateChatProject(projectId: string, input: {
+    name?: string;
+    description?: string;
+    workspacePath?: string;
+    color?: string;
+  }): ChatProjectRecord {
+    const updated = this.storage.chatProjects.update(projectId, input);
+    this.publishRealtime("system", "chat", {
+      type: "chat_project_updated",
+      projectId: updated.projectId,
+      name: updated.name,
+    });
+    return updated;
+  }
+
+  public archiveChatProject(projectId: string): ChatProjectRecord {
+    const archived = this.storage.chatProjects.archive(projectId);
+    this.publishRealtime("system", "chat", {
+      type: "chat_project_archived",
+      projectId: archived.projectId,
+    });
+    return archived;
+  }
+
+  public restoreChatProject(projectId: string): ChatProjectRecord {
+    const restored = this.storage.chatProjects.restore(projectId);
+    this.publishRealtime("system", "chat", {
+      type: "chat_project_restored",
+      projectId: restored.projectId,
+    });
+    return restored;
+  }
+
+  public hardDeleteChatProject(projectId: string): boolean {
+    const deleted = this.storage.chatProjects.hardDelete(projectId);
+    if (deleted) {
+      this.publishRealtime("system", "chat", {
+        type: "chat_project_deleted",
+        projectId,
+      });
+    }
+    return deleted;
+  }
+
+  public listChatSessions(query: ChatSessionListQuery = {}): ChatSessionRecord[] {
+    const scope = query.scope ?? "all";
+    const view = query.view ?? "active";
+    const limit = Math.max(1, Math.min(1000, Math.floor(query.limit ?? 200)));
+    const allSessions = this.storage.sessions.list(20000);
+    const projects = this.storage.chatProjects.list("all", 2000);
+    const projectById = new Map(projects.map((project) => [project.projectId, project]));
+    const sessionIds = allSessions.map((session) => session.sessionId);
+    const metaBySessionId = this.storage.chatSessionMeta.listBySessionIds(sessionIds);
+    const projectLinkBySessionId = this.storage.chatSessionProjects.listBySessionIds(sessionIds);
+
+    let records = allSessions.map((session) => {
+      const meta = metaBySessionId.get(session.sessionId) ?? this.storage.chatSessionMeta.ensure(session.sessionId);
+      const link = projectLinkBySessionId.get(session.sessionId);
+      const project = link ? projectById.get(link.projectId) : undefined;
+      return toChatSessionRecord(session, meta, project);
+    });
+
+    if (scope !== "all") {
+      records = records.filter((record) => record.scope === scope);
+    }
+    if (view !== "all") {
+      records = records.filter((record) => record.lifecycleStatus === view);
+    }
+    if (query.projectId) {
+      records = records.filter((record) => record.projectId === query.projectId);
+    }
+    if (query.q?.trim()) {
+      const q = query.q.trim().toLowerCase();
+      records = records.filter((record) => {
+        const haystack = [
+          record.title ?? "",
+          record.sessionKey,
+          record.channel,
+          record.account,
+          record.projectName ?? "",
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+
+    records.sort((left, right) => {
+      if (left.pinned !== right.pinned) {
+        return left.pinned ? -1 : 1;
+      }
+      const byUpdated = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+      if (byUpdated !== 0) {
+        return byUpdated;
+      }
+      return right.sessionId.localeCompare(left.sessionId);
+    });
+
+    if (query.cursor) {
+      const [cursorUpdatedAt, cursorSessionId] = query.cursor.split("|");
+      if (cursorUpdatedAt && cursorSessionId) {
+        records = records.filter((record) => {
+          if (record.updatedAt < cursorUpdatedAt) {
+            return true;
+          }
+          if (record.updatedAt > cursorUpdatedAt) {
+            return false;
+          }
+          return record.sessionId < cursorSessionId;
+        });
+      }
+    }
+
+    return records.slice(0, limit);
+  }
+
+  public createChatSession(input: {
+    title?: string;
+    projectId?: string;
+  }): ChatSessionRecord {
+    const peer = `chat_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const route = {
+      channel: "mission",
+      account: "operator",
+      peer,
+    };
+    const resolution = {
+      kind: "dm" as const,
+      sessionKey: `${route.channel}:${route.account}:${route.peer}`,
+      sessionId: `sess_${createHash("sha256").update(`${route.channel}:${route.account}:${route.peer}`).digest("hex").slice(0, 24)}`,
+    };
+    const now = new Date().toISOString();
+    this.storage.sessions.upsert({
+      sessionId: resolution.sessionId,
+      sessionKey: resolution.sessionKey,
+      kind: resolution.kind,
+      channel: route.channel,
+      account: route.account,
+      displayName: input.title?.trim() || undefined,
+      timestamp: now,
+    });
+    this.storage.chatSessionMeta.ensure(resolution.sessionId, now);
+    if (input.title?.trim()) {
+      this.storage.chatSessionMeta.patch(resolution.sessionId, {
+        title: input.title.trim(),
+      }, now);
+    }
+    this.storage.chatSessionBindings.upsert({
+      sessionId: resolution.sessionId,
+      transport: "llm",
+      writable: true,
+    }, now);
+    if (input.projectId) {
+      this.storage.chatProjects.get(input.projectId);
+      this.storage.chatSessionProjects.assign(resolution.sessionId, input.projectId, now);
+    }
+    const created = this.requireChatSession(resolution.sessionId);
+    if (!created) {
+      throw new Error(`Failed to create chat session ${resolution.sessionId}`);
+    }
+    this.publishRealtime("chat_session_updated", "chat", {
+      type: "chat_session_created",
+      sessionId: created.sessionId,
+      sessionKey: created.sessionKey,
+    });
+    return created;
+  }
+
+  public updateChatSession(sessionId: string, input: { title?: string }): ChatSessionRecord {
+    this.getSession(sessionId);
+    this.storage.chatSessionMeta.patch(sessionId, {
+      title: input.title,
+    });
+    return this.requireChatSession(sessionId);
+  }
+
+  public pinChatSession(sessionId: string): ChatSessionRecord {
+    this.getSession(sessionId);
+    this.storage.chatSessionMeta.patch(sessionId, { pinned: true });
+    return this.requireChatSession(sessionId);
+  }
+
+  public unpinChatSession(sessionId: string): ChatSessionRecord {
+    this.getSession(sessionId);
+    this.storage.chatSessionMeta.patch(sessionId, { pinned: false });
+    return this.requireChatSession(sessionId);
+  }
+
+  public archiveChatSession(sessionId: string): ChatSessionRecord {
+    this.getSession(sessionId);
+    this.storage.chatSessionMeta.patch(sessionId, {
+      lifecycleStatus: "archived",
+      archivedAt: new Date().toISOString(),
+    });
+    return this.requireChatSession(sessionId);
+  }
+
+  public restoreChatSession(sessionId: string): ChatSessionRecord {
+    this.getSession(sessionId);
+    this.storage.chatSessionMeta.patch(sessionId, {
+      lifecycleStatus: "active",
+      archivedAt: undefined,
+    });
+    return this.requireChatSession(sessionId);
+  }
+
+  public assignChatSessionProject(sessionId: string, projectId?: string): ChatSessionRecord {
+    this.getSession(sessionId);
+    if (!projectId) {
+      this.storage.chatSessionProjects.unassign(sessionId);
+      return this.requireChatSession(sessionId);
+    }
+    this.storage.chatProjects.get(projectId);
+    this.storage.chatSessionProjects.assign(sessionId, projectId);
+    return this.requireChatSession(sessionId);
+  }
+
+  public getChatSessionBinding(sessionId: string): ChatSessionBindingRecord | undefined {
+    this.getSession(sessionId);
+    return this.storage.chatSessionBindings.get(sessionId);
+  }
+
+  public setChatSessionBinding(input: {
+    sessionId: string;
+    transport: "llm" | "integration";
+    connectionId?: string;
+    target?: string;
+    writable?: boolean;
+  }): ChatSessionBindingRecord {
+    this.getSession(input.sessionId);
+    if (input.transport === "integration") {
+      if (!input.connectionId?.trim() || !input.target?.trim()) {
+        throw new Error("connectionId and target are required for integration transport");
+      }
+      this.storage.integrationConnections.get(input.connectionId);
+    }
+    const binding = this.storage.chatSessionBindings.upsert({
+      sessionId: input.sessionId,
+      transport: input.transport,
+      connectionId: input.connectionId?.trim() || undefined,
+      target: input.target?.trim() || undefined,
+      writable: input.writable,
+    });
+    this.publishRealtime("chat_session_updated", "chat", {
+      type: "chat_session_binding_updated",
+      sessionId: input.sessionId,
+      transport: binding.transport,
+    });
+    return binding;
+  }
+
+  public async listChatMessages(sessionId: string, limit = 200, cursor?: string): Promise<ChatMessageRecord[]> {
+    this.getSession(sessionId);
+    const events = await this.readTranscriptOrEmpty(sessionId);
+    let messages = events
+      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
+      .map((event) => toChatMessageRecord(event))
+      .filter((message): message is ChatMessageRecord => Boolean(message));
+
+    if (cursor) {
+      const index = messages.findIndex((message) => message.messageId === cursor);
+      if (index >= 0) {
+        messages = messages.slice(0, index);
+      }
+    }
+
+    return messages.slice(-Math.max(1, Math.min(limit, 1000)));
+  }
+
+  public async sendChatMessage(
+    sessionId: string,
+    input: {
+      content: string;
+      providerId?: string;
+      model?: string;
+      useMemory?: boolean;
+      attachments?: string[];
+    },
+  ): Promise<ChatSendMessageResponse> {
+    const session = this.getSession(sessionId);
+    const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    if (sessionMeta.lifecycleStatus === "archived") {
+      throw new Error(`Session ${sessionId} is archived`);
+    }
+    const content = input.content.trim();
+    if (!content) {
+      throw new Error("content is required");
+    }
+
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const route = this.routeFromSession(session);
+    const userEventId = randomUUID();
+    const userPayload = {
+      eventId: userEventId,
+      route,
+      actor: {
+        type: "user" as const,
+        id: "operator",
+      },
+      message: {
+        role: "user" as const,
+        content,
+        attachments: attachments.map((item) => ({
+          attachmentId: item.attachmentId,
+          fileName: item.fileName,
+          mimeType: item.mimeType,
+          sizeBytes: item.sizeBytes,
+        })),
+      },
+    };
+    await this.ingestEvent(randomUUID(), userPayload);
+
+    const userMessage: ChatMessageRecord = {
+      messageId: userEventId,
+      sessionId,
+      role: "user",
+      actorType: "user",
+      actorId: "operator",
+      content,
+      timestamp: new Date().toISOString(),
+      attachments: attachments.map((item) => ({
+        attachmentId: item.attachmentId,
+        fileName: item.fileName,
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+      })),
+    };
+
+    const binding = this.storage.chatSessionBindings.get(sessionId)
+      ?? (session.channel === "mission"
+        ? this.storage.chatSessionBindings.upsert({
+          sessionId,
+          transport: "llm",
+          writable: true,
+        })
+        : undefined);
+
+    if (!binding) {
+      throw new Error("External sessions require writeback binding before send");
+    }
+    if (!binding.writable) {
+      throw new Error("Session binding is not writable");
+    }
+
+    if (binding.transport === "integration") {
+      if (!binding.connectionId || !binding.target) {
+        throw new Error("Integration binding is missing connectionId or target");
+      }
+      const delivery = await this.commsSend({
+        connectionId: binding.connectionId,
+        target: binding.target,
+        message: content,
+        sessionId,
+        agentId: "operator",
+      });
+      const assistantContent = typeof delivery === "object"
+        ? `Delivered via integration ${binding.connectionId} to ${binding.target}.`
+        : "Delivered via integration.";
+      const assistantEventId = randomUUID();
+      await this.ingestEvent(randomUUID(), {
+        eventId: assistantEventId,
+        route,
+        actor: {
+          type: "system",
+          id: "integration",
+        },
+        message: {
+          role: "assistant",
+          content: assistantContent,
+        },
+      });
+      const assistantMessage: ChatMessageRecord = {
+        messageId: assistantEventId,
+        sessionId,
+        role: "assistant",
+        actorType: "system",
+        actorId: "integration",
+        content: assistantContent,
+        timestamp: new Date().toISOString(),
+      };
+      this.publishRealtime("chat_message", "chat", {
+        sessionId,
+        role: "assistant",
+        preview: assistantContent.slice(0, 160),
+      });
+      return {
+        sessionId,
+        userMessage,
+        assistantMessage,
+        transport: "integration",
+      };
+    }
+
+    const history = await this.buildLlmMessagesFromTranscript(sessionId);
+    const response = await this.createChatCompletion({
+      providerId: input.providerId,
+      model: input.model,
+      messages: history,
+      memory: {
+        enabled: input.useMemory ?? true,
+        mode: input.useMemory === false ? "off" : "qmd",
+        sessionId,
+      },
+      stream: false,
+    });
+    const assistantContent = extractAssistantContent(response);
+    const usage = parseUsageFromChatResponse(response);
+    const assistantEventId = randomUUID();
+    await this.ingestEvent(randomUUID(), {
+      eventId: assistantEventId,
+      route,
+      actor: {
+        type: "agent",
+        id: "assistant",
+      },
+      message: {
+        role: "assistant",
+        content: assistantContent,
+      },
+      usage,
+    });
+    const assistantMessage: ChatMessageRecord = {
+      messageId: assistantEventId,
+      sessionId,
+      role: "assistant",
+      actorType: "agent",
+      actorId: "assistant",
+      content: assistantContent,
+      timestamp: new Date().toISOString(),
+      tokenInput: usage.inputTokens,
+      tokenOutput: usage.outputTokens,
+      costUsd: usage.costUsd,
+    };
+    this.publishRealtime("chat_message", "chat", {
+      sessionId,
+      role: "assistant",
+      preview: assistantContent.slice(0, 160),
+      model: response.model,
+    });
+    return {
+      sessionId,
+      userMessage,
+      assistantMessage,
+      transport: "llm",
+      model: response.model ? String(response.model) : undefined,
+    };
+  }
+
+  public async *sendChatMessageStream(
+    sessionId: string,
+    input: {
+      content: string;
+      providerId?: string;
+      model?: string;
+      useMemory?: boolean;
+      attachments?: string[];
+    },
+  ): AsyncGenerator<ChatStreamChunk> {
+    const started = new Date().toISOString();
+    yield {
+      type: "message_start",
+      sessionId,
+      messageId: `msg_${randomUUID()}`,
+    };
+    try {
+      const response = await this.sendChatMessage(sessionId, input);
+      const assistant = response.assistantMessage;
+      const messageId = assistant?.messageId ?? `msg_${randomUUID()}`;
+      const content = assistant?.content ?? "";
+      const chunks = splitIntoChunks(content, 120);
+      for (const delta of chunks) {
+        yield {
+          type: "delta",
+          sessionId,
+          messageId,
+          delta,
+        };
+      }
+      yield {
+        type: "usage",
+        sessionId,
+        messageId,
+        usage: {
+          inputTokens: assistant?.tokenInput,
+          outputTokens: assistant?.tokenOutput,
+          costUsd: assistant?.costUsd,
+        },
+      };
+      yield {
+        type: "message_done",
+        sessionId,
+        messageId,
+        content,
+      };
+      yield {
+        type: "done",
+        sessionId,
+      };
+    } catch (error) {
+      yield {
+        type: "error",
+        sessionId,
+        error: (error as Error).message,
+      };
+      yield {
+        type: "done",
+        sessionId,
+        content: started,
+      };
+    }
+  }
+
+  public async uploadChatAttachment(input: {
+    sessionId: string;
+    projectId?: string;
+    fileName: string;
+    mimeType: string;
+    bytesBase64: string;
+  }): Promise<ChatAttachmentRecord> {
+    this.getSession(input.sessionId);
+    const fileName = sanitizeAttachmentFileName(input.fileName);
+    const mimeType = input.mimeType.trim() || "application/octet-stream";
+    const bytes = Buffer.from(input.bytesBase64, "base64");
+    if (bytes.length === 0) {
+      throw new Error("Attachment payload is empty");
+    }
+    if (bytes.length > 20 * 1024 * 1024) {
+      throw new Error("Attachment exceeds 20MB upload limit");
+    }
+
+    let projectId = input.projectId;
+    if (!projectId) {
+      projectId = this.storage.chatSessionProjects.get(input.sessionId)?.projectId;
+    }
+    const project = projectId ? this.storage.chatProjects.get(projectId) : undefined;
+    const rootPath = project?.workspacePath ?? "chat/default";
+    const stamp = new Date();
+    const year = String(stamp.getUTCFullYear());
+    const month = String(stamp.getUTCMonth() + 1).padStart(2, "0");
+    const attachmentId = randomUUID();
+    const storageRelPath = path.posix.join(
+      rootPath,
+      "attachments",
+      year,
+      month,
+      `${attachmentId}-${fileName}`,
+    );
+    const fullPath = path.resolve(this.config.rootDir, this.config.assistant.workspaceDir, storageRelPath);
+    assertWritePathInJail(fullPath, this.config.toolPolicy.sandbox.writeJailRoots);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, bytes);
+
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const { extractStatus, extractPreview } = extractAttachmentPreview(bytes, mimeType, fileName);
+    const created = this.storage.chatAttachments.create({
+      attachmentId,
+      sessionId: input.sessionId,
+      projectId,
+      fileName,
+      mimeType,
+      sizeBytes: bytes.length,
+      sha256,
+      storageRelPath,
+      extractStatus,
+      extractPreview,
+    });
+    this.publishRealtime("chat_message", "chat", {
+      type: "chat_attachment_uploaded",
+      sessionId: input.sessionId,
+      attachmentId,
+      fileName,
+      sizeBytes: bytes.length,
+    });
+    return created;
+  }
+
+  public getChatAttachment(attachmentId: string): ChatAttachmentRecord {
+    return this.storage.chatAttachments.get(attachmentId);
+  }
+
+  public async readChatAttachmentContent(attachmentId: string): Promise<{
+    record: ChatAttachmentRecord;
+    fullPath: string;
+    bytes: Buffer;
+  }> {
+    const record = this.storage.chatAttachments.get(attachmentId);
+    const fullPath = path.resolve(this.config.rootDir, this.config.assistant.workspaceDir, record.storageRelPath);
+    assertExistingPathRealpathAllowed(
+      fullPath,
+      this.config.toolPolicy.sandbox.writeJailRoots,
+      this.config.toolPolicy.sandbox.readOnlyRoots,
+    );
+    const bytes = await fs.readFile(fullPath);
+    return {
+      record,
+      fullPath,
+      bytes,
+    };
+  }
+
+  public async listBackups(limit = 50): Promise<BackupManifestRecord[]> {
+    const backupDir = this.getBackupDirectory();
+    const entries = await listFilesSafe(backupDir);
+    const manifests: BackupManifestRecord[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.endsWith(".backup")) {
+        continue;
+      }
+      const manifestPath = path.join(backupDir, entry.name, "manifest.json");
+      try {
+        const raw = await fs.readFile(manifestPath, "utf8");
+        const parsed = JSON.parse(raw) as BackupManifestRecord;
+        manifests.push(parsed);
+      } catch {
+        // skip invalid backup folders
+      }
+    }
+    manifests.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+    return manifests.slice(0, Math.max(1, Math.min(limit, 500)));
+  }
+
+  public async createBackup(input?: {
+    name?: string;
+    outputPath?: string;
+  }): Promise<BackupCreateResponse> {
+    const now = new Date();
+    const timestamp = formatBackupTimestamp(now);
+    const backupId = sanitizeBackupName(input?.name) ?? `backup-${timestamp}-${randomUUID().slice(0, 8)}`;
+    const backupDir = this.getBackupDirectory();
+    const outputPath = input?.outputPath
+      ? path.resolve(this.config.rootDir, input.outputPath)
+      : path.join(backupDir, `${backupId}.backup`);
+    const tempDir = `${outputPath}.tmp-${randomUUID().slice(0, 8)}`;
+    const payloadDir = path.join(tempDir, "payload");
+
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.mkdir(payloadDir, { recursive: true });
+
+    const includePaths = this.buildBackupIncludePaths();
+    for (const includePath of includePaths) {
+      const source = path.resolve(this.config.rootDir, includePath);
+      const target = path.join(payloadDir, includePath);
+      await copyPathIfExists(source, target);
+    }
+
+    const files = await collectBackupFileRecords(payloadDir);
+    const manifest: BackupManifestRecord = {
+      backupId,
+      createdAt: now.toISOString(),
+      appVersion: readAppVersion(),
+      gitRef: readGitRef(this.config.rootDir),
+      rootDir: this.config.rootDir,
+      files,
+    };
+    const manifestPath = path.join(tempDir, "manifest.json");
+    const manifestRaw = `${JSON.stringify(manifest, null, 2)}\n`;
+    await fs.writeFile(manifestPath, manifestRaw, "utf8");
+
+    await fs.rm(outputPath, { recursive: true, force: true });
+    await fs.rename(tempDir, outputPath);
+
+    return {
+      backupId,
+      outputPath,
+      bytes: files.reduce((sum, item) => sum + item.sizeBytes, 0) + Buffer.byteLength(manifestRaw, "utf8"),
+      manifest,
+    };
+  }
+
+  public async restoreBackup(input: {
+    filePath: string;
+    confirm: boolean;
+  }): Promise<{ restored: boolean; backupId?: string; filesRestored: number }> {
+    if (!input.confirm) {
+      throw new Error("Backup restore requires explicit confirm=true");
+    }
+
+    const backupPath = path.resolve(this.config.rootDir, input.filePath);
+    const manifestPath = path.join(backupPath, "manifest.json");
+    const payloadDir = path.join(backupPath, "payload");
+    const manifestRaw = await fs.readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(manifestRaw) as BackupManifestRecord;
+
+    if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+      throw new Error("Backup manifest has no files");
+    }
+
+    for (const file of manifest.files) {
+      const source = path.join(payloadDir, file.path);
+      const bytes = await fs.readFile(source);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== file.sha256) {
+        throw new Error(`Backup checksum mismatch for ${file.path}`);
+      }
+    }
+
+    for (const file of manifest.files) {
+      const source = path.join(payloadDir, file.path);
+      const target = path.resolve(this.config.rootDir, file.path);
+      ensurePathWithinRoot(target, this.config.rootDir);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.copyFile(source, target);
+    }
+
+    return {
+      restored: true,
+      backupId: manifest.backupId,
+      filesRestored: manifest.files.length,
+    };
+  }
+
+  public getRetentionPolicy(): RetentionPolicy {
+    const stored = this.storage.systemSettings.get<RetentionPolicy>(RETENTION_SETTINGS_KEY)?.value;
+    return normalizeRetentionPolicy(stored ?? DEFAULT_RETENTION_POLICY);
+  }
+
+  public updateRetentionPolicy(input: Partial<RetentionPolicy>): RetentionPolicy {
+    const current = this.getRetentionPolicy();
+    const merged = normalizeRetentionPolicy({
+      ...current,
+      ...input,
+    });
+    this.storage.systemSettings.set(RETENTION_SETTINGS_KEY, merged);
+    return merged;
+  }
+
+  public async pruneRetention(options: { dryRun?: boolean } = {}): Promise<RetentionPruneResult> {
+    const policy = this.getRetentionPolicy();
+    const dryRun = options.dryRun ?? true;
+    const startedAt = new Date().toISOString();
+    let removedRealtimeEvents = 0;
+    let removedBackupFiles = 0;
+    let removedTranscriptFiles = 0;
+    let removedAuditFiles = 0;
+    let reclaimedBytes = 0;
+
+    const realtimeCutoff = new Date(Date.now() - policy.realtimeEventsDays * 24 * 60 * 60 * 1000).toISOString();
+    const realtimeCountRow = this.storage.db.prepare(
+      "SELECT COUNT(*) AS count FROM realtime_events WHERE created_at < ?",
+    ).get(realtimeCutoff) as { count: number } | undefined;
+    removedRealtimeEvents = Number(realtimeCountRow?.count ?? 0);
+    if (!dryRun && removedRealtimeEvents > 0) {
+      this.storage.realtimeEvents.pruneOlderThan(realtimeCutoff);
+    }
+
+    const backupDir = this.getBackupDirectory();
+    const backupEntries = await listFilesSafe(backupDir);
+    const sortedBackups = backupEntries
+      .filter((entry) => entry.isFile())
+      .sort((left, right) => right.mtimeMs - left.mtimeMs);
+    const removableBackups = sortedBackups.slice(Math.max(0, policy.backupsKeep));
+    removedBackupFiles = removableBackups.length;
+    reclaimedBytes += removableBackups.reduce((sum, file) => sum + file.size, 0);
+    if (!dryRun) {
+      for (const file of removableBackups) {
+        await fs.rm(path.join(backupDir, file.name), { force: true });
+      }
+    }
+
+    if (policy.transcriptsDays !== undefined) {
+      const transcriptsDir = path.resolve(this.config.rootDir, this.config.assistant.transcriptsDir);
+      const cutoff = Date.now() - policy.transcriptsDays * 24 * 60 * 60 * 1000;
+      const pruned = await pruneFilesOlderThan(transcriptsDir, cutoff, dryRun);
+      removedTranscriptFiles = pruned.files;
+      reclaimedBytes += pruned.bytes;
+    }
+
+    if (policy.auditDays !== undefined) {
+      const auditDir = path.resolve(this.config.rootDir, this.config.assistant.auditDir);
+      const cutoff = Date.now() - policy.auditDays * 24 * 60 * 60 * 1000;
+      const pruned = await pruneFilesOlderThan(auditDir, cutoff, dryRun);
+      removedAuditFiles = pruned.files;
+      reclaimedBytes += pruned.bytes;
+    }
+
+    return {
+      applied: !dryRun,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      removedRealtimeEvents,
+      removedBackupFiles,
+      removedTranscriptFiles,
+      removedAuditFiles,
+      reclaimedBytes,
+    };
   }
 
   public async invokeTool(request: ToolInvokeRequest): Promise<ToolInvokeResult> {
@@ -1097,7 +1934,10 @@ export class GatewayService {
         },
       },
       auth: this.getAuthRuntimeSettings(),
-      llm: this.llmService.getRuntimeConfig(),
+      llm: this.llmService.getRuntimeConfig({
+        includeKeychainForActiveProvider: true,
+        useCache: true,
+      }),
       mesh: {
         enabled: this.config.assistant.mesh.enabled,
         mode: this.config.assistant.mesh.mode,
@@ -1884,7 +2724,10 @@ export class GatewayService {
   }
 
   public getLlmConfig(): LlmRuntimeConfig {
-    return this.llmService.getRuntimeConfig();
+    return this.llmService.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
   }
 
   public updateLlmConfig(input: {
@@ -2326,6 +3169,71 @@ export class GatewayService {
     }
   }
 
+  private requireChatSession(sessionId: string): ChatSessionRecord {
+    const record = this.listChatSessions({ scope: "all", view: "all", limit: 5000 })
+      .find((item) => item.sessionId === sessionId);
+    if (!record) {
+      throw new Error(`Chat session ${sessionId} not found`);
+    }
+    return record;
+  }
+
+  private routeFromSession(session: SessionMeta): {
+    channel: string;
+    account: string;
+    peer?: string;
+    room?: string;
+    threadId?: string;
+  } {
+    const parts = session.sessionKey.split(":");
+    const third = parts[2];
+    const fourth = parts[3];
+    if (session.kind === "dm") {
+      return {
+        channel: session.channel,
+        account: session.account,
+        peer: third,
+      };
+    }
+    if (session.kind === "group") {
+      return {
+        channel: session.channel,
+        account: session.account,
+        room: third,
+      };
+    }
+    return {
+      channel: session.channel,
+      account: session.account,
+      room: third,
+      threadId: fourth,
+    };
+  }
+
+  private async buildLlmMessagesFromTranscript(
+    sessionId: string,
+  ): Promise<Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>> {
+    const transcript = await this.readTranscriptOrEmpty(sessionId);
+    const messages = transcript
+      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
+      .map((event) => {
+        const payload = event.payload as {
+          message?: {
+            role?: string;
+            content?: unknown;
+          };
+        };
+        const content = typeof payload.message?.content === "string"
+          ? payload.message.content
+          : this.extractMessagePreview(event.payload);
+        return {
+          role: event.type === "message.assistant" ? "assistant" as const : "user" as const,
+          content,
+        };
+      });
+    return messages.slice(-80);
+  }
+
   private extractMessagePreview(payload: Record<string, unknown>): string {
     const content = payload.content;
     if (typeof content === "string") {
@@ -2573,6 +3481,25 @@ export class GatewayService {
     };
     fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
     fsSync.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private getBackupDirectory(): string {
+    const fromEnv = process.env.GOATCITADEL_BACKUP_DIR?.trim();
+    if (fromEnv) {
+      return path.resolve(fromEnv);
+    }
+    return path.join(os.homedir(), ".GoatCitadel", "backups");
+  }
+
+  private buildBackupIncludePaths(): string[] {
+    const paths = new Set<string>();
+    paths.add(path.relative(this.config.rootDir, this.config.dbPath).replaceAll("\\", "/"));
+    paths.add(`${path.relative(this.config.rootDir, this.config.dbPath).replaceAll("\\", "/")}-wal`);
+    paths.add(`${path.relative(this.config.rootDir, this.config.dbPath).replaceAll("\\", "/")}-shm`);
+    paths.add(this.config.assistant.transcriptsDir.replaceAll("\\", "/"));
+    paths.add(this.config.assistant.auditDir.replaceAll("\\", "/"));
+    paths.add("config");
+    return [...paths];
   }
 
   private serializeRootPath(fullPath: string): string {
@@ -2834,4 +3761,403 @@ async function walkFiles(
       modifiedAt: stat.mtime.toISOString(),
     });
   }
+}
+
+function toChatSessionRecord(
+  session: SessionMeta,
+  meta: {
+    title?: string;
+    pinned: boolean;
+    lifecycleStatus: "active" | "archived";
+    archivedAt?: string;
+  },
+  project?: ChatProjectRecord,
+): ChatSessionRecord {
+  return {
+    sessionId: session.sessionId,
+    sessionKey: session.sessionKey,
+    scope: session.channel === "mission" ? "mission" : "external",
+    title: meta.title ?? session.displayName,
+    pinned: meta.pinned,
+    lifecycleStatus: meta.lifecycleStatus,
+    archivedAt: meta.archivedAt,
+    projectId: project?.projectId,
+    projectName: project?.name,
+    channel: session.channel,
+    account: session.account,
+    updatedAt: session.updatedAt,
+    lastActivityAt: session.lastActivityAt,
+    tokenTotal: session.tokenTotal,
+    costUsdTotal: session.costUsdTotal,
+  };
+}
+
+function toChatMessageRecord(event: TranscriptEvent): ChatMessageRecord | undefined {
+  const payload = event.payload as {
+    message?: {
+      role?: string;
+      content?: unknown;
+      attachments?: unknown;
+    };
+  };
+  const message = payload.message;
+  if (!message || typeof message.content !== "string") {
+    return undefined;
+  }
+  const role = message.role === "assistant" ? "assistant" : "user";
+  return {
+    messageId: event.eventId,
+    sessionId: event.sessionId,
+    role,
+    actorType: event.actorType,
+    actorId: event.actorId,
+    content: message.content,
+    timestamp: event.timestamp,
+    tokenInput: event.tokenInput,
+    tokenOutput: event.tokenOutput,
+    costUsd: event.costUsd,
+    attachments: parseMessageAttachments(message.attachments),
+  };
+}
+
+function parseMessageAttachments(input: unknown): ChatMessageRecord["attachments"] | undefined {
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const attachments = input
+    .map((item) => {
+      const value = item as Record<string, unknown>;
+      const attachmentId = typeof value.attachmentId === "string" ? value.attachmentId : undefined;
+      const fileName = typeof value.fileName === "string" ? value.fileName : undefined;
+      const mimeType = typeof value.mimeType === "string" ? value.mimeType : undefined;
+      const sizeBytes = typeof value.sizeBytes === "number" ? value.sizeBytes : undefined;
+      if (!attachmentId || !fileName || !mimeType || sizeBytes === undefined) {
+        return undefined;
+      }
+      return {
+        attachmentId,
+        fileName,
+        mimeType,
+        sizeBytes,
+      };
+    })
+    .filter((item): item is NonNullable<ChatMessageRecord["attachments"]>[number] => Boolean(item));
+  return attachments.length > 0 ? attachments : undefined;
+}
+
+function extractAssistantContent(response: ChatCompletionResponse): string {
+  const choice = response.choices?.[0];
+  const message = choice?.message;
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const content = (message as Record<string, unknown>).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        const value = part as Record<string, unknown>;
+        return typeof value.text === "string" ? value.text : "";
+      })
+      .join("")
+      .trim();
+    return text;
+  }
+  return "";
+}
+
+function parseUsageFromChatResponse(response: ChatCompletionResponse): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  costUsd?: number;
+} {
+  const usage = (response.usage ?? {}) as Record<string, unknown>;
+  return {
+    inputTokens: readNumber(usage.prompt_tokens) ?? readNumber(usage.input_tokens),
+    outputTokens: readNumber(usage.completion_tokens) ?? readNumber(usage.output_tokens),
+    cachedInputTokens: readNumber(usage.cached_prompt_tokens) ?? readNumber(usage.cached_input_tokens),
+    costUsd: readNumber(usage.cost_usd) ?? readNumber(usage.total_cost_usd),
+  };
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function splitIntoChunks(input: string, maxChunkLength: number): string[] {
+  if (!input) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let remaining = input;
+  const chunkSize = Math.max(1, maxChunkLength);
+  while (remaining.length > chunkSize) {
+    chunks.push(remaining.slice(0, chunkSize));
+    remaining = remaining.slice(chunkSize);
+  }
+  chunks.push(remaining);
+  return chunks;
+}
+
+function sanitizeAttachmentFileName(input: string): string {
+  const normalized = input
+    .trim()
+    .replaceAll("\\", "/")
+    .split("/")
+    .pop()
+    ?.replace(/[<>:"|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+  if (!normalized) {
+    return "attachment.bin";
+  }
+  return normalized;
+}
+
+function extractAttachmentPreview(
+  bytes: Buffer,
+  mimeType: string,
+  fileName: string,
+): { extractStatus: "ready" | "unsupported" | "failed"; extractPreview?: string } {
+  const lowerMime = mimeType.toLowerCase();
+  const ext = path.extname(fileName).toLowerCase();
+  const textLike = lowerMime.startsWith("text/")
+    || lowerMime === "application/json"
+    || lowerMime === "application/xml"
+    || ext === ".md"
+    || ext === ".txt"
+    || ext === ".log"
+    || ext === ".json"
+    || ext === ".yaml"
+    || ext === ".yml";
+  if (textLike) {
+    try {
+      const preview = bytes.toString("utf8").slice(0, 4000);
+      return { extractStatus: "ready", extractPreview: preview };
+    } catch {
+      return { extractStatus: "failed" };
+    }
+  }
+  return { extractStatus: "unsupported" };
+}
+
+function normalizeRetentionPolicy(input: Partial<RetentionPolicy>): RetentionPolicy {
+  return {
+    realtimeEventsDays: clampInteger(input.realtimeEventsDays, 1, 365, DEFAULT_RETENTION_POLICY.realtimeEventsDays),
+    backupsKeep: clampInteger(input.backupsKeep, 1, 500, DEFAULT_RETENTION_POLICY.backupsKeep),
+    transcriptsDays: normalizeOptionalDays(input.transcriptsDays),
+    auditDays: normalizeOptionalDays(input.auditDays),
+  };
+}
+
+function normalizeOptionalDays(value: number | undefined): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return clampInteger(value, 1, 3650, 30);
+}
+
+function clampInteger(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+async function listFilesSafe(dir: string): Promise<Array<{
+  name: string;
+  size: number;
+  mtimeMs: number;
+  isFile: () => boolean;
+  isDirectory: () => boolean;
+}>> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const result: Array<{
+      name: string;
+      size: number;
+      mtimeMs: number;
+      isFile: () => boolean;
+      isDirectory: () => boolean;
+    }> = [];
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      let stats: fsSync.Stats | undefined;
+      try {
+        stats = await fs.stat(fullPath);
+      } catch {
+        continue;
+      }
+      result.push({
+        name: entry.name,
+        size: stats.size,
+        mtimeMs: stats.mtimeMs,
+        isFile: () => entry.isFile(),
+        isDirectory: () => entry.isDirectory(),
+      });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+async function pruneFilesOlderThan(
+  dir: string,
+  cutoffEpochMs: number,
+  dryRun: boolean,
+): Promise<{ files: number; bytes: number }> {
+  let files = 0;
+  let bytes = 0;
+  const walk = async (current: string): Promise<void> => {
+    let entries: fsSync.Dirent[];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      let stats: fsSync.Stats;
+      try {
+        stats = await fs.stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (stats.mtimeMs >= cutoffEpochMs) {
+        continue;
+      }
+      files += 1;
+      bytes += stats.size;
+      if (!dryRun) {
+        await fs.rm(fullPath, { force: true });
+      }
+    }
+  };
+  await walk(dir);
+  return { files, bytes };
+}
+
+async function copyPathIfExists(source: string, target: string): Promise<void> {
+  let stats: fsSync.Stats;
+  try {
+    stats = await fs.stat(source);
+  } catch {
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.cp(source, target, { recursive: true, force: true });
+    return;
+  }
+  if (stats.isFile()) {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.copyFile(source, target);
+  }
+}
+
+async function collectBackupFileRecords(payloadDir: string): Promise<BackupManifestFileRecord[]> {
+  const files: BackupManifestFileRecord[] = [];
+  const walk = async (current: string): Promise<void> => {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const bytes = await fs.readFile(fullPath);
+      const relativePath = path.relative(payloadDir, fullPath).replaceAll("\\", "/");
+      files.push({
+        path: relativePath,
+        sizeBytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+  };
+  await walk(payloadDir);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
+
+function formatBackupTimestamp(now: Date): string {
+  const parts = [
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, "0"),
+    String(now.getUTCDate()).padStart(2, "0"),
+    String(now.getUTCHours()).padStart(2, "0"),
+    String(now.getUTCMinutes()).padStart(2, "0"),
+    String(now.getUTCSeconds()).padStart(2, "0"),
+  ];
+  return parts.join("");
+}
+
+function sanitizeBackupName(input?: string): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+  const sanitized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return sanitized || undefined;
+}
+
+function readAppVersion(): string {
+  const packagePath = path.resolve(process.cwd(), "package.json");
+  try {
+    const raw = fsSync.readFileSync(packagePath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" ? parsed.version : "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+}
+
+function readGitRef(rootDir: string): string | undefined {
+  try {
+    const value = execFileSync("git", ["-C", rootDir, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ensurePathWithinRoot(targetPath: string, rootDir: string): void {
+  const relative = path.relative(rootDir, targetPath);
+  if (
+    relative === ""
+    || (!relative.startsWith("..") && !path.isAbsolute(relative))
+  ) {
+    return;
+  }
+  throw new Error(`Path escapes workspace root: ${targetPath}`);
 }

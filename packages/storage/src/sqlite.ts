@@ -113,6 +113,16 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "native_tools_expansion_schema",
     up: createNativeToolsExpansionSchema,
   },
+  {
+    version: 10,
+    name: "chat_workspace_schema",
+    up: createChatWorkspaceSchema,
+  },
+  {
+    version: 11,
+    name: "system_settings_schema",
+    up: createSystemSettingsSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -723,5 +733,93 @@ function createNativeToolsExpansionSchema(db: DatabaseSync): void {
       ON comms_deliveries(connection_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_comms_deliveries_channel_time
       ON comms_deliveries(channel_key, created_at DESC);
+  `);
+}
+
+function createChatWorkspaceSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_projects (
+      project_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      workspace_path TEXT NOT NULL,
+      color TEXT,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_projects_updated_at
+      ON chat_projects(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_projects_lifecycle
+      ON chat_projects(lifecycle_status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_session_meta (
+      session_id TEXT PRIMARY KEY,
+      title TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_session_meta_updated_at
+      ON chat_session_meta(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_meta_lifecycle
+      ON chat_session_meta(lifecycle_status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_meta_pinned
+      ON chat_session_meta(pinned DESC, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_session_projects (
+      session_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      assigned_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES chat_projects(project_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_session_projects_project
+      ON chat_session_projects(project_id, assigned_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_session_bindings (
+      session_id TEXT PRIMARY KEY,
+      transport TEXT NOT NULL,
+      connection_id TEXT,
+      target_json TEXT,
+      writable INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_attachments (
+      attachment_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      project_id TEXT,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      storage_rel_path TEXT NOT NULL,
+      extract_status TEXT NOT NULL,
+      extract_preview TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES chat_projects(project_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_attachments_session
+      ON chat_attachments(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_attachments_project
+      ON chat_attachments(project_id, created_at DESC);
+  `);
+}
+
+function createSystemSettingsSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_settings (
+      setting_key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }

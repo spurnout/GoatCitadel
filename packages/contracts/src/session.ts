@@ -67,7 +67,16 @@ export interface GatewayEventInput {
   eventId: string;
   route: SessionRouteInput;
   actor: { type: "user" | "agent" | "system"; id: string };
-  message: { role: "user" | "assistant"; content: string };
+  message: {
+    role: "user" | "assistant";
+    content: string;
+    attachments?: Array<{
+      attachmentId: string;
+      fileName: string;
+      mimeType: string;
+      sizeBytes: number;
+    }>;
+  };
   taskId?: string;
   usage?: {
     inputTokens?: number;

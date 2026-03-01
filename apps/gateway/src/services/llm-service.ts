@@ -35,6 +35,15 @@ export interface LlmServiceOptions {
   secretStore?: SecretStoreService;
 }
 
+export interface LlmProviderSecretStatusOptions {
+  includeKeychain?: boolean;
+  useCache?: boolean;
+}
+
+export interface LlmListProvidersOptions extends LlmProviderSecretStatusOptions {
+  includeKeychainForProviderId?: string;
+}
+
 export interface LlmProviderSecretStatus {
   providerId: string;
   hasApiKey: boolean;
@@ -43,16 +52,23 @@ export interface LlmProviderSecretStatus {
   apiKeyRef?: string;
 }
 
+interface SecretStatusCacheEntry {
+  status: LlmProviderSecretStatus;
+  cachedAt: number;
+}
+
 const DISALLOWED_BASE_HOSTS = new Set([
   "0.0.0.0",
   "169.254.169.254",
   "metadata.google.internal",
   "100.100.100.200",
 ]);
+const SECRET_STATUS_CACHE_TTL_MS = 60_000;
 
 export class LlmService {
   private readonly providers = new Map<string, LlmProviderConfig>();
   private readonly secretStore: SecretStoreService;
+  private readonly secretStatusCache = new Map<string, SecretStatusCacheEntry>();
   private networkAllowlist: string[];
   private activeProviderId: string;
   private activeModel: string;
@@ -82,9 +98,16 @@ export class LlmService {
     this.networkAllowlist = [...allowlist];
   }
 
-  public listProviders(): LlmProviderSummary[] {
+  public listProviders(options: LlmListProvidersOptions = {}): LlmProviderSummary[] {
+    const includeKeychainDefault = options.includeKeychain ?? false;
     return Array.from(this.providers.values()).map((provider) => {
-      const status = this.getProviderSecretStatus(provider.providerId);
+      const includeKeychain = options.includeKeychainForProviderId === provider.providerId
+        ? true
+        : includeKeychainDefault;
+      const status = this.getProviderSecretStatus(provider.providerId, {
+        includeKeychain,
+        useCache: options.useCache,
+      });
       return {
         providerId: provider.providerId,
         label: provider.label,
@@ -99,11 +122,17 @@ export class LlmService {
     });
   }
 
-  public getRuntimeConfig(): LlmRuntimeConfig {
+  public getRuntimeConfig(options: { includeKeychainForActiveProvider?: boolean; useCache?: boolean } = {}): LlmRuntimeConfig {
     return {
       activeProviderId: this.activeProviderId,
       activeModel: this.activeModel,
-      providers: this.listProviders(),
+      providers: this.listProviders({
+        includeKeychain: false,
+        includeKeychainForProviderId: options.includeKeychainForActiveProvider
+          ? this.activeProviderId
+          : undefined,
+        useCache: options.useCache,
+      }),
     };
   }
 
@@ -126,6 +155,7 @@ export class LlmService {
         headers: input.upsertProvider.headers ?? existing?.headers,
       });
       this.providers.set(merged.providerId, merged);
+      this.secretStatusCache.delete(merged.providerId);
     }
 
     if (input.activeProviderId) {
@@ -143,52 +173,53 @@ export class LlmService {
       this.activeModel = input.activeModel;
     }
 
-    return this.getRuntimeConfig();
+    return this.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
   }
 
-  public getProviderSecretStatus(providerId: string): LlmProviderSecretStatus {
+  public getProviderSecretStatus(
+    providerId: string,
+    options: LlmProviderSecretStatusOptions = {},
+  ): LlmProviderSecretStatus {
     const provider = this.providers.get(providerId);
     if (!provider) {
       throw new Error(`Unknown LLM provider: ${providerId}`);
     }
 
-    const keychainSecret = this.readKeychainApiKey(provider.providerId);
-    const envSecret = provider.apiKeyEnv ? this.env[provider.apiKeyEnv]?.trim() : undefined;
-    const inlineSecret = provider.apiKey?.trim();
+    const includeKeychain = options.includeKeychain ?? true;
+    const useCache = options.useCache ?? true;
+    const cached = useCache ? this.getCachedSecretStatus(provider.providerId) : undefined;
 
+    if (!includeKeychain) {
+      if (cached?.apiKeySource === "keychain" && cached.hasApiKey) {
+        return cached;
+      }
+      return this.buildQuickSecretStatus(provider);
+    }
+
+    if (cached) {
+      return cached;
+    }
+
+    const keychainSecret = this.readKeychainApiKey(provider.providerId);
+    let status: LlmProviderSecretStatus;
     if (keychainSecret) {
-      return {
+      status = {
         providerId: provider.providerId,
         hasApiKey: true,
         apiKeySource: "keychain",
         hasKeychainSecret: true,
         apiKeyRef: `keychain:goatcitadel:provider:${provider.providerId}`,
       };
+    } else {
+      status = this.buildQuickSecretStatus(provider);
     }
-    if (envSecret) {
-      return {
-        providerId: provider.providerId,
-        hasApiKey: true,
-        apiKeySource: "env",
-        hasKeychainSecret: false,
-        apiKeyRef: provider.apiKeyEnv,
-      };
+    if (useCache) {
+      this.setCachedSecretStatus(status);
     }
-    if (inlineSecret) {
-      return {
-        providerId: provider.providerId,
-        hasApiKey: true,
-        apiKeySource: "inline",
-        hasKeychainSecret: false,
-      };
-    }
-    return {
-      providerId: provider.providerId,
-      hasApiKey: false,
-      apiKeySource: "none",
-      hasKeychainSecret: false,
-      apiKeyRef: provider.apiKeyEnv,
-    };
+    return status;
   }
 
   public setProviderApiKey(providerId: string, apiKey: string): void {
@@ -203,6 +234,13 @@ export class LlmService {
       }
       throw error;
     }
+    this.setCachedSecretStatus({
+      providerId,
+      hasApiKey: true,
+      apiKeySource: "keychain",
+      hasKeychainSecret: true,
+      apiKeyRef: `keychain:goatcitadel:provider:${providerId}`,
+    });
   }
 
   public deleteProviderApiKey(providerId: string): void {
@@ -216,6 +254,12 @@ export class LlmService {
         throw new Error("Secure keychain is unavailable on this host.");
       }
       throw error;
+    }
+    const provider = this.providers.get(providerId);
+    if (provider) {
+      this.setCachedSecretStatus(this.buildQuickSecretStatus(provider));
+    } else {
+      this.secretStatusCache.delete(providerId);
     }
   }
 
@@ -231,6 +275,7 @@ export class LlmService {
       ...provider,
       apiKey: undefined,
     });
+    this.secretStatusCache.delete(providerId);
   }
 
   public exportConfigFile(): LlmConfigFile {
@@ -311,6 +356,92 @@ export class LlmService {
     return (await response.json()) as ChatCompletionResponse;
   }
 
+  public async *chatCompletionsStream(request: ChatCompletionRequest): AsyncGenerator<Record<string, unknown>> {
+    if (!request.messages || request.messages.length === 0) {
+      throw new Error("chat/completions requires at least one message");
+    }
+
+    const resolved = this.resolveProvider(request.providerId);
+    this.assertProviderHostAllowed(resolved.provider.baseUrl);
+    const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
+
+    const payload: Record<string, unknown> = {
+      model,
+      messages: request.messages,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (request.temperature !== undefined) payload.temperature = request.temperature;
+    if (request.top_p !== undefined) payload.top_p = request.top_p;
+    if (request.max_tokens !== undefined) payload.max_tokens = request.max_tokens;
+    if (request.tools !== undefined) payload.tools = request.tools;
+    if (request.tool_choice !== undefined) payload.tool_choice = request.tool_choice;
+    if (request.stop !== undefined) payload.stop = request.stop;
+    if (request.response_format !== undefined) payload.response_format = request.response_format;
+    if (request.metadata !== undefined) payload.metadata = request.metadata;
+
+    const response = await fetch(`${resolved.provider.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.buildHeaders(resolved),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120000),
+      redirect: "manual",
+    });
+
+    if (isRedirect(response.status)) {
+      throw new Error(`chat completion blocked redirect (${response.status})`);
+    }
+
+    if (!response.ok) {
+      throw new Error(await buildHttpError("chat completion", response));
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (!contentType.includes("text/event-stream") || !response.body) {
+      const json = (await response.json()) as Record<string, unknown>;
+      yield json;
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split(/\r?\n\r?\n/g);
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const dataLines = frame
+            .split(/\r?\n/g)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .filter(Boolean);
+          for (const data of dataLines) {
+            if (data === "[DONE]") {
+              return;
+            }
+            try {
+              yield JSON.parse(data) as Record<string, unknown>;
+            } catch {
+              // ignore malformed provider chunks
+            }
+          }
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private resolveProvider(providerId?: string): ResolvedProvider {
     const selectedId = providerId ?? this.activeProviderId;
     const provider = this.providers.get(selectedId);
@@ -364,6 +495,54 @@ export class LlmService {
       headers.Authorization = `Bearer ${resolved.apiKey}`;
     }
     return headers;
+  }
+
+  private buildQuickSecretStatus(provider: LlmProviderConfig): LlmProviderSecretStatus {
+    const envSecret = provider.apiKeyEnv ? this.env[provider.apiKeyEnv]?.trim() : undefined;
+    const inlineSecret = provider.apiKey?.trim();
+    if (envSecret) {
+      return {
+        providerId: provider.providerId,
+        hasApiKey: true,
+        apiKeySource: "env",
+        hasKeychainSecret: false,
+        apiKeyRef: provider.apiKeyEnv,
+      };
+    }
+    if (inlineSecret) {
+      return {
+        providerId: provider.providerId,
+        hasApiKey: true,
+        apiKeySource: "inline",
+        hasKeychainSecret: false,
+      };
+    }
+    return {
+      providerId: provider.providerId,
+      hasApiKey: false,
+      apiKeySource: "none",
+      hasKeychainSecret: false,
+      apiKeyRef: provider.apiKeyEnv,
+    };
+  }
+
+  private getCachedSecretStatus(providerId: string): LlmProviderSecretStatus | undefined {
+    const cached = this.secretStatusCache.get(providerId);
+    if (!cached) {
+      return undefined;
+    }
+    if (Date.now() - cached.cachedAt > SECRET_STATUS_CACHE_TTL_MS) {
+      this.secretStatusCache.delete(providerId);
+      return undefined;
+    }
+    return cached.status;
+  }
+
+  private setCachedSecretStatus(status: LlmProviderSecretStatus): void {
+    this.secretStatusCache.set(status.providerId, {
+      status,
+      cachedAt: Date.now(),
+    });
   }
 }
 

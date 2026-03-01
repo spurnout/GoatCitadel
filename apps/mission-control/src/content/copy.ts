@@ -84,6 +84,7 @@ export const appCopy = {
     { id: "activity", label: "Pulse (Activity)", code: "ACT" },
     { id: "cron", label: "Bell Tower (Cron)", code: "CRN" },
     { id: "sessions", label: "Runs (Sessions)", code: "SES" },
+    { id: "chat", label: "Chat Workspace", code: "CHT" },
     { id: "skills", label: "Playbook (Skills)", code: "SKL" },
     { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
     { id: "settings", label: "Forge (Settings)", code: "CFG" },
@@ -96,7 +97,7 @@ export const appCopy = {
   ] satisfies NavItemCopy[],
   navSections: [
     { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
-    { label: "Operate", items: ["dashboard", "tasks", "agents", "office", "approvals", "sessions"] },
+    { label: "Operate", items: ["dashboard", "chat", "tasks", "agents", "office", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
     { label: "Admin", items: ["skills"] },
   ] satisfies NavSectionCopy[],
@@ -111,6 +112,7 @@ export const appCopy = {
     activity: "Keep this open while testing actions in another tab.",
     cron: "Verify schedules and recent outcomes before enabling more automation.",
     sessions: "Select a run and inspect timeline details for recent behavior.",
+    chat: "Pick a project, open a session, then send a message with optional attachments.",
     skills: "Reload skills after adding or updating SKILL.md files.",
     costs: "Check burn rate and switch to a cheaper run mode if needed.",
     settings: "Apply provider and policy changes after reviewing risk indicators.",
@@ -257,6 +259,24 @@ export const pageCopy: Record<PageId, PageCopy> = {
       terms: [
         { term: "Session", meaning: "A routed conversation keyed by channel/account/peer or room/thread." },
         { term: "Timeline", meaning: "Chronological transcript events for the selected run." },
+      ],
+    },
+  },
+  chat: {
+    title: "Chat Workspace",
+    subtitle: "Project-based conversations with fast session switching, streaming, and file attachments.",
+    guide: {
+      what: "Chat Workspace is your day-to-day conversation surface for mission and external sessions.",
+      when: "Use this when you want ChatGPT-style chat flow with operational controls.",
+      actions: [
+        "Create or select a project.",
+        "Switch between sessions from the sidebar.",
+        "Send messages with optional file attachments.",
+      ],
+      terms: [
+        { term: "Mission session", meaning: "A local GoatCitadel chat session using configured model providers." },
+        { term: "External session", meaning: "A routed chat that can write back to an integration target." },
+        { term: "Writeback binding", meaning: "Connection + target mapping required before posting to external sessions." },
       ],
     },
   },

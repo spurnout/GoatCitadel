@@ -20,3 +20,5 @@ export * from "./tool-catalog.js";
 export * from "./comms.js";
 export * from "./knowledge.js";
 export * from "./ui-forms.js";
+export * from "./chat.js";
+export * from "./admin.js";

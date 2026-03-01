@@ -207,6 +207,9 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [error, setError] = useState<string | null>(null);
 
   const providerOptions = useMemo(() => settings?.llm.providers ?? [], [settings]);
+  const knownProviderIds = useMemo(() => {
+    return new Set(providerOptions.map((provider) => provider.providerId.toLowerCase()));
+  }, [providerOptions]);
   const providerSelectOptions = useMemo<SelectOption[]>(() => {
     const fromSettings = providerOptions.map((provider) => ({
       value: provider.providerId,
@@ -316,14 +319,15 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     const normalized = providerId.trim();
-    if (!normalized) {
+    const key = normalized.toLowerCase();
+    if (!normalized || key === "custom" || !knownProviderIds.has(key)) {
       setProviderSecretStatus(null);
       return;
     }
     void fetchProviderSecretStatus(normalized)
       .then((status) => setProviderSecretStatus(status))
       .catch(() => setProviderSecretStatus(null));
-  }, [providerId, settings]);
+  }, [providerId, knownProviderIds]);
 
   const onSaveRuntime = async () => {
     if (changeReview.overall === "critical" && !criticalConfirmed) {

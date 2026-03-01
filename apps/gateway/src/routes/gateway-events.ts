@@ -17,6 +17,12 @@ const bodySchema = z.object({
   message: z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().min(1),
+    attachments: z.array(z.object({
+      attachmentId: z.string().min(1),
+      fileName: z.string().min(1),
+      mimeType: z.string().min(1),
+      sizeBytes: z.number().int().nonnegative(),
+    })).optional(),
   }),
   taskId: z.string().min(1).optional(),
   usage: z

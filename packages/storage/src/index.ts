@@ -23,6 +23,12 @@ import { ToolGrantRepository } from "./tool-grant-repo.js";
 import { ToolAccessDecisionRepository } from "./tool-access-decision-repo.js";
 import { KnowledgeRepository } from "./knowledge-repo.js";
 import { CommsDeliveryRepository } from "./comms-delivery-repo.js";
+import { ChatProjectRepository } from "./chat-project-repo.js";
+import { ChatSessionMetaRepository } from "./chat-session-meta-repo.js";
+import { ChatSessionProjectRepository } from "./chat-session-project-repo.js";
+import { ChatSessionBindingRepository } from "./chat-session-binding-repo.js";
+import { ChatAttachmentRepository } from "./chat-attachment-repo.js";
+import { SystemSettingsRepository } from "./system-settings-repo.js";
 
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
@@ -55,6 +61,12 @@ export class Storage {
   public readonly toolAccessDecisions: ToolAccessDecisionRepository;
   public readonly knowledge: KnowledgeRepository;
   public readonly commsDeliveries: CommsDeliveryRepository;
+  public readonly chatProjects: ChatProjectRepository;
+  public readonly chatSessionMeta: ChatSessionMetaRepository;
+  public readonly chatSessionProjects: ChatSessionProjectRepository;
+  public readonly chatSessionBindings: ChatSessionBindingRepository;
+  public readonly chatAttachments: ChatAttachmentRepository;
+  public readonly systemSettings: SystemSettingsRepository;
 
   public constructor(options: StorageOptions) {
     this.db = createDatabase({ dbPath: options.dbPath });
@@ -82,6 +94,12 @@ export class Storage {
     this.toolAccessDecisions = new ToolAccessDecisionRepository(this.db);
     this.knowledge = new KnowledgeRepository(this.db);
     this.commsDeliveries = new CommsDeliveryRepository(this.db);
+    this.chatProjects = new ChatProjectRepository(this.db);
+    this.chatSessionMeta = new ChatSessionMetaRepository(this.db);
+    this.chatSessionProjects = new ChatSessionProjectRepository(this.db);
+    this.chatSessionBindings = new ChatSessionBindingRepository(this.db);
+    this.chatAttachments = new ChatAttachmentRepository(this.db);
+    this.systemSettings = new SystemSettingsRepository(this.db);
   }
 
   public close(): void {
@@ -114,3 +132,9 @@ export * from "./tool-grant-repo.js";
 export * from "./tool-access-decision-repo.js";
 export * from "./knowledge-repo.js";
 export * from "./comms-delivery-repo.js";
+export * from "./chat-project-repo.js";
+export * from "./chat-session-meta-repo.js";
+export * from "./chat-session-project-repo.js";
+export * from "./chat-session-binding-repo.js";
+export * from "./chat-attachment-repo.js";
+export * from "./system-settings-repo.js";

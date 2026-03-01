@@ -20,6 +20,7 @@
     "onboarding:tui": "pnpm --filter @goatcitadel/gateway onboarding:tui",
     "tui": "pnpm --filter @goatcitadel/gateway tui",
     "tools": "pnpm --filter @goatcitadel/gateway tools",
+    "admin": "pnpm --filter @goatcitadel/gateway admin",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"

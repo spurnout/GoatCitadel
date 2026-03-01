@@ -32,11 +32,18 @@ export const eventsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const raw = reply.raw;
+    const corsOrigin = reply.getHeader("Access-Control-Allow-Origin");
+    const corsCredentials = reply.getHeader("Access-Control-Allow-Credentials");
+    const corsVary = reply.getHeader("Vary");
+
     raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      ...(typeof corsOrigin === "string" ? { "Access-Control-Allow-Origin": corsOrigin } : {}),
+      ...(typeof corsCredentials === "string" ? { "Access-Control-Allow-Credentials": corsCredentials } : {}),
+      ...(typeof corsVary === "string" ? { Vary: corsVary } : {}),
     });
     raw.flushHeaders?.();
     raw.write(": connected\n\n");
@@ -81,7 +88,7 @@ export const eventsRoutes: FastifyPluginAsync = async (fastify) => {
       }
     };
 
-    request.raw.on("close", cleanup);
+    raw.on("close", cleanup);
     request.raw.on("aborted", cleanup);
     reply.hijack();
   });
