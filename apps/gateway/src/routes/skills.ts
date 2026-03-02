@@ -24,6 +24,41 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
     requireFirstUseConfirmation: z.boolean().optional(),
   });
 
+  const bankrActionTypeSchema = z.enum([
+    "read",
+    "trade",
+    "transfer",
+    "sign",
+    "submit",
+    "deploy",
+  ]);
+
+  const bankrPolicyPatchSchema = z.object({
+    enabled: z.boolean().optional(),
+    mode: z.enum(["read_only", "read_write"]).optional(),
+    dailyUsdCap: z.number().positive().optional(),
+    perActionUsdCap: z.number().positive().optional(),
+    requireApprovalEveryWrite: z.boolean().optional(),
+    allowedChains: z.array(z.string().min(1)).optional(),
+    allowedActionTypes: z.array(bankrActionTypeSchema).optional(),
+    blockedSymbols: z.array(z.string().min(1)).optional(),
+  });
+
+  const bankrPreviewSchema = z.object({
+    prompt: z.string().optional(),
+    actionType: bankrActionTypeSchema.optional(),
+    chain: z.string().optional(),
+    symbol: z.string().optional(),
+    usdEstimate: z.number().positive().optional(),
+    sessionId: z.string().optional(),
+    actorId: z.string().optional(),
+  });
+
+  const bankrAuditQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+    cursor: z.string().optional(),
+  });
+
   fastify.get("/api/v1/skills", async (_request, reply) => {
     return reply.send({ items: fastify.gateway.listSkills() });
   });
@@ -98,5 +133,35 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     return reply.send(fastify.gateway.updateSkillActivationPolicy(parsed.data));
+  });
+
+  fastify.get("/api/v1/skills/bankr/policy", async (_request, reply) => {
+    return reply.send(fastify.gateway.getBankrSafetyPolicy());
+  });
+
+  fastify.patch("/api/v1/skills/bankr/policy", async (request, reply) => {
+    const parsed = bankrPolicyPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send(fastify.gateway.updateBankrSafetyPolicy(parsed.data));
+  });
+
+  fastify.post("/api/v1/skills/bankr/preview", async (request, reply) => {
+    const parsed = bankrPreviewSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send(fastify.gateway.previewBankrAction(parsed.data));
+  });
+
+  fastify.get("/api/v1/skills/bankr/audit", async (request, reply) => {
+    const parsed = bankrAuditQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send({
+      items: fastify.gateway.listBankrActionAudit(parsed.data.limit ?? 100, parsed.data.cursor),
+    });
   });
 };

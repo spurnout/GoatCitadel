@@ -78,6 +78,10 @@ import type {
   PromptPackRunRecord,
   PromptPackScoreRecord,
   PromptPackReportRecord,
+  BankrActionAuditRecord,
+  BankrActionPreviewRequest,
+  BankrActionPreviewResponse,
+  BankrSafetyPolicy,
   SkillActivationPolicy,
   SkillListItem,
   SkillStateRecord,
@@ -1593,6 +1597,43 @@ export async function patchSkillActivationPolicies(
     method: "PATCH",
     body: JSON.stringify(input),
   });
+}
+
+export async function fetchBankrSafetyPolicy(): Promise<BankrSafetyPolicy> {
+  return request<BankrSafetyPolicy>("/api/v1/skills/bankr/policy");
+}
+
+export async function patchBankrSafetyPolicy(
+  input: Partial<BankrSafetyPolicy>,
+): Promise<BankrSafetyPolicy> {
+  return request<BankrSafetyPolicy>("/api/v1/skills/bankr/policy", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function previewBankrAction(
+  input: BankrActionPreviewRequest,
+): Promise<BankrActionPreviewResponse> {
+  return request<BankrActionPreviewResponse>("/api/v1/skills/bankr/preview", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchBankrActionAudit(query?: {
+  limit?: number;
+  cursor?: string;
+}): Promise<{ items: BankrActionAuditRecord[] }> {
+  const params = new URLSearchParams();
+  if (query?.limit) {
+    params.set("limit", String(query.limit));
+  }
+  if (query?.cursor) {
+    params.set("cursor", query.cursor);
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<{ items: BankrActionAuditRecord[] }>(`/api/v1/skills/bankr/audit${suffix}`);
 }
 
 export async function fetchSettings(): Promise<RuntimeSettingsResponse> {

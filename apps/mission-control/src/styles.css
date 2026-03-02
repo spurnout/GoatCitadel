@@ -831,6 +831,22 @@ pre {
   background: rgba(41, 211, 255, 0.15);
 }
 
+.token-chip.token-chip-active {
+  border-color: rgba(124, 230, 171, 0.65);
+  background: rgba(124, 230, 171, 0.2);
+  color: #d9ffe9;
+}
+
+.skills-state-pill-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.skills-state-pill-row .token-chip {
+  cursor: pointer;
+}
+
 .agents-v2,
 .memory-v2,
 .office-v3 {

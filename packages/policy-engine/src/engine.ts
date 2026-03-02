@@ -499,6 +499,13 @@ export class ToolPolicyEngine {
         }
       }
 
+      if (request.toolName.startsWith("bankr.")) {
+        assertHostAllowed("https://api.bankr.bot", this.config.sandbox.networkAllowlist);
+        if (request.args?.useLlmGateway === true) {
+          assertHostAllowed("https://llm.bankr.bot", this.config.sandbox.networkAllowlist);
+        }
+      }
+
       if (request.toolName === "docs.ingest" && request.args?.sourceType === "url") {
         const source = String(request.args?.source ?? "");
         assertHostAllowed(source, this.config.sandbox.networkAllowlist);

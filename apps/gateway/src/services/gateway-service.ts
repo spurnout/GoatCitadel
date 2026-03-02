@@ -8,10 +8,21 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventIngestService } from "@goatcitadel/gateway-core";
 import { MeshService } from "@goatcitadel/mesh-core";
 import { OrchestrationEngine } from "@goatcitadel/orchestration";
-import { ToolPolicyEngine, assertExistingPathRealpathAllowed, assertWritePathInJail } from "@goatcitadel/policy-engine";
+import {
+  ToolPolicyEngine,
+  assertExistingPathRealpathAllowed,
+  assertWritePathInJail,
+  evaluateBankrActionPreview,
+  readBankrSafetyPolicy,
+  writeBankrSafetyPolicy,
+} from "@goatcitadel/policy-engine";
 import { SkillsService } from "@goatcitadel/skills";
 import { Storage } from "@goatcitadel/storage";
 import type {
+  BankrActionAuditRecord,
+  BankrActionPreviewRequest,
+  BankrActionPreviewResponse,
+  BankrSafetyPolicy,
   AgentProfileArchiveInput,
   AgentProfileCreateInput,
   AgentProfileRecord,
@@ -2801,6 +2812,85 @@ export class GatewayService {
     return next;
   }
 
+  public getBankrSafetyPolicy(): BankrSafetyPolicy {
+    return readBankrSafetyPolicy(this.storage);
+  }
+
+  public updateBankrSafetyPolicy(input: Partial<BankrSafetyPolicy>): BankrSafetyPolicy {
+    const updated = writeBankrSafetyPolicy(this.storage, input);
+    this.publishRealtime("system", "skills", {
+      type: "bankr_policy_updated",
+      policy: updated,
+    });
+    return updated;
+  }
+
+  public previewBankrAction(input: BankrActionPreviewRequest): BankrActionPreviewResponse {
+    return evaluateBankrActionPreview(this.storage, input);
+  }
+
+  public listBankrActionAudit(limit = 100, cursor?: string): BankrActionAuditRecord[] {
+    const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const parsedCursor = parseBankrAuditCursor(cursor);
+    const rows = this.storage.db.prepare(`
+      SELECT
+        action_id AS actionId,
+        session_id AS sessionId,
+        actor_id AS actorId,
+        action_type AS actionType,
+        chain,
+        symbol,
+        usd_estimate AS usdEstimate,
+        status,
+        approval_id AS approvalId,
+        policy_reason AS policyReason,
+        details_json AS detailsJson,
+        created_at AS createdAt
+      FROM bankr_action_audit
+      WHERE (
+        @cursorCreatedAt IS NULL
+        OR created_at < @cursorCreatedAt
+        OR (created_at = @cursorCreatedAt AND action_id < @cursorActionId)
+      )
+      ORDER BY created_at DESC, action_id DESC
+      LIMIT @limit
+    `).all({
+      cursorCreatedAt: parsedCursor?.createdAt ?? null,
+      cursorActionId: parsedCursor?.actionId ?? null,
+      limit: boundedLimit,
+    }) as Array<{
+      actionId: string;
+      sessionId: string;
+      actorId: string;
+      actionType: BankrActionAuditRecord["actionType"];
+      chain?: string;
+      symbol?: string;
+      usdEstimate?: number;
+      status: BankrActionAuditRecord["status"];
+      approvalId?: string;
+      policyReason?: string;
+      detailsJson?: string;
+      createdAt: string;
+    }>;
+
+    return rows.map((row) => ({
+      actionId: row.actionId,
+      sessionId: row.sessionId,
+      actorId: row.actorId,
+      actionType: row.actionType,
+      chain: row.chain,
+      symbol: row.symbol,
+      usdEstimate: Number.isFinite(row.usdEstimate) ? row.usdEstimate : undefined,
+      status: row.status,
+      approvalId: row.approvalId,
+      policyReason: row.policyReason,
+      details: row.detailsJson
+        ? safeJsonParse<Record<string, unknown>>(row.detailsJson, {})
+        : undefined,
+      createdAt: row.createdAt,
+    }));
+  }
+
   public setSkillState(
     skillId: string,
     state: SkillRuntimeState,
@@ -5334,11 +5424,33 @@ export class GatewayService {
     const now = new Date().toISOString();
     const insert = this.storage.db.prepare(`
       INSERT OR IGNORE INTO skill_state (skill_id, state, note, updated_at, first_auto_approved_at)
-      VALUES (@skillId, 'enabled', NULL, @updatedAt, NULL)
+      VALUES (@skillId, @state, @note, @updatedAt, NULL)
     `);
     for (const skillId of unique) {
-      insert.run({ skillId, updatedAt: now });
+      const defaults = skillId === "managed:bankr"
+        ? {
+            state: "sleep",
+            note: "high-risk financial operations; guarded auto + hard limits required",
+          }
+        : {
+            state: "enabled",
+            note: null,
+          };
+      insert.run({ skillId, ...defaults, updatedAt: now });
     }
+
+    // Backfill older default rows so newly installed Bankr starts in sleep mode.
+    this.storage.db.prepare(`
+      UPDATE skill_state
+      SET state = 'sleep', note = @note, updated_at = @updatedAt
+      WHERE skill_id = 'managed:bankr'
+        AND state = 'enabled'
+        AND (note IS NULL OR note = '')
+        AND first_auto_approved_at IS NULL
+    `).run({
+      note: "high-risk financial operations; guarded auto + hard limits required",
+      updatedAt: now,
+    });
   }
 
   private processMediaJob(jobId: string): void {
@@ -6807,6 +6919,23 @@ function toTitleCase(value: string): string {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function parseBankrAuditCursor(
+  cursor?: string,
+): { createdAt: string; actionId: string } | undefined {
+  if (!cursor?.trim()) {
+    return undefined;
+  }
+  const [createdAt, actionId] = cursor.split("|");
+  if (!createdAt || !actionId) {
+    return undefined;
+  }
+  const parsed = Date.parse(createdAt);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return { createdAt, actionId };
 }
 
 function computeSkillActivationConfidence(reasons: string[], isExplicit: boolean): number {

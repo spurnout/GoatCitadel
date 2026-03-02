@@ -16,3 +16,4 @@ data/transcripts/*.jsonl
 data/audit/*.jsonl
 !data/audit/.gitkeep
 workspace/chat/
+.assistant/

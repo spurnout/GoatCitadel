@@ -7,6 +7,12 @@ import type { Storage } from "@goatcitadel/storage";
 import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
 import { executeBrowserTool, isBrowserToolName } from "./browser-tools.js";
+import {
+  appendBankrActionAudit,
+  applyBankrBudgetUsage,
+  evaluateBankrActionPreview,
+  readBankrSafetyPolicy,
+} from "./bankr-guard.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -26,6 +32,12 @@ export async function executeTool(
       return { sessionId: request.sessionId, status: "ok" };
     case "time.now":
       return timeNow();
+    case "bankr.status":
+      return bankrStatus(storage);
+    case "bankr.read":
+      return bankrPrompt(request, storage, "read");
+    case "bankr.write":
+      return bankrPrompt(request, storage, "write");
     case "fs.read":
       return fsRead(request.args, config);
     case "fs.write":
@@ -104,6 +116,184 @@ function timeNow() {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     epochMs: now.getTime(),
   };
+}
+
+async function bankrStatus(storage: Storage) {
+  const policy = readBankrSafetyPolicy(storage);
+  const cliAvailable = await hasBankrCli();
+  return {
+    cliAvailable,
+    policy,
+  };
+}
+
+async function bankrPrompt(
+  request: ToolInvokeRequest,
+  storage: Storage,
+  mode: "read" | "write",
+) {
+  const preview = evaluateBankrActionPreview(storage, {
+    ...(request.args as Record<string, unknown>),
+    sessionId: request.sessionId,
+    actorId: request.agentId,
+  });
+
+  if (mode === "read" && preview.normalized.actionType !== "read") {
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "blocked",
+      policyReason: "bankr.read only supports read actions",
+      details: { requestedMode: mode, normalized: preview.normalized },
+    });
+    throw new Error(
+      "bankr.read only supports read actions. Use bankr.write for trade/transfer/sign/submit/deploy.",
+    );
+  }
+
+  if (mode === "write" && preview.normalized.actionType === "read") {
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: "read",
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "blocked",
+      policyReason: "bankr.write received read-like request",
+      details: { requestedMode: mode, normalized: preview.normalized },
+    });
+    throw new Error("bankr.write requires a money-moving action intent.");
+  }
+
+  if (!preview.allowed) {
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "blocked",
+      policyReason: `${preview.reasonCode}: ${preview.reason}`,
+      details: { preview },
+    });
+    throw new Error(`Bankr policy blocked action: ${preview.reason}`);
+  }
+
+  if (!(await hasBankrCli())) {
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "failed",
+      policyReason: "bankr_cli_missing",
+    });
+    throw new Error("Bankr CLI not found. Install @bankr/cli and authenticate before invoking bankr tools.");
+  }
+
+  const prompt = required(
+    request.args.prompt ?? request.args.content ?? request.args.text,
+    "prompt",
+  );
+  const cliArgs = ["prompt"];
+  if (asBoolean(request.args.continue, false)) {
+    cliArgs.push("--continue");
+  } else {
+    const threadId = asString(request.args.threadId);
+    if (threadId) {
+      cliArgs.push("--thread", threadId);
+    }
+  }
+  cliArgs.push(prompt);
+
+  try {
+    const { stdout, stderr } = await execFileAsync("bankr", cliArgs, {
+      timeout: 120000,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+
+    let dailyUsageUsdAfter = preview.dailyUsageUsd;
+    if (mode === "write" && Number.isFinite(preview.normalized.usdEstimate)) {
+      dailyUsageUsdAfter = applyBankrBudgetUsage(
+        storage,
+        Number(preview.normalized.usdEstimate),
+      );
+    }
+
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "executed",
+      policyReason: "executed",
+      details: {
+        command: ["bankr", ...cliArgs],
+        stdout: stdout.slice(0, 12000),
+        stderr: stderr.slice(0, 4000),
+        dailyUsageUsdAfter,
+      },
+    });
+
+    return {
+      mode,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      stdoutSnippet: stdout.slice(0, 12000),
+      stderrSnippet: stderr.slice(0, 4000),
+      dailyUsageUsdAfter,
+    };
+  } catch (error) {
+    const err = error as {
+      stdout?: string;
+      stderr?: string;
+      message: string;
+      code?: number | string;
+    };
+    appendBankrActionAudit(storage, {
+      sessionId: request.sessionId,
+      actorId: request.agentId,
+      actionType: preview.normalized.actionType,
+      chain: preview.normalized.chain,
+      symbol: preview.normalized.symbol,
+      usdEstimate: preview.normalized.usdEstimate,
+      status: "failed",
+      policyReason: "cli_execution_failed",
+      details: {
+        command: ["bankr", ...cliArgs],
+        code: err.code,
+        stdout: (err.stdout ?? "").slice(0, 12000),
+        stderr: (err.stderr ?? err.message).slice(0, 4000),
+      },
+    });
+    throw new Error(`Bankr command failed: ${err.stderr ?? err.message}`);
+  }
+}
+
+async function hasBankrCli(): Promise<boolean> {
+  try {
+    await execFileAsync("bankr", ["--version"], {
+      timeout: 8000,
+      windowsHide: true,
+      maxBuffer: 256 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function fsRead(args: Record<string, unknown>, config: ToolPolicyConfig) {

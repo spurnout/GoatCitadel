@@ -74,6 +74,9 @@ Open `.env` and set at least one API key if you plan to use cloud models:
 OPENAI_API_KEY=your_key_here
 GLM_API_KEY=your_key_here
 MOONSHOT_API_KEY=your_key_here
+BANKR_API_KEY=your_key_here
+# Optional only if using Bankr LLM gateway:
+# BANKR_LLM_KEY=your_key_here
 ```
 
 GoatCitadel now auto-loads `.env` on gateway startup.  
@@ -173,6 +176,19 @@ All should pass.
 7. Browser tools work when enabled:
    - Tool profile includes research (or danger / explicit allow).
    - Network allowlist includes target hosts (for example `*.duckduckgo.com`).
+
+### C. Optional: Bankr skill guardrail setup (high-risk)
+
+1. Open `Playbook (Skills)`.
+2. Keep `managed:bankr` in `sleep` until you are ready.
+3. In `Bankr Safety Panel`, start with:
+   - mode: `read_only`
+   - require approval on every write: enabled
+   - low per-action and daily USD caps
+4. Add Bankr hosts to allowlist in `Forge (Settings)` only if needed:
+   - `api.bankr.bot`
+   - `llm.bankr.bot` (optional, only if using Bankr LLM gateway)
+5. Use `Preview a Bankr action` before any write action.
 
 ## 7) Optional: Terminal Mission Control (TUI)
 

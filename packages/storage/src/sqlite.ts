@@ -143,6 +143,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "skill_runtime_state_schema",
     up: createSkillRuntimeStateSchema,
   },
+  {
+    version: 16,
+    name: "bankr_safety_schema",
+    up: createBankrSafetySchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1218,6 +1223,37 @@ function createSkillRuntimeStateSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_skill_activation_events_skill
       ON skill_activation_events(skill_id, created_at DESC);
+  `);
+}
+
+function createBankrSafetySchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bankr_action_audit (
+      action_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      chain TEXT,
+      symbol TEXT,
+      usd_estimate REAL,
+      status TEXT NOT NULL,
+      approval_id TEXT,
+      policy_reason TEXT,
+      details_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bankr_action_audit_created
+      ON bankr_action_audit(created_at DESC, action_id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_bankr_action_audit_session
+      ON bankr_action_audit(session_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS bankr_budget_usage_daily (
+      day TEXT PRIMARY KEY,
+      usd_total REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 
