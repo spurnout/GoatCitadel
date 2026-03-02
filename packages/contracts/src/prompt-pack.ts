@@ -50,6 +50,40 @@ export interface PromptPackScoreRecord {
   createdAt: string;
 }
 
+export interface PromptPackAutoScoreRequest {
+  runId?: string;
+  providerId?: string;
+  model?: string;
+  force?: boolean;
+}
+
+export interface PromptPackAutoScoreResult {
+  score: PromptPackScoreRecord;
+  run: PromptPackRunRecord;
+  ruleScores: {
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+  };
+  modelScores?: {
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+    rationale?: string;
+  };
+  usedModelJudge: boolean;
+  notes: string;
+}
+
+export interface PromptPackAutoScoreBatchResult {
+  items: PromptPackAutoScoreResult[];
+  skipped: number;
+}
+
 export interface PromptPackReportRecord {
   pack: PromptPackRecord;
   tests: PromptPackTestRecord[];
@@ -64,4 +98,3 @@ export interface PromptPackReportRecord {
     failingCodes: string[];
   };
 }
-

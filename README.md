@@ -1,168 +1,202 @@
-# GoatCitadel
+# 🐐 GoatCitadel
 
-GoatCitadel is a local-first AI operations platform for people who want ChatGPT-style UX with real policy controls, auditable tool use, and deterministic session truth.
+> [!WARNING]
+> **Heavy development in progress.** GoatCitadel is moving fast and can be unstable between commits.
+> Expect breaking changes, incomplete flows, and rough edges while core systems are being hardened.
 
-You get one Mission Control surface to run conversations, orchestrate tasks, apply approvals, inspect traces, and manage external capabilities (tools, MCP servers, integrations) without losing safety or observability.
+GoatCitadel is a **local-first AI operations platform** for people who want more than a chatbot.
+It combines agentic chat, policy enforcement, approval gates, audit trails, MCP expansion, and skills lifecycle controls in one operator-focused surface.
+
+If you want ChatGPT-like speed with real operational controls, this project is built for that mission. ⚙️🐐
 
 ## Why GoatCitadel
 
-- Local-first by default: your runtime, your data paths, your policy.
-- Operator-first controls: approvals, grants, deny-wins policy, and replay.
-- Agentic chat without hand-wavy magic: tool traces, fallback visibility, and explicit routing.
-- Built to evolve: modular contracts, storage-backed state, and API-first UI.
+- **Local-first by default**: your runtime, your data paths, your control plane.
+- **Policy-first safety**: deny-wins access decisions, approval gates, and replayable audit history.
+- **Agentic by design**: tool-aware orchestration with visible traces, citations, and fallback routing.
+- **Built for operators**: clear status surfaces for sessions, tasks, costs, memory, approvals, and integrations.
+- **Expandable**: MCP servers + skills with runtime posture (`enabled` / `sleep` / `disabled`).
 
-## Who It Is For
+## Product Snapshot
 
-- Builders running serious AI workflows on a workstation or self-hosted node.
-- Teams that need explainable tool access and safer automation.
-- People migrating from "just a chatbot" toward structured operator workflows.
+GoatCitadel gives you one Mission Control shell to:
 
-## Who It Is Not For
+- run chats in `Chat`, `Cowork`, and `Code` modes,
+- route work through tools and governed approvals,
+- benchmark behavior with Prompt Lab test packs,
+- manage external capabilities (MCP, integrations, skills),
+- monitor health, spend, and execution in real time.
 
-- One-click SaaS users wanting zero setup.
-- Multi-tenant enterprise RBAC/OIDC-heavy deployments (planned, not primary).
-- Mobile-first app users (web-first surface today).
+## Screenshot Preview 📸
 
-## Core Product Capabilities
+### Summit + Operations
 
-### Chat Workspace (Agentic)
-- Chat, Cowork, and Code interaction modes.
-- Session switching, project grouping, and attachment-aware messaging.
-- Trace-first execution: tool timeline, routing metadata, citations, fallback notes.
-- Explicit approval path for risky actions.
+![Summit Dashboard](docs/screenshots/mission-control/dashboard.png)
 
-### Prompt Lab
-- Import markdown prompt packs with `[TEST-##]` blocks.
-- Run one, run next, or run all.
-- Score runs against a 0-2 rubric and generate pass/fail summaries.
-- Separate execution status from scoring status for honest evaluation.
+### Chat Workspace
 
-### Safety and Governance
-- Deny-wins policy model.
-- Idempotency enforcement on mutating APIs.
-- Approval queue with replay history.
-- Directory and network boundary controls.
+![Runs and Session Views](docs/screenshots/mission-control/sessions.png)
 
-### Skills and Capability Control
-- Skill lifecycle states: `enabled`, `sleep`, `disabled`.
-- Guarded auto mode for sleeping skills with confidence threshold.
-- Activation policies with first-use confirmation controls.
-- Skill activation traces to reduce hidden behavior.
+### Tool Access + Governance
 
-### MCP Server Operations
-- Register local and remote MCP servers (`stdio`, `http`, `sse`).
-- Trust tiers (`trusted`, `restricted`, `quarantined`) and cost posture metadata.
-- Per-server policy: first-use approval, redaction, allow/block patterns.
-- Tool discovery and invoke testing from Mission Control.
+![Tool Access](docs/screenshots/mission-control/tools.png)
 
-### Operational Console
-- Dashboard, system vitals, task board, approvals, integrations, memory, and more.
-- Live stream event feed for runtime diagnostics.
-- Cost and token visibility with run-cheaper guidance.
+### Skills Runtime Controls
 
-## Feature Matrix (What You Actually Get)
+![Skills](docs/screenshots/mission-control/skills.png)
+
+### Integrations + Connectivity
+
+![Integrations](docs/screenshots/mission-control/integrations.png)
+
+> More screenshots are available in [`docs/screenshots/mission-control`](docs/screenshots/mission-control).
+
+## Who This Is For
+
+- Builders running serious AI workflows on a workstation, homelab node, or self-hosted stack.
+- Teams that need **explainable automation** (what ran, why it ran, who approved it).
+- Operators who want AI leverage **without surrendering control**.
+
+## Who This Is Not For
+
+- Plug-and-play SaaS users who want zero setup.
+- Enterprise environments requiring mature multi-tenant RBAC/OIDC right now.
+- Mobile-first product use-cases (web operator console is currently primary).
+
+## Core Capabilities
+
+### 🧠 Chat Workspace (Agentic)
+
+- Modes: `Chat`, `Cowork`, `Code`
+- Fast project/session switching
+- Attachments + traces + citations
+- Approval prompts for risky actions
+- Slash commands + model/mode controls
+
+### 🧪 Prompt Lab
+
+- Import markdown packs with `[TEST-##]` blocks
+- Run single, run next, or run all
+- Hybrid scoring support (rule + model)
+- Separate execution status from quality scoring
+- Pass/fail visibility with remediation hints
+
+### 🛡️ Safety, Policy, and Approvals
+
+- Deny-wins policy model
+- Idempotency enforcement for mutating calls
+- Approval queue + replay timeline
+- Tool grants by scope (`task > agent > session > global`)
+
+### 🔌 MCP + Skills Expansion
+
+- Register local/remote MCP servers (`stdio`, `http`, `sse`)
+- Server trust tiers and policy posture
+- Skill lifecycle states: `enabled`, `sleep`, `disabled`
+- Guarded-auto activation for sleep state
+
+### 📊 Operator Observability
+
+- Live activity stream
+- Session and task diagnostics
+- System and runtime vitals
+- Cost visibility by day/session/agent/task
+
+## Feature Matrix
 
 | Area | Outcome |
 |---|---|
-| Chat Workspace | Agentic chat with visible execution traces and approvals |
-| Prompt Lab | Repeatable benchmark runs and rubric scoring |
-| Tool Access | Fine-grained grants plus policy enforcement |
-| MCP Management | Controlled expansion through external tool servers |
-| Playbook (Skills) | Dynamic capability activation with runtime posture |
-| Gatehouse | Human-in-the-loop approval decisions and replay |
-| Feed Ledger | Spend awareness by session/agent/task/day |
-| Memory Pasture | Retrieval visibility and context-pack diagnostics |
+| Chat Workspace | Agentic chat with execution trace visibility |
+| Prompt Lab | Repeatable benchmark execution and quality scoring |
+| Tool Access | Fine-grained grants and dry-run safety checks |
+| MCP Servers | Controlled external capability expansion |
+| Skills Playbook | Runtime activation governance and token-discipline |
+| Gatehouse | Human-in-the-loop action approval |
+| Feed Ledger | Spend awareness and budgeting feedback |
+| Memory Pasture | Retrieval visibility and context quality diagnostics |
 
-## Runtime Architecture
+## Architecture (High Level)
 
-- `apps/gateway`: Fastify API and orchestration runtime.
-- `apps/mission-control`: React + Vite operator UI.
-- `packages/contracts`: shared API/domain contract types.
-- `packages/storage`: SQLite repositories + transcript/audit logs.
-- `packages/policy-engine`: policy resolver and guard rails.
-- `packages/skills`: skill loading, precedence, activation logic.
+- `apps/gateway`: Fastify API + orchestration runtime
+- `apps/mission-control`: React + Vite operator UI
+- `packages/contracts`: shared domain/API contract types
+- `packages/storage`: SQLite repositories + transcript/audit persistence
+- `packages/policy-engine`: policy resolution + guard rails
+- `packages/skills`: skill loading, precedence, activation logic
 
-Primary data locations:
+Primary local data:
+
 - SQLite: `data/index.db`
 - Transcripts: `data/transcripts/<sessionId>.jsonl`
-- Audit: `data/audit/*.jsonl`
+- Audit log stream: `data/audit/*.jsonl`
 
-## Security Model At A Glance
+## Install (README = install-focused)
 
-- Mutating operations require `Idempotency-Key`.
-- Deny-wins tool policy semantics.
-- Approval gates for risky actions.
-- Redaction and trust posture support for MCP execution.
-- No plaintext secret storage requirement for remote auth references.
+### Prerequisites
 
-## Quick Start (5 Minutes)
-
-### Prereqs
-- Node.js 22+
-- pnpm
+- Node.js `22+`
+- `pnpm`
 - Git
 
-### 1) Install dependencies
+### 1) Clone
+
+```bash
+git clone https://github.com/<your-org-or-user>/goatcitadel.git
+cd goatcitadel
+```
+
+### 2) Install dependencies
 
 ```bash
 pnpm install
 ```
 
-### 2) Start Gateway + Mission Control
-
-```bash
-pnpm dev
-```
-
-### 3) Open locally
-- Mission Control: `http://localhost:5173`
-- Gateway health: `http://127.0.0.1:8787/health`
-
-### 4) Validate baseline
-
-```bash
-pnpm typecheck
-pnpm smoke
-pnpm build
-```
-
-## Setup Paths
-
-### Unified config source
-- `config/goatcitadel.json`
-
-Derived configs (synced at startup):
-- `config/assistant.config.json`
-- `config/tool-policy.json`
-- `config/budgets.json`
-- `config/llm-providers.json`
-- `config/cron-jobs.json`
-
-Manual sync:
+### 3) Sync runtime config files
 
 ```bash
 pnpm config:sync
 ```
 
+### 4) Verify baseline build health
+
+```bash
+pnpm -r typecheck
+pnpm smoke
+pnpm -r build
+```
+
+> Runtime/start commands are intentionally kept in the install/testing guide so README stays install-focused:
+> [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
+
+## Security Model At A Glance
+
+- Mutating operations require `Idempotency-Key`
+- Deny-wins tool policy semantics
+- Approval gates for higher-risk actions
+- Redaction/trust posture controls for MCP execution
+- Secret references preferred over plaintext config storage
+
 ## Mission Control Modules
 
-- `Launch Wizard`: first-time setup and bootstrap.
-- `Summit`: operational overview.
-- `Chat Workspace`: project/session chat runtime.
-- `Prompt Lab`: prompt-pack execution and scoring.
-- `Tool Access`: grants and risk posture.
-- `Playbook`: skills management.
-- `MCP Servers`: external MCP runtime controls.
-- `Gatehouse`: approval queue + replay.
-- `Trailboard`: tasks, subagents, deliverables.
+- `Launch Wizard`: first-time setup and baseline hardening
+- `Summit`: at-a-glance operational overview
+- `Chat Workspace`: day-to-day agentic conversation surface
+- `Prompt Lab`: benchmark runner + scoring loop
+- `Tool Access`: grants, dry-run checks, and policy posture
+- `Playbook`: skills runtime state controls
+- `MCP Servers`: server registration, trust tiers, policy routing
+- `Gatehouse`: approvals queue + replay
+- `Trailboard`: tasks, subagents, and deliverables
 
 ## API Highlights
 
 ### Chat
+
 - `POST /api/v1/chat/sessions/:sessionId/agent-send`
 - `POST /api/v1/chat/sessions/:sessionId/agent-send/stream`
 
 ### Skills
+
 - `GET /api/v1/skills`
 - `PATCH /api/v1/skills/:skillId/state`
 - `POST /api/v1/skills/bulk-state`
@@ -170,6 +204,7 @@ pnpm config:sync
 - `PATCH /api/v1/skills/activation-policies`
 
 ### MCP
+
 - `GET /api/v1/mcp/servers`
 - `POST /api/v1/mcp/servers`
 - `PATCH /api/v1/mcp/servers/:serverId`
@@ -177,6 +212,7 @@ pnpm config:sync
 - `POST /api/v1/mcp/invoke`
 
 ### Prompt Lab
+
 - `POST /api/v1/prompt-packs/import`
 - `POST /api/v1/prompt-packs/:packId/tests/:testId/run`
 - `POST /api/v1/prompt-packs/:packId/tests/:testId/score`
@@ -184,27 +220,30 @@ pnpm config:sync
 
 ## Production Readiness Checklist
 
-- [ ] All required providers and models configured.
-- [ ] Tool policy reviewed (`deny`, `allow`, profiles).
-- [ ] MCP trust tiers and policies configured.
-- [ ] Approval flow tested for risky actions.
-- [ ] Prompt Lab run + rubric scored for target pack.
-- [ ] Backup and restore path validated.
-- [ ] Typecheck/test/smoke/build passing.
+- [ ] Provider keys and model defaults configured
+- [ ] Tool policy reviewed (`allow`/`deny` + profiles)
+- [ ] MCP trust tiers and per-server policies configured
+- [ ] Approval flow tested for risky actions
+- [ ] Prompt Lab benchmark pack executed + scored
+- [ ] Backup/restore path validated
+- [ ] `typecheck`, `smoke`, and `build` passing in your environment
 
 ## Documentation
 
-- Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](./docs/ENGINEERING_HANDBOOK.md)
-- Install and testing guide: [`docs/INSTALL_SETUP_TESTING.md`](./docs/INSTALL_SETUP_TESTING.md)
+- Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](docs/ENGINEERING_HANDBOOK.md)
+- Install + setup + testing: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
+- MCP + skills curation notes: [`docs/MCP_SKILLS_CURATION.md`](docs/MCP_SKILLS_CURATION.md)
+- Claude production review prompt: [`docs/CLAUDE_PROD_REVIEW_PROMPT.md`](docs/CLAUDE_PROD_REVIEW_PROMPT.md)
 
 ## Roadmap Signal
 
 Near-term focus:
-- Better extraction reliability and visual fallback.
-- Deeper MCP runtime adapters.
-- Expanded voice + multimodal reliability.
-- UX density improvements for high-volume operators.
+
+- Web extraction reliability and visual fallback hardening
+- MCP runtime depth and safer server policy defaults
+- Voice/multimodal reliability improvements
+- Continued UI clarity and operator workflow polish
 
 ## Local-First Promise
 
-GoatCitadel is designed so you can run serious workflows on your own machine and infrastructure, with explicit controls over what tools can do, where data goes, and what must be approved.
+GoatCitadel is being built so you can run high-leverage AI workflows on your own hardware and infrastructure, with explicit control over what runs, what gets approved, and where data goes. 🐐

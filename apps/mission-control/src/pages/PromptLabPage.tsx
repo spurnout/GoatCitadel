@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PromptPackRunRecord, PromptPackScoreRecord, PromptPackTestRecord } from "@goatcitadel/contracts";
 import {
+  autoScorePromptPackBatch,
+  autoScorePromptPackTest,
   fetchPromptPackReport,
   fetchPromptPacks,
   fetchPromptPackTests,
@@ -34,6 +36,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [savingScore, setSavingScore] = useState(false);
+  const [autoScoring, setAutoScoring] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -55,6 +58,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     };
   } | null>(null);
   const [reuseLastModel, setReuseLastModel] = useState(true);
+  const [autoScoreOnRun, setAutoScoreOnRun] = useState(true);
   const [scoreDraft, setScoreDraft] = useState<ScoreDraft>(DEFAULT_SCORE_DRAFT);
 
   const loadPack = useCallback(async (packId: string) => {
@@ -175,19 +179,26 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
         ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
         : undefined;
       const run = await runPromptPackTest(selectedPackId, test.testId, input);
+      let autoScoreSummary = "";
+      if (autoScoreOnRun && run.status === "completed") {
+        const auto = await autoScorePromptPackTest(selectedPackId, test.testId, {
+          runId: run.runId,
+        });
+        autoScoreSummary = ` Auto-scored ${auto.score.totalScore}/10.`;
+      }
       await loadPack(selectedPackId);
       setSelectedTestId(test.testId);
       if (run.status === "failed") {
         setError(`Ran ${test.code}, but it failed: ${run.error ?? "Unknown error"}`);
       } else {
-        setSuccess(`Ran ${test.code}.`);
+        setSuccess(`Ran ${test.code}.${autoScoreSummary}`);
       }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setRunning(false);
     }
-  }, [lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId]);
+  }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId]);
 
   const runAll = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -199,6 +210,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       let completed = 0;
       let failed = 0;
+      let autoScored = 0;
       for (const test of tests) {
         const input = reuseLastModel && lastSuccessfulModel
           ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
@@ -208,16 +220,24 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
           failed += 1;
         } else if (run.status === "completed") {
           completed += 1;
+          if (autoScoreOnRun) {
+            await autoScorePromptPackTest(selectedPackId, test.testId, {
+              runId: run.runId,
+            });
+            autoScored += 1;
+          }
         }
       }
       await loadPack(selectedPackId);
-      setSuccess(`Run all finished: ${completed} completed, ${failed} failed.`);
+      setSuccess(
+        `Run all finished: ${completed} completed, ${failed} failed.${autoScoreOnRun ? ` auto-scored ${autoScored}.` : ""}`,
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setRunning(false);
     }
-  }, [lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId, tests]);
+  }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId, tests]);
 
   const runNext = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -264,6 +284,47 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [loadPack, scoreDraft, selectedPackId, selectedRun, selectedTest]);
 
+  const autoScoreSelected = useCallback(async () => {
+    if (!selectedPackId || !selectedTest || !selectedRun) {
+      return;
+    }
+    setAutoScoring(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await autoScorePromptPackTest(selectedPackId, selectedTest.testId, {
+        runId: selectedRun.runId,
+        force: true,
+      });
+      await loadPack(selectedPackId);
+      setSuccess(`Auto-scored ${selectedTest.code}: ${result.score.totalScore}/10.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAutoScoring(false);
+    }
+  }, [loadPack, selectedPackId, selectedRun, selectedTest]);
+
+  const autoScoreUnscored = useCallback(async () => {
+    if (!selectedPackId) {
+      return;
+    }
+    setAutoScoring(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await autoScorePromptPackBatch(selectedPackId, {
+        onlyUnscored: true,
+      });
+      await loadPack(selectedPackId);
+      setSuccess(`Auto-scored ${result.items.length} run(s); skipped ${result.skipped}.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAutoScoring(false);
+    }
+  }, [loadPack, selectedPackId]);
+
   const handleImport = useCallback(async () => {
     const content = importText.trim();
     if (!content) {
@@ -308,14 +369,22 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <div className="prompt-lab-actions">
           <ActionButton label="Run next test" pending={running} onClick={() => void runNext()} />
           <ActionButton label="Run all" pending={running} onClick={() => void runAll()} />
+          <ActionButton
+            label="Auto score unscored"
+            pending={autoScoring}
+            disabled={!selectedPackId || unscoredCompletedCount === 0}
+            onClick={() => void autoScoreUnscored()}
+          />
         </div>
       </header>
 
       {error ? <p className="error">{error}</p> : null}
       {success ? <p className="status-banner">{success}</p> : null}
       <div className="status-banner warning">
-        Runs only verify execution. Pass rate updates after you save scores.
-        {unscoredCompletedCount > 0 ? ` ${unscoredCompletedCount} completed test(s) are still unscored.` : ""}
+        {autoScoreOnRun
+          ? "Auto-score is ON (model + rule checks). You can still edit any score manually."
+          : "Run status only confirms execution. Pass rate updates after scoring."}
+        {unscoredCompletedCount > 0 ? ` ${unscoredCompletedCount} run(s) still need scoring.` : ""}
       </div>
 
       <div className="prompt-lab-grid">
@@ -328,7 +397,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
             onChange={(event) => setImportText(event.target.value)}
           />
           <ActionButton label="Import" pending={importing} onClick={() => void handleImport()} />
-          <p className="office-subtitle">Tip: paste the full markdown once, then use Run next test for fast iteration.</p>
+          <p className="office-subtitle">Tip: import once, then use Run next test to move quickly through the pack.</p>
         </article>
 
         <article className="card prompt-lab-packs">
@@ -355,6 +424,14 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
             />
             Reuse last successful model settings
           </label>
+          <label className="prompt-lab-toggle">
+            <input
+              type="checkbox"
+              checked={autoScoreOnRun}
+              onChange={(event) => setAutoScoreOnRun(event.target.checked)}
+            />
+            Auto-score completed runs (model + rules)
+          </label>
         </article>
       </div>
 
@@ -375,8 +452,8 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     {test.code} - {test.title}
                   </button>
                   <div className="prompt-lab-test-meta">
-                    <span>{run?.status ?? "not run"}</span>
-                    <span>{score ? `${score.totalScore}/10` : "unscored"}</span>
+                    <span className={`prompt-lab-chip ${statusChipClass(run?.status)}`}>{formatRunStatus(run?.status)}</span>
+                    <span className={`prompt-lab-chip ${score ? "score-ready" : "score-missing"}`}>{score ? `${score.totalScore}/10` : "Needs score"}</span>
                   </div>
                   <ActionButton label="Run" pending={running} onClick={() => void runOne(test)} />
                 </li>
@@ -391,7 +468,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
           {selectedRun ? (
             <section className="prompt-lab-run-summary">
               <p>
-                Latest run: <strong>{selectedRun.status}</strong>
+                Latest run: <strong>{formatRunStatus(selectedRun.status)}</strong>
                 {selectedRun.providerId ? ` • ${selectedRun.providerId}` : ""}
                 {selectedRun.model ? ` / ${selectedRun.model}` : ""}
                 {selectedRun.finishedAt ? ` • finished ${new Date(selectedRun.finishedAt).toLocaleTimeString()}` : ""}
@@ -429,10 +506,18 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
             value={scoreDraft.notes}
             onChange={(event) => setScoreDraft((current) => ({ ...current, notes: event.target.value }))}
           />
-          <ActionButton label="Save score" pending={savingScore} onClick={() => void submitScore()} />
+          <div className="prompt-lab-actions">
+            <ActionButton label="Save score" pending={savingScore} onClick={() => void submitScore()} />
+            <ActionButton
+              label="Auto score this run"
+              pending={autoScoring}
+              disabled={!selectedRun || selectedRun.status !== "completed"}
+              onClick={() => void autoScoreSelected()}
+            />
+          </div>
           {selectedRun?.status === "failed" ? (
             <div className="status-banner warning">
-              Latest run failed. Remediation hint: retry with web mode `quick`, then inspect trace and tool grants before scoring.
+              Latest run failed. Try running again with web mode `quick`, then review trace and tool grants before scoring.
             </div>
           ) : null}
         </article>
@@ -442,13 +527,14 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <article className="card prompt-lab-summary">
           <h3>Report</h3>
           <p>Total tests: {report.summary.totalTests}</p>
-          <p>Completed runs: {report.summary.completedRuns}</p>
+          <p>Executed runs: {report.summary.completedRuns}</p>
           <p>Failed runs: {report.summary.failedRuns}</p>
           <p>Scored runs: {report.scores.length}</p>
-          <p>Completed but unscored: {unscoredCompletedCount}</p>
+          <p>Runs waiting for score: {unscoredCompletedCount}</p>
           <p>Average score: {report.summary.averageTotalScore.toFixed(2)}/10</p>
           <p>Pass rate: {(report.summary.passRate * 100).toFixed(1)}%</p>
           <p>Failing tests: {report.summary.failingCodes.length > 0 ? report.summary.failingCodes.join(", ") : "none"}</p>
+          <p className="office-subtitle">Reminder: a run can succeed technically and still fail quality scoring.</p>
         </article>
       ) : null}
     </section>
@@ -470,4 +556,18 @@ function ScoreField(props: {
       </select>
     </label>
   );
+}
+
+function formatRunStatus(status?: PromptPackRunRecord["status"]): string {
+  if (!status) return "Not run";
+  if (status === "completed") return "Ran";
+  if (status === "failed") return "Failed";
+  return status;
+}
+
+function statusChipClass(status?: PromptPackRunRecord["status"]): string {
+  if (!status) return "run-not-run";
+  if (status === "completed") return "run-completed";
+  if (status === "failed") return "run-failed";
+  return "run-not-run";
 }

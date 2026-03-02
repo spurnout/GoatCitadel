@@ -13,10 +13,10 @@ interface NavSectionCopy {
 
 export const globalCopy: GlobalCopy = {
   guideCard: {
-    title: "How To Use This Page",
-    what: "What this does",
-    when: "When to use it",
-    actions: "Common actions",
+    title: "Quick Guide",
+    what: "What you can do here",
+    when: "Best time to use this page",
+    actions: "Try this first",
     terms: "Terms explained",
   },
   common: {
@@ -57,10 +57,10 @@ export const globalCopy: GlobalCopy = {
 
 export const appCopy = {
   brandTitle: "GoatCitadel",
-  brandSubtitle: "Mission Control for your AI team",
+  brandSubtitle: "Your AI operations home base",
   quickActionsButton: "Quick Actions (Ctrl/Cmd+K)",
-  nextStepTitle: "Next Step",
-  streamBanner: "Live stream is {state}. Mission Control will reconnect automatically.",
+  nextStepTitle: "Start Here",
+  streamBanner: "Live updates are {state}. GoatCitadel will reconnect automatically.",
   sidebar: {
     stream: "Stream",
     onboarding: "Onboarding",
@@ -104,38 +104,38 @@ export const appCopy = {
     { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
   nextStepByTab: {
-    onboarding: "Finish the setup checklist, then move to Summit or Forge.",
-    dashboard: "Use Quick Actions to jump to approvals, tasks, or live runs.",
-    system: "Check vitals first if performance feels slow or unstable.",
-    files: "Create or edit an artifact, then review path and risk hints before saving.",
-    memory: "Review memory health and run a context compose test if responses drift.",
-    agents: "Create or tune roles, then archive agents you no longer use.",
-    office: "Pick a desk to inspect what each agent is doing and thinking.",
-    activity: "Keep this open while testing actions in another tab.",
-    cron: "Verify schedules and recent outcomes before enabling more automation.",
-    sessions: "Select a run and inspect timeline details for recent behavior.",
-    chat: "Pick a project, open a session, then send a message with optional attachments.",
-    promptLab: "Import a prompt pack, run tests, and score outputs against the 0-2 rubric.",
-    skills: "Set each skill to enabled, sleep, or disabled and tune guarded-auto behavior.",
-    costs: "Check burn rate and switch to a cheaper run mode if needed.",
-    settings: "Apply provider and policy changes after reviewing risk indicators.",
-    tools: "Grant access by scope, then dry-run risky tools before live execution.",
-    approvals: "Resolve pending approvals to unblock agent work.",
-    tasks: "Keep task state current and clean stale work with trash/restore.",
-    integrations: "Start with the guided form and only use Advanced JSON when needed.",
-    mcp: "Register MCP servers, set trust/policy, then inspect and invoke tools safely.",
-    mesh: "Validate node status and lease health before distributed execution.",
-    npu: "Confirm sidecar status and model readiness before selecting npu-local.",
+    onboarding: "Finish setup once, then move into Summit or Chat.",
+    dashboard: "Start here for a quick health check, then jump where work is blocked.",
+    system: "If anything feels slow, check vitals here first.",
+    files: "Create or update a file, then review path and risk hints before saving.",
+    memory: "Use this when replies feel off-context or forgetful.",
+    agents: "Tune your crew roles so each agent has a clear job.",
+    office: "Pick an agent station to see what it is doing right now.",
+    activity: "Keep this open while you test actions in other tabs.",
+    cron: "Review scheduled jobs and confirm recent runs look healthy.",
+    sessions: "Choose a run and inspect timeline, usage, and outcomes.",
+    chat: "Pick a project, open a session, and send a message.",
+    promptLab: "Run your test pack, then score quality and reliability.",
+    skills: "Decide which skills are always on, guarded, or off.",
+    costs: "Watch spend and switch to a lighter mode when needed.",
+    settings: "Update providers and safety defaults in one place.",
+    tools: "Grant only what you need, then dry-run before going live.",
+    approvals: "Approve or reject risky actions waiting on you.",
+    tasks: "Keep tasks organized and archive stale work as you go.",
+    integrations: "Use guided setup first, then advanced JSON only if needed.",
+    mcp: "Connect MCP servers, set trust level, then test safely.",
+    mesh: "Check multi-node health before running distributed work.",
+    npu: "Verify local runtime readiness before selecting npu-local models.",
   } as Record<TabId, string>,
 };
 
 export const pageCopy: Record<PageId, PageCopy> = {
   dashboard: {
     title: "Summit",
-    subtitle: "High-level health, workload, and spend status across your current operations.",
+    subtitle: "A quick snapshot of system health, workload, and spend.",
     guide: {
-      what: "Summit gives you a quick operational snapshot so you can decide where to focus first.",
-      when: "Open this page first whenever you start a session or return after a break.",
+      what: "Summit helps you quickly see what needs your attention.",
+      when: "Open this first when you start your day or come back after a break.",
       actions: [
         "Check if approvals are blocking work.",
         "Review task and session pressure.",
@@ -149,7 +149,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   system: {
     title: "Engine",
-    subtitle: "Runtime health and host vitals for the current GoatCitadel node.",
+    subtitle: "Machine and runtime health for this GoatCitadel node.",
     guide: {
       what: "Shows machine and process vitals so you can spot bottlenecks quickly.",
       when: "Use this when the system feels slow or unstable.",
@@ -162,7 +162,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   files: {
     title: "Trail Files",
-    subtitle: "Create, edit, and manage workspace artifacts inside safe file boundaries.",
+    subtitle: "Create and edit workspace files inside safe write limits.",
     guide: {
       what: "Trail Files is your safe workspace editor for notes, docs, reports, and other artifacts.",
       when: "Use this when you need direct file control without leaving Mission Control.",
@@ -179,7 +179,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   memory: {
     title: "Memory Pasture",
-    subtitle: "Visibility into memory files, distilled context, and retrieval coverage.",
+    subtitle: "See what memory exists and how it is being used in replies.",
     guide: {
       what: "Shows what memory is available and how QMD context is being generated.",
       when: "Use this when answers lose context or memory quality drops.",
@@ -195,7 +195,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   agents: {
     title: "Goat Crew",
-    subtitle: "Manage built-in and custom agent profiles used throughout Mission Control.",
+    subtitle: "Manage built-in and custom agent roles for your workflows.",
     guide: {
       what: "This is your persistent agent roster for long-lived roles and responsibilities.",
       when: "Use this when adding a specialist, updating role descriptions, or cleaning unused roles.",
@@ -212,7 +212,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   office: {
     title: "Herd HQ",
-    subtitle: "Live WebGL floor view of what your agents are doing and thinking.",
+    subtitle: "Live floor view of what your agents are doing right now.",
     guide: {
       what: "Visual operations room for real-time agent activity and triage.",
       when: "Use this for live observability and quick agent-by-agent inspection.",
@@ -225,7 +225,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   activity: {
     title: "Pulse",
-    subtitle: "Realtime event stream across gateway, tools, approvals, and workflows.",
+    subtitle: "Live event stream across gateway, tools, approvals, and workflows.",
     guide: {
       what: "Shows live events so you can verify system behavior while actions run.",
       when: "Use this while testing, debugging, or validating automation.",
@@ -238,7 +238,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   cron: {
     title: "Bell Tower",
-    subtitle: "Scheduled jobs and recurring automation status.",
+    subtitle: "Scheduled jobs and recurring automation health.",
     guide: {
       what: "Lists scheduled jobs with run timing and enabled state.",
       when: "Use this when validating recurring automations.",
@@ -251,7 +251,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   sessions: {
     title: "Runs",
-    subtitle: "Session health, activity timeline, and spend visibility for active conversations.",
+    subtitle: "Session health, activity timeline, and spend for active conversations.",
     guide: {
       what: "Summarizes current sessions and lets you inspect each run in detail.",
       when: "Use this to monitor conversation quality and investigate issues.",
@@ -268,10 +268,10 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   chat: {
     title: "Chat Workspace",
-    subtitle: "Project-based conversations with fast session switching, streaming, and file attachments.",
+    subtitle: "Your everyday chat hub for projects, files, and agent help.",
     guide: {
-      what: "Chat Workspace is your day-to-day conversation surface for mission and external sessions.",
-      when: "Use this when you want ChatGPT-style chat flow with operational controls.",
+      what: "This is your daily chat surface for both mission and external sessions.",
+      when: "Use this when you want a smooth chat flow with tool and safety controls.",
       actions: [
         "Create or select a project.",
         "Switch between sessions from the sidebar.",
@@ -286,10 +286,10 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   promptLab: {
     title: "Prompt Lab",
-    subtitle: "Import your prompt pack, run TEST blocks, and score outputs with routing/honesty/handoff rubrics.",
+    subtitle: "Run prompt tests, spot weak replies quickly, and track quality over time.",
     guide: {
-      what: "Prompt Lab is your fast validation harness before large test passes.",
-      when: "Use it when tuning models, tools, or prompt policies against a fixed benchmark.",
+      what: "Prompt Lab lets you test changes quickly before bigger runs.",
+      when: "Use this when tuning models, tools, or prompt policies against a fixed test set.",
       actions: [
         "Import markdown prompt packs with [TEST-##] blocks.",
         "Run one test, run next, or batch-run all tests.",
@@ -303,7 +303,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   skills: {
     title: "Playbook",
-    subtitle: "Control which skills are always active, guarded (sleep), or fully off.",
+    subtitle: "Choose which skills are active, guarded (sleep), or fully off.",
     guide: {
       what: "Manage runtime skill posture so activation stays useful without burning tokens.",
       when: "Use this when testing prompt packs, reducing noise, or hardening automation.",
@@ -320,7 +320,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   costs: {
     title: "Feed Ledger",
-    subtitle: "Token and cost tracking to keep runs efficient and predictable.",
+    subtitle: "Track token usage and cost so runs stay predictable.",
     guide: {
       what: "Tracks token and dollar usage by day, session, agent, or task.",
       when: "Use this before and during larger runs to control spend.",
@@ -333,7 +333,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   settings: {
     title: "Forge",
-    subtitle: "Runtime setup for auth, policy posture, budgets, and model providers.",
+    subtitle: "Set up auth, safety defaults, budgets, and model providers.",
     guide: {
       what: "Forge controls how GoatCitadel runs, what it can access, and which models it uses.",
       when: "Use this for first-time setup and policy/provider updates.",
@@ -349,10 +349,10 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   tools: {
     title: "Tool Access",
-    subtitle: "Consent-first control over Dev Ops, Knowledge, and Comms tools.",
+    subtitle: "Decide which tools can run, where, and with what approval level.",
     guide: {
-      what: "Configure tool availability by scope and approval posture.",
-      when: "Use this before enabling high-impact actions.",
+      what: "Control tool access by scope and approval rules.",
+      when: "Use this before enabling higher-risk actions.",
       actions: [
         "Review tool catalog and risk levels.",
         "Create scoped grants with expiry where needed.",
@@ -365,7 +365,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   approvals: {
     title: "Gatehouse",
-    subtitle: "Human-in-the-loop decisions for risky operations.",
+    subtitle: "Review and approve risky actions before they run.",
     guide: {
       what: "Review, approve, or reject actions that require explicit operator confirmation.",
       when: "Use this whenever work is blocked on risk-based approval.",
@@ -381,7 +381,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   tasks: {
     title: "Trailboard",
-    subtitle: "Structured task execution with activities, deliverables, and subagent sessions.",
+    subtitle: "Track tasks, activity, deliverables, and linked subagent sessions.",
     guide: {
       what: "Task hub for planning, execution tracking, and output management.",
       when: "Use this when you want structured delivery over ad-hoc prompting.",
@@ -397,7 +397,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   integrations: {
     title: "Connections",
-    subtitle: "External service connections for channels, providers, and automations.",
+    subtitle: "Connect external channels, providers, and automation services.",
     guide: {
       what: "Defines what external systems GoatCitadel can talk to and how.",
       when: "Use this to add, pause, update, or remove integrations.",
@@ -413,7 +413,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   mcp: {
     title: "MCP Servers",
-    subtitle: "Register local/remote MCP servers and enforce trust, redaction, and tool policy.",
+    subtitle: "Register local or remote MCP servers with trust and safety controls.",
     guide: {
       what: "Control Model Context Protocol servers with explicit trust tiers and per-server tool policy.",
       when: "Use this before enabling external MCP tooling in chat or task workflows.",
@@ -431,7 +431,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   mesh: {
     title: "Mesh",
-    subtitle: "Node membership, lease health, and session ownership across machines.",
+    subtitle: "Multi-node status, lease health, and session ownership.",
     guide: {
       what: "Shows distributed coordination state for multi-node operation.",
       when: "Use this when running GoatCitadel across multiple machines.",
@@ -447,7 +447,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   npu: {
     title: "NPU Runtime",
-    subtitle: "Manage local sidecar inference and acceleration capability status.",
+    subtitle: "Manage local sidecar inference and acceleration readiness.",
     guide: {
       what: "Controls local NPU sidecar runtime and model availability.",
       when: "Use this when enabling local accelerated inference.",
@@ -465,7 +465,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
     title: "Launch Wizard",
     subtitle: "Guided first-time setup for auth, providers, defaults, and optional mesh.",
     guide: {
-      what: "Walks you through a safe initial setup with practical defaults.",
+      what: "Walks you through a safe setup with practical defaults.",
       when: "Use this after install or when resetting your baseline configuration.",
       actions: [
         "Set auth and provider defaults.",
@@ -476,7 +476,7 @@ export const pageCopy: Record<PageId, PageCopy> = {
   },
   liveFeed: {
     title: "Live Feed",
-    subtitle: "Raw realtime stream for deep debugging.",
+    subtitle: "Raw realtime stream for deep debugging and event validation.",
     guide: {
       what: "Displays unfiltered realtime event payloads.",
       when: "Use this when you need exact raw events for debugging.",

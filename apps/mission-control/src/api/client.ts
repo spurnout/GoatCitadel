@@ -77,6 +77,8 @@ import type {
   PromptPackTestRecord,
   PromptPackRunRecord,
   PromptPackScoreRecord,
+  PromptPackAutoScoreResult,
+  PromptPackAutoScoreBatchResult,
   PromptPackReportRecord,
   BankrActionAuditRecord,
   BankrActionPreviewRequest,
@@ -943,6 +945,44 @@ export async function scorePromptPackTest(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function autoScorePromptPackTest(
+  packId: string,
+  testId: string,
+  input?: {
+    runId?: string;
+    providerId?: string;
+    model?: string;
+    force?: boolean;
+  },
+): Promise<PromptPackAutoScoreResult> {
+  return request<PromptPackAutoScoreResult>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId)}/auto-score`,
+    {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    },
+  );
+}
+
+export async function autoScorePromptPackBatch(
+  packId: string,
+  input?: {
+    onlyUnscored?: boolean;
+    limit?: number;
+    providerId?: string;
+    model?: string;
+    force?: boolean;
+  },
+): Promise<PromptPackAutoScoreBatchResult> {
+  return request<PromptPackAutoScoreBatchResult>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/auto-score`,
+    {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    },
+  );
 }
 
 export async function fetchPromptPackReport(packId: string): Promise<PromptPackReportRecord> {

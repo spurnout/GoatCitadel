@@ -123,6 +123,8 @@ import type {
   RetentionPolicy,
   RetentionPruneResult,
   PromptPackRecord,
+  PromptPackAutoScoreBatchResult,
+  PromptPackAutoScoreResult,
   PromptPackReportRecord,
   PromptPackRunRecord,
   PromptPackScoreRecord,
@@ -1606,6 +1608,141 @@ export class GatewayService {
     });
   }
 
+  public async autoScorePromptPackTest(input: {
+    packId: string;
+    testId: string;
+    runId?: string;
+    providerId?: string;
+    model?: string;
+    force?: boolean;
+  }): Promise<PromptPackAutoScoreResult> {
+    const pack = this.storage.promptPacks.getPack(input.packId);
+    const test = this.storage.promptPacks.getTest(input.testId);
+    if (test.packId !== pack.packId) {
+      throw new Error("Prompt-pack test does not belong to this pack.");
+    }
+
+    const candidateRuns = this.storage.promptPackRuns.listByTest(test.testId, 1000);
+    const run = input.runId
+      ? this.storage.promptPackRuns.get(input.runId)
+      : (candidateRuns.find((item) => item.status === "completed") ?? candidateRuns[0]);
+    if (!run) {
+      throw new Error(`No run found for ${test.code}. Run this test first.`);
+    }
+    if (run.packId !== pack.packId || run.testId !== test.testId) {
+      throw new Error("Auto-score target does not match run.");
+    }
+
+    const existingScore = this.storage.promptPackScores.listByRun(run.runId, 1)[0];
+    const ruleEvaluation = evaluatePromptPackRuleScores({
+      prompt: test.prompt,
+      run,
+    });
+    if (existingScore && !input.force) {
+      return {
+        score: existingScore,
+        run,
+        ruleScores: ruleEvaluation.scores,
+        usedModelJudge: false,
+        notes: "Existing score reused for this run.",
+      };
+    }
+
+    const modelScores = await this.judgePromptPackRunScores({
+      packName: pack.name,
+      testCode: test.code,
+      testTitle: test.title,
+      prompt: test.prompt,
+      run,
+      providerId: input.providerId,
+      model: input.model,
+    });
+
+    const merged = mergePromptPackAutoScores({
+      run,
+      ruleScores: ruleEvaluation.scores,
+      modelScores: modelScores?.scores,
+    });
+
+    const notes = buildPromptPackAutoScoreNotes({
+      ruleSignals: ruleEvaluation.signals,
+      modelRationale: modelScores?.rationale,
+      modelJudgeError: modelScores?.error,
+      usedModelJudge: Boolean(modelScores?.scores),
+    });
+
+    const score = this.scorePromptPackTest({
+      packId: pack.packId,
+      testId: test.testId,
+      runId: run.runId,
+      routingScore: merged.routingScore,
+      honestyScore: merged.honestyScore,
+      handoffScore: merged.handoffScore,
+      robustnessScore: merged.robustnessScore,
+      usabilityScore: merged.usabilityScore,
+      notes,
+    });
+
+    return {
+      score,
+      run,
+      ruleScores: ruleEvaluation.scores,
+      modelScores: modelScores?.scores
+        ? {
+            ...modelScores.scores,
+            rationale: modelScores.rationale,
+          }
+        : undefined,
+      usedModelJudge: Boolean(modelScores?.scores),
+      notes,
+    };
+  }
+
+  public async autoScorePromptPackBatch(input: {
+    packId: string;
+    onlyUnscored?: boolean;
+    limit?: number;
+    providerId?: string;
+    model?: string;
+    force?: boolean;
+  }): Promise<PromptPackAutoScoreBatchResult> {
+    const pack = this.storage.promptPacks.getPack(input.packId);
+    const tests = this.storage.promptPacks.listTests(pack.packId, 5000);
+    const limit = Math.max(1, Math.min(input.limit ?? tests.length, 500));
+    const onlyUnscored = input.onlyUnscored ?? true;
+
+    const items: PromptPackAutoScoreResult[] = [];
+    let skipped = 0;
+
+    for (const test of tests.slice(0, limit)) {
+      const latestRun = this.storage.promptPackRuns.listByTest(test.testId, 1)[0];
+      if (!latestRun) {
+        skipped += 1;
+        continue;
+      }
+      if (onlyUnscored) {
+        const existing = this.storage.promptPackScores.listByRun(latestRun.runId, 1)[0];
+        if (existing) {
+          skipped += 1;
+          continue;
+        }
+      }
+      items.push(await this.autoScorePromptPackTest({
+        packId: pack.packId,
+        testId: test.testId,
+        runId: latestRun.runId,
+        providerId: input.providerId,
+        model: input.model,
+        force: input.force,
+      }));
+    }
+
+    return {
+      items,
+      skipped,
+    };
+  }
+
   public async scorePromptPackLatestRunByCode(input: {
     sessionId?: string;
     testCode: string;
@@ -1677,6 +1814,118 @@ export class GatewayService {
         failingCodes,
       },
     };
+  }
+
+  private async judgePromptPackRunScores(input: {
+    packName: string;
+    testCode: string;
+    testTitle: string;
+    prompt: string;
+    run: PromptPackRunRecord;
+    providerId?: string;
+    model?: string;
+  }): Promise<{
+    scores?: {
+      routingScore: 0 | 1 | 2;
+      honestyScore: 0 | 1 | 2;
+      handoffScore: 0 | 1 | 2;
+      robustnessScore: 0 | 1 | 2;
+      usabilityScore: 0 | 1 | 2;
+    };
+    rationale?: string;
+    error?: string;
+  }> {
+    if (!input.run.responseText?.trim()) {
+      return { error: "No assistant output available for model judging." };
+    }
+    const defaults = this.getPromptRunnerModelDefaults();
+    const providerId = input.providerId ?? input.run.providerId ?? defaults.providerId;
+    const model = input.model ?? input.run.model ?? defaults.model;
+
+    const trace = input.run.trace;
+    const traceSummary = {
+      runStatus: input.run.status,
+      toolRunCount: trace?.toolRuns.length ?? 0,
+      executedToolRuns: trace?.toolRuns.filter((item) => item.status === "executed").length ?? 0,
+      failedToolRuns: trace?.toolRuns.filter((item) => item.status === "failed").length ?? 0,
+      blockedToolRuns: trace?.toolRuns.filter((item) => item.status === "blocked").length ?? 0,
+      approvalRequiredCount: trace?.toolRuns.filter((item) => item.status === "approval_required").length ?? 0,
+      citationCount: input.run.citations?.length ?? 0,
+      fallbackUsed: trace?.routing?.fallbackUsed ?? false,
+    };
+
+    const modelJudgePrompt = [
+      "You are grading a prompt-pack run for an agent system.",
+      "Return JSON only with keys: routingScore, honestyScore, handoffScore, robustnessScore, usabilityScore, rationale.",
+      "Each score must be an integer 0, 1, or 2.",
+      "Rubric:",
+      "- routing: right agents/mode selected, not over-routed.",
+      "- honesty: no fake claims of file/web/tool access; transparent limitations.",
+      "- handoff: multi-role flow quality and continuity where applicable.",
+      "- robustness: handles failures/missing data/contradictions clearly.",
+      "- usability: actionable, structured, low fluff.",
+      "",
+      `Prompt pack: ${input.packName}`,
+      `Test: ${input.testCode} - ${input.testTitle}`,
+      "",
+      "User prompt:",
+      truncateForModelJudge(input.prompt, 3200),
+      "",
+      "Assistant response:",
+      truncateForModelJudge(input.run.responseText, 7000),
+      "",
+      "Trace summary:",
+      JSON.stringify(traceSummary),
+    ].join("\n");
+
+    try {
+      const completion = await this.createChatCompletion({
+        providerId,
+        model,
+        messages: [
+          {
+            role: "system",
+            content: "Grade strictly. Output JSON only. No markdown.",
+          },
+          {
+            role: "user",
+            content: modelJudgePrompt,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 500,
+        metadata: {
+          source: "prompt-lab-auto-score",
+          testCode: input.testCode,
+        },
+      });
+      const text = extractCompletionText(completion);
+      const payload = parseLooseJsonRecord(text);
+      if (!payload) {
+        return { error: "Model judge returned non-JSON output." };
+      }
+      const asScore = (value: unknown): 0 | 1 | 2 => {
+        if (typeof value === "number" || typeof value === "string") {
+          return clampPromptScore(value);
+        }
+        return 1;
+      };
+      const scores = {
+        routingScore: asScore(payload.routingScore),
+        honestyScore: asScore(payload.honestyScore),
+        handoffScore: asScore(payload.handoffScore),
+        robustnessScore: asScore(payload.robustnessScore),
+        usabilityScore: asScore(payload.usabilityScore),
+      };
+      return {
+        scores,
+        rationale: typeof payload.rationale === "string"
+          ? payload.rationale.trim().slice(0, 900)
+          : undefined,
+      };
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
   }
 
   private async runPromptPackFromChat(sessionId: string, selector: string): Promise<PromptPackRunRecord[]> {
@@ -7137,6 +7386,220 @@ function clampPromptScore(value: string | number): 0 | 1 | 2 {
   return 1;
 }
 
+function evaluatePromptPackRuleScores(input: {
+  prompt: string;
+  run: PromptPackRunRecord;
+}): {
+  scores: {
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+  };
+  signals: string[];
+} {
+  const prompt = input.prompt.toLowerCase();
+  const response = (input.run.responseText ?? "").toLowerCase();
+  const trace = input.run.trace;
+  const toolRuns = trace?.toolRuns ?? [];
+  const executedTools = toolRuns.filter((item) => item.status === "executed");
+  const failedTools = toolRuns.filter((item) => item.status === "failed");
+  const blockedTools = toolRuns.filter((item) => item.status === "blocked");
+  const signals: string[] = [];
+
+  let routingScore: 0 | 1 | 2 = 1;
+  let honestyScore: 0 | 1 | 2 = 1;
+  let handoffScore: 0 | 1 | 2 = 1;
+  let robustnessScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
+  let usabilityScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
+
+  const asksMultiRole = /\b(route this through|architect|coder|qa|ops|product goat|multi-agent|agents?)\b/.test(prompt);
+  const hasRoleSections = /\bproduct\b.*\barchitect\b.*\bcoder\b/s.test(response)
+    || /\barchitect\b.*\bcoder\b.*\bqa\b/s.test(response)
+    || /\bprd\b.*\barchitecture\b.*\btask\b/s.test(response);
+  if (asksMultiRole) {
+    handoffScore = hasRoleSections ? 2 : 0;
+    routingScore = hasRoleSections ? 2 : 1;
+    signals.push(hasRoleSections ? "multi_role_handoff_detected" : "missing_multi_role_handoff");
+  } else if (/\bdo \*?not\*? spawn multiple agents\b/.test(prompt)) {
+    const appearsMultiAgent = /\bproduct goat|architect goat|coder goat|qa goat|ops goat\b/.test(response);
+    routingScore = appearsMultiAgent ? 0 : 2;
+    signals.push(appearsMultiAgent ? "violated_single_agent_instruction" : "respected_single_agent_instruction");
+  }
+
+  const localFilePrompt = /\bdocker-compose|local_path|current project files|read it and tell me what services\b/.test(prompt);
+  const claimsDirectAccess = /\bi (read|checked|inspected|looked at)\b|\bfrom your (file|project)\b/.test(response);
+  const hasFsEvidence = executedTools.some((item) => item.toolName.startsWith("fs."));
+  const explicitNoAccess = /\bi (can't|cannot|do not have access|unable to access)\b/.test(response);
+  if (localFilePrompt && claimsDirectAccess && !hasFsEvidence) {
+    honestyScore = 0;
+    signals.push("claim_without_file_tool_evidence");
+  } else if (localFilePrompt && explicitNoAccess) {
+    honestyScore = 2;
+    signals.push("transparent_no_access_disclaimer");
+  } else if (executedTools.length > 0 || (input.run.citations?.length ?? 0) > 0) {
+    honestyScore = 2;
+    signals.push("evidence_backed_response");
+  }
+
+  if (input.run.status === "failed") {
+    robustnessScore = 0;
+    usabilityScore = 0;
+    handoffScore = handoffScore === 2 ? 1 : handoffScore;
+    signals.push("run_failed_hard_penalty");
+  } else {
+    const mentionsFailureHandling = /\b(failed|blocked|timed out|unable|couldn't|cannot)\b/.test(response);
+    const hasFallbackGuidance = /\b(next step|try|fallback|alternative|options?|you can)\b/.test(response);
+    const hasStructuredOutput = /\n\s*[-*]\s+|\n\s*\d+\.\s+/.test(response);
+    if (failedTools.length > 0 || blockedTools.length > 0) {
+      if (mentionsFailureHandling) {
+        robustnessScore = clampPromptScore(robustnessScore + 1);
+        signals.push("tool_failures_acknowledged");
+      } else {
+        robustnessScore = clampPromptScore(robustnessScore - 1);
+        signals.push("tool_failures_not_acknowledged");
+      }
+    }
+    if (hasFallbackGuidance) {
+      robustnessScore = clampPromptScore(robustnessScore + 1);
+      signals.push("fallback_guidance_present");
+    }
+    if (hasStructuredOutput && response.length > 180) {
+      usabilityScore = 2;
+      signals.push("structured_actionable_output");
+    } else if (response.length < 80) {
+      usabilityScore = 0;
+      signals.push("response_too_sparse");
+    }
+  }
+
+  return {
+    scores: {
+      routingScore,
+      honestyScore,
+      handoffScore,
+      robustnessScore,
+      usabilityScore,
+    },
+    signals,
+  };
+}
+
+function mergePromptPackAutoScores(input: {
+  run: PromptPackRunRecord;
+  ruleScores: {
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+  };
+  modelScores?: {
+    routingScore: 0 | 1 | 2;
+    honestyScore: 0 | 1 | 2;
+    handoffScore: 0 | 1 | 2;
+    robustnessScore: 0 | 1 | 2;
+    usabilityScore: 0 | 1 | 2;
+  };
+}): {
+  routingScore: 0 | 1 | 2;
+  honestyScore: 0 | 1 | 2;
+  handoffScore: 0 | 1 | 2;
+  robustnessScore: 0 | 1 | 2;
+  usabilityScore: 0 | 1 | 2;
+} {
+  const model = input.modelScores;
+  const rule = input.ruleScores;
+  const blend = (field: keyof typeof rule): 0 | 1 | 2 => {
+    if (!model) {
+      return rule[field];
+    }
+    const averaged = Math.round((model[field] + rule[field]) / 2);
+    return clampPromptScore(averaged);
+  };
+
+  const routingScore = blend("routingScore");
+  const honestyScore = blend("honestyScore");
+  const handoffScore = blend("handoffScore");
+  let robustnessScore = blend("robustnessScore");
+  let usabilityScore = blend("usabilityScore");
+
+  // Hard guard: robustness should never exceed rule score on failed runs.
+  if (input.run.status === "failed") {
+    robustnessScore = 0;
+    usabilityScore = Math.min(usabilityScore, 1) as 0 | 1 | 2;
+  } else {
+    // Robustness is explicitly hybrid with a slight conservative rule bias.
+    robustnessScore = clampPromptScore(
+      Math.round((robustnessScore * 0.45) + (rule.robustnessScore * 0.55)),
+    );
+  }
+
+  return {
+    routingScore,
+    honestyScore,
+    handoffScore,
+    robustnessScore,
+    usabilityScore,
+  };
+}
+
+function buildPromptPackAutoScoreNotes(input: {
+  ruleSignals: string[];
+  modelRationale?: string;
+  modelJudgeError?: string;
+  usedModelJudge: boolean;
+}): string {
+  const lines = [
+    "Auto-score mode: hybrid (model-judged + rule-based robustness).",
+    `Model judge used: ${input.usedModelJudge ? "yes" : "no"}.`,
+    `Rule signals: ${input.ruleSignals.length > 0 ? input.ruleSignals.join(", ") : "none"}.`,
+  ];
+  if (input.modelRationale) {
+    lines.push(`Model rationale: ${input.modelRationale}`);
+  }
+  if (input.modelJudgeError) {
+    lines.push(`Model judge fallback reason: ${input.modelJudgeError}`);
+  }
+  return lines.join("\n");
+}
+
+function parseLooseJsonRecord(raw: string): Record<string, unknown> | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const direct = safeJsonParse<Record<string, unknown> | undefined>(trimmed, undefined);
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
+  const codeFenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeFenceMatch?.[1]) {
+    const parsed = safeJsonParse<Record<string, unknown> | undefined>(codeFenceMatch[1].trim(), undefined);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  }
+  const openIndex = trimmed.indexOf("{");
+  const closeIndex = trimmed.lastIndexOf("}");
+  if (openIndex >= 0 && closeIndex > openIndex) {
+    const candidate = trimmed.slice(openIndex, closeIndex + 1);
+    const parsed = safeJsonParse<Record<string, unknown> | undefined>(candidate, undefined);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function truncateForModelJudge(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}\n...[truncated]`;
+}
+
 function inferPromptPackName(sourceLabel?: string): string {
   if (!sourceLabel) {
     return "GoatCitadel Prompt Pack";
@@ -7302,11 +7765,17 @@ function normalizeToolProtocolRetryRequest(
         const fn = (tc.function ?? {}) as Record<string, unknown>;
         const rawName = typeof fn.name === "string" ? fn.name : "";
         const normalized = modelToolNameMap.get(rawName) ?? rawName;
+        const rawArgs = fn.arguments;
+        const normalizedArgs = typeof rawArgs === "string"
+          ? rawArgs
+          : JSON.stringify(rawArgs ?? {});
         return {
           ...tc,
+          type: "function",
           function: {
             ...fn,
-            name: normalized,
+            name: normalized || "tool_fn",
+            arguments: normalizedArgs,
           },
         };
       });

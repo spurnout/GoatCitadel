@@ -333,7 +333,14 @@ export class ChatAgentOrchestrator {
         conversationMessages.push({
           role: "assistant",
           content: extractMessageContent(message),
-          tool_calls: toolCalls as unknown as Array<Record<string, unknown>>,
+          tool_calls: toolCalls.map((toolCall) => ({
+            id: toolCall.id,
+            type: "function",
+            function: {
+              name: this.resolveModelToolName(toolCall.toolName, toolSchema.canonicalToModel),
+              arguments: toolCall.rawArguments,
+            },
+          })) as unknown as Array<Record<string, unknown>>,
         } as unknown as ChatCompletionMessage);
 
         for (const toolCall of toolCalls) {
@@ -615,12 +622,13 @@ function readToolCalls(
   id: string;
   toolName: string;
   args: Record<string, unknown>;
+  rawArguments: string;
 }> {
   const raw = message.tool_calls;
   if (!Array.isArray(raw)) {
     return [];
   }
-  const out: Array<{ id: string; toolName: string; args: Record<string, unknown> }> = [];
+  const out: Array<{ id: string; toolName: string; args: Record<string, unknown>; rawArguments: string }> = [];
   for (const value of raw) {
     const toolCall = value as Record<string, unknown>;
     const id = typeof toolCall.id === "string" ? toolCall.id : `tool-${randomUUID()}`;
@@ -632,7 +640,9 @@ function readToolCalls(
     }
     let args: Record<string, unknown> = {};
     const rawArgs = fn?.arguments;
+    let rawArguments = "{}";
     if (typeof rawArgs === "string" && rawArgs.trim()) {
+      rawArguments = rawArgs;
       try {
         const parsed = JSON.parse(rawArgs) as unknown;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -641,8 +651,10 @@ function readToolCalls(
       } catch {
         args = {};
       }
+    } else {
+      rawArguments = JSON.stringify(args);
     }
-    out.push({ id, toolName, args });
+    out.push({ id, toolName, args, rawArguments });
   }
   return out;
 }

@@ -3,6 +3,8 @@ import type { ToolAccessEvaluateResponse, ToolCatalogEntry, ToolGrantRecord } fr
 import {
   createToolGrant,
   evaluateToolAccess,
+  fetchAgents,
+  fetchChatSessions,
   fetchToolCatalog,
   fetchToolGrants,
   invokeTool,
@@ -15,6 +17,11 @@ import { pageCopy } from "../content/copy";
 
 interface ToolsPageProps {
   refreshKey: number;
+}
+
+interface IdOption {
+  value: string;
+  label: string;
 }
 
 type GrantScope = "global" | "session" | "agent" | "task";
@@ -44,6 +51,8 @@ const TOOL_ARG_EXAMPLES: Record<string, Record<string, unknown>> = {
 export function ToolsPage({ refreshKey }: ToolsPageProps) {
   const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
   const [grants, setGrants] = useState<ToolGrantRecord[]>([]);
+  const [agentOptions, setAgentOptions] = useState<IdOption[]>([{ value: "operator", label: "operator (you)" }]);
+  const [sessionOptions, setSessionOptions] = useState<IdOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -114,9 +123,9 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
   const scopeRefHint = scope === "global"
     ? "Global grants apply everywhere. Scope ref is not needed."
     : scope === "session"
-      ? "Session ID example: sess_abc123... (scoped to one conversation)."
+      ? "Pick a session from the dropdown (scoped to one conversation)."
       : scope === "agent"
-        ? "Agent ID example: assistant or researcher."
+        ? "Pick an agent from the dropdown."
         : "Task ID example: task_abc123... (most specific scope).";
   const recommendedScope: GrantScope = "session";
   const isRecommendedScope = scope === recommendedScope;
@@ -145,13 +154,55 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
     setLoading(true);
     setError(null);
     try {
-      const [catalogRes, grantsRes] = await Promise.all([
+      const [catalogRes, grantsRes, sessionsRes, agentsRes] = await Promise.all([
         fetchToolCatalog(),
         fetchToolGrants({ limit: 500 }),
+        fetchChatSessions({ scope: "all", view: "all", limit: 500 }),
+        fetchAgents("all", 300),
       ]);
       setCatalog(catalogRes.items);
       setGrants(grantsRes.items);
       setSuccess(null);
+      const nextSessionOptions = sessionsRes.items.map((session) => ({
+        value: session.sessionId,
+        label: formatSessionOption(session),
+      }));
+      const nextAgentOptions = dedupeOptions([
+        { value: "operator", label: "operator (you)" },
+        ...agentsRes.items.map((agent) => ({
+          value: agent.agentId,
+          label: `${agent.name} (${agent.agentId})`,
+        })),
+      ]);
+      setSessionOptions(nextSessionOptions);
+      setAgentOptions(nextAgentOptions);
+      const defaultSession = nextSessionOptions[0]?.value;
+      const defaultAgent = nextAgentOptions.find((option) => option.value === "operator")?.value
+        ?? nextAgentOptions[0]?.value
+        ?? "operator";
+      setScopeRef((current) => {
+        if (scope === "session" && (current === "demo-session" || !current.trim()) && defaultSession) {
+          return defaultSession;
+        }
+        if (scope === "agent" && (current === "demo-session" || !current.trim())) {
+          return defaultAgent;
+        }
+        return current;
+      });
+      setEvaluateForm((current) => ({
+        ...current,
+        agentId: current.agentId === "operator" || !current.agentId.trim() ? defaultAgent : current.agentId,
+        sessionId: (current.sessionId === "demo-session" || !current.sessionId.trim()) && defaultSession
+          ? defaultSession
+          : current.sessionId,
+      }));
+      setDryRunForm((current) => ({
+        ...current,
+        agentId: current.agentId === "operator" || !current.agentId.trim() ? defaultAgent : current.agentId,
+        sessionId: (current.sessionId === "demo-session" || !current.sessionId.trim()) && defaultSession
+          ? defaultSession
+          : current.sessionId,
+      }));
       if (catalogRes.items.length > 0) {
         const first = catalogRes.items[0]?.toolName;
         if (first) {
@@ -320,10 +371,59 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
 
   function onApplyRecommendedScope() {
     setScope("session");
-    if (!scopeRef.trim()) {
-      setScopeRef("demo-session");
+    if (!scopeRef.trim() || scopeRef === "demo-session") {
+      setScopeRef(sessionOptions[0]?.value ?? "");
     }
   }
+
+  function onScopeChange(nextScope: GrantScope) {
+    setScope(nextScope);
+    if (nextScope === "global") {
+      setScopeRef("");
+      return;
+    }
+    if (nextScope === "session") {
+      if (sessionOptions.some((option) => option.value === scopeRef)) {
+        return;
+      }
+      setScopeRef(sessionOptions[0]?.value ?? scopeRef);
+      return;
+    }
+    if (nextScope === "agent") {
+      if (agentOptions.some((option) => option.value === scopeRef)) {
+        return;
+      }
+      setScopeRef(agentOptions[0]?.value ?? scopeRef);
+      return;
+    }
+  }
+
+  const selectedScopeRefOptions = useMemo(() => {
+    if (scope === "session") {
+      return ensureCurrentOption(sessionOptions, scopeRef, "Current session");
+    }
+    if (scope === "agent") {
+      return ensureCurrentOption(agentOptions, scopeRef, "Current agent");
+    }
+    return [];
+  }, [agentOptions, scope, scopeRef, sessionOptions]);
+
+  const evaluateAgentOptions = useMemo(
+    () => ensureCurrentOption(agentOptions, evaluateForm.agentId, "Current agent"),
+    [agentOptions, evaluateForm.agentId],
+  );
+  const evaluateSessionOptions = useMemo(
+    () => ensureCurrentOption(sessionOptions, evaluateForm.sessionId, "Current session"),
+    [evaluateForm.sessionId, sessionOptions],
+  );
+  const dryRunAgentOptions = useMemo(
+    () => ensureCurrentOption(agentOptions, dryRunForm.agentId, "Current agent"),
+    [agentOptions, dryRunForm.agentId],
+  );
+  const dryRunSessionOptions = useMemo(
+    () => ensureCurrentOption(sessionOptions, dryRunForm.sessionId, "Current session"),
+    [dryRunForm.sessionId, sessionOptions],
+  );
 
   return (
     <div>
@@ -344,7 +444,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
       <div className="split-grid">
         <div className="card">
           <h3>Create Grant</h3>
-          <p className="office-subtitle">Use the wizard for common cases, then tick advanced settings if you need full control.</p>
+          <p className="office-subtitle">Use this wizard for most cases. Turn on advanced settings only when needed.</p>
 
           <div className="tools-wizard-steps">
             <button type="button" className={grantWizardStep === 1 ? "active" : ""} onClick={() => onWizardJump(1)}>1. Who</button>
@@ -368,7 +468,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                   Scope
                   <HelpHint label="Scope help" text="More specific scopes win. Order is task > agent > session > global." />
                 </label>
-                <select value={scope} onChange={(event) => setScope(event.target.value as GrantScope)}>
+                <select value={scope} onChange={(event) => onScopeChange(event.target.value as GrantScope)}>
                   <option value="global">Global</option>
                   <option value="session">Session</option>
                   <option value="agent">Agent</option>
@@ -389,14 +489,29 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
               <div className="controls-row">
                 <label>
                   Scope ref
-                  <HelpHint label="Scope reference help" text="For session/agent/task scope, enter the ID this grant should target." />
+                  <HelpHint label="Scope reference help" text="Choose exactly where this grant applies. Session and agent options are loaded for you." />
                 </label>
-                <input
-                  value={scopeRef}
-                  onChange={(event) => setScopeRef(event.target.value)}
-                  placeholder={scope === "global" ? "Not required for global" : "session/agent/task id"}
-                  disabled={scope === "global"}
-                />
+                {scope === "session" || scope === "agent" ? (
+                  <select
+                    value={scopeRef}
+                    onChange={(event) => setScopeRef(event.target.value)}
+                    disabled={selectedScopeRefOptions.length === 0}
+                  >
+                    {selectedScopeRefOptions.length === 0 ? (
+                      <option value="">No {scope} options found</option>
+                    ) : null}
+                    {selectedScopeRefOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={scopeRef}
+                    onChange={(event) => setScopeRef(event.target.value)}
+                    placeholder={scope === "global" ? "Not required for global" : "task id"}
+                    disabled={scope === "global"}
+                  />
+                )}
               </div>
               <p className="tools-helper">{scopeRefHint}</p>
             </div>
@@ -507,7 +622,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
 
         <div className="card">
           <h3>Check Access</h3>
-          <p className="office-subtitle">Quickly test whether a tool call would be allowed before you run anything.</p>
+          <p className="office-subtitle">Quickly check whether a tool call would be allowed before you run it.</p>
           <div className="controls-row">
             <label>
               Tool
@@ -524,17 +639,31 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
           </div>
           <div className="controls-row">
             <label>Agent ID</label>
-            <input
+            <select
               value={evaluateForm.agentId}
               onChange={(event) => setEvaluateForm((current) => ({ ...current, agentId: event.target.value }))}
-            />
+            >
+              {evaluateAgentOptions.length === 0 ? (
+                <option value="">No agents found</option>
+              ) : null}
+              {evaluateAgentOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
           <div className="controls-row">
             <label>Session ID</label>
-            <input
+            <select
               value={evaluateForm.sessionId}
               onChange={(event) => setEvaluateForm((current) => ({ ...current, sessionId: event.target.value }))}
-            />
+            >
+              {evaluateSessionOptions.length === 0 ? (
+                <option value="">No sessions found</option>
+              ) : null}
+              {evaluateSessionOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
           <details className="advanced-panel">
             <summary>Advanced fields</summary>
@@ -570,7 +699,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
       <div className="split-grid">
         <div className="card">
           <h3>Dry-Run Tool</h3>
-          <p className="office-subtitle">Simulate a tool call with sample args and inspect the response safely.</p>
+          <p className="office-subtitle">Simulate a tool call and inspect the response safely before live execution.</p>
           <div className="controls-row">
             <label>
               Tool
@@ -588,17 +717,31 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
           {selectedDryRunTool ? <p className="tools-helper">{selectedDryRunTool.description}</p> : null}
           <div className="controls-row">
             <label>Agent ID</label>
-            <input
+            <select
               value={dryRunForm.agentId}
               onChange={(event) => setDryRunForm((current) => ({ ...current, agentId: event.target.value }))}
-            />
+            >
+              {dryRunAgentOptions.length === 0 ? (
+                <option value="">No agents found</option>
+              ) : null}
+              {dryRunAgentOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
           <div className="controls-row">
             <label>Session ID</label>
-            <input
+            <select
               value={dryRunForm.sessionId}
               onChange={(event) => setDryRunForm((current) => ({ ...current, sessionId: event.target.value }))}
-            />
+            >
+              {dryRunSessionOptions.length === 0 ? (
+                <option value="">No sessions found</option>
+              ) : null}
+              {dryRunSessionOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
           <details className="advanced-panel">
             <summary>Advanced fields</summary>
@@ -730,4 +873,42 @@ function toDatetimeLocalValue(isoUtc?: string): string {
   }
   const local = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
   return local.toISOString().slice(0, 16);
+}
+
+function formatSessionOption(session: {
+  sessionId: string;
+  title?: string;
+  scope: string;
+  updatedAt: string;
+  channel: string;
+  account: string;
+}): string {
+  const title = session.title?.trim() || `${session.channel}:${session.account}`;
+  const timestamp = new Date(session.updatedAt).toLocaleString();
+  return `${title} (${session.scope}) • ${session.sessionId} • ${timestamp}`;
+}
+
+function dedupeOptions(options: IdOption[]): IdOption[] {
+  const seen = new Set<string>();
+  const deduped: IdOption[] = [];
+  for (const option of options) {
+    const key = option.value.trim();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(option);
+  }
+  return deduped;
+}
+
+function ensureCurrentOption(options: IdOption[], currentValue: string, fallbackPrefix: string): IdOption[] {
+  const list = dedupeOptions(options);
+  if (!currentValue.trim()) {
+    return list;
+  }
+  if (list.some((option) => option.value === currentValue)) {
+    return list;
+  }
+  return [{ value: currentValue, label: `${fallbackPrefix}: ${currentValue}` }, ...list];
 }

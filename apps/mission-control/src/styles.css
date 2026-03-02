@@ -1596,6 +1596,14 @@ pre {
   background: rgba(115, 205, 255, 0.05);
 }
 
+.chat-v11-empty-item {
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 10px;
+  border: 1px dashed var(--line-soft);
+  border-radius: 10px;
+}
+
 .chat-v11-project-list button,
 .chat-v11-session-groups button {
   width: 100%;
@@ -1711,6 +1719,7 @@ pre {
   min-height: 260px;
   max-height: 52vh;
   overflow: auto;
+  scroll-behavior: smooth;
 }
 
 .chat-v11-message {
@@ -1718,6 +1727,7 @@ pre {
   border-radius: 10px;
   padding: 10px;
   background: rgba(123, 214, 255, 0.08);
+  animation: chat-message-in 180ms ease-out;
 }
 
 .chat-v11-message.user {
@@ -1738,6 +1748,10 @@ pre {
 .chat-v11-message p {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.chat-v11-empty-thread {
+  background: rgba(123, 214, 255, 0.04);
 }
 
 .chat-v11-attachment-row {
@@ -1808,6 +1822,10 @@ pre {
 
 .chat-v11-hidden-file {
   display: none;
+}
+
+.chat-v11-empty-shell h3 {
+  margin: 0 0 6px;
 }
 
 .prompt-lab {
@@ -1885,6 +1903,47 @@ pre {
   justify-content: space-between;
   font-size: 0.8rem;
   opacity: 0.85;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.prompt-lab-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+}
+
+.prompt-lab-chip.run-not-run {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.prompt-lab-chip.run-completed {
+  border-color: rgba(105, 208, 132, 0.66);
+  background: rgba(105, 208, 132, 0.14);
+  color: #d6ffd6;
+}
+
+.prompt-lab-chip.run-failed {
+  border-color: rgba(255, 135, 150, 0.74);
+  background: rgba(255, 135, 150, 0.14);
+  color: #ffe2e6;
+}
+
+.prompt-lab-chip.score-missing {
+  border-color: rgba(255, 206, 120, 0.72);
+  background: rgba(255, 206, 120, 0.14);
+  color: #ffe9c7;
+}
+
+.prompt-lab-chip.score-ready {
+  border-color: rgba(113, 194, 255, 0.72);
+  background: rgba(113, 194, 255, 0.16);
+  color: #d8f2ff;
 }
 
 .prompt-lab-toggle {
@@ -2101,6 +2160,17 @@ pre {
   margin: 0;
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 1180px) {

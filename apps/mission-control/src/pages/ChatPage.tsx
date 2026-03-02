@@ -225,6 +225,16 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     });
   }, [search, selectedProjectId, sessions?.items]);
 
+  const missionSessions = useMemo(
+    () => visibleSessions.filter((item) => item.scope === "mission"),
+    [visibleSessions],
+  );
+
+  const externalSessions = useMemo(
+    () => visibleSessions.filter((item) => item.scope === "external"),
+    [visibleSessions],
+  );
+
   const providerOptions = useMemo<ChatModelProviderOption[]>(() => {
     const providers = settings?.llm.providers ?? [];
     return providers.map((provider) => ({
@@ -560,7 +570,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
         role: "system",
         actorType: "system",
         actorId: "approval",
-        content: `Approved ${pendingApproval.approvalId}. Re-send your message to continue.`,
+        content: `Approved request ${pendingApproval.approvalId}. Send your message again and I will continue.`,
         timestamp: new Date().toISOString(),
       }]);
       setPendingApproval(null);
@@ -582,7 +592,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
         role: "system",
         actorType: "system",
         actorId: "approval",
-        content: `Denied ${pendingApproval.approvalId}.`,
+        content: `Denied request ${pendingApproval.approvalId}. No action was taken.`,
         timestamp: new Date().toISOString(),
       }]);
       setPendingApproval(null);
@@ -621,7 +631,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
         </div>
         <HelpHint
           label="Chat workspace help"
-          text="Use slash commands for control, select mode/model in the top bar, and keep trace cards collapsed until needed."
+          text="Use slash commands for quick control, switch mode and model from the top bar, and open trace only when you want the details."
         />
       </header>
       {error ? <p className="error">{error}</p> : null}
@@ -641,11 +651,11 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 setSending(false);
               }
             }} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search chats" />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a chat..." />
           </div>
           <div className="chat-v11-project-create">
-            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="New project" />
-            <input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="project path" />
+            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="New project name" />
+            <input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="Project path (optional)" />
             <button type="button" onClick={async () => {
               const name = projectName.trim();
               if (!name) return;
@@ -660,7 +670,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
               } finally {
                 setSending(false);
               }
-            }}>Create Project</button>
+            }}>Create project</button>
           </div>
           <div className="chat-v11-filter-row">
             <button type="button" className={selectedProjectId === "all" ? "active" : ""} onClick={() => setSelectedProjectId("all")}>All projects</button>
@@ -669,18 +679,19 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <div className="chat-v11-session-groups">
             <h4>Mission</h4>
             <ul>
-              {visibleSessions.filter((item) => item.scope === "mission").map((session) => (
+              {missionSessions.map((session) => (
                 <li key={session.sessionId}>
                   <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
                     {session.title || session.sessionKey}
                   </button>
-                  <p>{session.projectName ?? "No project"}</p>
+                  <p>{session.projectName ?? "No project yet"}</p>
                 </li>
               ))}
+              {missionSessions.length === 0 ? <li className="chat-v11-empty-item">No mission chats match this filter yet.</li> : null}
             </ul>
             <h4>External</h4>
             <ul>
-              {visibleSessions.filter((item) => item.scope === "external").map((session) => (
+              {externalSessions.map((session) => (
                 <li key={session.sessionId}>
                   <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
                     {session.title || session.sessionKey}
@@ -688,6 +699,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <p>{session.channel}/{session.account}</p>
                 </li>
               ))}
+              {externalSessions.length === 0 ? <li className="chat-v11-empty-item">No external chats are connected right now.</li> : null}
             </ul>
           </div>
         </aside>
@@ -772,11 +784,11 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 </select>
               </div>
 
-              {selectedSession.scope === "external" && (!binding || !binding.writable) ? <div className="status-banner warning">External writeback is not configured. Set connection + target first.</div> : null}
+              {selectedSession.scope === "external" && (!binding || !binding.writable) ? <div className="status-banner warning">This external chat is read-only right now. Set a connection and target before sending replies out.</div> : null}
               {selectedSession.scope === "external" ? (
                 <div className="card chat-v11-external-bind">
-                  <input value={integrationConnectionId} onChange={(event) => setIntegrationConnectionId(event.target.value)} placeholder="connection id" />
-                  <input value={integrationTarget} onChange={(event) => setIntegrationTarget(event.target.value)} placeholder="target (channel/thread/email)" />
+                  <input value={integrationConnectionId} onChange={(event) => setIntegrationConnectionId(event.target.value)} placeholder="Connection ID (example: slack:workspace-a)" />
+                  <input value={integrationTarget} onChange={(event) => setIntegrationTarget(event.target.value)} placeholder="Target (example: #ops-room or thread id)" />
                   <ActionButton label="Save binding" pending={sending} onClick={async () => {
                     if (!selectedSession) return;
                     setSending(true);
@@ -802,11 +814,17 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     >
                       {messages.map((message) => (
                         <li key={message.messageId} className={`chat-v11-message ${message.role}`}>
-                          <p className="chat-v11-message-meta"><strong>{message.role === "assistant" ? "Assistant" : message.role === "system" ? "System" : "You"}</strong> · {new Date(message.timestamp).toLocaleTimeString()}</p>
+                          <p className="chat-v11-message-meta"><strong>{formatMessageActor(message.role)}</strong> · {new Date(message.timestamp).toLocaleTimeString()}</p>
                           <p>{message.content}</p>
                           {message.attachments && message.attachments.length > 0 ? <div className="chat-v11-attachment-row">{message.attachments.map((attachment) => <span key={attachment.attachmentId} className="token-chip">{attachment.fileName}</span>)}</div> : null}
                         </li>
                       ))}
+                      {messages.length === 0 ? (
+                        <li className="chat-v11-message system chat-v11-empty-thread">
+                          <p className="chat-v11-message-meta"><strong>GoatCitadel</strong></p>
+                          <p>Start with a plain request, or type <code>/help</code> to see commands.</p>
+                        </li>
+                      ) : null}
                     </ul>
                   )}
 
@@ -815,7 +833,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
                   <div className={`chat-v11-composer ${isDragActive ? "drop-active" : ""}`} onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
                     {isDragActive ? <div className="chat-drop-overlay">Drop files to attach</div> : null}
-                    <textarea ref={composerRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} onPaste={handleComposerPaste} placeholder="Message GoatCitadel... Try /help" rows={4} />
+                    <textarea ref={composerRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} onPaste={handleComposerPaste} placeholder="Ask GoatCitadel anything... Try /help" rows={4} />
                     {commandSuggestions.length > 0 ? (
                       <div className="chat-v11-command-popover" role="listbox" aria-label="Slash command suggestions">
                         {commandSuggestions.map((item, index) => (
@@ -840,8 +858,8 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                         if (!files || files.length === 0) return;
                         void uploadAttachments(Array.from(files));
                       }} />
-                      <p>Drag files or paste screenshots to attach.</p>
-                      <button type="button" disabled={!canSend} onClick={() => void handleSend()}>{sending ? "Sending..." : "Send"}</button>
+                      <p>Tip: drag files here, paste screenshots, and press Enter to send.</p>
+                      <button type="button" disabled={!canSend} onClick={() => void handleSend()}>{sending ? "Sending..." : "Send message"}</button>
                     </div>
                   </div>
                 </article>
@@ -849,7 +867,10 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
               </div>
             </div>
           ) : (
-            <article className="card"><p className="office-subtitle">Create or pick a session to start chatting.</p></article>
+            <article className="card chat-v11-empty-shell">
+              <h3>No chat selected</h3>
+              <p className="office-subtitle">Pick a chat from the left, or click New Chat to start one.</p>
+            </article>
           )}
         </div>
       </div>
@@ -873,6 +894,12 @@ function formatCommandResult(result: { ok: boolean; message: string; research?: 
   const status = result.ok ? "Command completed" : "Command failed";
   if (!result.research) return `${status}: ${result.message}`;
   return `${status}: ${result.message}\nSources: ${result.research.sources.length}`;
+}
+
+function formatMessageActor(role: ChatMessageRecord["role"]): string {
+  if (role === "assistant") return "GoatCitadel";
+  if (role === "user") return "You";
+  return "System";
 }
 
 function deriveCoworkItems(messages: ChatMessageRecord[]): Array<{ id: string; title: string; note?: string }> {

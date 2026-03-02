@@ -192,6 +192,21 @@ const promptPackScoreBodySchema = z.object({
   notes: z.string().optional(),
 });
 
+const promptPackAutoScoreBodySchema = z.object({
+  runId: z.string().min(1).optional(),
+  providerId: z.string().optional(),
+  model: z.string().optional(),
+  force: z.boolean().optional(),
+});
+
+const promptPackAutoScoreBatchBodySchema = z.object({
+  onlyUnscored: z.boolean().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  providerId: z.string().optional(),
+  model: z.string().optional(),
+  force: z.boolean().optional(),
+});
+
 const chatToolDecisionSchema = z.object({
   sessionId: z.string().min(1),
   approvalId: z.string().min(1),
@@ -836,6 +851,56 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
         robustnessScore: body.data.robustnessScore as 0 | 1 | 2,
         usabilityScore: body.data.usabilityScore as 0 | 1 | 2,
         notes: body.data.notes,
+      }));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/tests/:testId/auto-score", async (request, reply) => {
+    const params = promptPackTestParamsSchema.safeParse(request.params);
+    const body = promptPackAutoScoreBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.autoScorePromptPackTest({
+        packId: params.data.packId,
+        testId: params.data.testId,
+        runId: body.data.runId,
+        providerId: body.data.providerId,
+        model: body.data.model,
+        force: body.data.force,
+      }));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/auto-score", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    const body = promptPackAutoScoreBatchBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.autoScorePromptPackBatch({
+        packId: params.data.packId,
+        onlyUnscored: body.data.onlyUnscored,
+        limit: body.data.limit,
+        providerId: body.data.providerId,
+        model: body.data.model,
+        force: body.data.force,
       }));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
