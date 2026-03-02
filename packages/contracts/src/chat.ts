@@ -8,6 +8,9 @@ export type ChatMode = "chat" | "cowork" | "code";
 export type ChatWebMode = "auto" | "off" | "quick" | "deep";
 export type ChatMemoryMode = "auto" | "on" | "off";
 export type ChatThinkingLevel = "minimal" | "standard" | "extended";
+export type ChatProactiveMode = "off" | "suggest" | "auto_safe";
+export type ChatRetrievalMode = "standard" | "layered";
+export type ChatReflectionMode = "off" | "on";
 export type ChatDelegationMode = "sequential" | "parallel";
 export type ChatDelegationStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type ChatDelegationRunStatus = "running" | "completed" | "failed" | "partial";
@@ -128,8 +131,33 @@ export interface ChatSessionPrefsRecord {
   thinkingLevel: ChatThinkingLevel;
   toolAutonomy: "safe_auto" | "manual";
   visionFallbackModel?: string;
+  proactiveMode?: ChatProactiveMode;
+  autonomyBudget?: ChatAutonomyBudget;
+  retrievalMode?: ChatRetrievalMode;
+  reflectionMode?: ChatReflectionMode;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ChatAutonomyBudget {
+  maxActionsPerHour: number;
+  maxActionsPerTurn: number;
+  cooldownSeconds: number;
+}
+
+export interface ChatSessionPrefsPatch {
+  mode?: ChatMode;
+  providerId?: string;
+  model?: string;
+  webMode?: ChatWebMode;
+  memoryMode?: ChatMemoryMode;
+  thinkingLevel?: ChatThinkingLevel;
+  toolAutonomy?: "safe_auto" | "manual";
+  visionFallbackModel?: string;
+  proactiveMode?: ChatProactiveMode;
+  autonomyBudget?: Partial<ChatAutonomyBudget>;
+  retrievalMode?: ChatRetrievalMode;
+  reflectionMode?: ChatReflectionMode;
 }
 
 export interface ChatCitationRecord {
@@ -181,6 +209,26 @@ export interface ChatTurnTraceRecord {
     fallbackReason?: string;
     fallbackUsed?: boolean;
   };
+  retrieval?: {
+    l0Used: boolean;
+    l1Used: boolean;
+    l2Used: boolean;
+    confidenceL0?: number;
+    confidenceL1?: number;
+    confidenceL2?: number;
+    escalationReason?: string;
+  };
+  reflection?: {
+    attempted: boolean;
+    attemptCount: number;
+    reason?: string;
+    outcome?: "recovered" | "still_failed" | "not_needed";
+  };
+  proactive?: {
+    runId?: string;
+    actionCount?: number;
+    mode?: ChatProactiveMode;
+  };
 }
 
 export interface ChatDelegationStepRecord {
@@ -230,6 +278,37 @@ export interface ChatDelegateResponse {
   trace?: ChatTurnTraceRecord["routing"];
 }
 
+export interface ChatDelegationSuggestionRecord {
+  suggestionId: string;
+  sessionId: string;
+  objective: string;
+  roles: string[];
+  mode: ChatDelegationMode;
+  confidence: number;
+  reason: string;
+  source: "manual" | "heuristic" | "proactive";
+  createdAt: string;
+}
+
+export interface ChatDelegateSuggestRequest {
+  objective?: string;
+  roles?: string[];
+  mode?: ChatDelegationMode;
+}
+
+export interface ChatDelegateSuggestResponse {
+  suggestion: ChatDelegationSuggestionRecord;
+}
+
+export interface ChatDelegateAcceptRequest {
+  suggestionId?: string;
+  objective: string;
+  roles: string[];
+  mode?: ChatDelegationMode;
+  providerId?: string;
+  model?: string;
+}
+
 export interface ChatSendMessageRequest {
   content: string;
   parts?: ChatInputPart[];
@@ -242,7 +321,7 @@ export interface ChatSendMessageRequest {
   memoryMode?: ChatMemoryMode;
   thinkingLevel?: ChatThinkingLevel;
   commandText?: string;
-  prefsOverride?: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>;
+  prefsOverride?: ChatSessionPrefsPatch;
 }
 
 export interface ChatSendMessageResponse {

@@ -3,6 +3,8 @@ import type { PromptPackRunRecord, PromptPackScoreRecord, PromptPackTestRecord }
 import {
   autoScorePromptPackBatch,
   autoScorePromptPackTest,
+  exportPromptPackReport,
+  fetchPromptPackExport,
   fetchPromptPackReport,
   fetchPromptPacks,
   fetchPromptPackTests,
@@ -32,11 +34,18 @@ const DEFAULT_SCORE_DRAFT: ScoreDraft = {
   notes: "",
 };
 
+interface ActiveRunState {
+  mode: "single" | "next" | "all";
+  testId?: string;
+  testCode?: string;
+}
+
 export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
+  const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
   const [savingScore, setSavingScore] = useState(false);
   const [autoScoring, setAutoScoring] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -59,12 +68,26 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   } | null>(null);
   const [reuseLastModel, setReuseLastModel] = useState(true);
   const [autoScoreOnRun, setAutoScoreOnRun] = useState(true);
+  const [exportInfo, setExportInfo] = useState<{
+    packId: string;
+    path: string;
+    exists: boolean;
+    sizeBytes: number;
+    updatedAt?: string;
+  } | null>(null);
   const [scoreDraft, setScoreDraft] = useState<ScoreDraft>(DEFAULT_SCORE_DRAFT);
+  const running = activeRun !== null;
 
   const loadPack = useCallback(async (packId: string) => {
-    const [testsResponse, reportResponse] = await Promise.all([
+    const [testsResponse, reportResponse, exportResponse] = await Promise.all([
       fetchPromptPackTests(packId),
       fetchPromptPackReport(packId),
+      fetchPromptPackExport(packId).catch(() => ({
+        packId,
+        path: "",
+        exists: false,
+        sizeBytes: 0,
+      })),
     ]);
     setTests(testsResponse.items);
     setReport({
@@ -72,6 +95,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
       scores: reportResponse.scores,
       summary: reportResponse.summary,
     });
+    setExportInfo(exportResponse);
     setSelectedTestId((current) => current && testsResponse.items.some((item) => item.testId === current)
       ? current
       : testsResponse.items[0]?.testId ?? null);
@@ -167,11 +191,11 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setScoreDraft(DEFAULT_SCORE_DRAFT);
   }, [selectedScore, selectedTestId]);
 
-  const runOne = useCallback(async (test: PromptPackTestRecord) => {
+  const runOne = useCallback(async (test: PromptPackTestRecord, mode: ActiveRunState["mode"] = "single") => {
     if (!selectedPackId) {
       return;
     }
-    setRunning(true);
+    setActiveRun({ mode, testId: test.testId, testCode: test.code });
     setError(null);
     setSuccess(null);
     try {
@@ -196,7 +220,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setRunning(false);
+      setActiveRun(null);
     }
   }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId]);
 
@@ -204,7 +228,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!selectedPackId || tests.length === 0) {
       return;
     }
-    setRunning(true);
+    setActiveRun({ mode: "all" });
     setError(null);
     setSuccess(null);
     try {
@@ -212,6 +236,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
       let failed = 0;
       let autoScored = 0;
       for (const test of tests) {
+        setActiveRun({ mode: "all", testId: test.testId, testCode: test.code });
         const input = reuseLastModel && lastSuccessfulModel
           ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
           : undefined;
@@ -235,7 +260,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setRunning(false);
+      setActiveRun(null);
     }
   }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId, tests]);
 
@@ -254,9 +279,38 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     if (!next) {
       return;
     }
-    await runOne(next);
+    await runOne(next, "next");
     setSelectedTestId(next.testId);
   }, [latestRunByTest, latestScoreByTest, runOne, selectedPackId, tests]);
+
+  const exportReport = useCallback(async () => {
+    if (!selectedPackId) {
+      return;
+    }
+    setExporting(true);
+    setError(null);
+    try {
+      const info = await exportPromptPackReport(selectedPackId);
+      setExportInfo(info);
+      setSuccess(`Exported report to ${info.path}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }, [selectedPackId]);
+
+  const copyExportPath = useCallback(async () => {
+    if (!exportInfo?.path) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(exportInfo.path);
+      setSuccess("Copied export path.");
+    } catch {
+      setError("Failed to copy export path.");
+    }
+  }, [exportInfo?.path]);
 
   const submitScore = useCallback(async () => {
     if (!selectedPackId || !selectedTest || !selectedRun) {
@@ -367,25 +421,56 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <p className="office-subtitle">{pageCopy.promptLab.subtitle}</p>
         </div>
         <div className="prompt-lab-actions">
-          <ActionButton label="Run next test" pending={running} onClick={() => void runNext()} />
-          <ActionButton label="Run all" pending={running} onClick={() => void runAll()} />
+          <ActionButton
+            label="Run next test"
+            pending={activeRun?.mode === "next"}
+            disabled={running && activeRun?.mode !== "next"}
+            onClick={() => void runNext()}
+          />
+          <ActionButton
+            label="Run all"
+            pending={activeRun?.mode === "all"}
+            disabled={running && activeRun?.mode !== "all"}
+            onClick={() => void runAll()}
+          />
           <ActionButton
             label="Auto score unscored"
             pending={autoScoring}
-            disabled={!selectedPackId || unscoredCompletedCount === 0}
+            disabled={!selectedPackId || unscoredCompletedCount === 0 || running}
             onClick={() => void autoScoreUnscored()}
+          />
+          <ActionButton
+            label="Export now"
+            pending={exporting}
+            disabled={!selectedPackId || running}
+            onClick={() => void exportReport()}
           />
         </div>
       </header>
 
       {error ? <p className="error">{error}</p> : null}
       {success ? <p className="status-banner">{success}</p> : null}
+      {activeRun ? (
+        <div className="status-banner">
+          Run in progress: {activeRun.testCode ?? "prompt-pack run"} ({activeRun.mode})
+        </div>
+      ) : null}
       <div className="status-banner warning">
         {autoScoreOnRun
           ? "Auto-score is ON (model + rule checks). You can still edit any score manually."
           : "Run status only confirms execution. Pass rate updates after scoring."}
         {unscoredCompletedCount > 0 ? ` ${unscoredCompletedCount} run(s) still need scoring.` : ""}
       </div>
+      {exportInfo?.path ? (
+        <div className="status-banner">
+          Export file: <code>{exportInfo.path}</code>
+          {exportInfo.updatedAt ? ` (updated ${new Date(exportInfo.updatedAt).toLocaleTimeString()})` : ""}
+          {exportInfo.exists ? ` • ${exportInfo.sizeBytes} bytes` : " • not generated yet"}
+          <button type="button" onClick={() => void copyExportPath()} style={{ marginLeft: 12 }}>
+            Copy path
+          </button>
+        </div>
+      ) : null}
 
       <div className="prompt-lab-grid">
         <article className="card prompt-lab-import">
@@ -455,7 +540,12 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     <span className={`prompt-lab-chip ${statusChipClass(run?.status)}`}>{formatRunStatus(run?.status)}</span>
                     <span className={`prompt-lab-chip ${score ? "score-ready" : "score-missing"}`}>{score ? `${score.totalScore}/10` : "Needs score"}</span>
                   </div>
-                  <ActionButton label="Run" pending={running} onClick={() => void runOne(test)} />
+                  <ActionButton
+                    label="Run"
+                    pending={activeRun?.testId === test.testId}
+                    disabled={running && activeRun?.testId !== test.testId}
+                    onClick={() => void runOne(test, "single")}
+                  />
                 </li>
               );
             })}

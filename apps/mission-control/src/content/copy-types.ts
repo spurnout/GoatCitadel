@@ -11,6 +11,7 @@ export type TabId =
   | "sessions"
   | "chat"
   | "promptLab"
+  | "improvement"
   | "skills"
   | "costs"
   | "settings"

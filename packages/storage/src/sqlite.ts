@@ -148,6 +148,16 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "bankr_safety_schema",
     up: createBankrSafetySchema,
   },
+  {
+    version: 17,
+    name: "agentic_depth_schema",
+    up: createAgenticDepthSchema,
+  },
+  {
+    version: 18,
+    name: "weekly_decision_replay_schema",
+    up: createWeeklyDecisionReplaySchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1253,6 +1263,264 @@ function createBankrSafetySchema(db: DatabaseSync): void {
       day TEXT PRIMARY KEY,
       usd_total REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
+    );
+  `);
+}
+
+function createAgenticDepthSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_autonomy_prefs (
+      session_id TEXT PRIMARY KEY,
+      proactive_mode TEXT NOT NULL DEFAULT 'off',
+      max_actions_per_hour INTEGER NOT NULL DEFAULT 6,
+      max_actions_per_turn INTEGER NOT NULL DEFAULT 2,
+      cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+      retrieval_mode TEXT NOT NULL DEFAULT 'standard',
+      reflection_mode TEXT NOT NULL DEFAULT 'off',
+      last_proactive_at TEXT,
+      last_proactive_run_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_autonomy_prefs_updated
+      ON session_autonomy_prefs(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS proactive_runs (
+      run_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      reasoning_summary TEXT,
+      action_count INTEGER NOT NULL DEFAULT 0,
+      suggested_actions_json TEXT NOT NULL,
+      executed_actions_json TEXT NOT NULL,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_proactive_runs_session_created
+      ON proactive_runs(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_proactive_runs_status
+      ON proactive_runs(status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS proactive_actions (
+      action_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      tool_name TEXT,
+      args_json TEXT,
+      result_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_proactive_actions_session_created
+      ON proactive_actions(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_proactive_actions_run
+      ON proactive_actions(run_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_proactive_actions_status
+      ON proactive_actions(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS learned_memory_items (
+      item_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      item_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      status TEXT NOT NULL DEFAULT 'active',
+      superseded_by_item_id TEXT,
+      redacted INTEGER NOT NULL DEFAULT 0,
+      disabled_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_items_session_created
+      ON learned_memory_items(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_items_type
+      ON learned_memory_items(item_type, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_items_status
+      ON learned_memory_items(status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS learned_memory_sources (
+      source_id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_ref TEXT NOT NULL,
+      snippet TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_sources_item
+      ON learned_memory_sources(item_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS learned_memory_conflicts (
+      conflict_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      item_type TEXT NOT NULL,
+      existing_item_id TEXT,
+      incoming_item_id TEXT,
+      incoming_content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolution_note TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_conflicts_session
+      ON learned_memory_conflicts(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_learned_memory_conflicts_status
+      ON learned_memory_conflicts(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_reflection_attempts (
+      attempt_id TEXT PRIMARY KEY,
+      turn_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 1,
+      strategy TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_reflection_attempts_turn
+      ON chat_reflection_attempts(turn_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_reflection_attempts_session
+      ON chat_reflection_attempts(session_id, created_at DESC);
+  `);
+
+  addColumnIfMissing(db, "chat_turn_traces", "retrieval_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "reflection_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "proactive_json", "TEXT");
+}
+
+function createWeeklyDecisionReplaySchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS decision_replay_runs (
+      run_id TEXT PRIMARY KEY,
+      trigger_mode TEXT NOT NULL,
+      sample_size INTEGER NOT NULL DEFAULT 500,
+      window_start TEXT NOT NULL,
+      window_end TEXT NOT NULL,
+      status TEXT NOT NULL,
+      report_id TEXT,
+      total_candidates INTEGER NOT NULL DEFAULT 0,
+      total_scored INTEGER NOT NULL DEFAULT 0,
+      likely_wrong_count INTEGER NOT NULL DEFAULT 0,
+      model_judged_count INTEGER NOT NULL DEFAULT 0,
+      error_text TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_runs_started
+      ON decision_replay_runs(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_runs_status
+      ON decision_replay_runs(status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS decision_replay_items (
+      item_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      decision_type TEXT NOT NULL,
+      session_id TEXT,
+      turn_id TEXT,
+      tool_run_id TEXT,
+      occurred_at TEXT NOT NULL,
+      wrongness_probability REAL NOT NULL DEFAULT 0,
+      label TEXT NOT NULL,
+      cause_class TEXT NOT NULL,
+      cluster_key TEXT NOT NULL,
+      rule_scores_json TEXT NOT NULL,
+      model_scores_json TEXT,
+      evidence_json TEXT NOT NULL,
+      summary_text TEXT,
+      input_excerpt TEXT,
+      output_excerpt TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES decision_replay_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_items_run_wrongness
+      ON decision_replay_items(run_id, wrongness_probability DESC, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_items_cause
+      ON decision_replay_items(cause_class, label, occurred_at DESC);
+
+    CREATE TABLE IF NOT EXISTS decision_replay_findings (
+      finding_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      cause_class TEXT NOT NULL,
+      cluster_key TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      recurrence_count INTEGER NOT NULL DEFAULT 0,
+      impacted_sessions INTEGER NOT NULL DEFAULT 0,
+      impacted_turns INTEGER NOT NULL DEFAULT 0,
+      avg_wrongness REAL NOT NULL DEFAULT 0,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      recommendation TEXT,
+      is_duplicate INTEGER NOT NULL DEFAULT 0,
+      duplicate_of_fingerprint TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES decision_replay_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_findings_run
+      ON decision_replay_findings(run_id, is_duplicate, recurrence_count DESC);
+    CREATE INDEX IF NOT EXISTS idx_decision_replay_findings_fingerprint
+      ON decision_replay_findings(fingerprint, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS decision_autotunes (
+      tune_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      finding_id TEXT,
+      tune_class TEXT NOT NULL,
+      risk_level TEXT NOT NULL,
+      status TEXT NOT NULL,
+      description TEXT NOT NULL,
+      patch_json TEXT NOT NULL,
+      snapshot_json TEXT,
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      applied_at TEXT,
+      reverted_at TEXT,
+      FOREIGN KEY(run_id) REFERENCES decision_replay_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_decision_autotunes_run_status
+      ON decision_autotunes(run_id, status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS improvement_reports (
+      report_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      week_start TEXT NOT NULL,
+      week_end TEXT NOT NULL,
+      summary_json TEXT NOT NULL,
+      top_findings_json TEXT NOT NULL,
+      applied_tunes_json TEXT NOT NULL,
+      queued_tunes_json TEXT NOT NULL,
+      week_over_week_json TEXT NOT NULL,
+      previous_report_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES decision_replay_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_improvement_reports_week
+      ON improvement_reports(week_end DESC, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS decision_replay_dedup (
+      fingerprint TEXT PRIMARY KEY,
+      last_seen_report_id TEXT,
+      last_seen_at TEXT NOT NULL,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      last_summary_hash TEXT
     );
   `);
 }

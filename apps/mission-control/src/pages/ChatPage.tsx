@@ -10,13 +10,19 @@ import {
 } from "react";
 import type {
   ChatAttachmentRecord,
+  ChatDelegationSuggestionRecord,
   ChatMessageRecord,
+  ChatSessionPrefsPatch,
   ChatSessionBindingRecord,
   ChatSessionPrefsRecord,
   ChatSessionRecord,
   ChatTurnTraceRecord,
+  LearnedMemoryItemRecord,
+  ProactivePolicy,
+  ProactiveRunRecord,
 } from "@goatcitadel/contracts";
 import {
+  acceptChatDelegation,
   approveChatTool,
   archiveChatSession,
   assignChatSessionProject,
@@ -25,20 +31,28 @@ import {
   denyChatTool,
   fetchChatCommandCatalog,
   fetchChatMessages,
+  fetchChatProactiveRuns,
+  fetchChatProactiveStatus,
   fetchChatProjects,
   fetchChatSessionBinding,
+  fetchChatLearnedMemory,
   fetchChatSessionPrefs,
   fetchChatSessions,
   fetchSettings,
   parseChatCommand,
+  rebuildChatLearnedMemory,
   pinChatSession,
   restoreChatSession,
   runChatResearch,
   sendAgentChatMessage,
+  triggerChatProactive,
+  updateChatProactivePolicy,
   setChatSessionBinding,
+  suggestChatDelegation,
   streamAgentChatMessage,
   unpinChatSession,
   updateChatSession,
+  updateChatLearnedMemoryItem,
   updateChatSessionPrefs,
   uploadChatAttachment,
   type ChatMessagesResponse,
@@ -83,6 +97,10 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [commandCatalog, setCommandCatalog] = useState<CommandCatalogItem[]>([]);
   const [latestTrace, setLatestTrace] = useState<ChatTurnTraceRecord | null>(null);
   const [pendingApproval, setPendingApproval] = useState<PendingApprovalState | null>(null);
+  const [proactiveStatus, setProactiveStatus] = useState<ProactivePolicy | null>(null);
+  const [proactiveRuns, setProactiveRuns] = useState<ProactiveRunRecord[]>([]);
+  const [learnedMemory, setLearnedMemory] = useState<LearnedMemoryItemRecord[]>([]);
+  const [delegationSuggestion, setDelegationSuggestion] = useState<ChatDelegationSuggestionRecord | null>(null);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -131,14 +149,21 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const loadSessionState = useCallback(async (sessionId: string) => {
     setMessagesLoading(true);
     try {
-      const [nextMessages, nextBinding, nextPrefs] = await Promise.all([
+      const [nextMessages, nextBinding, nextPrefs, nextProactiveStatus, nextProactiveRuns, nextMemory] = await Promise.all([
         fetchChatMessages(sessionId, 500),
         fetchChatSessionBinding(sessionId),
         fetchChatSessionPrefs(sessionId),
+        fetchChatProactiveStatus(sessionId),
+        fetchChatProactiveRuns(sessionId, 30),
+        fetchChatLearnedMemory(sessionId, 80),
       ]);
       setMessages(nextMessages.items);
       setBinding(nextBinding.item);
       setPrefs(nextPrefs);
+      setProactiveStatus(nextProactiveStatus.policy);
+      setProactiveRuns(nextProactiveRuns.items);
+      setLearnedMemory(nextMemory.items);
+      setDelegationSuggestion(null);
       setLatestTrace(null);
       setPendingApproval(null);
     } finally {
@@ -176,6 +201,10 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setMessages([]);
       setPrefs(null);
       setBinding(null);
+      setProactiveStatus(null);
+      setProactiveRuns([]);
+      setLearnedMemory([]);
+      setDelegationSuggestion(null);
       setPendingAttachments([]);
       lastLoadedSessionIdRef.current = null;
       return;
@@ -330,6 +359,133 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setSending(false);
     }
   }, [draft, ensureSession, messages, prefs?.model, prefs?.providerId, prefs?.webMode, sending]);
+
+  const handleProactivePolicyPatch = useCallback(async (
+    patch: {
+      proactiveMode?: "off" | "suggest" | "auto_safe";
+      autonomyBudget?: {
+        maxActionsPerHour?: number;
+        maxActionsPerTurn?: number;
+        cooldownSeconds?: number;
+      };
+      retrievalMode?: "standard" | "layered";
+      reflectionMode?: "off" | "on";
+    },
+  ) => {
+    if (!selectedSession) return;
+    try {
+      const updated = await updateChatProactivePolicy(selectedSession.sessionId, patch);
+      setProactiveStatus(updated);
+      setPrefs((current) => current ? {
+        ...current,
+        proactiveMode: updated.mode,
+        autonomyBudget: updated.autonomyBudget,
+        retrievalMode: updated.retrievalMode,
+        reflectionMode: updated.reflectionMode,
+      } : current);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [selectedSession]);
+
+  const handleTriggerProactive = useCallback(async () => {
+    if (!selectedSession || sending) return;
+    setSending(true);
+    try {
+      const run = await triggerChatProactive(selectedSession.sessionId, {
+        source: "manual",
+        reason: "Operator triggered from chat workspace.",
+      });
+      setProactiveRuns((current) => [run, ...current].slice(0, 30));
+      setMessages((current) => [...current, {
+        messageId: `proactive-${run.runId}`,
+        sessionId: selectedSession.sessionId,
+        role: "system",
+        actorType: "system",
+        actorId: "proactive",
+        content: `Proactive run ${run.status}: ${run.reasoningSummary}`,
+        timestamp: new Date().toISOString(),
+      }]);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }, [selectedSession, sending]);
+
+  const handleSuggestDelegation = useCallback(async () => {
+    if (!selectedSession || sending) return;
+    const objective = draft.trim() || messages.filter((item) => item.role === "user").at(-1)?.content?.trim() || "";
+    if (!objective) {
+      setError("Write a request first so I can suggest a delegation plan.");
+      return;
+    }
+    setSending(true);
+    try {
+      const suggested = await suggestChatDelegation(selectedSession.sessionId, { objective });
+      setDelegationSuggestion(suggested.suggestion);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }, [draft, messages, selectedSession, sending]);
+
+  const handleAcceptDelegation = useCallback(async () => {
+    if (!selectedSession || !delegationSuggestion || sending) return;
+    setSending(true);
+    try {
+      const accepted = await acceptChatDelegation(selectedSession.sessionId, {
+        suggestionId: delegationSuggestion.suggestionId,
+        objective: delegationSuggestion.objective,
+        roles: delegationSuggestion.roles,
+        mode: delegationSuggestion.mode,
+        providerId: prefs?.providerId,
+        model: prefs?.model,
+      });
+      setMessages((current) => [...current, {
+        messageId: `delegation-${accepted.runId}`,
+        sessionId: selectedSession.sessionId,
+        role: "assistant",
+        actorType: "agent",
+        actorId: "delegation",
+        content: accepted.stitchedOutput,
+        timestamp: new Date().toISOString(),
+      }]);
+      setDelegationSuggestion(null);
+      await loadSidebar();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }, [delegationSuggestion, loadSidebar, prefs?.model, prefs?.providerId, selectedSession, sending]);
+
+  const handleMemoryStatusUpdate = useCallback(async (
+    itemId: string,
+    status: "active" | "superseded" | "conflict" | "disabled",
+  ) => {
+    if (!selectedSession) return;
+    try {
+      const updated = await updateChatLearnedMemoryItem(selectedSession.sessionId, itemId, { status });
+      setLearnedMemory((current) => current.map((item) => item.itemId === itemId ? updated : item));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [selectedSession]);
+
+  const handleRebuildLearnedMemory = useCallback(async () => {
+    if (!selectedSession || sending) return;
+    setSending(true);
+    try {
+      const rebuilt = await rebuildChatLearnedMemory(selectedSession.sessionId);
+      setLearnedMemory(rebuilt.items);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }, [selectedSession, sending]);
 
   const handleComposerPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(event.clipboardData.files ?? []);
@@ -603,7 +759,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [pendingApproval, selectedSession]);
 
-  const handlePrefPatch = useCallback(async (patch: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>) => {
+  const handlePrefPatch = useCallback(async (patch: ChatSessionPrefsPatch) => {
     if (!selectedSession) return;
     try {
       const updated = await updateChatSessionPrefs(selectedSession.sessionId, patch);
@@ -733,11 +889,102 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <option value="deep">Deep</option>
               </select>
             </label>
+            <label className="chat-v11-select">Proactive
+              <select
+                value={proactiveStatus?.mode ?? prefs?.proactiveMode ?? "off"}
+                disabled={!selectedSessionId || sending}
+                onChange={(event) => void handleProactivePolicyPatch({ proactiveMode: event.target.value as "off" | "suggest" | "auto_safe" })}
+              >
+                <option value="off">Off</option>
+                <option value="suggest">Suggest</option>
+                <option value="auto_safe">Auto-safe</option>
+              </select>
+            </label>
+            <label className="chat-v11-select">Retrieval
+              <select
+                value={proactiveStatus?.retrievalMode ?? prefs?.retrievalMode ?? "standard"}
+                disabled={!selectedSessionId || sending}
+                onChange={(event) => void handleProactivePolicyPatch({ retrievalMode: event.target.value as "standard" | "layered" })}
+              >
+                <option value="standard">Standard</option>
+                <option value="layered">Layered</option>
+              </select>
+            </label>
+            <label className="chat-v11-select">Reflection
+              <select
+                value={proactiveStatus?.reflectionMode ?? prefs?.reflectionMode ?? "off"}
+                disabled={!selectedSessionId || sending}
+                onChange={(event) => void handleProactivePolicyPatch({ reflectionMode: event.target.value as "off" | "on" })}
+              >
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+            </label>
+            <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleSuggestDelegation()}>
+              Suggest delegation
+            </button>
+            <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleTriggerProactive()}>
+              Run proactive
+            </button>
             <label className="chat-v11-toggle"><input type="checkbox" checked={streamEnabled} onChange={(event) => setStreamEnabled(event.target.checked)} />Stream</label>
           </div>
 
           {selectedSession ? (
             <div className="chat-v11-conversation-shell">
+              <div className="chat-v11-agentic-row">
+                <article className="card chat-v11-agentic-card">
+                  <div className="chat-v11-agentic-head">
+                    <h3>Suggestions inbox</h3>
+                    <span className="token-chip">{proactiveRuns.filter((run) => run.status === "suggested").length} suggested</span>
+                  </div>
+                  {delegationSuggestion ? (
+                    <div className="chat-v11-suggestion-card">
+                      <p><strong>Delegation suggestion:</strong> {delegationSuggestion.reason}</p>
+                      <p>Roles: {delegationSuggestion.roles.join(" -> ")}</p>
+                      <div className="chat-v11-row-actions">
+                        <button type="button" disabled={sending} onClick={() => void handleAcceptDelegation()}>Accept plan</button>
+                        <button type="button" disabled={sending} onClick={() => setDelegationSuggestion(null)}>Dismiss</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="chat-v11-muted">No pending delegation suggestion. Click “Suggest delegation” to generate one from your current request.</p>
+                  )}
+                  <ul className="chat-v11-proactive-list">
+                    {proactiveRuns.slice(0, 4).map((run) => (
+                      <li key={run.runId}>
+                        <p><strong>{run.status}</strong> · {new Date(run.startedAt).toLocaleTimeString()}</p>
+                        <p>{run.reasoningSummary}</p>
+                      </li>
+                    ))}
+                    {proactiveRuns.length === 0 ? <li className="chat-v11-muted">No proactive runs yet for this session.</li> : null}
+                  </ul>
+                </article>
+
+                <article className="card chat-v11-agentic-card">
+                  <div className="chat-v11-agentic-head">
+                    <h3>Learned memory</h3>
+                    <button type="button" disabled={sending || !selectedSessionId} onClick={() => void handleRebuildLearnedMemory()}>
+                      Rebuild
+                    </button>
+                  </div>
+                  <p className="chat-v11-muted">Review what GoatCitadel is carrying forward (preferences, goals, constraints, facts, project context).</p>
+                  <ul className="chat-v11-memory-list">
+                    {learnedMemory.slice(0, 6).map((item) => (
+                      <li key={item.itemId}>
+                        <p><strong>{item.itemType}</strong> · {Math.round(item.confidence * 100)}% · {item.status}</p>
+                        <p>{item.content}</p>
+                        <div className="chat-v11-row-actions">
+                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "active")}>Keep</button>
+                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "superseded")}>Supersede</button>
+                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "disabled")}>Disable</button>
+                        </div>
+                      </li>
+                    ))}
+                    {learnedMemory.length === 0 ? <li className="chat-v11-muted">No learned memory items yet. They appear after completed assistant turns.</li> : null}
+                  </ul>
+                </article>
+              </div>
+
               <div className="card chat-v11-session-bar">
                 <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} placeholder="Session title" />
                 <ActionButton label="Save" pending={sending} onClick={async () => {

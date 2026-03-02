@@ -37,6 +37,7 @@ import { mcpRoutes } from "./routes/mcp.js";
 import { voiceRoutes } from "./routes/voice.js";
 import { mediaRoutes } from "./routes/media.js";
 import { daemonRoutes } from "./routes/daemon.js";
+import { improvementRoutes } from "./routes/improvement.js";
 
 loadLocalEnvFile();
 
@@ -127,6 +128,7 @@ export async function buildApp() {
   await app.register(voiceRoutes);
   await app.register(mediaRoutes);
   await app.register(daemonRoutes);
+  await app.register(improvementRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
 

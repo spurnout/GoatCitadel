@@ -86,6 +86,7 @@ export const appCopy = {
     { id: "sessions", label: "Runs (Sessions)", code: "SES" },
     { id: "chat", label: "Chat Workspace", code: "CHT" },
     { id: "promptLab", label: "Prompt Lab", code: "LAB" },
+    { id: "improvement", label: "Improvement", code: "IMP" },
     { id: "skills", label: "Playbook (Skills)", code: "SKL" },
     { id: "costs", label: "Feed Ledger (Costs)", code: "USD" },
     { id: "settings", label: "Forge (Settings)", code: "CFG" },
@@ -99,7 +100,7 @@ export const appCopy = {
   ] satisfies NavItemCopy[],
   navSections: [
     { label: "Setup", items: ["onboarding", "settings", "integrations", "tools"] },
-    { label: "Operate", items: ["dashboard", "chat", "promptLab", "tasks", "agents", "office", "approvals", "sessions"] },
+    { label: "Operate", items: ["dashboard", "chat", "promptLab", "improvement", "tasks", "agents", "office", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
     { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
@@ -116,6 +117,7 @@ export const appCopy = {
     sessions: "Choose a run and inspect timeline, usage, and outcomes.",
     chat: "Pick a project, open a session, and send a message.",
     promptLab: "Run your test pack, then score quality and reliability.",
+    improvement: "Review weekly replay findings, then apply or revert low-risk tunes.",
     skills: "Decide which skills are always on, guarded, or off.",
     costs: "Watch spend and switch to a lighter mode when needed.",
     settings: "Update providers and safety defaults in one place.",
@@ -298,6 +300,23 @@ export const pageCopy: Record<PageId, PageCopy> = {
       terms: [
         { term: "Pass threshold", meaning: "Default pass threshold is 7/10 total score." },
         { term: "Run trace", meaning: "Per-test execution trace including routing and tool behavior." },
+      ],
+    },
+  },
+  improvement: {
+    title: "Improvement",
+    subtitle: "Weekly decision replay audit for long-term agent quality and safe auto-tuning.",
+    guide: {
+      what: "Replays last week's chat/tool decisions, scores likely misses, and clusters root causes.",
+      when: "Use this weekly (or after major changes) to keep behavior improving without guessing.",
+      actions: [
+        "Run replay manually if you shipped major runtime changes.",
+        "Review top clusters and compare trend changes versus last week.",
+        "Revert any low-risk auto-tune instantly if behavior regresses.",
+      ],
+      terms: [
+        { term: "Likely wrong", meaning: "A replay item with high wrongness probability after rule + model scoring." },
+        { term: "Duplicate suppressed", meaning: "Repeated finding fingerprint from prior reports, hidden from top list." },
       ],
     },
   },

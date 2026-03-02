@@ -44,19 +44,28 @@ import type {
   ChatAttachmentMediaType,
   ChatAttachmentPreviewResponse,
   ChatCitationRecord,
+  ChatDelegateAcceptRequest,
   ChatDelegateRequest,
+  ChatDelegateSuggestRequest,
+  ChatDelegateSuggestResponse,
   ChatDelegateResponse,
+  ChatDelegationSuggestionRecord,
   ChatDelegationRunRecord,
   ChatDelegationStepRecord,
   ChatInputPart,
+  ChatMemoryMode,
   ChatMode,
   ChatMessageRecord,
+  ChatProactiveMode,
   ChatProjectRecord,
+  ChatReflectionMode,
+  ChatRetrievalMode,
   ChatSendMessageRequest,
   ChatSendMessageResponse,
   ChatSessionPrefsRecord,
   ChatSessionBindingRecord,
   ChatSessionRecord,
+  ChatSessionPrefsPatch,
   ChatStreamChunk,
   ChatThinkingLevel,
   ChatTurnTraceRecord,
@@ -125,10 +134,14 @@ import type {
   PromptPackRecord,
   PromptPackAutoScoreBatchResult,
   PromptPackAutoScoreResult,
+  PromptPackExportRecord,
   PromptPackReportRecord,
   PromptPackRunRecord,
   PromptPackScoreRecord,
   PromptPackTestRecord,
+  ProactiveActionRecord,
+  ProactivePolicy,
+  ProactiveRunRecord,
   ResearchRunRecord,
   ResearchSourceRecord,
   ResearchSummaryRecord,
@@ -141,6 +154,18 @@ import type {
   SkillRuntimeState,
   SkillStateRecord,
   SkillResolveInput,
+  LearnedMemoryConflictRecord,
+  LearnedMemoryItemRecord,
+  LearnedMemoryItemType,
+  LearnedMemoryUpdateInput,
+  DecisionAutoTuneRecord,
+  DecisionReplayCauseClass,
+  DecisionReplayFindingRecord,
+  DecisionReplayItemModelScores,
+  DecisionReplayItemRecord,
+  DecisionReplayItemRuleScores,
+  DecisionReplayRunRecord,
+  WeeklyImprovementReportRecord,
   SystemVitals,
   TaskActivityCreateInput,
   TaskActivityRecord,
@@ -289,6 +314,23 @@ const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
   guardedAutoThreshold: 0.72,
   requireFirstUseConfirmation: true,
 };
+const DEFAULT_SESSION_AUTONOMY_PREFS = {
+  proactiveMode: "off" as ChatProactiveMode,
+  maxActionsPerHour: 6,
+  maxActionsPerTurn: 2,
+  cooldownSeconds: 60,
+  retrievalMode: "standard" as ChatRetrievalMode,
+  reflectionMode: "off" as ChatReflectionMode,
+};
+const PROACTIVE_SCHEDULER_INTERVAL_MS = 120_000;
+const PROACTIVE_MIN_IDLE_SECONDS = 90;
+const PROACTIVE_SAFE_TOOL_ALLOWLIST = new Set([
+  "time.now",
+  "browser.search",
+  "browser.navigate",
+  "browser.extract",
+  "http.get",
+]);
 const DEFAULT_MCP_SERVER_POLICY: McpServerPolicy = {
   requireFirstToolApproval: false,
   redactionMode: "basic",
@@ -315,7 +357,28 @@ const CHAT_SESSION_AUTO_ALLOW_TOOLS = [
 
 const PROMPT_PACK_PASS_THRESHOLD = 7;
 const DEFAULT_PROMPT_RUNNER_SOURCE = "goatcitadel_prompt_pack.md";
+const DEFAULT_PROMPT_PACK_EXPORT_DIR = "artifacts/prompt-lab";
 const DEFAULT_DELEGATION_ROLES = ["product", "architect", "coder", "qa", "ops"];
+const IMPROVEMENT_WEEKLY_JOB_ID = "self_improvement_weekly_replay";
+const IMPROVEMENT_WEEKLY_TIME_ZONE = "America/Los_Angeles";
+const IMPROVEMENT_WEEKLY_SCHEDULE_LABEL = "0 2 * * 0 America/Los_Angeles";
+const IMPROVEMENT_WEEKLY_SAMPLE_SIZE = 500;
+const IMPROVEMENT_JUDGE_SAMPLE_LIMIT = 120;
+const IMPROVEMENT_SCHEDULER_INTERVAL_MS = 60_000;
+const IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY = "improvement_weekly_last_week_key_v1";
+const IMPROVEMENT_TUNE_KEY_BLOCKER_TEMPLATE = "improvement_tune_blocker_template_v1";
+const IMPROVEMENT_TUNE_KEY_RETRY_THRESHOLD = "improvement_tune_retry_threshold_v1";
+const IMPROVEMENT_TUNE_KEY_LIVE_INTENT = "improvement_tune_live_intent_threshold_v1";
+const IMPROVEMENT_TUNE_KEY_REFUSAL_STYLE = "improvement_tune_refusal_style_v1";
+const IMPROVEMENT_RUN_STATUS_VALUES = new Set(["running", "completed", "failed"]);
+const IMPROVEMENT_CAUSE_CLASSES = new Set<DecisionReplayCauseClass>([
+  "false_refusal_tone",
+  "weak_blocker_explanation",
+  "tool_mismatch",
+  "retrieval_miss",
+  "incomplete_retry_repair",
+  "other",
+]);
 const PIPELINE_TEMPLATES: Record<string, string[]> = {
   prd: ["product", "architect"],
   build: ["architect", "coder", "qa"],
@@ -330,6 +393,66 @@ interface ChatSessionListQuery {
   view?: "active" | "archived" | "all";
   limit?: number;
   cursor?: string;
+}
+
+interface SessionAutonomyPrefs {
+  sessionId: string;
+  proactiveMode: ChatProactiveMode;
+  maxActionsPerHour: number;
+  maxActionsPerTurn: number;
+  cooldownSeconds: number;
+  retrievalMode: ChatRetrievalMode;
+  reflectionMode: ChatReflectionMode;
+  lastProactiveAt?: string;
+  lastProactiveRunId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ProactiveTriggerInput {
+  source?: "scheduler" | "manual" | "chat";
+  reason?: string;
+}
+
+interface ProactivePlannedAction {
+  kind: "tool" | "delegate" | "note";
+  toolName?: string;
+  args?: Record<string, unknown>;
+  note?: string;
+  objective?: string;
+  roles?: string[];
+}
+
+interface ImprovementReplayTriggerInput {
+  sampleSize?: number;
+}
+
+interface DecisionReplayCandidate {
+  decisionType: "chat_turn" | "tool_run";
+  sessionId?: string;
+  turnId?: string;
+  toolRunId?: string;
+  status: string;
+  occurredAt: string;
+  model?: string;
+  mode?: ChatMode;
+  webMode?: ChatWebMode;
+  memoryMode?: ChatMemoryMode;
+  thinkingLevel?: ChatThinkingLevel;
+  routing?: ChatTurnTraceRecord["routing"];
+  retrieval?: ChatTurnTraceRecord["retrieval"];
+  reflection?: ChatTurnTraceRecord["reflection"];
+  toolName?: string;
+  error?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  userMessageId?: string;
+  assistantMessageId?: string;
+}
+
+interface ReplayScoredItemResult {
+  item: DecisionReplayItemRecord;
+  judgeUsed: boolean;
 }
 
 interface RealtimeListener {
@@ -352,6 +475,8 @@ export class GatewayService {
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly onboardingMarkerPath: string;
+  private proactiveScheduler?: NodeJS.Timeout;
+  private improvementScheduler?: NodeJS.Timeout;
   private closing = false;
   private onboardingMarker: { completedAt?: string; completedBy?: string } = {};
 
@@ -434,11 +559,14 @@ export class GatewayService {
     const skills = await this.skillsService.reload();
     this.ensureSkillStates(skills.map((skill) => skill.skillId));
     await this.loadCronJobsFromConfig();
+    this.ensureWeeklyImprovementCronJob();
     this.meshService.init();
     await this.npuSidecar.init();
     // Enforce env-only secret persistence policy on startup.
     this.persistLlmConfig();
     this.persistAssistantConfig();
+    this.startProactiveScheduler();
+    this.startImprovementScheduler();
   }
 
   public subscribeRealtime(listener: RealtimeListener): () => void {
@@ -822,23 +950,28 @@ export class GatewayService {
 
   public getChatSessionPrefs(sessionId: string): ChatSessionPrefsRecord {
     this.getSession(sessionId);
-    const prefs = this.storage.chatSessionPrefs.ensure(sessionId);
-    return this.ensureGlmPrimaryDefaults(sessionId, prefs);
+    const prefs = this.ensureGlmPrimaryDefaults(sessionId, this.storage.chatSessionPrefs.ensure(sessionId));
+    return this.hydrateChatPrefsWithAutonomy(sessionId, prefs);
   }
 
   public updateChatSessionPrefs(
     sessionId: string,
-    input: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>,
+    input: ChatSessionPrefsPatch,
   ): ChatSessionPrefsRecord {
     this.getSession(sessionId);
-    const updated = this.storage.chatSessionPrefs.patch(sessionId, input);
+    const { basePatch, autonomyPatch } = splitChatPrefsPatch(input);
+    if (Object.keys(autonomyPatch).length > 0) {
+      this.patchSessionAutonomyPrefs(sessionId, autonomyPatch);
+    }
+    const updated = this.storage.chatSessionPrefs.patch(sessionId, basePatch);
     const normalized = this.ensureGlmPrimaryDefaults(sessionId, updated);
+    const hydrated = this.hydrateChatPrefsWithAutonomy(sessionId, normalized);
     this.publishRealtime("chat_session_updated", "chat", {
       type: "chat_session_prefs_updated",
       sessionId,
-      prefs: normalized,
+      prefs: hydrated,
     });
-    return normalized;
+    return hydrated;
   }
 
   private ensureGlmPrimaryDefaults(sessionId: string, prefs: ChatSessionPrefsRecord): ChatSessionPrefsRecord {
@@ -857,6 +990,800 @@ export class GatewayService {
       return prefs;
     }
     return this.storage.chatSessionPrefs.patch(sessionId, patch);
+  }
+
+  private hydrateChatPrefsWithAutonomy(sessionId: string, prefs: ChatSessionPrefsRecord): ChatSessionPrefsRecord {
+    const autonomy = this.getSessionAutonomyPrefs(sessionId);
+    return {
+      ...prefs,
+      proactiveMode: autonomy.proactiveMode,
+      autonomyBudget: {
+        maxActionsPerHour: autonomy.maxActionsPerHour,
+        maxActionsPerTurn: autonomy.maxActionsPerTurn,
+        cooldownSeconds: autonomy.cooldownSeconds,
+      },
+      retrievalMode: autonomy.retrievalMode,
+      reflectionMode: autonomy.reflectionMode,
+    };
+  }
+
+  private getSessionAutonomyPrefs(sessionId: string): SessionAutonomyPrefs {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM session_autonomy_prefs
+      WHERE session_id = ?
+    `).get(sessionId) as {
+      session_id: string;
+      proactive_mode: ChatProactiveMode;
+      max_actions_per_hour: number;
+      max_actions_per_turn: number;
+      cooldown_seconds: number;
+      retrieval_mode: ChatRetrievalMode;
+      reflection_mode: ChatReflectionMode;
+      last_proactive_at: string | null;
+      last_proactive_run_id: string | null;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+    if (!row) {
+      const now = new Date().toISOString();
+      this.storage.db.prepare(`
+        INSERT INTO session_autonomy_prefs (
+          session_id, proactive_mode, max_actions_per_hour, max_actions_per_turn, cooldown_seconds,
+          retrieval_mode, reflection_mode, last_proactive_at, last_proactive_run_id, created_at, updated_at
+        ) VALUES (
+          @sessionId, @proactiveMode, @maxActionsPerHour, @maxActionsPerTurn, @cooldownSeconds,
+          @retrievalMode, @reflectionMode, NULL, NULL, @createdAt, @updatedAt
+        )
+      `).run({
+        sessionId,
+        proactiveMode: DEFAULT_SESSION_AUTONOMY_PREFS.proactiveMode,
+        maxActionsPerHour: DEFAULT_SESSION_AUTONOMY_PREFS.maxActionsPerHour,
+        maxActionsPerTurn: DEFAULT_SESSION_AUTONOMY_PREFS.maxActionsPerTurn,
+        cooldownSeconds: DEFAULT_SESSION_AUTONOMY_PREFS.cooldownSeconds,
+        retrievalMode: DEFAULT_SESSION_AUTONOMY_PREFS.retrievalMode,
+        reflectionMode: DEFAULT_SESSION_AUTONOMY_PREFS.reflectionMode,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return this.getSessionAutonomyPrefs(sessionId);
+    }
+    return {
+      sessionId: row.session_id,
+      proactiveMode: row.proactive_mode,
+      maxActionsPerHour: Math.max(1, Math.min(200, row.max_actions_per_hour)),
+      maxActionsPerTurn: Math.max(1, Math.min(25, row.max_actions_per_turn)),
+      cooldownSeconds: Math.max(0, Math.min(3600, row.cooldown_seconds)),
+      retrievalMode: row.retrieval_mode,
+      reflectionMode: row.reflection_mode,
+      lastProactiveAt: row.last_proactive_at ?? undefined,
+      lastProactiveRunId: row.last_proactive_run_id ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private patchSessionAutonomyPrefs(
+    sessionId: string,
+    input: Partial<{
+      proactiveMode: ChatProactiveMode;
+      maxActionsPerHour: number;
+      maxActionsPerTurn: number;
+      cooldownSeconds: number;
+      retrievalMode: ChatRetrievalMode;
+      reflectionMode: ChatReflectionMode;
+    }>,
+  ): SessionAutonomyPrefs {
+    const current = this.getSessionAutonomyPrefs(sessionId);
+    const next: SessionAutonomyPrefs = {
+      ...current,
+      proactiveMode: input.proactiveMode ?? current.proactiveMode,
+      maxActionsPerHour: clampInteger(input.maxActionsPerHour, 1, 200, current.maxActionsPerHour),
+      maxActionsPerTurn: clampInteger(input.maxActionsPerTurn, 1, 25, current.maxActionsPerTurn),
+      cooldownSeconds: clampInteger(input.cooldownSeconds, 0, 3600, current.cooldownSeconds),
+      retrievalMode: input.retrievalMode ?? current.retrievalMode,
+      reflectionMode: input.reflectionMode ?? current.reflectionMode,
+      updatedAt: new Date().toISOString(),
+    };
+    this.storage.db.prepare(`
+      UPDATE session_autonomy_prefs
+      SET
+        proactive_mode = @proactiveMode,
+        max_actions_per_hour = @maxActionsPerHour,
+        max_actions_per_turn = @maxActionsPerTurn,
+        cooldown_seconds = @cooldownSeconds,
+        retrieval_mode = @retrievalMode,
+        reflection_mode = @reflectionMode,
+        updated_at = @updatedAt
+      WHERE session_id = @sessionId
+    `).run({
+      sessionId,
+      proactiveMode: next.proactiveMode,
+      maxActionsPerHour: next.maxActionsPerHour,
+      maxActionsPerTurn: next.maxActionsPerTurn,
+      cooldownSeconds: next.cooldownSeconds,
+      retrievalMode: next.retrievalMode,
+      reflectionMode: next.reflectionMode,
+      updatedAt: next.updatedAt,
+    });
+    return next;
+  }
+
+  private toProactivePolicy(sessionId: string, prefs: SessionAutonomyPrefs): ProactivePolicy {
+    return {
+      sessionId,
+      mode: prefs.proactiveMode,
+      autonomyBudget: {
+        maxActionsPerHour: prefs.maxActionsPerHour,
+        maxActionsPerTurn: prefs.maxActionsPerTurn,
+        cooldownSeconds: prefs.cooldownSeconds,
+      },
+      retrievalMode: prefs.retrievalMode,
+      reflectionMode: prefs.reflectionMode,
+      updatedAt: prefs.updatedAt,
+    };
+  }
+
+  private startProactiveScheduler(): void {
+    if (this.proactiveScheduler) {
+      return;
+    }
+    this.proactiveScheduler = setInterval(() => {
+      const task = this.runProactiveSchedulerTick().catch((error) => {
+        this.publishRealtime("system", "chat", {
+          type: "proactive_scheduler_error",
+          message: (error as Error).message,
+        });
+      });
+      this.backgroundTasks.add(task);
+      task.finally(() => this.backgroundTasks.delete(task));
+    }, PROACTIVE_SCHEDULER_INTERVAL_MS);
+  }
+
+  private async runProactiveSchedulerTick(): Promise<void> {
+    if (this.closing) {
+      return;
+    }
+    const sessions = this.listChatSessions({
+      scope: "mission",
+      view: "active",
+      limit: 300,
+    });
+    for (const session of sessions) {
+      const prefs = this.getSessionAutonomyPrefs(session.sessionId);
+      if (prefs.proactiveMode === "off") {
+        continue;
+      }
+      try {
+        await this.triggerChatSessionProactive(session.sessionId, {
+          source: "scheduler",
+          reason: "Background proactive scheduler tick.",
+        });
+      } catch (error) {
+        this.publishRealtime("system", "chat", {
+          type: "proactive_scheduler_session_error",
+          sessionId: session.sessionId,
+          message: (error as Error).message,
+        });
+      }
+    }
+  }
+
+  private startImprovementScheduler(): void {
+    if (this.improvementScheduler) {
+      return;
+    }
+    this.improvementScheduler = setInterval(() => {
+      const task = this.runImprovementSchedulerTick().catch((error) => {
+        this.publishRealtime("system", "improvement", {
+          type: "improvement_scheduler_error",
+          message: (error as Error).message,
+        });
+      });
+      this.backgroundTasks.add(task);
+      task.finally(() => this.backgroundTasks.delete(task));
+    }, IMPROVEMENT_SCHEDULER_INTERVAL_MS);
+  }
+
+  private async runImprovementSchedulerTick(): Promise<void> {
+    if (this.closing) {
+      return;
+    }
+    const job = this.storage.cronJobs.list().find((item) => item.jobId === IMPROVEMENT_WEEKLY_JOB_ID);
+    if (!job?.enabled) {
+      return;
+    }
+    const now = new Date();
+    const window = getZonedDateParts(now, IMPROVEMENT_WEEKLY_TIME_ZONE);
+    const isScheduledMinute = window.weekday === 0 && window.hour === 2 && window.minute < 5;
+    if (!isScheduledMinute) {
+      return;
+    }
+    const weekKey = toWeekKeyForTimezone(now, IMPROVEMENT_WEEKLY_TIME_ZONE);
+    const lastWeekKey = this.storage.systemSettings.get<string>(IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY)?.value;
+    if (lastWeekKey === weekKey) {
+      return;
+    }
+    await this.runDecisionReplayAudit({
+      triggerMode: "scheduled",
+      sampleSize: IMPROVEMENT_WEEKLY_SAMPLE_SIZE,
+    });
+    this.storage.systemSettings.set(IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY, weekKey);
+    const finishedAt = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      ...job,
+      lastRunAt: finishedAt,
+      nextRunAt: new Date(Date.now() + (7 * 24 * 60 * 60 * 1000)).toISOString(),
+    });
+  }
+
+  private hasRunningTurn(sessionId: string): boolean {
+    const latest = this.storage.chatTurnTraces.listBySession(sessionId, 1)[0];
+    return latest?.status === "running" || latest?.status === "approval_required";
+  }
+
+  private getSessionIdleSeconds(sessionId: string): number {
+    const session = this.getSession(sessionId);
+    const lastActivity = Date.parse(session.lastActivityAt);
+    if (!Number.isFinite(lastActivity)) {
+      return 0;
+    }
+    return Math.max(0, Math.floor((Date.now() - lastActivity) / 1000));
+  }
+
+  private getProactiveCooldownRemainingSeconds(prefs: SessionAutonomyPrefs): number {
+    if (!prefs.lastProactiveAt || prefs.cooldownSeconds <= 0) {
+      return 0;
+    }
+    const elapsedSeconds = Math.floor((Date.now() - Date.parse(prefs.lastProactiveAt)) / 1000);
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds >= prefs.cooldownSeconds) {
+      return 0;
+    }
+    return Math.max(0, prefs.cooldownSeconds - elapsedSeconds);
+  }
+
+  private countProactiveActionsLastHour(sessionId: string): number {
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const row = this.storage.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM proactive_actions
+      WHERE session_id = ? AND status = 'executed' AND created_at >= ?
+    `).get(sessionId, cutoff) as { count?: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  private async planProactiveActions(sessionId: string): Promise<{
+    confidence: number;
+    reasoningSummary: string;
+    actions: ProactivePlannedAction[];
+  }> {
+    const messages = await this.listChatMessages(sessionId, 60);
+    const latestUser = [...messages].reverse().find((message) => message.role === "user");
+    if (!latestUser) {
+      return {
+        confidence: 0.1,
+        reasoningSummary: "No recent user prompt found.",
+        actions: [],
+      };
+    }
+    const text = latestUser.content.trim();
+    if (!text) {
+      return {
+        confidence: 0.1,
+        reasoningSummary: "Latest user prompt is empty.",
+        actions: [],
+      };
+    }
+    const actions: ProactivePlannedAction[] = [];
+    const roles = detectDelegationRoles(text);
+    if (roles.length > 1 || /\b(prd|architecture|qa|ops|handoff|route this)\b/i.test(text)) {
+      actions.push({
+        kind: "delegate",
+        objective: text,
+        roles,
+      });
+    }
+
+    if (/\b(weather|price|latest|news|current|today|time)\b/i.test(text)) {
+      actions.push({
+        kind: "tool",
+        toolName: /\btime\b/i.test(text) ? "time.now" : "browser.search",
+        args: /\btime\b/i.test(text) ? {} : { query: text, maxResults: 5 },
+      });
+    }
+
+    if (actions.length === 0) {
+      actions.push({
+        kind: "note",
+        note: "Consider running /delegate for structured multi-role output.",
+      });
+    }
+
+    return {
+      confidence: actions.some((action) => action.kind !== "note") ? 0.78 : 0.42,
+      reasoningSummary: "Generated actions from latest user intent and route hints.",
+      actions,
+    };
+  }
+
+  private insertProactiveRun(run: ProactiveRunRecord): void {
+    this.storage.db.prepare(`
+      INSERT INTO proactive_runs (
+        run_id, session_id, status, mode, confidence, reasoning_summary, action_count,
+        suggested_actions_json, executed_actions_json, error, started_at, finished_at
+      ) VALUES (
+        @runId, @sessionId, @status, @mode, @confidence, @reasoningSummary, @actionCount,
+        @suggestedActionsJson, @executedActionsJson, @error, @startedAt, @finishedAt
+      )
+    `).run({
+      runId: run.runId,
+      sessionId: run.sessionId,
+      status: run.status,
+      mode: run.mode,
+      confidence: run.confidence,
+      reasoningSummary: run.reasoningSummary,
+      actionCount: run.suggestedActions.length,
+      suggestedActionsJson: JSON.stringify(run.suggestedActions),
+      executedActionsJson: JSON.stringify(run.executedActions),
+      error: run.error ?? null,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt ?? null,
+    });
+  }
+
+  private finishProactiveRun(
+    runId: string,
+    patch: Partial<Pick<ProactiveRunRecord, "status" | "confidence" | "reasoningSummary" | "suggestedActions" | "executedActions" | "error">>,
+  ): ProactiveRunRecord {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM proactive_runs
+      WHERE run_id = ?
+    `).get(runId) as {
+      run_id: string;
+      session_id: string;
+      status: ProactiveRunRecord["status"];
+      mode: ChatProactiveMode;
+      confidence: number;
+      reasoning_summary: string;
+      suggested_actions_json: string;
+      executed_actions_json: string;
+      started_at: string;
+      finished_at: string | null;
+      error: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Proactive run ${runId} not found.`);
+    }
+    const next: ProactiveRunRecord = {
+      runId: row.run_id,
+      sessionId: row.session_id,
+      status: patch.status ?? row.status,
+      mode: row.mode,
+      confidence: patch.confidence ?? Number(row.confidence || 0),
+      reasoningSummary: patch.reasoningSummary ?? row.reasoning_summary ?? "",
+      suggestedActions: patch.suggestedActions ?? safeJsonParse<ProactiveActionRecord[]>(row.suggested_actions_json, []),
+      executedActions: patch.executedActions ?? safeJsonParse<ProactiveActionRecord[]>(row.executed_actions_json, []),
+      startedAt: row.started_at,
+      finishedAt: new Date().toISOString(),
+      error: patch.error ?? row.error ?? undefined,
+    };
+    this.storage.db.prepare(`
+      UPDATE proactive_runs
+      SET
+        status = @status,
+        confidence = @confidence,
+        reasoning_summary = @reasoningSummary,
+        action_count = @actionCount,
+        suggested_actions_json = @suggestedActionsJson,
+        executed_actions_json = @executedActionsJson,
+        error = @error,
+        finished_at = @finishedAt
+      WHERE run_id = @runId
+    `).run({
+      runId: next.runId,
+      status: next.status,
+      confidence: next.confidence,
+      reasoningSummary: next.reasoningSummary,
+      actionCount: next.suggestedActions.length,
+      suggestedActionsJson: JSON.stringify(next.suggestedActions),
+      executedActionsJson: JSON.stringify(next.executedActions),
+      error: next.error ?? null,
+      finishedAt: next.finishedAt ?? null,
+    });
+    return next;
+  }
+
+  private insertProactiveAction(action: ProactiveActionRecord): void {
+    this.storage.db.prepare(`
+      INSERT INTO proactive_actions (
+        action_id, run_id, session_id, kind, status, tool_name, args_json, result_json, error, created_at, updated_at
+      ) VALUES (
+        @actionId, @runId, @sessionId, @kind, @status, @toolName, @argsJson, @resultJson, @error, @createdAt, @updatedAt
+      )
+    `).run({
+      actionId: action.actionId,
+      runId: action.runId,
+      sessionId: action.sessionId,
+      kind: action.kind,
+      status: action.status,
+      toolName: action.toolName ?? null,
+      argsJson: action.args ? JSON.stringify(action.args) : null,
+      resultJson: action.result ? JSON.stringify(action.result) : null,
+      error: action.error ?? null,
+      createdAt: action.createdAt,
+      updatedAt: action.updatedAt ?? action.createdAt,
+    });
+  }
+
+  private updateProactiveAction(
+    actionId: string,
+    patch: Partial<Pick<ProactiveActionRecord, "status" | "result" | "error">>,
+  ): ProactiveActionRecord {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM proactive_actions
+      WHERE action_id = ?
+    `).get(actionId) as {
+      action_id: string;
+      run_id: string;
+      session_id: string;
+      kind: ProactiveActionRecord["kind"];
+      status: ProactiveActionRecord["status"];
+      tool_name: string | null;
+      args_json: string | null;
+      result_json: string | null;
+      error: string | null;
+      created_at: string;
+      updated_at: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Proactive action ${actionId} not found.`);
+    }
+    const updatedAt = new Date().toISOString();
+    const next: ProactiveActionRecord = {
+      actionId: row.action_id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      kind: row.kind,
+      status: patch.status ?? row.status,
+      toolName: row.tool_name ?? undefined,
+      args: row.args_json ? safeJsonParse<Record<string, unknown>>(row.args_json, {}) : undefined,
+      result: patch.result ?? (row.result_json ? safeJsonParse<Record<string, unknown>>(row.result_json, {}) : undefined),
+      error: patch.error ?? row.error ?? undefined,
+      createdAt: row.created_at,
+      updatedAt,
+    };
+    this.storage.db.prepare(`
+      UPDATE proactive_actions
+      SET status = @status, result_json = @resultJson, error = @error, updated_at = @updatedAt
+      WHERE action_id = @actionId
+    `).run({
+      actionId: next.actionId,
+      status: next.status,
+      resultJson: next.result ? JSON.stringify(next.result) : null,
+      error: next.error ?? null,
+      updatedAt,
+    });
+    return next;
+  }
+
+  private resolveProactiveAction(
+    action: ProactiveActionRecord,
+    remainingHourBudget: number,
+    remainingTurnBudget: number,
+  ): { execute: boolean; reason?: string } {
+    if (remainingHourBudget <= 0) {
+      return { execute: false, reason: "Autonomy hour budget exhausted." };
+    }
+    if (remainingTurnBudget <= 0) {
+      return { execute: false, reason: "Autonomy turn budget exhausted." };
+    }
+    if (action.kind !== "tool" || !action.toolName) {
+      return { execute: false, reason: "Only safe tool actions are eligible for auto execution." };
+    }
+    if (!PROACTIVE_SAFE_TOOL_ALLOWLIST.has(action.toolName)) {
+      return { execute: false, reason: `Tool ${action.toolName} is not allowlisted for auto_safe mode.` };
+    }
+    return { execute: true };
+  }
+
+  private async executeProactiveToolAction(action: ProactiveActionRecord): Promise<ProactiveActionRecord> {
+    if (!action.toolName) {
+      return this.updateProactiveAction(action.actionId, {
+        status: "blocked",
+        error: "Missing tool name.",
+      });
+    }
+    try {
+      const result = await this.invokeTool({
+        toolName: action.toolName,
+        args: action.args ?? {},
+        agentId: "proactive",
+        sessionId: action.sessionId,
+        consentContext: {
+          source: "agent",
+          reason: "proactive auto_safe execution",
+        },
+      });
+      if (result.outcome === "executed") {
+        return this.updateProactiveAction(action.actionId, {
+          status: "executed",
+          result: result.result ?? {},
+        });
+      }
+      if (result.outcome === "approval_required") {
+        return this.updateProactiveAction(action.actionId, {
+          status: "blocked",
+          error: "Approval required by policy.",
+          result: {
+            approvalId: result.approvalId,
+            policyReason: result.policyReason,
+          },
+        });
+      }
+      return this.updateProactiveAction(action.actionId, {
+        status: "blocked",
+        error: result.policyReason,
+      });
+    } catch (error) {
+      return this.updateProactiveAction(action.actionId, {
+        status: "failed",
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  private touchSessionProactiveTick(sessionId: string, runId: string): void {
+    this.storage.db.prepare(`
+      UPDATE session_autonomy_prefs
+      SET last_proactive_at = @lastProactiveAt, last_proactive_run_id = @runId, updated_at = @updatedAt
+      WHERE session_id = @sessionId
+    `).run({
+      sessionId,
+      runId,
+      lastProactiveAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private async inferLatestUserObjective(sessionId: string): Promise<string> {
+    const messages = await this.listChatMessages(sessionId, 40);
+    const latestUser = [...messages].reverse().find((item) => item.role === "user");
+    return latestUser?.content ?? "";
+  }
+
+  private computeDelegationSuggestionConfidence(objective: string, roles: string[]): number {
+    let score = roles.length >= 3 ? 0.84 : roles.length >= 2 ? 0.72 : 0.58;
+    if (/\b(prd|architecture|implement|qa|ops|handoff)\b/i.test(objective)) {
+      score += 0.12;
+    }
+    return clamp01(score);
+  }
+
+  private extractAndPersistLearnedMemory(
+    sessionId: string,
+    content: string,
+    source: {
+      role: "user" | "assistant";
+      sourceRef: string;
+    },
+  ): void {
+    const candidates = extractLearnedMemoryCandidates(content, source.role);
+    for (const candidate of candidates) {
+      if (looksSensitive(candidate.content)) {
+        this.insertLearnedMemoryItem({
+          sessionId,
+          itemType: candidate.itemType,
+          content: "[REDACTED]",
+          confidence: candidate.confidence,
+          status: "dropped",
+          redacted: true,
+          sourceKind: source.role,
+          sourceRef: source.sourceRef,
+          snippet: "Dropped due to secret redaction policy.",
+        });
+        continue;
+      }
+      this.upsertLearnedMemoryItem({
+        sessionId,
+        itemType: candidate.itemType,
+        content: candidate.content,
+        confidence: candidate.confidence,
+        sourceKind: source.role,
+        sourceRef: source.sourceRef,
+        snippet: candidate.content.slice(0, 240),
+      });
+    }
+  }
+
+  private insertLearnedMemoryItem(input: {
+    sessionId: string;
+    itemType: LearnedMemoryItemType;
+    content: string;
+    confidence: number;
+    status: LearnedMemoryItemRecord["status"];
+    redacted: boolean;
+    sourceKind: string;
+    sourceRef: string;
+    snippet: string;
+  }): LearnedMemoryItemRecord {
+    const now = new Date().toISOString();
+    const itemId = randomUUID();
+    this.storage.db.prepare(`
+      INSERT INTO learned_memory_items (
+        item_id, session_id, item_type, content, confidence, status, superseded_by_item_id,
+        redacted, disabled_reason, created_at, updated_at
+      ) VALUES (
+        @itemId, @sessionId, @itemType, @content, @confidence, @status, NULL,
+        @redacted, NULL, @createdAt, @updatedAt
+      )
+    `).run({
+      itemId,
+      sessionId: input.sessionId,
+      itemType: input.itemType,
+      content: input.content,
+      confidence: clamp01(input.confidence),
+      status: input.status,
+      redacted: input.redacted ? 1 : 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.storage.db.prepare(`
+      INSERT INTO learned_memory_sources (source_id, item_id, source_kind, source_ref, snippet, created_at)
+      VALUES (@sourceId, @itemId, @sourceKind, @sourceRef, @snippet, @createdAt)
+    `).run({
+      sourceId: randomUUID(),
+      itemId,
+      sourceKind: input.sourceKind,
+      sourceRef: input.sourceRef,
+      snippet: input.snippet,
+      createdAt: now,
+    });
+    return {
+      itemId,
+      sessionId: input.sessionId,
+      itemType: input.itemType,
+      content: input.content,
+      confidence: clamp01(input.confidence),
+      status: input.status,
+      redacted: input.redacted,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  private upsertLearnedMemoryItem(input: {
+    sessionId: string;
+    itemType: LearnedMemoryItemType;
+    content: string;
+    confidence: number;
+    sourceKind: string;
+    sourceRef: string;
+    snippet: string;
+  }): void {
+    const normalized = normalizeMemoryText(input.content);
+    if (!normalized) {
+      return;
+    }
+    const existing = this.storage.db.prepare(`
+      SELECT *
+      FROM learned_memory_items
+      WHERE session_id = @sessionId
+        AND item_type = @itemType
+        AND status IN ('active', 'conflict')
+      ORDER BY updated_at DESC
+      LIMIT 5
+    `).all({
+      sessionId: input.sessionId,
+      itemType: input.itemType,
+    }) as Array<{
+      item_id: string;
+      content: string;
+      confidence: number;
+      status: LearnedMemoryItemRecord["status"];
+    }>;
+
+    const duplicate = existing.find((row) => normalizeMemoryText(row.content) === normalized);
+    if (duplicate) {
+      this.storage.db.prepare(`
+        UPDATE learned_memory_items
+        SET confidence = @confidence, updated_at = @updatedAt
+        WHERE item_id = @itemId
+      `).run({
+        itemId: duplicate.item_id,
+        confidence: Math.max(clamp01(input.confidence), Number(duplicate.confidence || 0)),
+        updatedAt: new Date().toISOString(),
+      });
+      this.storage.db.prepare(`
+        INSERT INTO learned_memory_sources (source_id, item_id, source_kind, source_ref, snippet, created_at)
+        VALUES (@sourceId, @itemId, @sourceKind, @sourceRef, @snippet, @createdAt)
+      `).run({
+        sourceId: randomUUID(),
+        itemId: duplicate.item_id,
+        sourceKind: input.sourceKind,
+        sourceRef: input.sourceRef,
+        snippet: input.snippet,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const current = existing[0];
+    if (current) {
+      const overlap = memoryTextOverlap(normalized, normalizeMemoryText(current.content));
+      const incomingConfidence = clamp01(input.confidence);
+      const existingConfidence = clamp01(Number(current.confidence || 0));
+      if (overlap < 0.45) {
+        const diff = Math.abs(incomingConfidence - existingConfidence);
+        if (diff < 0.2) {
+          const incomingItem = this.insertLearnedMemoryItem({
+            sessionId: input.sessionId,
+            itemType: input.itemType,
+            content: input.content,
+            confidence: incomingConfidence,
+            status: "conflict",
+            redacted: false,
+            sourceKind: input.sourceKind,
+            sourceRef: input.sourceRef,
+            snippet: input.snippet,
+          });
+          this.storage.db.prepare(`
+            INSERT INTO learned_memory_conflicts (
+              conflict_id, session_id, item_type, existing_item_id, incoming_item_id, incoming_content,
+              status, resolution_note, created_at, resolved_at
+            ) VALUES (
+              @conflictId, @sessionId, @itemType, @existingItemId, @incomingItemId, @incomingContent,
+              'open', NULL, @createdAt, NULL
+            )
+          `).run({
+            conflictId: randomUUID(),
+            sessionId: input.sessionId,
+            itemType: input.itemType,
+            existingItemId: current.item_id,
+            incomingItemId: incomingItem.itemId,
+            incomingContent: input.content,
+            createdAt: new Date().toISOString(),
+          });
+          return;
+        }
+        if (incomingConfidence > existingConfidence + 0.2) {
+          const next = this.insertLearnedMemoryItem({
+            sessionId: input.sessionId,
+            itemType: input.itemType,
+            content: input.content,
+            confidence: incomingConfidence,
+            status: "active",
+            redacted: false,
+            sourceKind: input.sourceKind,
+            sourceRef: input.sourceRef,
+            snippet: input.snippet,
+          });
+          this.storage.db.prepare(`
+            UPDATE learned_memory_items
+            SET status = 'superseded', superseded_by_item_id = @supersededByItemId, updated_at = @updatedAt
+            WHERE item_id = @itemId
+          `).run({
+            itemId: current.item_id,
+            supersededByItemId: next.itemId,
+            updatedAt: new Date().toISOString(),
+          });
+          return;
+        }
+      }
+    }
+
+    this.insertLearnedMemoryItem({
+      sessionId: input.sessionId,
+      itemType: input.itemType,
+      content: input.content,
+      confidence: clamp01(input.confidence),
+      status: "active",
+      redacted: false,
+      sourceKind: input.sourceKind,
+      sourceRef: input.sourceRef,
+      snippet: input.snippet,
+    });
   }
 
   private getPromptRunnerModelDefaults(): { providerId?: string; model?: string } {
@@ -928,6 +1855,9 @@ export class GatewayService {
       { command: "/memory", usage: "/memory auto|on|off", description: "Set memory behavior." },
       { command: "/think", usage: "/think minimal|standard|extended", description: "Set thinking depth." },
       { command: "/tool", usage: "/tool safe_auto|manual", description: "Set tool autonomy mode." },
+      { command: "/proactive", usage: "/proactive off|suggest|auto_safe", description: "Set proactive mode." },
+      { command: "/retrieval", usage: "/retrieval standard|layered", description: "Set retrieval routing mode." },
+      { command: "/reflect", usage: "/reflect off|on", description: "Toggle reflection retry mode." },
       { command: "/research", usage: "/research <query>", description: "Run quick research for current session." },
       { command: "/delegate", usage: "/delegate <role1,role2,...> :: <objective>", description: "Run task-backed role delegation." },
       { command: "/pipeline", usage: "/pipeline prd|build|triage|release :: <objective>", description: "Run a built-in delegation template." },
@@ -1039,6 +1969,54 @@ export class GatewayService {
       }
       const prefs = this.updateChatSessionPrefs(sessionId, { toolAutonomy });
       return { ok: true, command, args, prefs, message: `Tool autonomy set to ${prefs.toolAutonomy}.` };
+    }
+
+    if (command === "/proactive") {
+      const proactiveMode = (args[0] ?? "").toLowerCase() as ChatProactiveMode;
+      if (!["off", "suggest", "auto_safe"].includes(proactiveMode)) {
+        return { ok: false, command, args, message: "Usage: /proactive off|suggest|auto_safe" };
+      }
+      const policy = this.updateChatSessionProactivePolicy(sessionId, { proactiveMode });
+      const prefs = this.getChatSessionPrefs(sessionId);
+      return {
+        ok: true,
+        command,
+        args,
+        prefs,
+        message: `Proactive mode set to ${policy.mode}.`,
+      };
+    }
+
+    if (command === "/retrieval") {
+      const retrievalMode = (args[0] ?? "").toLowerCase() as ChatRetrievalMode;
+      if (!["standard", "layered"].includes(retrievalMode)) {
+        return { ok: false, command, args, message: "Usage: /retrieval standard|layered" };
+      }
+      this.updateChatSessionProactivePolicy(sessionId, { retrievalMode });
+      const prefs = this.getChatSessionPrefs(sessionId);
+      return {
+        ok: true,
+        command,
+        args,
+        prefs,
+        message: `Retrieval mode set to ${retrievalMode}.`,
+      };
+    }
+
+    if (command === "/reflect") {
+      const reflectionMode = (args[0] ?? "").toLowerCase() as ChatReflectionMode;
+      if (!["off", "on"].includes(reflectionMode)) {
+        return { ok: false, command, args, message: "Usage: /reflect off|on" };
+      }
+      this.updateChatSessionProactivePolicy(sessionId, { reflectionMode });
+      const prefs = this.getChatSessionPrefs(sessionId);
+      return {
+        ok: true,
+        command,
+        args,
+        prefs,
+        message: `Reflection mode set to ${reflectionMode}.`,
+      };
     }
 
     if (command === "/research") {
@@ -1438,6 +2416,17 @@ export class GatewayService {
       });
     }
 
+    this.extractAndPersistLearnedMemory(sessionId, objective, {
+      role: "user",
+      sourceRef: runId,
+    });
+    if (stitchedOutput.trim()) {
+      this.extractAndPersistLearnedMemory(sessionId, stitchedOutput, {
+        role: "assistant",
+        sourceRef: runId,
+      });
+    }
+
     return {
       runId,
       taskId: task.taskId,
@@ -1488,6 +2477,490 @@ export class GatewayService {
     };
   }
 
+  public getChatSessionProactiveStatus(sessionId: string): {
+    policy: ProactivePolicy;
+    idleSeconds: number;
+    hasRunningTurn: boolean;
+    pendingSuggestions: number;
+    actionsLastHour: number;
+    lastRun?: ProactiveRunRecord;
+  } {
+    this.getSession(sessionId);
+    const policy = this.toProactivePolicy(sessionId, this.getSessionAutonomyPrefs(sessionId));
+    const idleSeconds = this.getSessionIdleSeconds(sessionId);
+    const hasRunningTurn = this.hasRunningTurn(sessionId);
+    const pendingSuggestions = this.storage.db.prepare(
+      "SELECT COUNT(*) AS count FROM proactive_actions WHERE session_id = ? AND status = 'suggested'",
+    ).get(sessionId) as { count?: number } | undefined;
+    const actionsLastHour = this.countProactiveActionsLastHour(sessionId);
+    const lastRun = this.listChatSessionProactiveRuns(sessionId, 1)[0];
+    return {
+      policy,
+      idleSeconds,
+      hasRunningTurn,
+      pendingSuggestions: Number(pendingSuggestions?.count ?? 0),
+      actionsLastHour,
+      lastRun,
+    };
+  }
+
+  public updateChatSessionProactivePolicy(
+    sessionId: string,
+    input: Partial<{
+      proactiveMode: ChatProactiveMode;
+      autonomyBudget: {
+        maxActionsPerHour?: number;
+        maxActionsPerTurn?: number;
+        cooldownSeconds?: number;
+      };
+      retrievalMode: ChatRetrievalMode;
+      reflectionMode: ChatReflectionMode;
+    }>,
+  ): ProactivePolicy {
+    this.getSession(sessionId);
+    const next = this.patchSessionAutonomyPrefs(sessionId, {
+      proactiveMode: input.proactiveMode,
+      maxActionsPerHour: input.autonomyBudget?.maxActionsPerHour,
+      maxActionsPerTurn: input.autonomyBudget?.maxActionsPerTurn,
+      cooldownSeconds: input.autonomyBudget?.cooldownSeconds,
+      retrievalMode: input.retrievalMode,
+      reflectionMode: input.reflectionMode,
+    });
+    const policy = this.toProactivePolicy(sessionId, next);
+    this.publishRealtime("system", "chat", {
+      type: "proactive_policy_updated",
+      sessionId,
+      policy,
+    });
+    return policy;
+  }
+
+  public async triggerChatSessionProactive(
+    sessionId: string,
+    input: ProactiveTriggerInput = {},
+  ): Promise<ProactiveRunRecord> {
+    this.getSession(sessionId);
+    const prefs = this.getSessionAutonomyPrefs(sessionId);
+    const source = input.source ?? "manual";
+    const now = new Date().toISOString();
+    const runId = randomUUID();
+    const initialRun: ProactiveRunRecord = {
+      runId,
+      sessionId,
+      status: "running",
+      mode: prefs.proactiveMode,
+      confidence: 0,
+      reasoningSummary: input.reason ?? `proactive tick (${source})`,
+      suggestedActions: [],
+      executedActions: [],
+      startedAt: now,
+    };
+    this.insertProactiveRun(initialRun);
+    this.publishRealtime("proactive_tick_started", "chat", {
+      sessionId,
+      runId,
+      mode: prefs.proactiveMode,
+      source,
+    });
+
+    if (prefs.proactiveMode === "off") {
+      return this.finishProactiveRun(runId, {
+        status: "no_action",
+        confidence: 0,
+        reasoningSummary: "Proactive mode is off.",
+      });
+    }
+
+    if (this.hasRunningTurn(sessionId)) {
+      return this.finishProactiveRun(runId, {
+        status: "no_action",
+        confidence: 0.2,
+        reasoningSummary: "Skipped because a chat turn is still running.",
+      });
+    }
+
+    const idleSeconds = this.getSessionIdleSeconds(sessionId);
+    if (idleSeconds < PROACTIVE_MIN_IDLE_SECONDS) {
+      return this.finishProactiveRun(runId, {
+        status: "no_action",
+        confidence: 0.2,
+        reasoningSummary: `Skipped because session idle time (${idleSeconds}s) is below ${PROACTIVE_MIN_IDLE_SECONDS}s.`,
+      });
+    }
+
+    const cooldownRemaining = this.getProactiveCooldownRemainingSeconds(prefs);
+    if (cooldownRemaining > 0) {
+      return this.finishProactiveRun(runId, {
+        status: "no_action",
+        confidence: 0.25,
+        reasoningSummary: `Skipped because cooldown is active (${cooldownRemaining}s remaining).`,
+      });
+    }
+
+    const plan = await this.planProactiveActions(sessionId);
+    if (plan.actions.length === 0) {
+      const completed = this.finishProactiveRun(runId, {
+        status: "no_action",
+        confidence: plan.confidence,
+        reasoningSummary: plan.reasoningSummary,
+      });
+      this.publishRealtime("proactive_no_action", "chat", {
+        sessionId,
+        runId,
+        reason: completed.reasoningSummary,
+      });
+      this.touchSessionProactiveTick(sessionId, runId);
+      return completed;
+    }
+
+    const suggestedActions: ProactiveActionRecord[] = [];
+    const executedActions: ProactiveActionRecord[] = [];
+    for (const action of plan.actions) {
+      const actionId = randomUUID();
+      const base: ProactiveActionRecord = {
+        actionId,
+        runId,
+        sessionId,
+        kind: action.kind,
+        status: "suggested",
+        toolName: action.toolName,
+        args: action.args,
+        result: action.note
+          ? { note: action.note }
+          : action.objective
+            ? { objective: action.objective, roles: action.roles }
+            : undefined,
+        createdAt: new Date().toISOString(),
+      };
+      suggestedActions.push(base);
+      this.insertProactiveAction(base);
+    }
+
+    if (prefs.proactiveMode === "suggest") {
+      const completed = this.finishProactiveRun(runId, {
+        status: "suggested",
+        confidence: plan.confidence,
+        reasoningSummary: plan.reasoningSummary,
+        suggestedActions,
+        executedActions: [],
+      });
+      this.publishRealtime("proactive_suggestion_created", "chat", {
+        sessionId,
+        runId,
+        actionCount: suggestedActions.length,
+      });
+      this.touchSessionProactiveTick(sessionId, runId);
+      return completed;
+    }
+
+    const actionsLastHour = this.countProactiveActionsLastHour(sessionId);
+    let remainingHourBudget = Math.max(0, prefs.maxActionsPerHour - actionsLastHour);
+    let remainingTurnBudget = Math.max(0, prefs.maxActionsPerTurn);
+    for (const action of suggestedActions) {
+      const status = this.resolveProactiveAction(
+        action,
+        remainingHourBudget,
+        remainingTurnBudget,
+      );
+      if (status.execute) {
+        remainingHourBudget -= 1;
+        remainingTurnBudget -= 1;
+        const executed = await this.executeProactiveToolAction(action);
+        executedActions.push(executed);
+      } else {
+        const blocked = this.updateProactiveAction(action.actionId, {
+          status: "blocked",
+          error: status.reason,
+        });
+        executedActions.push(blocked);
+        this.publishRealtime("proactive_action_blocked", "chat", {
+          sessionId,
+          runId,
+          actionId: action.actionId,
+          reason: status.reason,
+        });
+      }
+    }
+
+    const executedCount = executedActions.filter((item) => item.status === "executed").length;
+    const runStatus: ProactiveRunRecord["status"] = executedCount > 0 ? "executed" : "blocked";
+    const completed = this.finishProactiveRun(runId, {
+      status: runStatus,
+      confidence: plan.confidence,
+      reasoningSummary: plan.reasoningSummary,
+      suggestedActions,
+      executedActions,
+    });
+    if (executedCount > 0) {
+      this.publishRealtime("proactive_action_executed", "chat", {
+        sessionId,
+        runId,
+        actionCount: executedCount,
+      });
+    }
+    this.touchSessionProactiveTick(sessionId, runId);
+    return completed;
+  }
+
+  public listChatSessionProactiveRuns(sessionId: string, limit = 50): ProactiveRunRecord[] {
+    this.getSession(sessionId);
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM proactive_runs
+      WHERE session_id = ?
+      ORDER BY started_at DESC
+      LIMIT ?
+    `).all(sessionId, Math.max(1, Math.min(limit, 500))) as Array<{
+      run_id: string;
+      session_id: string;
+      status: ProactiveRunRecord["status"];
+      mode: ChatProactiveMode;
+      confidence: number;
+      reasoning_summary: string;
+      suggested_actions_json: string;
+      executed_actions_json: string;
+      started_at: string;
+      finished_at: string | null;
+      error: string | null;
+    }>;
+    return rows.map((row) => ({
+      runId: row.run_id,
+      sessionId: row.session_id,
+      status: row.status,
+      mode: row.mode,
+      confidence: Number(row.confidence || 0),
+      reasoningSummary: row.reasoning_summary || "",
+      suggestedActions: safeJsonParse<ProactiveActionRecord[]>(row.suggested_actions_json, []),
+      executedActions: safeJsonParse<ProactiveActionRecord[]>(row.executed_actions_json, []),
+      startedAt: row.started_at,
+      finishedAt: row.finished_at ?? undefined,
+      error: row.error ?? undefined,
+    }));
+  }
+
+  public listChatSessionLearnedMemory(
+    sessionId: string,
+    limit = 200,
+  ): {
+    items: LearnedMemoryItemRecord[];
+    conflicts: LearnedMemoryConflictRecord[];
+  } {
+    this.getSession(sessionId);
+    const boundedLimit = Math.max(1, Math.min(limit, 1000));
+    const itemRows = this.storage.db.prepare(`
+      SELECT *
+      FROM learned_memory_items
+      WHERE session_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT ?
+    `).all(sessionId, boundedLimit) as Array<{
+      item_id: string;
+      session_id: string;
+      item_type: LearnedMemoryItemType;
+      content: string;
+      confidence: number;
+      status: LearnedMemoryItemRecord["status"];
+      superseded_by_item_id: string | null;
+      redacted: number;
+      created_at: string;
+      updated_at: string;
+    }>;
+    const conflictRows = this.storage.db.prepare(`
+      SELECT *
+      FROM learned_memory_conflicts
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(sessionId, boundedLimit) as Array<{
+      conflict_id: string;
+      session_id: string;
+      item_type: LearnedMemoryItemType;
+      existing_item_id: string | null;
+      incoming_item_id: string | null;
+      incoming_content: string;
+      status: LearnedMemoryConflictRecord["status"];
+      resolution_note: string | null;
+      created_at: string;
+      resolved_at: string | null;
+    }>;
+    return {
+      items: itemRows.map((row) => ({
+        itemId: row.item_id,
+        sessionId: row.session_id,
+        itemType: row.item_type,
+        content: row.content,
+        confidence: Number(row.confidence || 0),
+        status: row.status,
+        supersededByItemId: row.superseded_by_item_id ?? undefined,
+        redacted: row.redacted === 1,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      })),
+      conflicts: conflictRows.map((row) => ({
+        conflictId: row.conflict_id,
+        sessionId: row.session_id,
+        itemType: row.item_type,
+        existingItemId: row.existing_item_id ?? undefined,
+        incomingItemId: row.incoming_item_id ?? undefined,
+        incomingContent: row.incoming_content,
+        status: row.status,
+        resolutionNote: row.resolution_note ?? undefined,
+        createdAt: row.created_at,
+        resolvedAt: row.resolved_at ?? undefined,
+      })),
+    };
+  }
+
+  public updateChatSessionLearnedMemory(
+    sessionId: string,
+    itemId: string,
+    input: LearnedMemoryUpdateInput,
+  ): LearnedMemoryItemRecord {
+    this.getSession(sessionId);
+    const row = this.storage.db.prepare(`
+      SELECT * FROM learned_memory_items WHERE item_id = ?
+    `).get(itemId) as {
+      item_id: string;
+      session_id: string;
+      item_type: LearnedMemoryItemType;
+      content: string;
+      confidence: number;
+      status: LearnedMemoryItemRecord["status"];
+      superseded_by_item_id: string | null;
+      redacted: number;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Learned memory item ${itemId} not found.`);
+    }
+    if (row.session_id !== sessionId) {
+      throw new Error("Learned memory item does not belong to this session.");
+    }
+    const nextStatus = input.status ?? row.status;
+    const nextContent = input.content?.trim() || row.content;
+    const nextConfidence = clamp01(typeof input.confidence === "number" ? input.confidence : row.confidence);
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE learned_memory_items
+      SET status = @status, content = @content, confidence = @confidence, updated_at = @updatedAt
+      WHERE item_id = @itemId
+    `).run({
+      itemId,
+      status: nextStatus,
+      content: nextContent,
+      confidence: nextConfidence,
+      updatedAt: now,
+    });
+    return {
+      itemId: row.item_id,
+      sessionId: row.session_id,
+      itemType: row.item_type,
+      content: nextContent,
+      confidence: nextConfidence,
+      status: nextStatus,
+      supersededByItemId: row.superseded_by_item_id ?? undefined,
+      redacted: row.redacted === 1,
+      createdAt: row.created_at,
+      updatedAt: now,
+    };
+  }
+
+  public async rebuildChatSessionLearnedMemory(sessionId: string): Promise<{
+    rebuiltAt: string;
+    items: LearnedMemoryItemRecord[];
+    conflicts: LearnedMemoryConflictRecord[];
+  }> {
+    this.getSession(sessionId);
+    this.storage.db.prepare("DELETE FROM learned_memory_sources WHERE item_id IN (SELECT item_id FROM learned_memory_items WHERE session_id = ?)").run(sessionId);
+    this.storage.db.prepare("DELETE FROM learned_memory_conflicts WHERE session_id = ?").run(sessionId);
+    this.storage.db.prepare("DELETE FROM learned_memory_items WHERE session_id = ?").run(sessionId);
+
+    const transcript = await this.readTranscriptOrEmpty(sessionId);
+    for (const event of transcript) {
+      if (event.type !== "message.user" && event.type !== "message.assistant") {
+        continue;
+      }
+      const role = event.type === "message.user" ? "user" : "assistant";
+      const content = extractStringFromUnknown((event.payload as { message?: { content?: unknown } })?.message?.content);
+      if (!content.trim()) {
+        continue;
+      }
+      this.extractAndPersistLearnedMemory(sessionId, content, {
+        role,
+        sourceRef: event.eventId,
+      });
+    }
+    const rebuiltAt = new Date().toISOString();
+    const snapshot = this.listChatSessionLearnedMemory(sessionId, 500);
+    return {
+      rebuiltAt,
+      items: snapshot.items,
+      conflicts: snapshot.conflicts,
+    };
+  }
+
+  public async suggestChatDelegation(
+    sessionId: string,
+    input: ChatDelegateSuggestRequest = {},
+  ): Promise<ChatDelegateSuggestResponse> {
+    this.getSession(sessionId);
+    const objective = (input.objective?.trim() || (await this.inferLatestUserObjective(sessionId))).trim();
+    if (!objective) {
+      throw new Error("No objective provided and no recent user request was found.");
+    }
+    const detectedRoles = normalizeDelegationRoles(input.roles?.length ? input.roles : detectDelegationRoles(objective));
+    const roles = detectedRoles.length > 0 ? detectedRoles : DEFAULT_DELEGATION_ROLES.slice(0, 3);
+    const confidence = this.computeDelegationSuggestionConfidence(objective, roles);
+    const suggestion: ChatDelegationSuggestionRecord = {
+      suggestionId: randomUUID(),
+      sessionId,
+      objective,
+      roles,
+      mode: input.mode ?? "sequential",
+      confidence,
+      reason: "Detected multi-role objective and generated delegation plan.",
+      source: "manual",
+      createdAt: new Date().toISOString(),
+    };
+    return { suggestion };
+  }
+
+  public async acceptChatDelegation(
+    sessionId: string,
+    input: ChatDelegateAcceptRequest,
+  ): Promise<ChatDelegateResponse> {
+    this.getSession(sessionId);
+    if (input.suggestionId) {
+      const actionRow = this.storage.db.prepare(`
+        SELECT args_json
+        FROM proactive_actions
+        WHERE action_id = ? AND session_id = ?
+      `).get(input.suggestionId, sessionId) as { args_json?: string } | undefined;
+      if (actionRow?.args_json) {
+        const parsed = safeJsonParse<Record<string, unknown>>(actionRow.args_json, {});
+        const objectiveFromSuggestion = typeof parsed.objective === "string" ? parsed.objective.trim() : "";
+        const rolesFromSuggestion = Array.isArray(parsed.roles)
+          ? parsed.roles.map((item) => String(item))
+          : [];
+        return this.runChatDelegation(sessionId, {
+          objective: objectiveFromSuggestion || input.objective,
+          roles: rolesFromSuggestion.length > 0 ? rolesFromSuggestion : input.roles,
+          mode: input.mode ?? "sequential",
+          providerId: input.providerId,
+          model: input.model,
+        });
+      }
+    }
+    return this.runChatDelegation(sessionId, {
+      objective: input.objective,
+      roles: input.roles,
+      mode: input.mode ?? "sequential",
+      providerId: input.providerId,
+      model: input.model,
+    });
+  }
+
   public importPromptPack(input: {
     content: string;
     name?: string;
@@ -1502,12 +2975,14 @@ export class GatewayService {
       throw new Error("No tests found in prompt-pack markdown.");
     }
     const name = input.name?.trim() || inferPromptPackName(input.sourceLabel);
-    return this.storage.promptPacks.replacePackTests({
+    const imported = this.storage.promptPacks.replacePackTests({
       packId: input.packId,
       name,
       sourceLabel: input.sourceLabel,
       tests,
     });
+    this.refreshPromptPackExportFile(imported.pack.packId);
+    return imported;
   }
 
   public listPromptPacks(limit = 100): PromptPackRecord[] {
@@ -1569,13 +3044,16 @@ export class GatewayService {
         citations: response.citations,
         finishedAt: new Date().toISOString(),
       });
+      this.refreshPromptPackExportFile(pack.packId);
       return updated;
     } catch (error) {
-      return this.storage.promptPackRuns.patch(runId, {
+      const failed = this.storage.promptPackRuns.patch(runId, {
         status: "failed",
         error: (error as Error).message,
         finishedAt: new Date().toISOString(),
       });
+      this.refreshPromptPackExportFile(pack.packId);
+      return failed;
     }
   }
 
@@ -1594,7 +3072,7 @@ export class GatewayService {
     if (run.packId !== input.packId || run.testId !== input.testId) {
       throw new Error("Score target does not match run.");
     }
-    return this.storage.promptPackScores.create({
+    const score = this.storage.promptPackScores.create({
       scoreId: randomUUID(),
       packId: input.packId,
       testId: input.testId,
@@ -1606,6 +3084,8 @@ export class GatewayService {
       usabilityScore: input.usabilityScore,
       notes: input.notes?.trim() || undefined,
     });
+    this.refreshPromptPackExportFile(input.packId);
+    return score;
   }
 
   public async autoScorePromptPackTest(input: {
@@ -1816,6 +3296,176 @@ export class GatewayService {
     };
   }
 
+  private refreshPromptPackExportFile(packId: string): PromptPackExportRecord {
+    const report = this.getPromptPackReport(packId);
+    const filePath = this.resolvePromptPackExportPath(report.pack);
+    const body = renderPromptPackMarkdownReport(report);
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fsSync.writeFileSync(filePath, body, "utf8");
+    return this.readPromptPackExportRecord(report.pack);
+  }
+
+  private readPromptPackExportRecord(pack: PromptPackRecord): PromptPackExportRecord {
+    const filePath = this.resolvePromptPackExportPath(pack);
+    try {
+      const stat = fsSync.statSync(filePath);
+      return {
+        packId: pack.packId,
+        path: filePath,
+        exists: true,
+        sizeBytes: stat.size,
+        updatedAt: new Date(stat.mtimeMs).toISOString(),
+      };
+    } catch {
+      return {
+        packId: pack.packId,
+        path: filePath,
+        exists: false,
+        sizeBytes: 0,
+      };
+    }
+  }
+
+  private resolvePromptPackExportPath(pack: PromptPackRecord): string {
+    const dir = path.join(this.config.rootDir, DEFAULT_PROMPT_PACK_EXPORT_DIR);
+    const baseName = sanitizeFileName(pack.name || pack.packId || "prompt-pack");
+    return path.join(dir, `${baseName}-latest.md`);
+  }
+
+  public getPromptPackExport(packId: string): PromptPackExportRecord {
+    const pack = this.storage.promptPacks.getPack(packId);
+    return this.readPromptPackExportRecord(pack);
+  }
+
+  public exportPromptPack(packId: string): PromptPackExportRecord {
+    this.storage.promptPacks.getPack(packId);
+    return this.refreshPromptPackExportFile(packId);
+  }
+
+  public listImprovementReports(limit = 24): WeeklyImprovementReportRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM improvement_reports
+      ORDER BY week_end DESC, created_at DESC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(limit, 260))) as Array<{
+      report_id: string;
+      run_id: string;
+      week_start: string;
+      week_end: string;
+      summary_json: string;
+      top_findings_json: string;
+      applied_tunes_json: string;
+      queued_tunes_json: string;
+      week_over_week_json: string;
+      previous_report_id: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => mapImprovementReportRow(row));
+  }
+
+  public getImprovementReport(reportId: string): WeeklyImprovementReportRecord {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM improvement_reports
+      WHERE report_id = ?
+    `).get(reportId) as {
+      report_id: string;
+      run_id: string;
+      week_start: string;
+      week_end: string;
+      summary_json: string;
+      top_findings_json: string;
+      applied_tunes_json: string;
+      queued_tunes_json: string;
+      week_over_week_json: string;
+      previous_report_id: string | null;
+      created_at: string;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Improvement report ${reportId} not found`);
+    }
+    return mapImprovementReportRow(row);
+  }
+
+  public getDecisionReplayRun(runId: string): {
+    run: DecisionReplayRunRecord;
+    items: DecisionReplayItemRecord[];
+    findings: DecisionReplayFindingRecord[];
+    autoTunes: DecisionAutoTuneRecord[];
+    report?: WeeklyImprovementReportRecord;
+  } {
+    const run = this.readDecisionReplayRun(runId);
+    const items = this.listDecisionReplayItems(runId, 1500);
+    const findings = this.listDecisionReplayFindings(runId, 300);
+    const autoTunes = this.listDecisionAutoTunes(runId, 300);
+    const report = run.reportId ? this.getImprovementReport(run.reportId) : undefined;
+    return { run, items, findings, autoTunes, report };
+  }
+
+  public async runImprovementReplayManually(
+    input: ImprovementReplayTriggerInput = {},
+  ): Promise<{
+    run: DecisionReplayRunRecord;
+    report?: WeeklyImprovementReportRecord;
+  }> {
+    return this.runDecisionReplayAudit({
+      triggerMode: "manual",
+      sampleSize: clampInteger(input.sampleSize, 50, 2000, IMPROVEMENT_WEEKLY_SAMPLE_SIZE),
+    });
+  }
+
+  public approveDecisionAutoTune(tuneId: string): DecisionAutoTuneRecord {
+    const tune = this.readDecisionAutoTune(tuneId);
+    if (tune.status === "applied") {
+      return tune;
+    }
+    if (tune.status !== "queued") {
+      throw new Error(`Auto-tune ${tuneId} is ${tune.status} and cannot be approved.`);
+    }
+    if (tune.riskLevel !== "low") {
+      throw new Error(`Auto-tune ${tuneId} is ${tune.riskLevel} risk and requires manual code review.`);
+    }
+    return this.applyDecisionAutoTune(tuneId, "manual");
+  }
+
+  public revertDecisionAutoTune(tuneId: string): DecisionAutoTuneRecord {
+    const tune = this.readDecisionAutoTune(tuneId);
+    if (tune.status !== "applied") {
+      throw new Error(`Auto-tune ${tuneId} is ${tune.status} and cannot be reverted.`);
+    }
+    const snapshot = tune.snapshot ?? {};
+    const settingKey = typeof snapshot.settingKey === "string" ? snapshot.settingKey : undefined;
+    if (!settingKey) {
+      throw new Error(`Auto-tune ${tuneId} does not contain a rollback snapshot.`);
+    }
+    const previousValue = snapshot.previousValue;
+    if (previousValue === undefined) {
+      this.storage.systemSettings.set(settingKey, null);
+    } else {
+      this.storage.systemSettings.set(settingKey, previousValue);
+    }
+    const revertedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE decision_autotunes
+      SET status = 'reverted', reverted_at = @revertedAt, result_json = @resultJson
+      WHERE tune_id = @tuneId
+    `).run({
+      tuneId,
+      revertedAt,
+      resultJson: JSON.stringify({
+        revertedBy: "operator",
+        restoredSetting: settingKey,
+      }),
+    });
+    this.publishRealtime("improvement_autotune_reverted", "improvement", {
+      tuneId,
+      settingKey,
+      revertedAt,
+    });
+    return this.readDecisionAutoTune(tuneId);
+  }
+
   private async judgePromptPackRunScores(input: {
     packName: string;
     testCode: string;
@@ -1894,10 +3544,6 @@ export class GatewayService {
         ],
         temperature: 0,
         max_tokens: 500,
-        metadata: {
-          source: "prompt-lab-auto-score",
-          testCode: input.testCode,
-        },
       });
       const text = extractCompletionText(completion);
       const payload = parseLooseJsonRecord(text);
@@ -1925,6 +3571,405 @@ export class GatewayService {
       };
     } catch (error) {
       return { error: (error as Error).message };
+    }
+  }
+
+  private async runDecisionReplayAudit(input: {
+    triggerMode: "scheduled" | "manual";
+    sampleSize: number;
+  }): Promise<{
+    run: DecisionReplayRunRecord;
+    report?: WeeklyImprovementReportRecord;
+  }> {
+    const startedAt = new Date();
+    const windowEnd = startedAt.toISOString();
+    const windowStart = new Date(startedAt.getTime() - (7 * 24 * 60 * 60 * 1000)).toISOString();
+    const runId = randomUUID();
+    this.storage.db.prepare(`
+      INSERT INTO decision_replay_runs (
+        run_id, trigger_mode, sample_size, window_start, window_end, status,
+        total_candidates, total_scored, likely_wrong_count, model_judged_count, started_at
+      ) VALUES (
+        @runId, @triggerMode, @sampleSize, @windowStart, @windowEnd, 'running',
+        0, 0, 0, 0, @startedAt
+      )
+    `).run({
+      runId,
+      triggerMode: input.triggerMode,
+      sampleSize: input.sampleSize,
+      windowStart,
+      windowEnd,
+      startedAt: startedAt.toISOString(),
+    });
+
+    this.publishRealtime("improvement_replay_started", "improvement", {
+      runId,
+      triggerMode: input.triggerMode,
+      sampleSize: input.sampleSize,
+      windowStart,
+      windowEnd,
+    });
+
+    try {
+      const candidates = await this.selectDecisionReplayCandidates(windowStart, windowEnd, input.sampleSize);
+      const sample = sampleDecisionReplayCandidates(candidates, input.sampleSize);
+      const scored = await this.scoreDecisionReplayCandidates(runId, sample);
+      const items = scored.map((entry) => entry.item);
+      this.insertDecisionReplayItems(items);
+
+      const findings = this.buildDecisionReplayFindings(runId, items);
+      const dedupedFindings = this.tagDuplicateDecisionReplayFindings(findings);
+      this.insertDecisionReplayFindings(dedupedFindings);
+
+      const plannedTunes = this.planDecisionAutoTunes(runId, dedupedFindings);
+      const appliedAutoTunes: DecisionAutoTuneRecord[] = [];
+      const queuedRecommendations: DecisionAutoTuneRecord[] = [];
+      for (const planned of plannedTunes) {
+        this.insertDecisionAutoTune(planned);
+        if (planned.riskLevel === "low") {
+          appliedAutoTunes.push(this.applyDecisionAutoTune(planned.tuneId, "auto"));
+        } else {
+          queuedRecommendations.push(planned);
+        }
+      }
+
+      const report = this.createWeeklyImprovementReport({
+        runId,
+        windowStart,
+        windowEnd,
+        items,
+        findings: dedupedFindings,
+        appliedAutoTunes,
+        queuedRecommendations,
+      });
+
+      this.markDecisionReplayRunCompleted({
+        runId,
+        reportId: report.reportId,
+        totalCandidates: candidates.length,
+        totalScored: items.length,
+        likelyWrongCount: items.filter((item) => item.label === "likely_wrong").length,
+        modelJudgedCount: scored.filter((entry) => entry.judgeUsed).length,
+      });
+      this.persistDecisionReplayDedup(dedupedFindings, report.reportId);
+
+      this.publishRealtime("improvement_replay_completed", "improvement", {
+        runId,
+        reportId: report.reportId,
+        sampledDecisions: items.length,
+        likelyWrongCount: items.filter((item) => item.label === "likely_wrong").length,
+        appliedAutoTunes: appliedAutoTunes.length,
+        queuedRecommendations: queuedRecommendations.length,
+      });
+      return {
+        run: this.readDecisionReplayRun(runId),
+        report,
+      };
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      this.storage.db.prepare(`
+        UPDATE decision_replay_runs
+        SET status = 'failed', error_text = @errorText, finished_at = @finishedAt
+        WHERE run_id = @runId
+      `).run({
+        runId,
+        errorText: (error as Error).message,
+        finishedAt,
+      });
+      this.publishRealtime("improvement_replay_failed", "improvement", {
+        runId,
+        message: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  private async selectDecisionReplayCandidates(
+    windowStart: string,
+    windowEnd: string,
+    sampleSize: number,
+  ): Promise<DecisionReplayCandidate[]> {
+    const fetchLimit = Math.max(1000, Math.min(sampleSize * 8, 6000));
+    const turnRows = this.storage.db.prepare(`
+      SELECT
+        turn_id,
+        session_id,
+        user_message_id,
+        assistant_message_id,
+        status,
+        mode,
+        model,
+        web_mode,
+        memory_mode,
+        thinking_level,
+        routing_json,
+        retrieval_json,
+        reflection_json,
+        started_at,
+        finished_at
+      FROM chat_turn_traces
+      WHERE started_at >= @windowStart AND started_at <= @windowEnd
+      ORDER BY started_at DESC
+      LIMIT @limit
+    `).all({
+      windowStart,
+      windowEnd,
+      limit: fetchLimit,
+    }) as Array<{
+      turn_id: string;
+      session_id: string;
+      user_message_id: string;
+      assistant_message_id: string | null;
+      status: string;
+      mode: ChatMode;
+      model: string | null;
+      web_mode: ChatWebMode;
+      memory_mode: ChatMemoryMode;
+      thinking_level: ChatThinkingLevel;
+      routing_json: string;
+      retrieval_json: string | null;
+      reflection_json: string | null;
+      started_at: string;
+      finished_at: string | null;
+    }>;
+
+    const toolRows = this.storage.db.prepare(`
+      SELECT
+        tool_run_id,
+        turn_id,
+        session_id,
+        tool_name,
+        status,
+        error,
+        args_json,
+        result_json,
+        started_at
+      FROM chat_tool_runs
+      WHERE started_at >= @windowStart AND started_at <= @windowEnd
+      ORDER BY started_at DESC
+      LIMIT @limit
+    `).all({
+      windowStart,
+      windowEnd,
+      limit: fetchLimit,
+    }) as Array<{
+      tool_run_id: string;
+      turn_id: string;
+      session_id: string;
+      tool_name: string;
+      status: string;
+      error: string | null;
+      args_json: string | null;
+      result_json: string | null;
+      started_at: string;
+    }>;
+
+    const turns = turnRows.map((row) => ({
+      decisionType: "chat_turn" as const,
+      sessionId: row.session_id,
+      turnId: row.turn_id,
+      status: row.status,
+      occurredAt: row.finished_at ?? row.started_at,
+      model: row.model ?? undefined,
+      mode: row.mode,
+      webMode: row.web_mode,
+      memoryMode: row.memory_mode,
+      thinkingLevel: row.thinking_level,
+      routing: safeJsonParse<ChatTurnTraceRecord["routing"]>(row.routing_json, {}),
+      retrieval: safeJsonParse<ChatTurnTraceRecord["retrieval"] | undefined>(row.retrieval_json ?? "", undefined),
+      reflection: safeJsonParse<ChatTurnTraceRecord["reflection"] | undefined>(row.reflection_json ?? "", undefined),
+      userMessageId: row.user_message_id,
+      assistantMessageId: row.assistant_message_id ?? undefined,
+    }));
+    const tools = toolRows.map((row) => ({
+      decisionType: "tool_run" as const,
+      sessionId: row.session_id,
+      turnId: row.turn_id,
+      toolRunId: row.tool_run_id,
+      status: row.status,
+      occurredAt: row.started_at,
+      toolName: row.tool_name,
+      error: row.error ?? undefined,
+      args: row.args_json ? safeJsonParse<Record<string, unknown>>(row.args_json, {}) : undefined,
+      result: row.result_json ? safeJsonParse<Record<string, unknown>>(row.result_json, {}) : undefined,
+    }));
+
+    return [...turns, ...tools].sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt));
+  }
+
+  private async scoreDecisionReplayCandidates(
+    runId: string,
+    candidates: DecisionReplayCandidate[],
+  ): Promise<ReplayScoredItemResult[]> {
+    const byTurn = new Map<string, DecisionReplayCandidate[]>();
+    for (const candidate of candidates) {
+      if (!candidate.turnId) {
+        continue;
+      }
+      const list = byTurn.get(candidate.turnId) ?? [];
+      list.push(candidate);
+      byTurn.set(candidate.turnId, list);
+    }
+
+    const messageCache = new Map<string, Map<string, string>>();
+    const results: ReplayScoredItemResult[] = [];
+    let modelJudgeCount = 0;
+
+    for (const candidate of candidates) {
+      const excerpts = await this.buildDecisionReplayExcerpts(candidate, messageCache);
+      const turnTools = candidate.turnId
+        ? (byTurn.get(candidate.turnId) ?? []).filter((item) => item.decisionType === "tool_run")
+        : [];
+      const ruleEval = evaluateDecisionReplayRuleScores(candidate, turnTools);
+      let modelScores: DecisionReplayItemModelScores | undefined;
+      let judgeUsed = false;
+      if (
+        modelJudgeCount < IMPROVEMENT_JUDGE_SAMPLE_LIMIT
+        && (candidate.decisionType === "chat_turn" || candidate.status === "failed")
+      ) {
+        modelScores = await this.judgeDecisionReplayCandidate(candidate, excerpts, ruleEval.scores);
+        if (modelScores) {
+          judgeUsed = true;
+          modelJudgeCount += 1;
+        }
+      }
+      const wrongnessProbability = computeDecisionWrongnessProbability(candidate, ruleEval.scores, modelScores);
+      const causeClass = inferDecisionReplayCauseClass(candidate, ruleEval.scores, wrongnessProbability);
+      const clusterKey = `${causeClass}:${candidate.decisionType}:${candidate.toolName ?? candidate.status}`.slice(0, 140);
+      const label: DecisionReplayItemRecord["label"] = wrongnessProbability >= 0.68
+        ? "likely_wrong"
+        : wrongnessProbability >= 0.45
+          ? "uncertain"
+          : "ok";
+
+      const createdAt = new Date().toISOString();
+      const evidence = [...ruleEval.signals];
+      if (judgeUsed) {
+        evidence.push("model_judged");
+      }
+      if (candidate.toolName) {
+        evidence.push(`tool:${candidate.toolName}`);
+      }
+      const item: DecisionReplayItemRecord = {
+        itemId: randomUUID(),
+        runId,
+        decisionType: candidate.decisionType,
+        sessionId: candidate.sessionId,
+        turnId: candidate.turnId,
+        toolRunId: candidate.toolRunId,
+        occurredAt: candidate.occurredAt,
+        wrongnessProbability,
+        label,
+        causeClass,
+        clusterKey,
+        ruleScores: ruleEval.scores,
+        modelScores,
+        evidence,
+        summary: buildDecisionReplayItemSummary(candidate, causeClass),
+        inputExcerpt: excerpts.inputExcerpt,
+        outputExcerpt: excerpts.outputExcerpt,
+        createdAt,
+      };
+      results.push({ item, judgeUsed });
+    }
+    return results;
+  }
+
+  private async buildDecisionReplayExcerpts(
+    candidate: DecisionReplayCandidate,
+    messageCache: Map<string, Map<string, string>>,
+  ): Promise<{
+    inputExcerpt?: string;
+    outputExcerpt?: string;
+  }> {
+    if (candidate.decisionType === "tool_run") {
+      const inputExcerpt = candidate.args ? JSON.stringify(candidate.args, null, 2) : undefined;
+      const outputExcerpt = candidate.error
+        ? candidate.error
+        : candidate.result
+          ? JSON.stringify(candidate.result, null, 2)
+          : undefined;
+      return {
+        inputExcerpt: truncateForModelJudge(inputExcerpt ?? "", 1800),
+        outputExcerpt: truncateForModelJudge(outputExcerpt ?? "", 1800),
+      };
+    }
+
+    if (!candidate.sessionId) {
+      return {};
+    }
+    let sessionMessages = messageCache.get(candidate.sessionId);
+    if (!sessionMessages) {
+      const map = new Map<string, string>();
+      const transcript = await this.readTranscriptOrEmpty(candidate.sessionId);
+      for (const event of transcript) {
+        if ((event.type === "message.user" || event.type === "message.assistant") && event.eventId) {
+          const payload = event.payload as { message?: { content?: unknown } };
+          const content = typeof payload.message?.content === "string" ? payload.message.content : "";
+          map.set(event.eventId, content);
+        }
+      }
+      messageCache.set(candidate.sessionId, map);
+      sessionMessages = map;
+    }
+    const inputExcerpt = candidate.userMessageId ? sessionMessages.get(candidate.userMessageId) : undefined;
+    const outputExcerpt = candidate.assistantMessageId ? sessionMessages.get(candidate.assistantMessageId) : undefined;
+    return {
+      inputExcerpt: inputExcerpt ? truncateForModelJudge(inputExcerpt, 2200) : undefined,
+      outputExcerpt: outputExcerpt ? truncateForModelJudge(outputExcerpt, 2500) : undefined,
+    };
+  }
+
+  private async judgeDecisionReplayCandidate(
+    candidate: DecisionReplayCandidate,
+    excerpts: { inputExcerpt?: string; outputExcerpt?: string },
+    ruleScores: DecisionReplayItemRuleScores,
+  ): Promise<DecisionReplayItemModelScores | undefined> {
+    const defaults = this.getPromptRunnerModelDefaults();
+    if (!defaults.providerId || !defaults.model) {
+      return undefined;
+    }
+    const prompt = [
+      "You are grading one agent decision replay item.",
+      "Return JSON only with keys: correctnessLikelihood, missedToolProbability, betterResponsePotential, rationale.",
+      "Each probability must be a number between 0 and 1.",
+      `Decision type: ${candidate.decisionType}`,
+      `Decision status: ${candidate.status}`,
+      `Tool: ${candidate.toolName ?? "n/a"}`,
+      `Rule score snapshot: ${JSON.stringify(ruleScores)}`,
+      "",
+      "Input excerpt:",
+      excerpts.inputExcerpt ?? "(none)",
+      "",
+      "Output excerpt:",
+      excerpts.outputExcerpt ?? "(none)",
+    ].join("\n");
+
+    try {
+      const completion = await this.createChatCompletion({
+        providerId: defaults.providerId,
+        model: defaults.model,
+        messages: [
+          { role: "system", content: "Grade strictly. JSON only." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0,
+        max_tokens: 220,
+      });
+      const payload = parseLooseJsonRecord(extractCompletionText(completion));
+      if (!payload) {
+        return undefined;
+      }
+      return {
+        correctnessLikelihood: clampProbability(payload.correctnessLikelihood),
+        missedToolProbability: clampProbability(payload.missedToolProbability),
+        betterResponsePotential: clampProbability(payload.betterResponsePotential),
+        rationale: typeof payload.rationale === "string"
+          ? payload.rationale.slice(0, 500)
+          : undefined,
+      };
+    } catch {
+      return undefined;
     }
   }
 
@@ -1973,6 +4018,660 @@ export class GatewayService {
     } catch {
       return undefined;
     }
+  }
+
+  private insertDecisionReplayItems(items: DecisionReplayItemRecord[]): void {
+    const insert = this.storage.db.prepare(`
+      INSERT INTO decision_replay_items (
+        item_id, run_id, decision_type, session_id, turn_id, tool_run_id, occurred_at,
+        wrongness_probability, label, cause_class, cluster_key, rule_scores_json, model_scores_json,
+        evidence_json, summary_text, input_excerpt, output_excerpt, created_at
+      ) VALUES (
+        @itemId, @runId, @decisionType, @sessionId, @turnId, @toolRunId, @occurredAt,
+        @wrongnessProbability, @label, @causeClass, @clusterKey, @ruleScoresJson, @modelScoresJson,
+        @evidenceJson, @summaryText, @inputExcerpt, @outputExcerpt, @createdAt
+      )
+    `);
+    this.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const item of items) {
+        insert.run({
+          itemId: item.itemId,
+          runId: item.runId,
+          decisionType: item.decisionType,
+          sessionId: item.sessionId ?? null,
+          turnId: item.turnId ?? null,
+          toolRunId: item.toolRunId ?? null,
+          occurredAt: item.occurredAt,
+          wrongnessProbability: item.wrongnessProbability,
+          label: item.label,
+          causeClass: item.causeClass,
+          clusterKey: item.clusterKey,
+          ruleScoresJson: JSON.stringify(item.ruleScores),
+          modelScoresJson: item.modelScores ? JSON.stringify(item.modelScores) : null,
+          evidenceJson: JSON.stringify(item.evidence),
+          summaryText: item.summary ?? null,
+          inputExcerpt: item.inputExcerpt ?? null,
+          outputExcerpt: item.outputExcerpt ?? null,
+          createdAt: item.createdAt,
+        });
+      }
+      this.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.storage.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private buildDecisionReplayFindings(
+    runId: string,
+    items: DecisionReplayItemRecord[],
+  ): DecisionReplayFindingRecord[] {
+    const relevant = items.filter((item) => item.label !== "ok");
+    const grouped = new Map<string, DecisionReplayItemRecord[]>();
+    for (const item of relevant) {
+      const list = grouped.get(item.clusterKey) ?? [];
+      list.push(item);
+      grouped.set(item.clusterKey, list);
+    }
+
+    const findings: DecisionReplayFindingRecord[] = [];
+    for (const [clusterKey, group] of grouped.entries()) {
+      if (group.length === 0) {
+        continue;
+      }
+      const causeClass = group[0]?.causeClass ?? "other";
+      const avgWrongness = group.reduce((sum, item) => sum + item.wrongnessProbability, 0) / group.length;
+      const severity: DecisionReplayFindingRecord["severity"] = group.length >= 8 || avgWrongness >= 0.78
+        ? "high"
+        : group.length >= 4 || avgWrongness >= 0.62
+          ? "medium"
+          : "low";
+      const fingerprint = createHash("sha1")
+        .update(`${causeClass}|${clusterKey}|${group[0]?.summary ?? ""}`)
+        .digest("hex");
+      findings.push({
+        findingId: randomUUID(),
+        runId,
+        fingerprint,
+        causeClass,
+        clusterKey,
+        severity,
+        recurrenceCount: group.length,
+        impactedSessions: new Set(group.map((item) => item.sessionId).filter(Boolean)).size,
+        impactedTurns: new Set(group.map((item) => item.turnId).filter(Boolean)).size,
+        avgWrongness: Number(avgWrongness.toFixed(4)),
+        title: titleForDecisionReplayCause(causeClass),
+        summary: summarizeDecisionReplayFinding(group),
+        recommendation: recommendationForDecisionReplayCause(causeClass),
+        isDuplicate: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return findings.sort((left, right) => {
+      if (left.severity !== right.severity) {
+        return severityRank(right.severity) - severityRank(left.severity);
+      }
+      if (left.recurrenceCount !== right.recurrenceCount) {
+        return right.recurrenceCount - left.recurrenceCount;
+      }
+      return right.avgWrongness - left.avgWrongness;
+    });
+  }
+
+  private tagDuplicateDecisionReplayFindings(
+    findings: DecisionReplayFindingRecord[],
+  ): DecisionReplayFindingRecord[] {
+    if (findings.length === 0) {
+      return findings;
+    }
+    const stmt = this.storage.db.prepare(`
+      SELECT fingerprint
+      FROM decision_replay_dedup
+      WHERE fingerprint = ?
+    `);
+    return findings.map((finding) => {
+      const existing = stmt.get(finding.fingerprint) as { fingerprint: string } | undefined;
+      if (!existing) {
+        return finding;
+      }
+      return {
+        ...finding,
+        isDuplicate: true,
+        duplicateOfFingerprint: existing.fingerprint,
+      };
+    });
+  }
+
+  private insertDecisionReplayFindings(findings: DecisionReplayFindingRecord[]): void {
+    const insert = this.storage.db.prepare(`
+      INSERT INTO decision_replay_findings (
+        finding_id, run_id, fingerprint, cause_class, cluster_key, severity, recurrence_count,
+        impacted_sessions, impacted_turns, avg_wrongness, title, summary, recommendation,
+        is_duplicate, duplicate_of_fingerprint, created_at
+      ) VALUES (
+        @findingId, @runId, @fingerprint, @causeClass, @clusterKey, @severity, @recurrenceCount,
+        @impactedSessions, @impactedTurns, @avgWrongness, @title, @summary, @recommendation,
+        @isDuplicate, @duplicateOfFingerprint, @createdAt
+      )
+    `);
+    this.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const finding of findings) {
+        insert.run({
+          findingId: finding.findingId,
+          runId: finding.runId,
+          fingerprint: finding.fingerprint,
+          causeClass: finding.causeClass,
+          clusterKey: finding.clusterKey,
+          severity: finding.severity,
+          recurrenceCount: finding.recurrenceCount,
+          impactedSessions: finding.impactedSessions,
+          impactedTurns: finding.impactedTurns,
+          avgWrongness: finding.avgWrongness,
+          title: finding.title,
+          summary: finding.summary,
+          recommendation: finding.recommendation ?? null,
+          isDuplicate: finding.isDuplicate ? 1 : 0,
+          duplicateOfFingerprint: finding.duplicateOfFingerprint ?? null,
+          createdAt: finding.createdAt,
+        });
+      }
+      this.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.storage.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private planDecisionAutoTunes(
+    runId: string,
+    findings: DecisionReplayFindingRecord[],
+  ): DecisionAutoTuneRecord[] {
+    const plans: DecisionAutoTuneRecord[] = [];
+    for (const finding of findings) {
+      if (finding.isDuplicate) {
+        continue;
+      }
+      if (finding.causeClass === "weak_blocker_explanation" && finding.recurrenceCount >= 3) {
+        const current = this.storage.systemSettings.get<number>(IMPROVEMENT_TUNE_KEY_BLOCKER_TEMPLATE)?.value ?? 1;
+        plans.push({
+          tuneId: randomUUID(),
+          runId,
+          findingId: finding.findingId,
+          tuneClass: "prompt_contract",
+          riskLevel: "low",
+          status: "queued",
+          description: "Increase blocker template strictness to improve blocker specificity.",
+          patch: {
+            settingKey: IMPROVEMENT_TUNE_KEY_BLOCKER_TEMPLATE,
+            nextValue: Math.min(10, current + 1),
+          },
+          snapshot: {
+            settingKey: IMPROVEMENT_TUNE_KEY_BLOCKER_TEMPLATE,
+            previousValue: current,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      } else if (finding.causeClass === "incomplete_retry_repair" && finding.recurrenceCount >= 3) {
+        const current = this.storage.systemSettings.get<number>(IMPROVEMENT_TUNE_KEY_RETRY_THRESHOLD)?.value ?? 1;
+        plans.push({
+          tuneId: randomUUID(),
+          runId,
+          findingId: finding.findingId,
+          tuneClass: "threshold",
+          riskLevel: "low",
+          status: "queued",
+          description: "Lower retry trigger threshold so failed turns attempt one repair more often.",
+          patch: {
+            settingKey: IMPROVEMENT_TUNE_KEY_RETRY_THRESHOLD,
+            nextValue: Math.max(0, current - 1),
+          },
+          snapshot: {
+            settingKey: IMPROVEMENT_TUNE_KEY_RETRY_THRESHOLD,
+            previousValue: current,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      } else if ((finding.causeClass === "retrieval_miss" || finding.causeClass === "false_refusal_tone") && finding.recurrenceCount >= 3) {
+        const current = this.storage.systemSettings.get<number>(IMPROVEMENT_TUNE_KEY_LIVE_INTENT)?.value ?? 0.6;
+        plans.push({
+          tuneId: randomUUID(),
+          runId,
+          findingId: finding.findingId,
+          tuneClass: "threshold",
+          riskLevel: "low",
+          status: "queued",
+          description: "Raise live-data intent sensitivity so web retrieval is triggered more reliably.",
+          patch: {
+            settingKey: IMPROVEMENT_TUNE_KEY_LIVE_INTENT,
+            nextValue: Number(Math.min(0.95, current + 0.05).toFixed(2)),
+          },
+          snapshot: {
+            settingKey: IMPROVEMENT_TUNE_KEY_LIVE_INTENT,
+            previousValue: current,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      } else if (finding.causeClass === "tool_mismatch" && finding.recurrenceCount >= 4) {
+        plans.push({
+          tuneId: randomUUID(),
+          runId,
+          findingId: finding.findingId,
+          tuneClass: "ranking_weight",
+          riskLevel: "medium",
+          status: "queued",
+          description: "Review tool routing weights for this cluster before auto-applying.",
+          patch: {
+            settingKey: "improvement_tune_tool_routing_weights_v1",
+            suggestedDelta: 1,
+          },
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    return plans.slice(0, 12);
+  }
+
+  private insertDecisionAutoTune(tune: DecisionAutoTuneRecord): void {
+    this.storage.db.prepare(`
+      INSERT INTO decision_autotunes (
+        tune_id, run_id, finding_id, tune_class, risk_level, status, description,
+        patch_json, snapshot_json, result_json, created_at, applied_at, reverted_at
+      ) VALUES (
+        @tuneId, @runId, @findingId, @tuneClass, @riskLevel, @status, @description,
+        @patchJson, @snapshotJson, NULL, @createdAt, @appliedAt, @revertedAt
+      )
+    `).run({
+      tuneId: tune.tuneId,
+      runId: tune.runId,
+      findingId: tune.findingId ?? null,
+      tuneClass: tune.tuneClass,
+      riskLevel: tune.riskLevel,
+      status: tune.status,
+      description: tune.description,
+      patchJson: JSON.stringify(tune.patch),
+      snapshotJson: tune.snapshot ? JSON.stringify(tune.snapshot) : null,
+      createdAt: tune.createdAt,
+      appliedAt: tune.appliedAt ?? null,
+      revertedAt: tune.revertedAt ?? null,
+    });
+  }
+
+  private applyDecisionAutoTune(tuneId: string, mode: "auto" | "manual"): DecisionAutoTuneRecord {
+    const tune = this.readDecisionAutoTune(tuneId);
+    if (tune.riskLevel !== "low") {
+      throw new Error(`Auto-tune ${tuneId} is ${tune.riskLevel} risk and cannot auto-apply.`);
+    }
+    const settingKey = typeof tune.patch.settingKey === "string" ? tune.patch.settingKey : undefined;
+    if (!settingKey) {
+      throw new Error(`Auto-tune ${tuneId} is missing settingKey patch data.`);
+    }
+    const nextValue = tune.patch.nextValue;
+    this.storage.systemSettings.set(settingKey, nextValue);
+    const appliedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE decision_autotunes
+      SET status = 'applied', applied_at = @appliedAt, result_json = @resultJson
+      WHERE tune_id = @tuneId
+    `).run({
+      tuneId,
+      appliedAt,
+      resultJson: JSON.stringify({
+        appliedBy: mode,
+        settingKey,
+        nextValue,
+      }),
+    });
+    this.publishRealtime("improvement_autotune_applied", "improvement", {
+      tuneId,
+      settingKey,
+      mode,
+    });
+    return this.readDecisionAutoTune(tuneId);
+  }
+
+  private createWeeklyImprovementReport(input: {
+    runId: string;
+    windowStart: string;
+    windowEnd: string;
+    items: DecisionReplayItemRecord[];
+    findings: DecisionReplayFindingRecord[];
+    appliedAutoTunes: DecisionAutoTuneRecord[];
+    queuedRecommendations: DecisionAutoTuneRecord[];
+  }): WeeklyImprovementReportRecord {
+    const currentCounts = new Map<DecisionReplayCauseClass, number>();
+    for (const item of input.items) {
+      if (item.label === "ok") {
+        continue;
+      }
+      currentCounts.set(item.causeClass, (currentCounts.get(item.causeClass) ?? 0) + 1);
+    }
+    const topCauseClasses = Array.from(currentCounts.entries())
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([causeClass, count]) => ({ causeClass, count }));
+
+    const previous = this.storage.db.prepare(`
+      SELECT *
+      FROM improvement_reports
+      ORDER BY week_end DESC, created_at DESC
+      LIMIT 1
+    `).get() as {
+      report_id: string;
+      summary_json: string;
+    } | undefined;
+
+    const previousSummary = previous
+      ? safeJsonParse<WeeklyImprovementReportRecord["summary"]>(previous.summary_json, {
+        sampledDecisions: 0,
+        likelyWrongCount: 0,
+        wrongnessRate: 0,
+        topCauseClasses: [],
+        duplicateSuppressedCount: 0,
+        improvedCount: 0,
+        regressedCount: 0,
+      })
+      : undefined;
+    const previousCounts = new Map<DecisionReplayCauseClass, number>(
+      (previousSummary?.topCauseClasses ?? []).map((entry) => [entry.causeClass, entry.count]),
+    );
+    const weekOverWeek = compareDecisionCauseCounts(currentCounts, previousCounts);
+
+    const report: WeeklyImprovementReportRecord = {
+      reportId: randomUUID(),
+      runId: input.runId,
+      weekStart: input.windowStart,
+      weekEnd: input.windowEnd,
+      summary: {
+        sampledDecisions: input.items.length,
+        likelyWrongCount: input.items.filter((item) => item.label === "likely_wrong").length,
+        wrongnessRate: input.items.length > 0
+          ? Number((input.items.reduce((sum, item) => sum + item.wrongnessProbability, 0) / input.items.length).toFixed(4))
+          : 0,
+        topCauseClasses,
+        duplicateSuppressedCount: input.findings.filter((finding) => finding.isDuplicate).length,
+        improvedCount: weekOverWeek.improved.length,
+        regressedCount: weekOverWeek.regressed.length,
+      },
+      topFindings: input.findings.filter((finding) => !finding.isDuplicate).slice(0, 10),
+      appliedAutoTunes: input.appliedAutoTunes,
+      queuedRecommendations: input.queuedRecommendations,
+      weekOverWeek,
+      previousReportId: previous?.report_id,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.storage.db.prepare(`
+      INSERT INTO improvement_reports (
+        report_id, run_id, week_start, week_end, summary_json, top_findings_json,
+        applied_tunes_json, queued_tunes_json, week_over_week_json, previous_report_id, created_at
+      ) VALUES (
+        @reportId, @runId, @weekStart, @weekEnd, @summaryJson, @topFindingsJson,
+        @appliedTunesJson, @queuedTunesJson, @weekOverWeekJson, @previousReportId, @createdAt
+      )
+    `).run({
+      reportId: report.reportId,
+      runId: report.runId,
+      weekStart: report.weekStart,
+      weekEnd: report.weekEnd,
+      summaryJson: JSON.stringify(report.summary),
+      topFindingsJson: JSON.stringify(report.topFindings),
+      appliedTunesJson: JSON.stringify(report.appliedAutoTunes),
+      queuedTunesJson: JSON.stringify(report.queuedRecommendations),
+      weekOverWeekJson: JSON.stringify(report.weekOverWeek),
+      previousReportId: report.previousReportId ?? null,
+      createdAt: report.createdAt,
+    });
+    return report;
+  }
+
+  private markDecisionReplayRunCompleted(input: {
+    runId: string;
+    reportId: string;
+    totalCandidates: number;
+    totalScored: number;
+    likelyWrongCount: number;
+    modelJudgedCount: number;
+  }): void {
+    this.storage.db.prepare(`
+      UPDATE decision_replay_runs
+      SET
+        status = 'completed',
+        report_id = @reportId,
+        total_candidates = @totalCandidates,
+        total_scored = @totalScored,
+        likely_wrong_count = @likelyWrongCount,
+        model_judged_count = @modelJudgedCount,
+        finished_at = @finishedAt
+      WHERE run_id = @runId
+    `).run({
+      runId: input.runId,
+      reportId: input.reportId,
+      totalCandidates: input.totalCandidates,
+      totalScored: input.totalScored,
+      likelyWrongCount: input.likelyWrongCount,
+      modelJudgedCount: input.modelJudgedCount,
+      finishedAt: new Date().toISOString(),
+    });
+  }
+
+  private persistDecisionReplayDedup(findings: DecisionReplayFindingRecord[], reportId: string): void {
+    const upsert = this.storage.db.prepare(`
+      INSERT INTO decision_replay_dedup (
+        fingerprint, last_seen_report_id, last_seen_at, occurrence_count, last_summary_hash
+      ) VALUES (
+        @fingerprint, @reportId, @lastSeenAt, 1, @summaryHash
+      )
+      ON CONFLICT(fingerprint) DO UPDATE SET
+        last_seen_report_id = excluded.last_seen_report_id,
+        last_seen_at = excluded.last_seen_at,
+        occurrence_count = decision_replay_dedup.occurrence_count + 1,
+        last_summary_hash = excluded.last_summary_hash
+    `);
+    for (const finding of findings) {
+      upsert.run({
+        fingerprint: finding.fingerprint,
+        reportId,
+        lastSeenAt: new Date().toISOString(),
+        summaryHash: createHash("sha1").update(finding.summary).digest("hex"),
+      });
+    }
+  }
+
+  private readDecisionReplayRun(runId: string): DecisionReplayRunRecord {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_replay_runs
+      WHERE run_id = ?
+    `).get(runId) as {
+      run_id: string;
+      trigger_mode: "scheduled" | "manual";
+      sample_size: number;
+      window_start: string;
+      window_end: string;
+      status: string;
+      report_id: string | null;
+      total_candidates: number;
+      total_scored: number;
+      likely_wrong_count: number;
+      model_judged_count: number;
+      started_at: string;
+      finished_at: string | null;
+      error_text: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Decision replay run ${runId} not found`);
+    }
+    return {
+      runId: row.run_id,
+      triggerMode: row.trigger_mode,
+      sampleSize: row.sample_size,
+      windowStart: row.window_start,
+      windowEnd: row.window_end,
+      status: IMPROVEMENT_RUN_STATUS_VALUES.has(row.status) ? (row.status as DecisionReplayRunRecord["status"]) : "failed",
+      reportId: row.report_id ?? undefined,
+      totalCandidates: row.total_candidates,
+      totalScored: row.total_scored,
+      likelyWrongCount: row.likely_wrong_count,
+      modelJudgedCount: row.model_judged_count,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at ?? undefined,
+      error: row.error_text ?? undefined,
+    };
+  }
+
+  private listDecisionReplayItems(runId: string, limit = 500): DecisionReplayItemRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_replay_items
+      WHERE run_id = ?
+      ORDER BY wrongness_probability DESC, occurred_at DESC
+      LIMIT ?
+    `).all(runId, Math.max(1, Math.min(limit, 5000))) as Array<{
+      item_id: string;
+      run_id: string;
+      decision_type: "chat_turn" | "tool_run";
+      session_id: string | null;
+      turn_id: string | null;
+      tool_run_id: string | null;
+      occurred_at: string;
+      wrongness_probability: number;
+      label: DecisionReplayItemRecord["label"];
+      cause_class: string;
+      cluster_key: string;
+      rule_scores_json: string;
+      model_scores_json: string | null;
+      evidence_json: string;
+      summary_text: string | null;
+      input_excerpt: string | null;
+      output_excerpt: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      itemId: row.item_id,
+      runId: row.run_id,
+      decisionType: row.decision_type,
+      sessionId: row.session_id ?? undefined,
+      turnId: row.turn_id ?? undefined,
+      toolRunId: row.tool_run_id ?? undefined,
+      occurredAt: row.occurred_at,
+      wrongnessProbability: Number(row.wrongness_probability),
+      label: row.label,
+      causeClass: normalizeDecisionReplayCauseClass(row.cause_class),
+      clusterKey: row.cluster_key,
+      ruleScores: safeJsonParse<DecisionReplayItemRuleScores>(row.rule_scores_json, {
+        honesty: 0.5,
+        blockerQuality: 0.5,
+        retryQuality: 0.5,
+        toolEvidence: 0.5,
+        actionability: 0.5,
+      }),
+      modelScores: row.model_scores_json
+        ? safeJsonParse<DecisionReplayItemModelScores | undefined>(row.model_scores_json, undefined)
+        : undefined,
+      evidence: safeJsonParse<string[]>(row.evidence_json, []),
+      summary: row.summary_text ?? undefined,
+      inputExcerpt: row.input_excerpt ?? undefined,
+      outputExcerpt: row.output_excerpt ?? undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
+  private listDecisionReplayFindings(runId: string, limit = 100): DecisionReplayFindingRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_replay_findings
+      WHERE run_id = ?
+      ORDER BY is_duplicate ASC, recurrence_count DESC, avg_wrongness DESC
+      LIMIT ?
+    `).all(runId, Math.max(1, Math.min(limit, 1000))) as Array<{
+      finding_id: string;
+      run_id: string;
+      fingerprint: string;
+      cause_class: string;
+      cluster_key: string;
+      severity: "low" | "medium" | "high";
+      recurrence_count: number;
+      impacted_sessions: number;
+      impacted_turns: number;
+      avg_wrongness: number;
+      title: string;
+      summary: string;
+      recommendation: string | null;
+      is_duplicate: number;
+      duplicate_of_fingerprint: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      findingId: row.finding_id,
+      runId: row.run_id,
+      fingerprint: row.fingerprint,
+      causeClass: normalizeDecisionReplayCauseClass(row.cause_class),
+      clusterKey: row.cluster_key,
+      severity: row.severity,
+      recurrenceCount: row.recurrence_count,
+      impactedSessions: row.impacted_sessions,
+      impactedTurns: row.impacted_turns,
+      avgWrongness: row.avg_wrongness,
+      title: row.title,
+      summary: row.summary,
+      recommendation: row.recommendation ?? undefined,
+      isDuplicate: Boolean(row.is_duplicate),
+      duplicateOfFingerprint: row.duplicate_of_fingerprint ?? undefined,
+      createdAt: row.created_at,
+    }));
+  }
+
+  private listDecisionAutoTunes(runId: string, limit = 100): DecisionAutoTuneRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_autotunes
+      WHERE run_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(runId, Math.max(1, Math.min(limit, 1000))) as Array<{
+      tune_id: string;
+      run_id: string;
+      finding_id: string | null;
+      tune_class: DecisionAutoTuneRecord["tuneClass"];
+      risk_level: DecisionAutoTuneRecord["riskLevel"];
+      status: DecisionAutoTuneRecord["status"];
+      description: string;
+      patch_json: string;
+      snapshot_json: string | null;
+      result_json: string | null;
+      created_at: string;
+      applied_at: string | null;
+      reverted_at: string | null;
+    }>;
+    return rows.map((row) => mapDecisionAutoTuneRow(row));
+  }
+
+  private readDecisionAutoTune(tuneId: string): DecisionAutoTuneRecord {
+    const row = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_autotunes
+      WHERE tune_id = ?
+    `).get(tuneId) as {
+      tune_id: string;
+      run_id: string;
+      finding_id: string | null;
+      tune_class: DecisionAutoTuneRecord["tuneClass"];
+      risk_level: DecisionAutoTuneRecord["riskLevel"];
+      status: DecisionAutoTuneRecord["status"];
+      description: string;
+      patch_json: string;
+      snapshot_json: string | null;
+      result_json: string | null;
+      created_at: string;
+      applied_at: string | null;
+      reverted_at: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Auto-tune ${tuneId} not found`);
+    }
+    return mapDecisionAutoTuneRow(row);
   }
 
   public async resolveChatToolApproval(
@@ -2068,7 +4767,7 @@ export class GatewayService {
       return this.sendChatMessage(sessionId, input);
     }
 
-    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, {
+    const prefsOverride = {
       ...(input.prefsOverride ?? {}),
       mode: input.mode ?? input.prefsOverride?.mode,
       providerId: input.providerId ?? input.prefsOverride?.providerId,
@@ -2076,17 +4775,29 @@ export class GatewayService {
       webMode: input.webMode ?? input.prefsOverride?.webMode,
       memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
       thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
-    });
+    };
+    const splitPrefs = splitChatPrefsPatch(prefsOverride);
+    if (Object.keys(splitPrefs.autonomyPatch).length > 0) {
+      this.patchSessionAutonomyPrefs(sessionId, splitPrefs.autonomyPatch);
+    }
+    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, splitPrefs.basePatch);
     const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
+    const autonomy = this.getSessionAutonomyPrefs(sessionId);
     const normalized = normalizeAgentInputFromSend(input);
+    const retrievalTrace = buildRetrievalTrace({
+      content,
+      retrievalMode: autonomy.retrievalMode,
+      webMode: normalized.webMode ?? prefs.webMode,
+      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+    });
 
     const history = await this.buildLlmMessagesFromTranscript(sessionId, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
     });
 
-    const turnId = randomUUID();
-    const turnResult = await this.chatAgentOrchestrator.run({
+    let turnId = randomUUID();
+    let turnResult = await this.chatAgentOrchestrator.run({
       sessionId,
       turnId,
       userMessageId: userEventId,
@@ -2100,8 +4811,85 @@ export class GatewayService {
       toolAutonomy: prefs.toolAutonomy,
       historyMessages: history,
     });
+    let reflectionTrace: ChatTurnTraceRecord["reflection"] = {
+      attempted: false,
+      attemptCount: 0,
+      outcome: "not_needed",
+    };
+
+    const shouldAttemptReflection = autonomy.reflectionMode === "on"
+      && !turnResult.requiresApproval
+      && (turnResult.turnTrace.status === "failed" || looksLowConfidenceResponse(turnResult.assistantContent));
+
+    if (shouldAttemptReflection) {
+      const retryTurnId = randomUUID();
+      const retryReason = turnResult.turnTrace.status === "failed"
+        ? "tool failure or completion failure"
+        : "low confidence response";
+      reflectionTrace = {
+        attempted: true,
+        attemptCount: 1,
+        reason: retryReason,
+        outcome: "still_failed",
+      };
+      this.storage.db.prepare(`
+        INSERT INTO chat_reflection_attempts (
+          attempt_id, turn_id, session_id, reason, outcome, attempt_count, strategy, error, created_at
+        ) VALUES (
+          @attemptId, @turnId, @sessionId, @reason, @outcome, @attemptCount, @strategy, @error, @createdAt
+        )
+      `).run({
+        attemptId: randomUUID(),
+        turnId: retryTurnId,
+        sessionId,
+        reason: retryReason,
+        outcome: "still_failed",
+        attemptCount: 1,
+        strategy: "single retry with alternate tool/query strategy",
+        error: turnResult.turnTrace.status === "failed" ? turnResult.assistantContent.slice(0, 500) : null,
+        createdAt: new Date().toISOString(),
+      });
+
+      const retryHistory = await this.buildLlmMessagesFromTranscript(sessionId, {
+        providerId: input.providerId ?? prefs.providerId,
+        model: input.model ?? prefs.model,
+      });
+      const retryPrompt = `${content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
+      const retryResult = await this.chatAgentOrchestrator.run({
+        sessionId,
+        turnId: retryTurnId,
+        userMessageId: userEventId,
+        content: retryPrompt,
+        mode: normalized.mode ?? prefs.mode,
+        providerId: input.providerId ?? prefs.providerId,
+        model: input.model ?? prefs.model,
+        webMode: normalized.webMode ?? prefs.webMode,
+        memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+        thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
+        toolAutonomy: prefs.toolAutonomy,
+        historyMessages: retryHistory,
+      });
+      if (retryResult.turnTrace.status === "completed" && retryResult.assistantContent.trim().length > 0) {
+        turnId = retryTurnId;
+        turnResult = retryResult;
+        reflectionTrace = {
+          attempted: true,
+          attemptCount: 1,
+          reason: retryReason,
+          outcome: "recovered",
+        };
+      }
+    }
 
     if (turnResult.requiresApproval) {
+      const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
+        retrieval: retrievalTrace,
+        reflection: reflectionTrace,
+        proactive: {
+          runId: autonomy.lastProactiveRunId,
+          mode: autonomy.proactiveMode,
+        },
+      });
       return {
         sessionId,
         userMessage,
@@ -2109,7 +4897,11 @@ export class GatewayService {
         transport: "llm",
         model: turnResult.assistantModel,
         turnId,
-        trace: turnResult.turnTrace,
+        trace: {
+          ...traceWithMeta,
+          citations: turnResult.turnTrace.citations,
+          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+        },
         citations: turnResult.turnTrace.citations,
         routing: turnResult.turnTrace.routing,
       };
@@ -2141,12 +4933,34 @@ export class GatewayService {
       assistantMessageId: assistantEventId,
       status: "completed",
       finishedAt: new Date().toISOString(),
+      retrieval: retrievalTrace,
+      reflection: reflectionTrace,
+      proactive: {
+        runId: autonomy.lastProactiveRunId,
+        mode: autonomy.proactiveMode,
+      },
     });
     const hydratedTrace: ChatTurnTraceRecord = {
       ...trace,
       citations: turnResult.turnTrace.citations,
       toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
     };
+
+    this.extractAndPersistLearnedMemory(sessionId, content, {
+      role: "user",
+      sourceRef: userEventId,
+    });
+    this.extractAndPersistLearnedMemory(sessionId, turnResult.assistantContent, {
+      role: "assistant",
+      sourceRef: assistantEventId,
+    });
+    const delegationDetection = detectDelegationRoles(content);
+    if (delegationDetection.length > 1) {
+      await this.triggerChatSessionProactive(sessionId, {
+        source: "chat",
+        reason: "Detected multi-role phrasing; generated delegation suggestion.",
+      });
+    }
 
     return {
       sessionId,
@@ -2195,7 +5009,7 @@ export class GatewayService {
       },
     });
 
-    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, {
+    const prefsOverride = {
       ...(input.prefsOverride ?? {}),
       mode: input.mode ?? input.prefsOverride?.mode,
       providerId: input.providerId ?? input.prefsOverride?.providerId,
@@ -2203,9 +5017,21 @@ export class GatewayService {
       webMode: input.webMode ?? input.prefsOverride?.webMode,
       memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
       thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
-    });
+    };
+    const splitPrefs = splitChatPrefsPatch(prefsOverride);
+    if (Object.keys(splitPrefs.autonomyPatch).length > 0) {
+      this.patchSessionAutonomyPrefs(sessionId, splitPrefs.autonomyPatch);
+    }
+    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, splitPrefs.basePatch);
     const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
+    const autonomy = this.getSessionAutonomyPrefs(sessionId);
     const normalized = normalizeAgentInputFromSend(input);
+    const retrievalTrace = buildRetrievalTrace({
+      content,
+      retrievalMode: autonomy.retrievalMode,
+      webMode: normalized.webMode ?? prefs.webMode,
+      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+    });
     const history = await this.buildLlmMessagesFromTranscript(sessionId, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
@@ -2271,6 +5097,39 @@ export class GatewayService {
           role: "assistant",
           content: finalText,
         },
+      });
+      const updatedTrace = this.storage.chatTurnTraces.patch(turnId, {
+        assistantMessageId: assistantEventId,
+        status: "completed",
+        finishedAt: new Date().toISOString(),
+        retrieval: retrievalTrace,
+        reflection: {
+          attempted: false,
+          attemptCount: 0,
+          outcome: "not_needed",
+        },
+        proactive: {
+          runId: autonomy.lastProactiveRunId,
+          mode: autonomy.proactiveMode,
+        },
+      });
+      yield {
+        type: "trace_update",
+        sessionId,
+        turnId,
+        trace: {
+          ...updatedTrace,
+          citations: updatedTrace.citations,
+          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+        },
+      };
+      this.extractAndPersistLearnedMemory(sessionId, content, {
+        role: "user",
+        sourceRef: userEventId,
+      });
+      this.extractAndPersistLearnedMemory(sessionId, finalText, {
+        role: "assistant",
+        sourceRef: assistantEventId,
       });
     }
 
@@ -5917,6 +8776,14 @@ export class GatewayService {
 
   public async close(): Promise<void> {
     this.closing = true;
+    if (this.proactiveScheduler) {
+      clearInterval(this.proactiveScheduler);
+      this.proactiveScheduler = undefined;
+    }
+    if (this.improvementScheduler) {
+      clearInterval(this.improvementScheduler);
+      this.improvementScheduler = undefined;
+    }
     if (this.backgroundTasks.size > 0) {
       const tasks = [...this.backgroundTasks];
       this.backgroundTasks.clear();
@@ -6420,6 +9287,19 @@ export class GatewayService {
     for (const job of jobs) {
       this.storage.cronJobs.upsert(job);
     }
+  }
+
+  private ensureWeeklyImprovementCronJob(): void {
+    const existing = this.storage.cronJobs.list().find((job) => job.jobId === IMPROVEMENT_WEEKLY_JOB_ID);
+    const now = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      jobId: IMPROVEMENT_WEEKLY_JOB_ID,
+      name: "Self-Improvement Weekly Replay",
+      schedule: IMPROVEMENT_WEEKLY_SCHEDULE_LABEL,
+      enabled: existing?.enabled ?? true,
+      lastRunAt: existing?.lastRunAt,
+      nextRunAt: existing?.nextRunAt,
+    }, now);
   }
 
   private persistLlmConfig(): void {
@@ -7315,6 +10195,175 @@ function parsePipelineCommand(input: string): { template: string; roles: string[
   };
 }
 
+function sanitizeFileName(input: string): string {
+  const cleaned = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "prompt-pack";
+}
+
+function renderPromptPackMarkdownReport(report: PromptPackReportRecord): string {
+  const generatedAt = new Date().toISOString();
+  const runs = [...report.runs]
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  const scores = [...report.scores]
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const latestRunByTest = new Map<string, PromptPackRunRecord>();
+  for (const run of runs) {
+    if (!latestRunByTest.has(run.testId)) {
+      latestRunByTest.set(run.testId, run);
+    }
+  }
+  const latestScoreByTest = new Map<string, PromptPackScoreRecord>();
+  for (const score of scores) {
+    if (!latestScoreByTest.has(score.testId)) {
+      latestScoreByTest.set(score.testId, score);
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(`# Prompt Pack Report: ${report.pack.name}`);
+  lines.push("");
+  lines.push(`- Pack ID: \`${report.pack.packId}\``);
+  lines.push(`- Generated: ${generatedAt}`);
+  lines.push(`- Total tests: ${report.summary.totalTests}`);
+  lines.push(`- Completed runs: ${report.summary.completedRuns}`);
+  lines.push(`- Failed runs: ${report.summary.failedRuns}`);
+  lines.push(`- Average score: ${report.summary.averageTotalScore.toFixed(2)}/10`);
+  lines.push(`- Pass rate: ${(report.summary.passRate * 100).toFixed(1)}% (threshold ${PROMPT_PACK_PASS_THRESHOLD}/10)`);
+  lines.push("");
+  lines.push("## Snapshot");
+  lines.push("");
+  lines.push("| Test | Status | Score | Provider/Model | Last run |");
+  lines.push("| --- | --- | --- | --- | --- |");
+  for (const test of report.tests) {
+    const run = latestRunByTest.get(test.testId);
+    const score = latestScoreByTest.get(test.testId);
+    const providerModel = run?.providerId || run?.model
+      ? `${run?.providerId ?? "?"}/${run?.model ?? "?"}`
+      : "-";
+    lines.push(`| ${test.code} | ${run?.status ?? "not_run"} | ${score ? `${score.totalScore}/10` : "-"} | ${providerModel} | ${run?.finishedAt ?? run?.startedAt ?? "-"} |`);
+  }
+
+  for (const test of report.tests) {
+    const run = latestRunByTest.get(test.testId);
+    const score = latestScoreByTest.get(test.testId);
+    lines.push("");
+    lines.push(`## ${test.code} - ${test.title}`);
+    lines.push("");
+    lines.push("### Prompt");
+    lines.push("");
+    lines.push("```text");
+    lines.push(test.prompt.trim());
+    lines.push("```");
+
+    if (!run) {
+      lines.push("");
+      lines.push("_No run yet._");
+      continue;
+    }
+
+    lines.push("");
+    lines.push("### Latest Run");
+    lines.push("");
+    lines.push(`- Run ID: \`${run.runId}\``);
+    lines.push(`- Status: \`${run.status}\``);
+    lines.push(`- Provider/Model: \`${run.providerId ?? "-"} / ${run.model ?? "-"}\``);
+    lines.push(`- Started: ${run.startedAt}`);
+    lines.push(`- Finished: ${run.finishedAt ?? "-"}`);
+    if (run.error) {
+      lines.push(`- Error: ${run.error}`);
+    }
+
+    if (score) {
+      lines.push("");
+      lines.push("### Score");
+      lines.push("");
+      lines.push(`- Total: **${score.totalScore}/10**`);
+      lines.push(`- Routing: ${score.routingScore}`);
+      lines.push(`- Honesty: ${score.honestyScore}`);
+      lines.push(`- Handoff: ${score.handoffScore}`);
+      lines.push(`- Robustness: ${score.robustnessScore}`);
+      lines.push(`- Usability: ${score.usabilityScore}`);
+      if (score.notes?.trim()) {
+        lines.push(`- Notes: ${score.notes.trim()}`);
+      }
+    }
+
+    if (run.responseText?.trim()) {
+      lines.push("");
+      lines.push("### Assistant Output");
+      lines.push("");
+      lines.push("```text");
+      lines.push(run.responseText.trim());
+      lines.push("```");
+    }
+
+    const trace = run.trace;
+    if (trace) {
+      lines.push("");
+      lines.push("### Trace Summary");
+      lines.push("");
+      lines.push(`- Tool runs: ${trace.toolRuns.length}`);
+      lines.push(`- Approval required: ${trace.toolRuns.filter((item) => item.status === "approval_required").length}`);
+      lines.push(`- Blocked: ${trace.toolRuns.filter((item) => item.status === "blocked").length}`);
+      lines.push(`- Failed: ${trace.toolRuns.filter((item) => item.status === "failed").length}`);
+      if (trace.routing?.fallbackUsed) {
+        lines.push(`- Fallback: ${trace.routing.fallbackProviderId ?? "-"} / ${trace.routing.fallbackModel ?? "-"}`);
+        if (trace.routing.fallbackReason) {
+          lines.push(`- Fallback reason: ${trace.routing.fallbackReason}`);
+        }
+      }
+      if (trace.toolRuns.length > 0) {
+        lines.push("");
+        lines.push("#### Tool Timeline");
+        lines.push("");
+        for (const toolRun of trace.toolRuns) {
+          const duration = (toolRun.finishedAt && toolRun.startedAt)
+            ? `${Math.max(0, Date.parse(toolRun.finishedAt) - Date.parse(toolRun.startedAt))}ms`
+            : "-";
+          lines.push(`- \`${toolRun.toolName}\` • ${toolRun.status} • ${duration}`);
+          if (toolRun.error) {
+            lines.push(`  - error: ${toolRun.error}`);
+          }
+        }
+      }
+    }
+
+    if (run.citations && run.citations.length > 0) {
+      lines.push("");
+      lines.push("### Citations");
+      lines.push("");
+      for (const citation of run.citations) {
+        lines.push(`- [${citation.title ?? citation.url}](${citation.url})`);
+      }
+    }
+  }
+
+  const unscoredCompleted = report.tests
+    .filter((test) => {
+      const run = latestRunByTest.get(test.testId);
+      const score = latestScoreByTest.get(test.testId);
+      return run?.status === "completed" && !score;
+    })
+    .map((test) => test.code);
+  const notRun = report.tests
+    .filter((test) => !latestRunByTest.has(test.testId))
+    .map((test) => test.code);
+
+  lines.push("");
+  lines.push("## Outstanding");
+  lines.push("");
+  lines.push(`- Not run: ${notRun.length > 0 ? notRun.join(", ") : "none"}`);
+  lines.push(`- Completed but unscored: ${unscoredCompleted.length > 0 ? unscoredCompleted.join(", ") : "none"}`);
+  lines.push(`- Failing tests (< ${PROMPT_PACK_PASS_THRESHOLD}/10): ${report.summary.failingCodes.length > 0 ? report.summary.failingCodes.join(", ") : "none"}`);
+
+  return `${lines.join("\n")}\n`;
+}
+
 function normalizeDelegationRoles(roles: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -7330,6 +10379,218 @@ function normalizeDelegationRoles(roles: string[]): string[] {
     return [...DEFAULT_DELEGATION_ROLES];
   }
   return out;
+}
+
+function detectDelegationRoles(objective: string): string[] {
+  const normalized = objective.toLowerCase();
+  const roleHints: Array<{ role: string; patterns: RegExp[] }> = [
+    { role: "product", patterns: [/\bproduct\b/, /\bprd\b/, /\brequirements?\b/] },
+    { role: "architect", patterns: [/\barchitect\b/, /\bdesign\b/, /\barchitecture\b/] },
+    { role: "coder", patterns: [/\bcoder\b/, /\bdeveloper\b/, /\bimplementation\b/, /\bbuild\b/] },
+    { role: "qa", patterns: [/\bqa\b/, /\btest\b/, /\bvalidation\b/] },
+    { role: "ops", patterns: [/\bops\b/, /\bdeploy\b/, /\brollout\b/, /\brelease\b/] },
+    { role: "researcher", patterns: [/\bresearch\b/, /\banalyze\b/, /\bsources?\b/] },
+  ];
+  const roles = roleHints
+    .filter((hint) => hint.patterns.some((pattern) => pattern.test(normalized)))
+    .map((hint) => hint.role);
+  if (roles.length > 0) {
+    return roles;
+  }
+  if (/->|route this through|multi-agent|agents work together|handoff/.test(normalized)) {
+    return [...DEFAULT_DELEGATION_ROLES.slice(0, 3)];
+  }
+  return [];
+}
+
+function splitChatPrefsPatch(
+  input: ChatSessionPrefsPatch,
+): {
+  basePatch: Pick<
+    ChatSessionPrefsPatch,
+    "mode" | "providerId" | "model" | "webMode" | "memoryMode" | "thinkingLevel" | "toolAutonomy" | "visionFallbackModel"
+  >;
+  autonomyPatch: Partial<{
+    proactiveMode: ChatProactiveMode;
+    maxActionsPerHour: number;
+    maxActionsPerTurn: number;
+    cooldownSeconds: number;
+    retrievalMode: ChatRetrievalMode;
+    reflectionMode: ChatReflectionMode;
+  }>;
+} {
+  const basePatch: Pick<
+    ChatSessionPrefsPatch,
+    "mode" | "providerId" | "model" | "webMode" | "memoryMode" | "thinkingLevel" | "toolAutonomy" | "visionFallbackModel"
+  > = {
+    mode: input.mode,
+    providerId: input.providerId,
+    model: input.model,
+    webMode: input.webMode,
+    memoryMode: input.memoryMode,
+    thinkingLevel: input.thinkingLevel,
+    toolAutonomy: input.toolAutonomy,
+    visionFallbackModel: input.visionFallbackModel,
+  };
+  return {
+    basePatch,
+    autonomyPatch: {
+      proactiveMode: input.proactiveMode,
+      maxActionsPerHour: input.autonomyBudget?.maxActionsPerHour,
+      maxActionsPerTurn: input.autonomyBudget?.maxActionsPerTurn,
+      cooldownSeconds: input.autonomyBudget?.cooldownSeconds,
+      retrievalMode: input.retrievalMode,
+      reflectionMode: input.reflectionMode,
+    },
+  };
+}
+
+function buildRetrievalTrace(input: {
+  content: string;
+  retrievalMode: ChatRetrievalMode;
+  webMode: ChatWebMode;
+  memoryMode: ChatSessionPrefsRecord["memoryMode"];
+}): NonNullable<ChatTurnTraceRecord["retrieval"]> {
+  const liveIntent = /\b(latest|today|weather|news|price|current|right now|time)\b/i.test(input.content);
+  const l0Base = liveIntent ? 0.55 : 0.86;
+  const l1Base = input.memoryMode === "off" ? 0.2 : liveIntent ? 0.64 : 0.78;
+  const shouldUseLayered = input.retrievalMode === "layered";
+  const shouldUseL2 = shouldUseLayered && (liveIntent || l1Base < 0.55) && input.webMode !== "off";
+  return {
+    l0Used: true,
+    l1Used: input.memoryMode !== "off",
+    l2Used: shouldUseL2,
+    confidenceL0: l0Base,
+    confidenceL1: l1Base,
+    confidenceL2: shouldUseL2 ? (input.webMode === "deep" ? 0.82 : 0.71) : undefined,
+    escalationReason: shouldUseL2
+      ? (liveIntent ? "explicit_live_data_intent" : "low_retrieval_confidence")
+      : undefined,
+  };
+}
+
+function looksLowConfidenceResponse(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return (
+    normalized.length < 80
+    || /\b(i don't know|not sure|can't help|cannot help|unable to)\b/.test(normalized)
+  );
+}
+
+function extractLearnedMemoryCandidates(
+  content: string,
+  role: "user" | "assistant",
+): Array<{
+  itemType: LearnedMemoryItemType;
+  content: string;
+  confidence: number;
+}> {
+  const lines = content
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 12);
+  const out: Array<{ itemType: LearnedMemoryItemType; content: string; confidence: number }> = [];
+  const add = (itemType: LearnedMemoryItemType, text: string, confidence: number) => {
+    const normalized = normalizeMemoryText(text);
+    if (!normalized) {
+      return;
+    }
+    out.push({
+      itemType,
+      content: text.trim(),
+      confidence: clamp01(confidence),
+    });
+  };
+  for (const line of lines) {
+    if (/^(remember|preference|format|always|please format)/i.test(line)) {
+      add("preference", line, role === "user" ? 0.9 : 0.6);
+      continue;
+    }
+    if (/\b(top priority|goal|objective|for 1\.0|roadmap)\b/i.test(line)) {
+      add("goal", line, role === "user" ? 0.86 : 0.58);
+      continue;
+    }
+    if (/\bmust|never|cannot|can't|do not|without\b/i.test(line)) {
+      add("constraint", line, role === "user" ? 0.82 : 0.56);
+      continue;
+    }
+    if (/\b(project|workspace|stack|integration|session|prompt pack|goatcitadel)\b/i.test(line)) {
+      add("project_context", line, role === "user" ? 0.74 : 0.52);
+      continue;
+    }
+    if (/\bis|are|was|were\b/.test(line) && line.length > 18 && line.length < 220) {
+      add("fact", line, role === "user" ? 0.58 : 0.48);
+    }
+  }
+  return out.slice(0, 8);
+}
+
+function looksSensitive(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    /api[_-]?key|token|secret|password|private[_-]?key|bearer\s+[a-z0-9._-]+/i.test(normalized)
+    || /\bsk-[a-z0-9]{8,}\b/i.test(normalized)
+    || /\bghp_[a-z0-9]{10,}\b/i.test(normalized)
+  );
+}
+
+function normalizeMemoryText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`*_>#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function memoryTextOverlap(left: string, right: string): number {
+  if (!left || !right) {
+    return 0;
+  }
+  const leftTokens = new Set(left.split(" ").filter((token) => token.length > 2));
+  const rightTokens = new Set(right.split(" ").filter((token) => token.length > 2));
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+  let matches = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      matches += 1;
+    }
+  }
+  return matches / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function extractStringFromUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        if (item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string") {
+          return String((item as { text?: unknown }).text);
+        }
+        return "";
+      })
+      .join("");
+  }
+  if (value && typeof value === "object") {
+    const maybe = value as { text?: unknown; content?: unknown };
+    if (typeof maybe.text === "string") {
+      return maybe.text;
+    }
+    if (typeof maybe.content === "string") {
+      return maybe.content;
+    }
+  }
+  return "";
 }
 
 function buildDelegationSystemPrompt(role: string): string {
@@ -7565,6 +10826,430 @@ function buildPromptPackAutoScoreNotes(input: {
   return lines.join("\n");
 }
 
+function sampleDecisionReplayCandidates(
+  candidates: DecisionReplayCandidate[],
+  sampleSize: number,
+): DecisionReplayCandidate[] {
+  const cap = Math.max(1, Math.min(sampleSize, candidates.length));
+  const critical = candidates.filter((candidate) => {
+    if (candidate.decisionType === "tool_run") {
+      return candidate.status === "failed" || candidate.status === "blocked" || candidate.status === "approval_required";
+    }
+    return candidate.status === "failed" || candidate.status === "approval_required";
+  });
+  const normal = candidates.filter((candidate) => !critical.includes(candidate));
+  const criticalTarget = Math.min(critical.length, Math.max(1, Math.floor(cap * 0.45)));
+  const selected = [
+    ...critical.slice(0, criticalTarget),
+    ...normal.slice(0, cap - criticalTarget),
+  ];
+  if (selected.length < cap) {
+    const fallback = [...critical.slice(criticalTarget), ...normal.slice(cap - criticalTarget)];
+    for (const candidate of fallback) {
+      if (selected.length >= cap) {
+        break;
+      }
+      if (selected.includes(candidate)) {
+        continue;
+      }
+      selected.push(candidate);
+    }
+  }
+  return selected.slice(0, cap);
+}
+
+function evaluateDecisionReplayRuleScores(
+  candidate: DecisionReplayCandidate,
+  turnTools: DecisionReplayCandidate[],
+): {
+  scores: DecisionReplayItemRuleScores;
+  signals: string[];
+} {
+  const signals: string[] = [];
+  let honesty = 0.7;
+  let blockerQuality = 0.7;
+  let retryQuality = 0.7;
+  let toolEvidence = 0.65;
+  let actionability = 0.7;
+
+  if (candidate.decisionType === "chat_turn") {
+    const executedTools = turnTools.filter((item) => item.status === "executed");
+    const failedTools = turnTools.filter((item) => item.status === "failed");
+    const blockedTools = turnTools.filter((item) => item.status === "blocked" || item.status === "approval_required");
+
+    if (candidate.status === "failed") {
+      blockerQuality = 0.38;
+      actionability = 0.35;
+      signals.push("chat_turn_failed");
+      if (failedTools.length > 0) {
+        blockerQuality = 0.56;
+        signals.push("failed_tools_present");
+      }
+    } else if (candidate.status === "approval_required") {
+      blockerQuality = 0.82;
+      actionability = 0.62;
+      signals.push("approval_required_gate");
+    }
+
+    if ((candidate.routing?.liveDataIntent ?? false) && !(candidate.retrieval?.l2Used ?? false)) {
+      honesty = 0.48;
+      toolEvidence = Math.min(toolEvidence, 0.42);
+      signals.push("live_data_without_l2");
+    }
+
+    if (executedTools.length > 0) {
+      toolEvidence = 0.88;
+      honesty = Math.max(honesty, 0.82);
+      signals.push("tool_execution_evidence");
+    } else if ((candidate.routing?.liveDataIntent ?? false) || candidate.webMode === "quick" || candidate.webMode === "deep") {
+      toolEvidence = 0.44;
+      signals.push("web_intent_without_execution");
+    }
+
+    const attemptedRepair = (candidate.reflection?.attemptCount ?? 0) > 0;
+    if ((candidate.status === "failed" || failedTools.length > 0) && !attemptedRepair) {
+      retryQuality = 0.32;
+      signals.push("missing_reflection_retry");
+    } else if (attemptedRepair) {
+      retryQuality = 0.86;
+      signals.push("reflection_retry_attempted");
+    }
+
+    if (blockedTools.length > 0 && blockerQuality < 0.7) {
+      blockerQuality = 0.74;
+      signals.push("blocked_with_reason");
+    }
+  } else {
+    const status = candidate.status;
+    if (status === "executed") {
+      toolEvidence = 0.9;
+      blockerQuality = 0.8;
+      actionability = 0.8;
+      signals.push("tool_executed");
+    } else if (status === "failed") {
+      honesty = 0.58;
+      blockerQuality = candidate.error?.trim().length ? 0.62 : 0.34;
+      retryQuality = 0.35;
+      toolEvidence = 0.45;
+      actionability = 0.42;
+      signals.push("tool_failed");
+    } else if (status === "blocked" || status === "approval_required") {
+      blockerQuality = candidate.error?.trim().length ? 0.78 : 0.5;
+      actionability = 0.55;
+      signals.push("tool_blocked_or_approval");
+    }
+  }
+
+  const scores: DecisionReplayItemRuleScores = {
+    honesty: clampProbability(honesty),
+    blockerQuality: clampProbability(blockerQuality),
+    retryQuality: clampProbability(retryQuality),
+    toolEvidence: clampProbability(toolEvidence),
+    actionability: clampProbability(actionability),
+  };
+  return { scores, signals };
+}
+
+function computeDecisionWrongnessProbability(
+  candidate: DecisionReplayCandidate,
+  ruleScores: DecisionReplayItemRuleScores,
+  modelScores?: DecisionReplayItemModelScores,
+): number {
+  const ruleQuality = (
+    (ruleScores.honesty * 0.28)
+    + (ruleScores.blockerQuality * 0.2)
+    + (ruleScores.retryQuality * 0.2)
+    + (ruleScores.toolEvidence * 0.2)
+    + (ruleScores.actionability * 0.12)
+  );
+  let ruleWrongness = 1 - ruleQuality;
+  if (candidate.status === "failed") {
+    ruleWrongness += 0.18;
+  } else if (candidate.status === "blocked") {
+    ruleWrongness += 0.08;
+  } else if (candidate.status === "approval_required") {
+    ruleWrongness += 0.05;
+  }
+  ruleWrongness = clampProbability(ruleWrongness);
+  if (!modelScores) {
+    return ruleWrongness;
+  }
+  const modelWrongness = (
+    (1 - modelScores.correctnessLikelihood) * 0.55
+    + (modelScores.missedToolProbability * 0.3)
+    + (modelScores.betterResponsePotential * 0.15)
+  );
+  return clampProbability((ruleWrongness * 0.55) + (modelWrongness * 0.45));
+}
+
+function inferDecisionReplayCauseClass(
+  candidate: DecisionReplayCandidate,
+  ruleScores: DecisionReplayItemRuleScores,
+  wrongnessProbability: number,
+): DecisionReplayCauseClass {
+  if (wrongnessProbability < 0.45) {
+    return "other";
+  }
+  if (candidate.decisionType === "chat_turn") {
+    if ((candidate.routing?.liveDataIntent ?? false) && !(candidate.retrieval?.l2Used ?? false)) {
+      if (candidate.status === "completed") {
+        return "false_refusal_tone";
+      }
+      return "retrieval_miss";
+    }
+    if (candidate.status === "failed" && ruleScores.blockerQuality < 0.5) {
+      return "weak_blocker_explanation";
+    }
+    if ((candidate.status === "failed" || candidate.status === "approval_required") && ruleScores.retryQuality < 0.45) {
+      return "incomplete_retry_repair";
+    }
+    if (ruleScores.toolEvidence < 0.45) {
+      return "tool_mismatch";
+    }
+    return "other";
+  }
+  if ((candidate.status === "blocked" || candidate.status === "approval_required") && ruleScores.blockerQuality < 0.66) {
+    return "weak_blocker_explanation";
+  }
+  if (candidate.status === "failed" && ruleScores.retryQuality < 0.5) {
+    return "incomplete_retry_repair";
+  }
+  if (candidate.status === "failed" && ruleScores.toolEvidence < 0.6) {
+    return "tool_mismatch";
+  }
+  return "other";
+}
+
+function buildDecisionReplayItemSummary(
+  candidate: DecisionReplayCandidate,
+  causeClass: DecisionReplayCauseClass,
+): string {
+  if (candidate.decisionType === "chat_turn") {
+    return `Chat turn ${candidate.turnId ?? "unknown"} was tagged ${causeClass} (${candidate.status}).`;
+  }
+  return `Tool ${candidate.toolName ?? "unknown"} run ${candidate.toolRunId ?? "unknown"} was tagged ${causeClass} (${candidate.status}).`;
+}
+
+function titleForDecisionReplayCause(causeClass: DecisionReplayCauseClass): string {
+  if (causeClass === "false_refusal_tone") return "False Refusal Tone";
+  if (causeClass === "weak_blocker_explanation") return "Weak Blocker Explanations";
+  if (causeClass === "tool_mismatch") return "Tool Selection Mismatch";
+  if (causeClass === "retrieval_miss") return "Retrieval Misses";
+  if (causeClass === "incomplete_retry_repair") return "Incomplete Retry/Repair";
+  return "Other Replay Issues";
+}
+
+function recommendationForDecisionReplayCause(causeClass: DecisionReplayCauseClass): string {
+  if (causeClass === "false_refusal_tone") {
+    return "Tighten refusal wording contract and require explicit tool-attempt summary before refusal.";
+  }
+  if (causeClass === "weak_blocker_explanation") {
+    return "Improve blocker template with concrete cause, failing step, and next-step fallback fields.";
+  }
+  if (causeClass === "tool_mismatch") {
+    return "Re-rank tool selection heuristics and add tie-break preference for higher-evidence tools.";
+  }
+  if (causeClass === "retrieval_miss") {
+    return "Raise live-data intent sensitivity and escalate layered retrieval earlier.";
+  }
+  if (causeClass === "incomplete_retry_repair") {
+    return "Trigger one alternate-strategy retry for failed turns before final response.";
+  }
+  return "Review trace samples and add targeted heuristics for this cluster.";
+}
+
+function summarizeDecisionReplayFinding(group: DecisionReplayItemRecord[]): string {
+  const example = group[0];
+  if (!example) {
+    return "No sample data available.";
+  }
+  return [
+    `Observed ${group.length} similar items.`,
+    `Example: ${example.summary ?? `${example.decisionType} ${example.turnId ?? example.toolRunId ?? "unknown"}`}`,
+    `Average wrongness: ${(group.reduce((sum, item) => sum + item.wrongnessProbability, 0) / group.length).toFixed(2)}.`,
+  ].join(" ");
+}
+
+function severityRank(severity: DecisionReplayFindingRecord["severity"]): number {
+  if (severity === "high") {
+    return 3;
+  }
+  if (severity === "medium") {
+    return 2;
+  }
+  return 1;
+}
+
+function compareDecisionCauseCounts(
+  current: Map<DecisionReplayCauseClass, number>,
+  previous: Map<DecisionReplayCauseClass, number>,
+): WeeklyImprovementReportRecord["weekOverWeek"] {
+  const keys = new Set<DecisionReplayCauseClass>([
+    ...current.keys(),
+    ...previous.keys(),
+  ]);
+  const improved: string[] = [];
+  const regressed: string[] = [];
+  const unchanged: string[] = [];
+  for (const key of keys) {
+    const currentValue = current.get(key) ?? 0;
+    const previousValue = previous.get(key) ?? 0;
+    if (currentValue < previousValue) {
+      improved.push(`${key}: ${previousValue} -> ${currentValue}`);
+    } else if (currentValue > previousValue) {
+      regressed.push(`${key}: ${previousValue} -> ${currentValue}`);
+    } else {
+      unchanged.push(`${key}: ${currentValue}`);
+    }
+  }
+  return { improved, regressed, unchanged };
+}
+
+function normalizeDecisionReplayCauseClass(value: string): DecisionReplayCauseClass {
+  if (IMPROVEMENT_CAUSE_CLASSES.has(value as DecisionReplayCauseClass)) {
+    return value as DecisionReplayCauseClass;
+  }
+  return "other";
+}
+
+function mapDecisionAutoTuneRow(row: {
+  tune_id: string;
+  run_id: string;
+  finding_id: string | null;
+  tune_class: DecisionAutoTuneRecord["tuneClass"];
+  risk_level: DecisionAutoTuneRecord["riskLevel"];
+  status: DecisionAutoTuneRecord["status"];
+  description: string;
+  patch_json: string;
+  snapshot_json: string | null;
+  result_json: string | null;
+  created_at: string;
+  applied_at: string | null;
+  reverted_at: string | null;
+}): DecisionAutoTuneRecord {
+  return {
+    tuneId: row.tune_id,
+    runId: row.run_id,
+    findingId: row.finding_id ?? undefined,
+    tuneClass: row.tune_class,
+    riskLevel: row.risk_level,
+    status: row.status,
+    description: row.description,
+    patch: safeJsonParse<Record<string, unknown>>(row.patch_json, {}),
+    snapshot: row.snapshot_json ? safeJsonParse<Record<string, unknown>>(row.snapshot_json, {}) : undefined,
+    result: row.result_json ? safeJsonParse<Record<string, unknown>>(row.result_json, {}) : undefined,
+    createdAt: row.created_at,
+    appliedAt: row.applied_at ?? undefined,
+    revertedAt: row.reverted_at ?? undefined,
+  };
+}
+
+function mapImprovementReportRow(row: {
+  report_id: string;
+  run_id: string;
+  week_start: string;
+  week_end: string;
+  summary_json: string;
+  top_findings_json: string;
+  applied_tunes_json: string;
+  queued_tunes_json: string;
+  week_over_week_json: string;
+  previous_report_id: string | null;
+  created_at: string;
+}): WeeklyImprovementReportRecord {
+  return {
+    reportId: row.report_id,
+    runId: row.run_id,
+    weekStart: row.week_start,
+    weekEnd: row.week_end,
+    summary: safeJsonParse<WeeklyImprovementReportRecord["summary"]>(row.summary_json, {
+      sampledDecisions: 0,
+      likelyWrongCount: 0,
+      wrongnessRate: 0,
+      topCauseClasses: [],
+      duplicateSuppressedCount: 0,
+      improvedCount: 0,
+      regressedCount: 0,
+    }),
+    topFindings: safeJsonParse<DecisionReplayFindingRecord[]>(row.top_findings_json, []),
+    appliedAutoTunes: safeJsonParse<DecisionAutoTuneRecord[]>(row.applied_tunes_json, []),
+    queuedRecommendations: safeJsonParse<DecisionAutoTuneRecord[]>(row.queued_tunes_json, []),
+    weekOverWeek: safeJsonParse<WeeklyImprovementReportRecord["weekOverWeek"]>(row.week_over_week_json, {
+      improved: [],
+      regressed: [],
+      unchanged: [],
+    }),
+    previousReportId: row.previous_report_id ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function getZonedDateParts(date: Date, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  hour: number;
+  minute: number;
+} {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const read = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
+  const weekdayRaw = read("weekday").toLowerCase();
+  const weekday = weekdayRaw.startsWith("sun")
+    ? 0
+    : weekdayRaw.startsWith("mon")
+      ? 1
+      : weekdayRaw.startsWith("tue")
+        ? 2
+        : weekdayRaw.startsWith("wed")
+          ? 3
+          : weekdayRaw.startsWith("thu")
+            ? 4
+            : weekdayRaw.startsWith("fri")
+              ? 5
+              : 6;
+  return {
+    year: Number.parseInt(read("year"), 10),
+    month: Number.parseInt(read("month"), 10),
+    day: Number.parseInt(read("day"), 10),
+    weekday,
+    hour: Number.parseInt(read("hour"), 10),
+    minute: Number.parseInt(read("minute"), 10),
+  };
+}
+
+function toWeekKeyForTimezone(date: Date, timeZone: string): string {
+  const parts = getZonedDateParts(date, timeZone);
+  const anchor = new Date(Date.UTC(parts.year, parts.month - 1, parts.day - parts.weekday));
+  const yyyy = anchor.getUTCFullYear();
+  const mm = String(anchor.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(anchor.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function clampProbability(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Number(Math.max(0, Math.min(1, value)).toFixed(4));
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return Number(Math.max(0, Math.min(1, parsed)).toFixed(4));
+    }
+  }
+  return 0.5;
+}
+
 function parseLooseJsonRecord(raw: string): Record<string, unknown> | undefined {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -7791,17 +11476,10 @@ function normalizeToolProtocolRetryRequest(
     return message;
   });
 
-  const metadata = {
-    ...(request.metadata ?? {}),
-    goatcitadel_retry_attempt: attempt,
-    ...(attempt === 2 ? { goatcitadel_thinking_level: "minimal" } : {}),
-  };
-
   return {
     ...request,
     tools,
     messages,
-    metadata,
   };
 }
 

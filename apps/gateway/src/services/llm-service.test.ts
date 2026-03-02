@@ -239,6 +239,138 @@ describe("LlmService", () => {
     expect(typeof assistantToolCallMessage?.reasoning_content).toBe("string");
     expect(String(assistantToolCallMessage?.reasoning_content)).not.toHaveLength(0);
   });
+
+  it("retries without metadata when provider rejects metadata without store", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "moonshot",
+      providers: [
+        {
+          providerId: "moonshot",
+          label: "Moonshot",
+          baseUrl: "https://api.moonshot.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "kimi-k2.5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    const payloads: Record<string, unknown>[] = [];
+
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      payloads.push(payload);
+      if (payloads.length === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "The 'metadata' parameter is only allowed when 'store' is enabled.",
+              type: "invalid_request_error",
+            },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "cmpl_test",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const completion = await service.chatCompletions({
+        model: "kimi-k2.5",
+        messages: [
+          { role: "user", content: "hello" },
+        ],
+        metadata: { source: "test-suite" },
+      });
+      const message = completion.choices?.[0]?.message as Record<string, unknown> | undefined;
+      expect(message?.content).toBe("ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]?.metadata).toBeTruthy();
+    expect(payloads[1]?.metadata).toBeUndefined();
+  });
+
+  it("retries stream calls without metadata when provider rejects metadata without store", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "moonshot",
+      providers: [
+        {
+          providerId: "moonshot",
+          label: "Moonshot",
+          baseUrl: "https://api.moonshot.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "kimi-k2.5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    const payloads: Record<string, unknown>[] = [];
+
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      payloads.push(payload);
+      if (payloads.length === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "The 'metadata' parameter is only allowed when 'store' is enabled.",
+              type: "invalid_request_error",
+            },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return new Response(
+        "data: {\"id\":\"chunk_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n",
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    const chunks: Record<string, unknown>[] = [];
+    try {
+      for await (const chunk of service.chatCompletionsStream({
+        model: "kimi-k2.5",
+        messages: [
+          { role: "user", content: "hello" },
+        ],
+        metadata: { source: "test-suite" },
+      })) {
+        chunks.push(chunk);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]?.metadata).toBeTruthy();
+    expect(payloads[1]?.metadata).toBeUndefined();
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks[0]?.id).toBe("chunk_1");
+  });
 });
 
 function createNoopSecretStore(): SecretStoreService {

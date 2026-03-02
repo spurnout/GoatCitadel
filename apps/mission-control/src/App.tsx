@@ -15,6 +15,7 @@ import { CronPage } from "./pages/CronPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { ChatPage } from "./pages/ChatPage";
 import { PromptLabPage } from "./pages/PromptLabPage";
+import { ImprovementPage } from "./pages/ImprovementPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import { CostConsolePage } from "./pages/CostConsolePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -48,6 +49,7 @@ type Tab =
   | "sessions"
   | "chat"
   | "promptLab"
+  | "improvement"
   | "skills"
   | "costs"
   | "settings"
@@ -72,6 +74,7 @@ const allTabs: Tab[] = [
   "sessions",
   "chat",
   "promptLab",
+  "improvement",
   "skills",
   "costs",
   "settings",
@@ -258,6 +261,9 @@ export function App() {
     }
     if (tab === "promptLab") {
       return <PromptLabPage refreshKey={refreshKey} />;
+    }
+    if (tab === "improvement") {
+      return <ImprovementPage refreshKey={refreshKey} />;
     }
     if (tab === "skills") {
       return <SkillsPage refreshKey={refreshKey} />;

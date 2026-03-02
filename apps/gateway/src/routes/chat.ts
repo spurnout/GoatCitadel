@@ -113,6 +113,14 @@ const sendMessageSchema = z.object({
     thinkingLevel: z.enum(["minimal", "standard", "extended"]).optional(),
     toolAutonomy: z.enum(["safe_auto", "manual"]).optional(),
     visionFallbackModel: z.string().optional(),
+    proactiveMode: z.enum(["off", "suggest", "auto_safe"]).optional(),
+    autonomyBudget: z.object({
+      maxActionsPerHour: z.coerce.number().int().positive().max(200).optional(),
+      maxActionsPerTurn: z.coerce.number().int().positive().max(25).optional(),
+      cooldownSeconds: z.coerce.number().int().min(0).max(3600).optional(),
+    }).optional(),
+    retrievalMode: z.enum(["standard", "layered"]).optional(),
+    reflectionMode: z.enum(["off", "on"]).optional(),
   }).optional(),
 });
 
@@ -125,6 +133,14 @@ const prefsPatchSchema = z.object({
   thinkingLevel: z.enum(["minimal", "standard", "extended"]).optional(),
   toolAutonomy: z.enum(["safe_auto", "manual"]).optional(),
   visionFallbackModel: z.string().optional(),
+  proactiveMode: z.enum(["off", "suggest", "auto_safe"]).optional(),
+  autonomyBudget: z.object({
+    maxActionsPerHour: z.coerce.number().int().positive().max(200).optional(),
+    maxActionsPerTurn: z.coerce.number().int().positive().max(25).optional(),
+    cooldownSeconds: z.coerce.number().int().min(0).max(3600).optional(),
+  }).optional(),
+  retrievalMode: z.enum(["standard", "layered"]).optional(),
+  reflectionMode: z.enum(["off", "on"]).optional(),
 });
 
 const commandParseSchema = z.object({
@@ -154,6 +170,57 @@ const delegateBodySchema = z.object({
 const delegationRunParamsSchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
+});
+
+const proactivePolicyPatchSchema = z.object({
+  proactiveMode: z.enum(["off", "suggest", "auto_safe"]).optional(),
+  autonomyBudget: z.object({
+    maxActionsPerHour: z.coerce.number().int().positive().max(200).optional(),
+    maxActionsPerTurn: z.coerce.number().int().positive().max(25).optional(),
+    cooldownSeconds: z.coerce.number().int().min(0).max(3600).optional(),
+  }).optional(),
+  retrievalMode: z.enum(["standard", "layered"]).optional(),
+  reflectionMode: z.enum(["off", "on"]).optional(),
+});
+
+const proactiveTriggerSchema = z.object({
+  source: z.enum(["scheduler", "manual", "chat"]).optional(),
+  reason: z.string().optional(),
+});
+
+const proactiveRunListSchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).default(50),
+});
+
+const learnedMemoryParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  itemId: z.string().min(1),
+});
+
+const learnedMemoryListSchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).default(200),
+});
+
+const learnedMemoryPatchSchema = z.object({
+  status: z.enum(["active", "superseded", "conflict", "disabled"]).optional(),
+  content: z.string().optional(),
+  confidence: z.coerce.number().min(0).max(1).optional(),
+  resolutionNote: z.string().optional(),
+});
+
+const delegateSuggestSchema = z.object({
+  objective: z.string().optional(),
+  roles: z.array(z.string().min(1)).optional(),
+  mode: z.enum(["sequential", "parallel"]).optional(),
+});
+
+const delegateAcceptSchema = z.object({
+  suggestionId: z.string().optional(),
+  objective: z.string().min(1),
+  roles: z.array(z.string().min(1)).min(1),
+  mode: z.enum(["sequential", "parallel"]).optional(),
+  providerId: z.string().optional(),
+  model: z.string().optional(),
 });
 
 const promptPackImportSchema = z.object({
@@ -205,6 +272,10 @@ const promptPackAutoScoreBatchBodySchema = z.object({
   providerId: z.string().optional(),
   model: z.string().optional(),
   force: z.boolean().optional(),
+});
+
+const promptPackExportBodySchema = z.object({
+  includeHistory: z.boolean().optional(),
 });
 
 const chatToolDecisionSchema = z.object({
@@ -768,6 +839,160 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
+  fastify.get("/api/v1/chat/sessions/:sessionId/proactive/status", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getChatSessionProactiveStatus(params.data.sessionId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/chat/sessions/:sessionId/proactive/policy", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const body = proactivePolicyPatchSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.updateChatSessionProactivePolicy(params.data.sessionId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/proactive/trigger", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const body = proactiveTriggerSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.triggerChatSessionProactive(params.data.sessionId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/chat/sessions/:sessionId/proactive/runs", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const query = proactiveRunListSchema.safeParse(request.query ?? {});
+    if (!params.success || !query.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          query: query.success ? undefined : query.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send({
+        items: fastify.gateway.listChatSessionProactiveRuns(params.data.sessionId, query.data.limit),
+      });
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/chat/sessions/:sessionId/learned-memory", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const query = learnedMemoryListSchema.safeParse(request.query ?? {});
+    if (!params.success || !query.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          query: query.success ? undefined : query.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.listChatSessionLearnedMemory(params.data.sessionId, query.data.limit));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/chat/sessions/:sessionId/learned-memory/:itemId", async (request, reply) => {
+    const params = learnedMemoryParamsSchema.safeParse(request.params);
+    const body = learnedMemoryPatchSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(
+        fastify.gateway.updateChatSessionLearnedMemory(params.data.sessionId, params.data.itemId, body.data),
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/learned-memory/rebuild", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.rebuildChatSessionLearnedMemory(params.data.sessionId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/delegate/suggest", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const body = delegateSuggestSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.suggestChatDelegation(params.data.sessionId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/delegate/accept", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const body = delegateAcceptSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.acceptChatDelegation(params.data.sessionId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.post("/api/v1/prompt-packs/import", async (request, reply) => {
     const body = promptPackImportSchema.safeParse(request.body);
     if (!body.success) {
@@ -916,6 +1141,36 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(fastify.gateway.getPromptPackReport(params.data.packId));
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/prompt-packs/:packId/export", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getPromptPackExport(params.data.packId));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/export", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    const body = promptPackExportBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.exportPromptPack(params.data.packId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
     }
   });
 

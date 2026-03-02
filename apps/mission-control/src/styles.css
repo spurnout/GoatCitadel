@@ -1676,6 +1676,75 @@ pre {
   gap: 10px;
 }
 
+.chat-v11-agentic-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.chat-v11-agentic-card {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-v11-agentic-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-v11-agentic-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.chat-v11-suggestion-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 9px;
+  background: rgba(130, 196, 255, 0.08);
+  display: grid;
+  gap: 6px;
+}
+
+.chat-v11-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chat-v11-proactive-list,
+.chat-v11-memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.chat-v11-proactive-list li,
+.chat-v11-memory-list li {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(115, 205, 255, 0.04);
+  display: grid;
+  gap: 4px;
+}
+
+.chat-v11-proactive-list li p,
+.chat-v11-memory-list li p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-v11-muted {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
 .chat-v11-session-bar,
 .chat-v11-external-bind {
   display: flex;
@@ -1984,6 +2053,36 @@ pre {
   gap: 0.35rem;
 }
 
+.improvement-page {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.improvement-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.6rem;
+}
+
+.improvement-score-grid p {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+}
+
+.improvement-simple-list {
+  margin: 0.35rem 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.improvement-compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
 .chat-plus-menu {
   position: relative;
 }
@@ -2182,6 +2281,10 @@ pre {
     max-height: none;
   }
 
+  .chat-v11-agentic-row {
+    grid-template-columns: 1fr;
+  }
+
   .chat-v11-main-grid.with-cowork {
     grid-template-columns: 1fr;
   }
@@ -2192,6 +2295,14 @@ pre {
 
   .prompt-lab-score-grid {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .improvement-score-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .improvement-compare-grid {
+    grid-template-columns: 1fr;
   }
 }
 

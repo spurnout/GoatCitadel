@@ -339,20 +339,29 @@ export class LlmService {
     if (request.response_format !== undefined) payload.response_format = request.response_format;
     if (request.metadata !== undefined) payload.metadata = request.metadata;
 
-    const response = await fetch(`${resolved.provider.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: this.buildHeaders(resolved),
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(60000),
-      redirect: "manual",
-    });
+    const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
+    const headers = this.buildHeaders(resolved);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, 60000);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
     }
 
     if (!response.ok) {
-      throw new Error(await buildHttpError("chat completion", response));
+      const errorText = await response.text();
+      if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.metadata;
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, 60000);
+        if (isRedirect(response.status)) {
+          throw new Error(`chat completion blocked redirect (${response.status})`);
+        }
+        if (!response.ok) {
+          throw new Error(await buildHttpError("chat completion", response));
+        }
+      } else {
+        throw new Error(buildHttpErrorFromText("chat completion", response.status, response.statusText, errorText));
+      }
     }
 
     return (await response.json()) as ChatCompletionResponse;
@@ -383,20 +392,29 @@ export class LlmService {
     if (request.response_format !== undefined) payload.response_format = request.response_format;
     if (request.metadata !== undefined) payload.metadata = request.metadata;
 
-    const response = await fetch(`${resolved.provider.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: this.buildHeaders(resolved),
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(120000),
-      redirect: "manual",
-    });
+    const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
+    const headers = this.buildHeaders(resolved);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, 120000);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
     }
 
     if (!response.ok) {
-      throw new Error(await buildHttpError("chat completion", response));
+      const errorText = await response.text();
+      if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.metadata;
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, 120000);
+        if (isRedirect(response.status)) {
+          throw new Error(`chat completion blocked redirect (${response.status})`);
+        }
+        if (!response.ok) {
+          throw new Error(await buildHttpError("chat completion", response));
+        }
+      } else {
+        throw new Error(buildHttpErrorFromText("chat completion", response.status, response.statusText, errorText));
+      }
     }
 
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -591,6 +609,35 @@ async function buildHttpError(action: string, response: Response): Promise<strin
   const text = await response.text();
   const snippet = text.slice(0, 400);
   return `${action} failed (${response.status} ${response.statusText}): ${snippet}`;
+}
+
+function buildHttpErrorFromText(action: string, status: number, statusText: string, text: string): string {
+  const snippet = text.slice(0, 400);
+  return `${action} failed (${status} ${statusText}): ${snippet}`;
+}
+
+function isMetadataStoreCompatibilityError(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("metadata")
+    && normalized.includes("store")
+    && (normalized.includes("only allowed") || normalized.includes("enabled"))
+  );
+}
+
+async function postChatCompletionsRequest(
+  endpoint: string,
+  headers: Record<string, string>,
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<Response> {
+  return fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
+    redirect: "manual",
+  });
 }
 
 function validateProviderBaseUrl(rawUrl: string): void {

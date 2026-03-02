@@ -98,3 +98,11 @@ export interface PromptPackReportRecord {
     failingCodes: string[];
   };
 }
+
+export interface PromptPackExportRecord {
+  packId: string;
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+  updatedAt?: string;
+}

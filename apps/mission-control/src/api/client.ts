@@ -13,7 +13,11 @@ import type {
   ChatAttachmentPreviewResponse,
   ChatCitationRecord,
   ChatDelegateRequest,
+  ChatDelegateAcceptRequest,
+  ChatDelegateSuggestRequest,
+  ChatDelegateSuggestResponse,
   ChatDelegateResponse,
+  ChatDelegationSuggestionRecord,
   ChatDelegationRunRecord,
   ChatDelegationStepRecord,
   ChatMessageRecord,
@@ -22,6 +26,7 @@ import type {
   ChatSendMessageResponse,
   ChatSessionBindingRecord,
   ChatSessionPrefsRecord,
+  ChatSessionPrefsPatch,
   ChatSessionRecord,
   ChatStreamChunk,
   ChatThinkingLevel,
@@ -80,14 +85,25 @@ import type {
   PromptPackAutoScoreResult,
   PromptPackAutoScoreBatchResult,
   PromptPackReportRecord,
+  PromptPackExportRecord,
+  ProactivePolicy,
+  ProactiveRunRecord,
+  LearnedMemoryConflictRecord,
+  LearnedMemoryItemRecord,
+  LearnedMemoryUpdateInput,
   BankrActionAuditRecord,
   BankrActionPreviewRequest,
   BankrActionPreviewResponse,
   BankrSafetyPolicy,
+  DecisionAutoTuneRecord,
+  DecisionReplayFindingRecord,
+  DecisionReplayItemRecord,
+  DecisionReplayRunRecord,
   SkillActivationPolicy,
   SkillListItem,
   SkillStateRecord,
   SkillRuntimeState,
+  WeeklyImprovementReportRecord,
 } from "@goatcitadel/contracts";
 
 export type { SessionSummary, SessionTimelineItem };
@@ -736,10 +752,125 @@ export async function fetchChatSessionPrefs(sessionId: string): Promise<ChatSess
 
 export async function updateChatSessionPrefs(
   sessionId: string,
-  input: Partial<Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt">>,
+  input: ChatSessionPrefsPatch,
 ): Promise<ChatSessionPrefsRecord> {
   return request<ChatSessionPrefsRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`, {
     method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export interface ChatProactiveStatusResponse {
+  policy: ProactivePolicy;
+  idleSeconds: number;
+  hasRunningTurn: boolean;
+  pendingSuggestions: number;
+  actionsLastHour: number;
+  lastRun?: ProactiveRunRecord;
+}
+
+export async function fetchChatProactiveStatus(sessionId: string): Promise<ChatProactiveStatusResponse> {
+  return request<ChatProactiveStatusResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/proactive/status`,
+  );
+}
+
+export async function updateChatProactivePolicy(
+  sessionId: string,
+  input: Partial<{
+    proactiveMode: ProactivePolicy["mode"];
+    autonomyBudget: Partial<ProactivePolicy["autonomyBudget"]>;
+    retrievalMode: ProactivePolicy["retrievalMode"];
+    reflectionMode: ProactivePolicy["reflectionMode"];
+  }>,
+): Promise<ProactivePolicy> {
+  return request<ProactivePolicy>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/proactive/policy`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function triggerChatProactive(
+  sessionId: string,
+  input?: {
+    source?: "scheduler" | "manual" | "chat";
+    reason?: string;
+  },
+): Promise<ProactiveRunRecord> {
+  return request<ProactiveRunRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/proactive/trigger`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function fetchChatProactiveRuns(sessionId: string, limit = 50): Promise<{ items: ProactiveRunRecord[] }> {
+  return request<{ items: ProactiveRunRecord[] }>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/proactive/runs?limit=${Math.max(1, Math.min(limit, 500))}`,
+  );
+}
+
+export async function fetchChatLearnedMemory(
+  sessionId: string,
+  limit = 200,
+): Promise<{
+  items: LearnedMemoryItemRecord[];
+  conflicts: LearnedMemoryConflictRecord[];
+}> {
+  return request<{
+    items: LearnedMemoryItemRecord[];
+    conflicts: LearnedMemoryConflictRecord[];
+  }>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/learned-memory?limit=${Math.max(1, Math.min(limit, 1000))}`,
+  );
+}
+
+export async function updateChatLearnedMemoryItem(
+  sessionId: string,
+  itemId: string,
+  input: LearnedMemoryUpdateInput,
+): Promise<LearnedMemoryItemRecord> {
+  return request<LearnedMemoryItemRecord>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/learned-memory/${encodeURIComponent(itemId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function rebuildChatLearnedMemory(
+  sessionId: string,
+): Promise<{
+  rebuiltAt: string;
+  items: LearnedMemoryItemRecord[];
+  conflicts: LearnedMemoryConflictRecord[];
+}> {
+  return request<{
+    rebuiltAt: string;
+    items: LearnedMemoryItemRecord[];
+    conflicts: LearnedMemoryConflictRecord[];
+  }>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/learned-memory/rebuild`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function suggestChatDelegation(
+  sessionId: string,
+  input: ChatDelegateSuggestRequest = {},
+): Promise<ChatDelegateSuggestResponse> {
+  return request<ChatDelegateSuggestResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/suggest`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function acceptChatDelegation(
+  sessionId: string,
+  input: ChatDelegateAcceptRequest,
+): Promise<ChatDelegateResponse> {
+  return request<ChatDelegateResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/accept`, {
+    method: "POST",
     body: JSON.stringify(input),
   });
 }
@@ -987,6 +1118,75 @@ export async function autoScorePromptPackBatch(
 
 export async function fetchPromptPackReport(packId: string): Promise<PromptPackReportRecord> {
   return request<PromptPackReportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`);
+}
+
+export async function fetchPromptPackExport(packId: string): Promise<PromptPackExportRecord> {
+  return request<PromptPackExportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/export`);
+}
+
+export async function exportPromptPackReport(
+  packId: string,
+  input?: { includeHistory?: boolean },
+): Promise<PromptPackExportRecord> {
+  return request<PromptPackExportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/export`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function fetchImprovementReports(limit = 24): Promise<{ items: WeeklyImprovementReportRecord[] }> {
+  return request<{ items: WeeklyImprovementReportRecord[] }>(
+    `/api/v1/improvement/reports?limit=${Math.max(1, Math.min(limit, 260))}`,
+  );
+}
+
+export async function fetchImprovementReport(reportId: string): Promise<WeeklyImprovementReportRecord> {
+  return request<WeeklyImprovementReportRecord>(`/api/v1/improvement/reports/${encodeURIComponent(reportId)}`);
+}
+
+export async function runImprovementReplay(input?: {
+  sampleSize?: number;
+}): Promise<{
+  run: DecisionReplayRunRecord;
+  report?: WeeklyImprovementReportRecord;
+}> {
+  return request<{
+    run: DecisionReplayRunRecord;
+    report?: WeeklyImprovementReportRecord;
+  }>("/api/v1/improvement/replay/run", {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function fetchImprovementReplayRun(runId: string): Promise<{
+  run: DecisionReplayRunRecord;
+  items: DecisionReplayItemRecord[];
+  findings: DecisionReplayFindingRecord[];
+  autoTunes: DecisionAutoTuneRecord[];
+  report?: WeeklyImprovementReportRecord;
+}> {
+  return request<{
+    run: DecisionReplayRunRecord;
+    items: DecisionReplayItemRecord[];
+    findings: DecisionReplayFindingRecord[];
+    autoTunes: DecisionAutoTuneRecord[];
+    report?: WeeklyImprovementReportRecord;
+  }>(`/api/v1/improvement/replay/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function approveImprovementAutoTune(tuneId: string): Promise<DecisionAutoTuneRecord> {
+  return request<DecisionAutoTuneRecord>(`/api/v1/improvement/autotune/${encodeURIComponent(tuneId)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function revertImprovementAutoTune(tuneId: string): Promise<DecisionAutoTuneRecord> {
+  return request<DecisionAutoTuneRecord>(`/api/v1/improvement/autotune/${encodeURIComponent(tuneId)}/revert`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function approveChatTool(sessionId: string, approvalId: string): Promise<{ ok: boolean; approvalId: string }> {

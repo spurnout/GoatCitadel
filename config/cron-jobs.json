@@ -11,6 +11,12 @@
       "name": "Cost Report",
       "schedule": "0 * * * *",
       "enabled": true
+    },
+    {
+      "jobId": "self_improvement_weekly_replay",
+      "name": "Self-Improvement Weekly Replay",
+      "schedule": "0 2 * * 0 America/Los_Angeles",
+      "enabled": true
     }
   ]
 }
