@@ -247,6 +247,7 @@ const promptPackRunBodySchema = z.object({
   sessionId: z.string().optional(),
   providerId: z.string().optional(),
   model: z.string().optional(),
+  placeholderValues: z.record(z.string(), z.string()).optional(),
 });
 
 const promptPackScoreBodySchema = z.object({

@@ -3007,6 +3007,7 @@ export class GatewayService {
       sessionId?: string;
       providerId?: string;
       model?: string;
+      placeholderValues?: Record<string, string>;
     },
   ): Promise<PromptPackRunRecord> {
     const pack = this.storage.promptPacks.getPack(packId);
@@ -3018,6 +3019,12 @@ export class GatewayService {
     const defaults = this.getPromptRunnerModelDefaults();
     const providerId = input?.providerId ?? defaults.providerId;
     const model = input?.model ?? defaults.model;
+    const resolvedPrompt = applyPromptPlaceholderValues(test.prompt, input?.placeholderValues);
+    if (resolvedPrompt.missingPlaceholders.length > 0) {
+      throw new Error(
+        `Missing placeholder values for ${test.code}: ${resolvedPrompt.missingPlaceholders.join(", ")}.`,
+      );
+    }
     const runId = randomUUID();
     const sessionId = input?.sessionId ?? this.createChatSession({
       title: `[${test.code}] ${test.title}`.slice(0, 200),
@@ -3035,7 +3042,7 @@ export class GatewayService {
 
     try {
       const response = await this.agentSendChatMessage(sessionId, {
-        content: test.prompt,
+        content: resolvedPrompt.prompt,
         providerId,
         model,
         mode: "chat",
@@ -11483,6 +11490,80 @@ function parsePromptPackTests(content: string): Array<{
   }
   flush();
   return entries;
+}
+
+function extractPromptPlaceholders(prompt: string): string[] {
+  const matches = prompt.match(/<[^<>\n]{3,160}>/g) ?? [];
+  const unique = new Set<string>();
+  for (const match of matches) {
+    const trimmed = match.trim();
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) {
+      continue;
+    }
+    const looksLikePlaceholder = /[A-Z]{2,}/.test(inner)
+      || /[_ ]/.test(inner)
+      || /\b(PASTE|LOCAL|URL|TOPIC|PATH|EXAMPLE|YOUR)\b/i.test(inner);
+    if (!looksLikePlaceholder) {
+      continue;
+    }
+    unique.add(`<${inner}>`);
+  }
+  return Array.from(unique);
+}
+
+function normalizePromptPlaceholderKey(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const inner = trimmed.startsWith("<") && trimmed.endsWith(">")
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
+  return inner.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function applyPromptPlaceholderValues(
+  prompt: string,
+  placeholderValues?: Record<string, string>,
+): {
+  prompt: string;
+  missingPlaceholders: string[];
+} {
+  const placeholders = extractPromptPlaceholders(prompt);
+  if (placeholders.length === 0) {
+    return {
+      prompt,
+      missingPlaceholders: [],
+    };
+  }
+
+  const replacements = new Map<string, string>();
+  for (const [rawKey, rawValue] of Object.entries(placeholderValues ?? {})) {
+    const key = normalizePromptPlaceholderKey(rawKey);
+    const value = rawValue.trim();
+    if (!key || !value) {
+      continue;
+    }
+    replacements.set(key, value);
+  }
+
+  let resolvedPrompt = prompt;
+  const missingPlaceholders: string[] = [];
+  for (const placeholder of placeholders) {
+    const key = normalizePromptPlaceholderKey(placeholder);
+    const replacement = replacements.get(key);
+    if (!replacement) {
+      missingPlaceholders.push(placeholder);
+      continue;
+    }
+    resolvedPrompt = resolvedPrompt.split(placeholder).join(replacement);
+  }
+
+  return {
+    prompt: resolvedPrompt,
+    missingPlaceholders,
+  };
 }
 
 function extractCompletionText(response: ChatCompletionResponse): string {

@@ -60,6 +60,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null);
   const [tests, setTests] = useState<PromptPackTestRecord[]>([]);
   const [importText, setImportText] = useState("");
+  const [placeholderValues, setPlaceholderValues] = useState<Record<string, string>>({});
   const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
   const [report, setReport] = useState<{
     runs: PromptPackRunRecord[];
@@ -204,6 +205,14 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const selectedTest = tests.find((item) => item.testId === selectedTestId) ?? null;
   const selectedRun = selectedTest ? latestRunByTest.get(selectedTest.testId) : undefined;
   const selectedScore = selectedTest ? latestScoreByTest.get(selectedTest.testId) : undefined;
+  const selectedPlaceholders = useMemo(
+    () => selectedTest ? extractPromptPlaceholders(selectedTest.prompt) : [],
+    [selectedTest],
+  );
+  const selectedMissingPlaceholders = useMemo(
+    () => selectedPlaceholders.filter((token) => !(placeholderValues[normalizePromptPlaceholderKey(token)] ?? "").trim()),
+    [placeholderValues, selectedPlaceholders],
+  );
 
   const lastSuccessfulModel = useMemo(() => {
     for (const run of report?.runs ?? []) {
@@ -269,15 +278,53 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setScoreDraft(DEFAULT_SCORE_DRAFT);
   }, [selectedScore, selectedTestId]);
 
+  const buildRunInput = useCallback((test: PromptPackTestRecord): {
+    input: {
+      sessionId?: string;
+      providerId?: string;
+      model?: string;
+      placeholderValues?: Record<string, string>;
+    };
+    missingPlaceholders: string[];
+  } => {
+    const placeholders = extractPromptPlaceholders(test.prompt);
+    const missingPlaceholders: string[] = [];
+    const resolvedPlaceholderValues: Record<string, string> = {};
+
+    for (const placeholder of placeholders) {
+      const key = normalizePromptPlaceholderKey(placeholder);
+      const value = (placeholderValues[key] ?? "").trim();
+      if (!value) {
+        missingPlaceholders.push(placeholder);
+        continue;
+      }
+      resolvedPlaceholderValues[key] = value;
+    }
+
+    return {
+      input: {
+        ...selectedRunModel,
+        placeholderValues: Object.keys(resolvedPlaceholderValues).length > 0 ? resolvedPlaceholderValues : undefined,
+      },
+      missingPlaceholders,
+    };
+  }, [placeholderValues, selectedRunModel]);
+
   const runOne = useCallback(async (test: PromptPackTestRecord, mode: ActiveRunState["mode"] = "single") => {
     if (!selectedPackId) {
+      return;
+    }
+    const { input, missingPlaceholders } = buildRunInput(test);
+    if (missingPlaceholders.length > 0) {
+      setError(
+        `Missing placeholder values for ${test.code}: ${missingPlaceholders.join(", ")}.`,
+      );
       return;
     }
     setActiveRun({ mode, testId: test.testId, testCode: test.code });
     setError(null);
     setSuccess(null);
     try {
-      const input = selectedRunModel;
       const run = await runPromptPackTest(selectedPackId, test.testId, input);
       let autoScoreSummary = "";
       if (autoScoreOnRun && run.status === "completed") {
@@ -298,7 +345,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } finally {
       setActiveRun(null);
     }
-  }, [autoScoreOnRun, loadPack, selectedPackId, selectedRunModel]);
+  }, [autoScoreOnRun, buildRunInput, loadPack, selectedPackId]);
 
   const runAll = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -308,12 +355,17 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setError(null);
     setSuccess(null);
     try {
-      const input = selectedRunModel;
       let completed = 0;
       let failed = 0;
       let autoScored = 0;
+      let skipped = 0;
       for (const test of tests) {
         setActiveRun({ mode: "all", testId: test.testId, testCode: test.code });
+        const { input, missingPlaceholders } = buildRunInput(test);
+        if (missingPlaceholders.length > 0) {
+          skipped += 1;
+          continue;
+        }
         const run = await runPromptPackTest(selectedPackId, test.testId, input);
         if (run.status === "failed") {
           failed += 1;
@@ -329,14 +381,14 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
       }
       await loadPack(selectedPackId);
       setSuccess(
-        `Run all finished: ${completed} completed, ${failed} failed.${autoScoreOnRun ? ` auto-scored ${autoScored}.` : ""}`,
+        `Run all finished: ${completed} completed, ${failed} failed, ${skipped} skipped for missing placeholders.${autoScoreOnRun ? ` auto-scored ${autoScored}.` : ""}`,
       );
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setActiveRun(null);
     }
-  }, [autoScoreOnRun, loadPack, selectedPackId, selectedRunModel, tests]);
+  }, [autoScoreOnRun, buildRunInput, loadPack, selectedPackId, tests]);
 
   const runNext = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -719,6 +771,41 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <article className="card prompt-lab-detail">
           <h3>{selectedTest ? `${selectedTest.code} - ${selectedTest.title}` : "Select a test"}</h3>
           {selectedTest ? <pre>{selectedTest.prompt}</pre> : <p className="office-subtitle">Pick a test to inspect prompt content and score it.</p>}
+          {selectedTest && selectedPlaceholders.length > 0 ? (
+            <section className="status-banner warning" style={{ marginBottom: 12 }}>
+              <p style={{ marginTop: 0 }}>
+                This test has placeholder tokens. Fill them before running.
+              </p>
+              <div style={{ display: "grid", gap: 8 }}>
+                {selectedPlaceholders.map((placeholder) => {
+                  const key = normalizePromptPlaceholderKey(placeholder);
+                  return (
+                    <label key={placeholder} style={{ display: "grid", gap: 4 }}>
+                      {placeholder}
+                      <input
+                        value={placeholderValues[key] ?? ""}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setPlaceholderValues((current) => ({
+                            ...current,
+                            [key]: value,
+                          }));
+                        }}
+                        placeholder={`Value for ${placeholder}`}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+              {selectedMissingPlaceholders.length > 0 ? (
+                <p style={{ marginBottom: 0 }}>
+                  Missing: {selectedMissingPlaceholders.join(", ")}
+                </p>
+              ) : (
+                <p style={{ marginBottom: 0 }}>All placeholders set for this test.</p>
+              )}
+            </section>
+          ) : null}
           {selectedRun ? (
             <section className="prompt-lab-run-summary">
               <p>
@@ -810,6 +897,37 @@ function ScoreField(props: {
       </select>
     </label>
   );
+}
+
+function extractPromptPlaceholders(prompt: string): string[] {
+  const matches = prompt.match(/<[^<>\n]{3,160}>/g) ?? [];
+  const unique = new Set<string>();
+  for (const match of matches) {
+    const trimmed = match.trim();
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) {
+      continue;
+    }
+    const looksLikePlaceholder = /[A-Z]{2,}/.test(inner)
+      || /[_ ]/.test(inner)
+      || /\b(PASTE|LOCAL|URL|TOPIC|PATH|EXAMPLE|YOUR)\b/i.test(inner);
+    if (!looksLikePlaceholder) {
+      continue;
+    }
+    unique.add(`<${inner}>`);
+  }
+  return Array.from(unique);
+}
+
+function normalizePromptPlaceholderKey(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const inner = trimmed.startsWith("<") && trimmed.endsWith(">")
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
+  return inner.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function formatRunStatus(status?: PromptPackRunRecord["status"]): string {

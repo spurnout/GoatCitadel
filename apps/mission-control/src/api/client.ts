@@ -1123,6 +1123,7 @@ export async function runPromptPackTest(
     sessionId?: string;
     providerId?: string;
     model?: string;
+    placeholderValues?: Record<string, string>;
   },
 ): Promise<PromptPackRunRecord> {
   return request<PromptPackRunRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId)}/run`, {
