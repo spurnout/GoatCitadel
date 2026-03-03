@@ -23,9 +23,30 @@ GoatCitadel gives you one Mission Control shell to:
 
 - run chats in `Chat`, `Cowork`, and `Code` modes,
 - route work through tools and governed approvals,
+- personalize behavior with global + workspace guidance docs,
 - benchmark behavior with Prompt Lab test packs,
 - manage external capabilities (MCP, integrations, skills),
 - monitor health, spend, and execution in real time.
+
+## Hardening Snapshot (Current Branch)
+
+- Prompt Lab now separates:
+  - **Run failures**: execution/runtime issues (tooling, policy, transport).
+  - **Score failures**: completed run quality below threshold.
+- Prompt-pack reports now expose explicit gate counters:
+  - `runFailureCount`, `scoreFailureCount`, `needsScoreCount`, `passThreshold`.
+- Prompt Lab live updates run in **background refresh mode** after first load to avoid full-page skeleton flashes during `Run all`.
+- Prompt Lab benchmark matrix APIs are available for model-vs-model subset runs.
+- Mission Control UI now has:
+  - global live/degraded freshness indicator,
+  - reduced banner noise via consolidated notifications,
+  - upgraded operator controls on high-traffic pages,
+  - virtualized long lists on heavy activity/session/file/MCP surfaces.
+- Gateway keeps a **warn-first** remote bind posture:
+  - non-loopback + missing auth emits startup warnings with remediation guidance.
+- Private-beta daily backup cron (`private_beta_backup_daily`) is enabled by default with retention pruning.
+- Inbound channel/webhook-style route has tighter payload bounds and validation.
+- Storage repositories continue migrating to safe JSON parsing to reduce malformed-row crash risk.
 
 ## Screenshot Preview 📸
 
@@ -33,7 +54,15 @@ GoatCitadel gives you one Mission Control shell to:
 
 ![Summit Dashboard](docs/screenshots/mission-control/dashboard.png)
 
-### Chat Workspace
+### Chat Workspace (Conversations)
+
+![Chat Workspace](docs/screenshots/mission-control/chat.png)
+
+### Prompt Lab (Prompt Tests)
+
+![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png)
+
+### Runs and Session Views
 
 ![Runs and Session Views](docs/screenshots/mission-control/sessions.png)
 
@@ -49,7 +78,19 @@ GoatCitadel gives you one Mission Control shell to:
 
 ![Integrations](docs/screenshots/mission-control/integrations.png)
 
+### MCP + Workspaces
+
+![MCP Servers](docs/screenshots/mission-control/mcp.png)
+
+![Workspaces](docs/screenshots/mission-control/workspaces.png)
+
 > More screenshots are available in [`docs/screenshots/mission-control`](docs/screenshots/mission-control).
+
+To refresh screenshots locally:
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screenshots.ps1
+```
 
 ## Who This Is For
 
@@ -78,7 +119,7 @@ GoatCitadel gives you one Mission Control shell to:
 - Import markdown packs with `[TEST-##]` blocks
 - Run single, run next, or run all
 - Hybrid scoring support (rule + model)
-- Separate execution status from quality scoring
+- Separate execution status from quality scoring (`run failure` vs `score failure`)
 - Pass/fail visibility with remediation hints
 
 ### 🛡️ Safety, Policy, and Approvals
@@ -157,6 +198,11 @@ pnpm install
 pnpm config:sync
 ```
 
+Private-beta profile artifacts:
+
+- Env template: [`.env.private-beta.example`](.env.private-beta.example)
+- Config snapshot: [`config/private-beta.profile.json`](config/private-beta.profile.json)
+
 ### 4) Verify baseline build health
 
 ```bash
@@ -217,10 +263,38 @@ pnpm -r build
 - `POST /api/v1/prompt-packs/:packId/tests/:testId/run`
 - `POST /api/v1/prompt-packs/:packId/tests/:testId/score`
 - `GET /api/v1/prompt-packs/:packId/report`
+- `POST /api/v1/prompt-packs/:packId/benchmark/run`
+- `GET /api/v1/prompt-packs/benchmark/:benchmarkRunId`
+
+### Workspaces + Guidance
+
+- `GET /api/v1/workspaces`
+- `POST /api/v1/workspaces`
+- `GET /api/v1/workspaces/:workspaceId`
+- `PATCH /api/v1/workspaces/:workspaceId`
+- `POST /api/v1/workspaces/:workspaceId/archive`
+- `POST /api/v1/workspaces/:workspaceId/restore`
+- `GET /api/v1/guidance/global`
+- `PUT /api/v1/guidance/global/:docType`
+- `GET /api/v1/workspaces/:workspaceId/guidance`
+- `PUT /api/v1/workspaces/:workspaceId/guidance/:docType`
+
+Benchmark request body:
+
+```json
+{
+  "testCodes": ["TEST-03", "TEST-06", "TEST-10", "TEST-12", "TEST-15", "TEST-28"],
+  "providers": [
+    { "providerId": "glm", "model": "glm-5" },
+    { "providerId": "moonshot", "model": "kimi-k2.5" }
+  ]
+}
+```
 
 ## Production Readiness Checklist
 
 - [ ] Provider keys and model defaults configured
+- [ ] Private-beta env profile copied (`.env.private-beta.example` -> `.env`) and secrets filled
 - [ ] Tool policy reviewed (`allow`/`deny` + profiles)
 - [ ] MCP trust tiers and per-server policies configured
 - [ ] Approval flow tested for risky actions
@@ -228,12 +302,37 @@ pnpm -r build
 - [ ] Backup/restore path validated
 - [ ] `typecheck`, `smoke`, and `build` passing in your environment
 
+## Prompt Lab Rerun Gate (Recommended)
+
+Before full 42-test reruns:
+
+1. Run engineering quality gates:
+   - `pnpm -r typecheck`
+   - `pnpm -r test`
+   - `pnpm smoke`
+   - `pnpm -r build`
+2. Run a high-signal subset first:
+   - `TEST-03`, `TEST-06`, `TEST-10`, `TEST-12`, `TEST-15`, `TEST-28`
+3. Confirm:
+   - zero run failures in subset,
+   - no repeated identical tool-failure loops,
+   - run-vs-score classification visible and sane.
+4. Then execute full pack.
+
 ## Documentation
 
 - Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](docs/ENGINEERING_HANDBOOK.md)
 - Install + setup + testing: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
 - MCP + skills curation notes: [`docs/MCP_SKILLS_CURATION.md`](docs/MCP_SKILLS_CURATION.md)
 - Claude production review prompt: [`docs/CLAUDE_PROD_REVIEW_PROMPT.md`](docs/CLAUDE_PROD_REVIEW_PROMPT.md)
+- Mobile companion research report: [`docs/mobile_app_research_report.md`](docs/mobile_app_research_report.md)
+- Runtime guidance: [`GOATCITADEL.md`](GOATCITADEL.md)
+- Agent conventions: [`AGENTS.md`](AGENTS.md)
+- Claude workflow guidance: [`CLAUDE.md`](CLAUDE.md)
+- Contributor workflow: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security policy: [`SECURITY.md`](SECURITY.md)
+- Product vision: [`VISION.md`](VISION.md)
+- AI learning log (validated improvements): [`GOATCITADEL_LEARNING_LOG.md`](GOATCITADEL_LEARNING_LOG.md)
 
 ## Roadmap Signal
 
@@ -243,6 +342,18 @@ Near-term focus:
 - MCP runtime depth and safer server policy defaults
 - Voice/multimodal reliability improvements
 - Continued UI clarity and operator workflow polish
+
+## Mobile Companion (Placeholder)
+
+A mobile companion track is planned and intentionally documented as **pending research integration**.
+
+- Current status: placeholder only (no production mobile runtime yet).
+- Research input file: [`docs/mobile_app_research_report.md`](docs/mobile_app_research_report.md)
+- Expected deliverables in docs:
+  - offline sync model,
+  - auth/session handling on mobile,
+  - notification + approval interaction model,
+  - constrained-tool execution posture for handheld contexts.
 
 ## Local-First Promise
 

@@ -46,6 +46,10 @@ try {
   $targets = @(
     @{ tab = "onboarding"; file = "onboarding.png"; wait = 2500 },
     @{ tab = "dashboard"; file = "dashboard.png"; wait = 2500 },
+    @{ tab = "chat"; file = "chat.png"; wait = 2500 },
+    @{ tab = "promptLab"; file = "prompt-lab.png"; wait = 2500 },
+    @{ tab = "improvement"; file = "improvement.png"; wait = 2500 },
+    @{ tab = "workspaces"; file = "workspaces.png"; wait = 2500 },
     @{ tab = "system"; file = "system.png"; wait = 2500 },
     @{ tab = "files"; file = "files.png"; wait = 2500 },
     @{ tab = "memory"; file = "memory.png"; wait = 2500 },
@@ -61,6 +65,7 @@ try {
     @{ tab = "approvals"; file = "approvals.png"; wait = 2500 },
     @{ tab = "tasks"; file = "tasks.png"; wait = 2500 },
     @{ tab = "integrations"; file = "integrations.png"; wait = 2500 },
+    @{ tab = "mcp"; file = "mcp.png"; wait = 2500 },
     @{ tab = "mesh"; file = "mesh.png"; wait = 2500 },
     @{ tab = "npu"; file = "npu.png"; wait = 2500 }
   )
@@ -68,7 +73,11 @@ try {
   foreach ($target in $targets) {
     $url = "http://localhost:5173/?tab=$($target.tab)"
     $out = Join-Path $outputDir $target.file
-    npx playwright screenshot --wait-for-timeout $target.wait --full-page $url $out | Out-Null
+    Write-Host "Capturing $($target.tab) -> $($target.file)"
+    pnpm dlx playwright screenshot --wait-for-timeout $target.wait --full-page $url $out
+    if ($LASTEXITCODE -ne 0) {
+      throw "Playwright screenshot failed for tab '$($target.tab)' (exit $LASTEXITCODE)."
+    }
   }
 }
 finally {
