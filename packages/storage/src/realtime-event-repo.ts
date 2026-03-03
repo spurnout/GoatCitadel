@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { RealtimeEvent } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface RealtimeEventRow {
   event_id: string;
@@ -92,7 +93,7 @@ export class RealtimeEventRepository {
       eventType: row.event_type,
       source: row.source,
       timestamp: row.created_at,
-      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+      payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {}),
     }));
   }
 

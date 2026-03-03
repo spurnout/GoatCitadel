@@ -2022,6 +2022,16 @@ pre {
   margin-top: 0.45rem;
 }
 
+.prompt-lab-model-picker {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.3rem;
+}
+
+.prompt-lab-model-picker .chat-model-picker {
+  width: 100%;
+}
+
 .prompt-lab-score-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));

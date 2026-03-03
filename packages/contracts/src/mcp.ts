@@ -88,6 +88,7 @@ export interface McpInvokeRequest {
   serverId: string;
   toolName: string;
   arguments?: Record<string, unknown>;
+  agentId?: string;
   sessionId?: string;
   taskId?: string;
 }
@@ -96,4 +97,8 @@ export interface McpInvokeResponse {
   ok: boolean;
   output?: Record<string, unknown>;
   error?: string;
+  approvalRequired?: boolean;
+  approvalId?: string;
+  policyReason?: string;
+  reasonCodes?: string[];
 }

@@ -108,7 +108,10 @@ import type {
 
 export type { SessionSummary, SessionTimelineItem };
 
-const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? "http://127.0.0.1:8787";
+const DEFAULT_GATEWAY_HOST = "127.0.0.1";
+const DEFAULT_GATEWAY_PORT = 8787;
+const DEFAULT_GATEWAY_HOST_ALLOWLIST = ["bld"];
+const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? inferDefaultGatewayBaseUrl();
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 
 interface GatewayAuthState {
@@ -117,6 +120,75 @@ interface GatewayAuthState {
   username?: string;
   password?: string;
   tokenQueryParam?: string;
+}
+
+function inferDefaultGatewayBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return `http://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}`;
+  }
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  const host = window.location.hostname || DEFAULT_GATEWAY_HOST;
+  if (isTrustedGatewayHost(host, import.meta.env.VITE_GATEWAY_ALLOWED_HOSTS)) {
+    return `${protocol}//${host}:${DEFAULT_GATEWAY_PORT}`;
+  }
+  console.warn(
+    `[goatcitadel] refusing inferred gateway host "${host}" because it is not trusted; `
+    + `falling back to ${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}. Set VITE_GATEWAY_ALLOWED_HOSTS to override.`,
+  );
+  return `${protocol}//${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}`;
+}
+
+export function isTrustedGatewayHost(hostname: string, rawAllowlist?: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) {
+    return false;
+  }
+  if (
+    host === "localhost"
+    || host === "127.0.0.1"
+    || host === "::1"
+    || host === "[::1]"
+    || host.endsWith(".ts.net")
+  ) {
+    return true;
+  }
+  if (isPrivateOrCarrierGradeIpv4(host)) {
+    return true;
+  }
+  const allowlist = (rawAllowlist ?? "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  const mergedAllowlist = [...DEFAULT_GATEWAY_HOST_ALLOWLIST, ...allowlist];
+  return mergedAllowlist.some((entry) => {
+    if (entry.startsWith(".")) {
+      return host.endsWith(entry);
+    }
+    return host === entry;
+  });
+}
+
+function isPrivateOrCarrierGradeIpv4(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => !Number.isFinite(octet) || octet < 0 || octet > 255)) {
+    return false;
+  }
+  const a = octets[0] ?? -1;
+  const b = octets[1] ?? -1;
+  if (a === 10 || a === 127) {
+    return true;
+  }
+  if (a === 192 && b === 168) {
+    return true;
+  }
+  if (a === 172 && b >= 16 && b <= 31) {
+    return true;
+  }
+  return a === 100 && b >= 64 && b <= 127;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1129,6 +1201,29 @@ export async function exportPromptPackReport(
   input?: { includeHistory?: boolean },
 ): Promise<PromptPackExportRecord> {
   return request<PromptPackExportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/export`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function resetPromptPack(
+  packId: string,
+  input?: {
+    clearRuns?: boolean;
+    clearScores?: boolean;
+  },
+): Promise<{
+  packId: string;
+  deletedRuns: number;
+  deletedScores: number;
+  export: PromptPackExportRecord;
+}> {
+  return request<{
+    packId: string;
+    deletedRuns: number;
+    deletedScores: number;
+    export: PromptPackExportRecord;
+  }>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/reset`, {
     method: "POST",
     body: JSON.stringify(input ?? {}),
   });
@@ -2275,6 +2370,7 @@ export async function invokeMcpTool(input: {
   serverId: string;
   toolName: string;
   arguments?: Record<string, unknown>;
+  agentId?: string;
   sessionId?: string;
   taskId?: string;
 }): Promise<McpInvokeResponse> {

@@ -477,6 +477,13 @@ function defaultLlmConfig(): string {
         apiKey: "lm-studio",
       },
       {
+        providerId: "ollama",
+        label: "Ollama",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "llama3.2",
+      },
+      {
         providerId: "npu-local",
         label: "NPU Local Sidecar",
         baseUrl: "http://127.0.0.1:11440/v1",

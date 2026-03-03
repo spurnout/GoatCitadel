@@ -1,5 +1,6 @@
 import type { SessionMeta } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
+import { safeJsonParse } from "./safe-json.js";
 
 interface SessionRow {
   session_id: string;
@@ -171,7 +172,7 @@ function mapSessionRow(row: SessionRow): SessionMeta {
     channel: row.channel,
     account: row.account,
     displayName: row.display_name ?? undefined,
-    routingHints: row.routing_hints_json ? (JSON.parse(row.routing_hints_json) as Record<string, string>) : undefined,
+    routingHints: safeJsonParse<Record<string, string> | undefined>(row.routing_hints_json, undefined),
     lastActivityAt: row.last_activity_at,
     updatedAt: row.updated_at,
     health: row.health,

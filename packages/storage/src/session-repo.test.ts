@@ -65,4 +65,27 @@ describe("SessionRepository", () => {
     assert.equal(page2.length, 2);
     assert.equal(page2.some((item) => item.sessionId === page1[0]?.sessionId), false);
   });
+
+  it("handles malformed routing_hints_json without throwing", () => {
+    const repo = createRepo();
+    const now = "2026-02-27T10:00:00.000Z";
+
+    repo.upsert({
+      sessionId: "session-malformed",
+      sessionKey: "discord:me:malformed",
+      kind: "dm",
+      channel: "discord",
+      account: "me",
+      timestamp: now,
+    });
+
+    const db = (repo as unknown as { db: ReturnType<typeof createDatabase> }).db;
+    db.prepare("UPDATE sessions SET routing_hints_json = @json WHERE session_id = @sessionId").run({
+      json: "{invalid-json",
+      sessionId: "session-malformed",
+    });
+
+    const row = repo.getBySessionId("session-malformed");
+    assert.equal(row.routingHints, undefined);
+  });
 });

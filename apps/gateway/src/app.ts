@@ -38,12 +38,15 @@ import { voiceRoutes } from "./routes/voice.js";
 import { mediaRoutes } from "./routes/media.js";
 import { daemonRoutes } from "./routes/daemon.js";
 import { improvementRoutes } from "./routes/improvement.js";
+import { isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
 
 loadLocalEnvFile();
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
   const allowedOrigins = resolveAllowedOrigins();
+  const allowTailnetDevOrigins = resolveAllowTailnetDevOrigins();
+  const tailnetShortHostAllowlist = resolveTailnetShortHostAllowlist();
   const rateLimitConfig = resolveRateLimitConfig();
 
   await app.register(cors, {
@@ -53,6 +56,10 @@ export async function buildApp() {
         return;
       }
       if (allowedOrigins.has(origin)) {
+        cb(null, true);
+        return;
+      }
+      if (allowTailnetDevOrigins && isTailnetDevOrigin(origin, tailnetShortHostAllowlist)) {
         cb(null, true);
         return;
       }
@@ -202,4 +209,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+function resolveAllowTailnetDevOrigins(): boolean {
+  const raw = process.env.GOATCITADEL_ALLOW_TAILNET_DEV_ORIGINS?.trim().toLowerCase();
+  if (!raw) {
+    return process.env.NODE_ENV !== "production";
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }

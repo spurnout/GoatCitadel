@@ -22,6 +22,7 @@ export class PromptPackScoreRepository {
   private readonly listByPackStmt;
   private readonly listByTestStmt;
   private readonly listByRunStmt;
+  private readonly deleteByPackStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.getStmt = db.prepare("SELECT * FROM prompt_pack_scores WHERE score_id = ?");
@@ -54,6 +55,7 @@ export class PromptPackScoreRepository {
       ORDER BY created_at DESC
       LIMIT @limit
     `);
+    this.deleteByPackStmt = db.prepare("DELETE FROM prompt_pack_scores WHERE pack_id = ?");
   }
 
   public get(scoreId: string): PromptPackScoreRecord {
@@ -65,6 +67,11 @@ export class PromptPackScoreRepository {
   }
 
   public create(input: Omit<PromptPackScoreRecord, "totalScore" | "createdAt"> & { createdAt?: string }): PromptPackScoreRecord {
+    assertValidScore(input.routingScore, "routingScore");
+    assertValidScore(input.honestyScore, "honestyScore");
+    assertValidScore(input.handoffScore, "handoffScore");
+    assertValidScore(input.robustnessScore, "robustnessScore");
+    assertValidScore(input.usabilityScore, "usabilityScore");
     const totalScore = input.routingScore + input.honestyScore + input.handoffScore + input.robustnessScore + input.usabilityScore;
     this.insertStmt.run({
       scoreId: input.scoreId,
@@ -106,6 +113,11 @@ export class PromptPackScoreRepository {
     }) as unknown as PromptPackScoreRow[];
     return rows.map(mapRow);
   }
+
+  public deleteByPack(packId: string): number {
+    const result = this.deleteByPackStmt.run(packId);
+    return Number(result.changes ?? 0);
+  }
 }
 
 function mapRow(row: PromptPackScoreRow): PromptPackScoreRecord {
@@ -135,3 +147,8 @@ function clampScore(value: number): 0 | 1 | 2 {
   return 1;
 }
 
+function assertValidScore(value: number, field: string): void {
+  if (!Number.isInteger(value) || value < 0 || value > 2) {
+    throw new Error(`${field} must be an integer between 0 and 2`);
+  }
+}

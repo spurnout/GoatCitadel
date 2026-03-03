@@ -182,3 +182,4 @@ export * from "./research-source-repo.js";
 export * from "./prompt-pack-repo.js";
 export * from "./prompt-pack-run-repo.js";
 export * from "./prompt-pack-score-repo.js";
+export * from "./safe-json.js";

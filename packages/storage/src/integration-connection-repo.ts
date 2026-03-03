@@ -6,6 +6,7 @@ import type {
   IntegrationConnectionUpdateInput,
   IntegrationKind,
 } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface IntegrationConnectionRow {
   connection_id: string;
@@ -158,7 +159,7 @@ function mapRow(row: IntegrationConnectionRow): IntegrationConnection {
     label: row.label,
     enabled: Boolean(row.enabled),
     status: row.status,
-    config: JSON.parse(row.config_json) as Record<string, unknown>,
+    config: safeJsonParse<Record<string, unknown>>(row.config_json, {}),
     pluginId: row.plugin_id ?? undefined,
     pluginVersion: row.plugin_version ?? undefined,
     pluginEnabled: Boolean(row.plugin_enabled),

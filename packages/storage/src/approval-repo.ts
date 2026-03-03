@@ -7,6 +7,7 @@ import type {
 } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { safeJsonParse } from "./safe-json.js";
 
 interface ApprovalRow {
   approval_id: string;
@@ -167,17 +168,15 @@ export class ApprovalRepository {
 }
 
 function mapRow(row: ApprovalRow): ApprovalRequest {
-  const explanation = row.explanation_json
-    ? (JSON.parse(row.explanation_json) as ApprovalExplanation)
-    : undefined;
+  const explanation = safeJsonParse<ApprovalExplanation | undefined>(row.explanation_json, undefined);
 
   return {
     approvalId: row.approval_id,
     kind: row.kind,
     riskLevel: row.risk_level,
     status: row.status,
-    payload: JSON.parse(row.payload_json) as Record<string, unknown>,
-    preview: JSON.parse(row.preview_json) as Record<string, unknown>,
+    payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {}),
+    preview: safeJsonParse<Record<string, unknown>>(row.preview_json, {}),
     createdAt: row.created_at,
     resolvedAt: row.resolved_at ?? undefined,
     resolvedBy: row.resolved_by ?? undefined,

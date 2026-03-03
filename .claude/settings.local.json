@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(pnpm:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(wc:*)"
     ]
   }
 }

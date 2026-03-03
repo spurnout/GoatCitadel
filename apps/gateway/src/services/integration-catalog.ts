@@ -88,6 +88,7 @@ const FORM_SCHEMA_OVERRIDES: Record<string, IntegrationFormSchema> = {
   "model_provider.glm": providerSchema("model_provider.glm", "GLM (Z.AI)", "GLM_API_KEY", "https://api.z.ai/api/paas/v4", "glm-5"),
   "model_provider.moonshot": providerSchema("model_provider.moonshot", "Moonshot", "MOONSHOT_API_KEY", "https://api.moonshot.ai/v1", "kimi-k2.5"),
   "model_provider.lmstudio": providerSchema("model_provider.lmstudio", "LM Studio", "", "http://127.0.0.1:1234/v1", "local-model", true),
+  "model_provider.ollama": providerSchema("model_provider.ollama", "Ollama", "", "http://127.0.0.1:11434/v1", "llama3.2", true),
   "model_provider.local-models": providerSchema("model_provider.local-models", "Local Models", "", "http://127.0.0.1:1234/v1", "local-model", true),
 };
 
@@ -118,6 +119,7 @@ export const INTEGRATION_CATALOG: IntegrationCatalogEntry[] = [
   entry("model_provider", "deepseek", "DeepSeek", "DeepSeek provider route.", "planned", ["api-key"], ["chat-completions"]),
   entry("model_provider", "glm", "GLM (Z.AI)", "GLM provider route via Z.AI OpenAI-compatible API.", "beta", ["api-key"], ["chat-completions"]),
   entry("model_provider", "moonshot", "Moonshot (Kimi API)", "Moonshot Kimi OpenAI-compatible provider route.", "beta", ["api-key"], ["chat-completions"]),
+  entry("model_provider", "ollama", "Ollama", "Ollama local runtime via OpenAI-compatible endpoint.", "native", ["local"], ["chat-completions"]),
   entry("model_provider", "perplexity", "Perplexity", "Perplexity provider route.", "planned", ["api-key"], ["chat-completions"]),
   entry("model_provider", "huggingface", "HuggingFace", "HuggingFace inference route.", "planned", ["api-key"], ["chat-completions"]),
   entry("model_provider", "local-models", "Local Models", "Local model backends (LM Studio/Ollama/LocalAI).", "native", ["local"], ["chat-completions"]),

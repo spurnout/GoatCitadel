@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { OrchestrationPlan, OrchestrationRun } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 export interface OrchestrationCheckpoint {
   checkpointId: string;
@@ -127,7 +128,15 @@ export class OrchestrationRepository {
     if (!row) {
       throw new Error(`Orchestration plan ${planId} not found`);
     }
-    return JSON.parse(row.plan_json) as OrchestrationPlan;
+    return safeJsonParse<OrchestrationPlan>(row.plan_json, {
+      planId,
+      goal: "[corrupted orchestration plan payload]",
+      mode: "auto",
+      maxIterations: 1,
+      maxRuntimeMinutes: 1,
+      maxCostUsd: 0,
+      waves: [],
+    });
   }
 
   public createRun(run: OrchestrationRun): OrchestrationRun {
@@ -208,7 +217,7 @@ export class OrchestrationRepository {
       phaseId: row.phase_id ?? undefined,
       checkpointKind: row.checkpoint_kind,
       gitRef: row.git_ref ?? undefined,
-      details: JSON.parse(row.details_json) as Record<string, unknown>,
+      details: safeJsonParse<Record<string, unknown>>(row.details_json, {}),
       createdAt: row.created_at,
     }));
   }

@@ -63,6 +63,7 @@ const invokeSchema = z.object({
   serverId: z.string().min(1),
   toolName: z.string().min(1),
   arguments: z.record(z.unknown()).optional(),
+  agentId: z.string().optional(),
   sessionId: z.string().optional(),
   taskId: z.string().optional(),
 });
@@ -184,7 +185,7 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     try {
-      return reply.send(fastify.gateway.invokeMcpTool(parsed.data));
+      return reply.send(await fastify.gateway.invokeMcpTool(parsed.data));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }

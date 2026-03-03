@@ -630,6 +630,22 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
+  const applyLocalProviderPreset = (nextProviderId: "lmstudio" | "ollama") => {
+    const template = PROVIDER_TEMPLATES.find((item) => item.providerId === nextProviderId);
+    if (!template) {
+      return;
+    }
+    setActiveProviderId(nextProviderId);
+    setActiveModel(template.defaultModel);
+    setProviderId(nextProviderId);
+    setProviderLabel(template.label);
+    setProviderBaseUrl(template.baseUrl);
+    setProviderDefaultModel(template.defaultModel);
+    setProviderApiKey("");
+    setProviderApiKeyEnv("");
+    setShowAdvanced(true);
+  };
+
   if (!settings) {
     return <p>Loading Forge settings...</p>;
   }
@@ -845,8 +861,20 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
 
       <article className="card">
-        <h3>LLM (OpenAI-Compatible, Chat Completions)</h3>
+        <h3>LLM Providers & Models (OpenAI-Compatible)</h3>
         <p>This uses `/v1/chat/completions` only. Legacy `/v1/completions` is intentionally not used.</p>
+        <details className="advanced-panel">
+          <summary>Local runtime quick setup: LM Studio + Ollama</summary>
+          <p className="office-subtitle"><strong>LM Studio:</strong> load at least one model, then start its local server.</p>
+          <p className="office-subtitle">Base URL: <code>http://127.0.0.1:1234/v1</code> | model id: the loaded model name in LM Studio.</p>
+          <p className="office-subtitle"><strong>Ollama:</strong> run <code>ollama pull llama3.2</code> and keep Ollama running.</p>
+          <p className="office-subtitle">Base URL: <code>http://127.0.0.1:11434/v1</code> | model id: installed tag, for example <code>llama3.2</code>.</p>
+          <p className="office-subtitle">If GoatCitadel is remote, replace <code>127.0.0.1</code> with the host IP/tailnet name and include that host in your outbound allowlist.</p>
+          <div className="controls-row">
+            <button onClick={() => applyLocalProviderPreset("lmstudio")}>Use LM Studio Preset</button>
+            <button onClick={() => applyLocalProviderPreset("ollama")}>Use Ollama Preset</button>
+          </div>
+        </details>
 
         <div className="controls-row">
           <label htmlFor="activeProvider">Active Provider</label>
@@ -968,7 +996,13 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 onChange={setProviderApiKeyEnv}
                 options={[
                   { value: "OPENAI_API_KEY", label: "OPENAI_API_KEY" },
+                  { value: "ANTHROPIC_API_KEY", label: "ANTHROPIC_API_KEY" },
+                  { value: "GOOGLE_API_KEY", label: "GOOGLE_API_KEY" },
+                  { value: "GLM_API_KEY", label: "GLM_API_KEY" },
+                  { value: "MOONSHOT_API_KEY", label: "MOONSHOT_API_KEY" },
                   { value: "OPENROUTER_API_KEY", label: "OPENROUTER_API_KEY" },
+                  { value: "OLLAMA_API_KEY", label: "OLLAMA_API_KEY (optional/proxy only)" },
+                  { value: "LMSTUDIO_API_KEY", label: "LMSTUDIO_API_KEY (optional/proxy only)" },
                 ]}
                 customPlaceholder="Custom env var name"
                 customLabel="Custom env var"

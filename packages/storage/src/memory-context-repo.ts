@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { MemoryContextPack, MemoryContextScope, MemoryCitation, MemoryQmdStatus } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface MemoryContextRow {
   context_id: string;
@@ -156,7 +157,7 @@ export class MemoryContextRepository {
 }
 
 function mapRow(row: MemoryContextRow): MemoryContextPack {
-  const quality = JSON.parse(row.quality_json) as { status?: MemoryQmdStatus; reason?: string };
+  const quality = safeJsonParse<{ status?: MemoryQmdStatus; reason?: string }>(row.quality_json, {});
   return {
     contextId: row.context_id,
     scope: row.scope,
@@ -167,7 +168,7 @@ function mapRow(row: MemoryContextRow): MemoryContextPack {
     queryHash: row.query_hash,
     sourcesHash: row.sources_hash,
     contextText: row.context_text,
-    citations: JSON.parse(row.citations_json) as MemoryCitation[],
+    citations: safeJsonParse<MemoryCitation[]>(row.citations_json, []),
     quality: {
       status: quality.status ?? "generated",
       reason: quality.reason,

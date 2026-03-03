@@ -278,6 +278,11 @@ const promptPackExportBodySchema = z.object({
   includeHistory: z.boolean().optional(),
 });
 
+const promptPackResetBodySchema = z.object({
+  clearRuns: z.boolean().optional(),
+  clearScores: z.boolean().optional(),
+});
+
 const chatToolDecisionSchema = z.object({
   sessionId: z.string().min(1),
   approvalId: z.string().min(1),
@@ -1169,6 +1174,40 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
     try {
       return reply.send(fastify.gateway.exportPromptPack(params.data.packId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/reset", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    const body = promptPackResetBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      const clearRuns = body.data.clearRuns ?? true;
+      const clearScores = body.data.clearScores ?? true;
+
+      if (!clearRuns && !clearScores) {
+        return reply.send({
+          packId: params.data.packId,
+          deletedRuns: 0,
+          deletedScores: 0,
+          export: fastify.gateway.getPromptPackExport(params.data.packId),
+        });
+      }
+      return reply.send(
+        fastify.gateway.resetPromptPackRunsAndScores(params.data.packId, {
+          clearRuns,
+          clearScores,
+        }),
+      );
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }

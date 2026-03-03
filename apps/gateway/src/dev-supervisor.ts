@@ -8,8 +8,10 @@ import { loadLocalEnvFile } from "./env-file.js";
 
 loadLocalEnvFile();
 
-const gatewayHost = process.env.GATEWAY_HOST ?? "127.0.0.1";
+const gatewayHost = process.env.GATEWAY_HOST ?? "0.0.0.0";
+const gatewayHealthHost = resolveGatewayHealthHost(gatewayHost);
 const gatewayPort = Number(process.env.GATEWAY_PORT ?? 8787);
+const warnUnauthNonLoopback = resolveWarnUnauthNonLoopback();
 const pollMs = Number(process.env.GOATCITADEL_GATEWAY_WATCH_POLL_MS ?? 1200);
 const restartWindowMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_WINDOW_MS ?? 60_000);
 const restartMaxFailures = Number(process.env.GOATCITADEL_GATEWAY_RESTART_MAX_FAILURES ?? 5);
@@ -42,10 +44,16 @@ const failureTimestamps: number[] = [];
 async function main(): Promise<void> {
   console.log(`[gateway-supervisor] root: ${repoRoot}`);
   console.log(`[gateway-supervisor] watching for changes (${pollMs}ms poll)`);
-  console.log(`[gateway-supervisor] target health: http://${gatewayHost}:${gatewayPort}/health`);
+  console.log(`[gateway-supervisor] target health: http://${gatewayHealthHost}:${gatewayPort}/health`);
   console.log(
     `[gateway-supervisor] restart budget: max ${restartMaxFailures} failures per ${restartWindowMs}ms`,
   );
+  if (warnUnauthNonLoopback && shouldWarnUnauthNonLoopbackBind(gatewayHost)) {
+    console.warn(
+      "[gateway-supervisor] warning: non-loopback bind without explicit auth env detected. "
+      + "Consider GOATCITADEL_AUTH_TOKEN or GOATCITADEL_AUTH_MODE=basic for safer remote access.",
+    );
+  }
 
   process.on("SIGINT", () => {
     void shutdown("SIGINT");
@@ -234,7 +242,7 @@ async function waitForPortClosed(timeoutMs: number): Promise<boolean> {
 
 async function isGatewayHealthy(): Promise<boolean> {
   try {
-    const response = await fetch(`http://${gatewayHost}:${gatewayPort}/health`, {
+    const response = await fetch(`http://${gatewayHealthHost}:${gatewayPort}/health`, {
       signal: AbortSignal.timeout(1_500),
     });
     return response.ok;
@@ -245,7 +253,7 @@ async function isGatewayHealthy(): Promise<boolean> {
 
 async function isPortOpen(): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    const socket = net.createConnection({ host: gatewayHost, port: gatewayPort });
+    const socket = net.createConnection({ host: gatewayHealthHost, port: gatewayPort });
     let settled = false;
 
     const finish = (value: boolean) => {
@@ -375,6 +383,50 @@ function resetFailureBudget(): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveGatewayHealthHost(host: string): string {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]") {
+    return "127.0.0.1";
+  }
+  return host;
+}
+
+function resolveWarnUnauthNonLoopback(): boolean {
+  const raw = process.env.GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK?.trim().toLowerCase();
+  if (!raw) {
+    return true;
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function shouldWarnUnauthNonLoopbackBind(bindHost: string): boolean {
+  if (isLoopbackHost(bindHost)) {
+    return false;
+  }
+  const mode = process.env.GOATCITADEL_AUTH_MODE?.trim().toLowerCase() ?? "none";
+  if (mode === "none") {
+    return true;
+  }
+  if (mode === "token") {
+    return !process.env.GOATCITADEL_AUTH_TOKEN?.trim();
+  }
+  if (mode === "basic") {
+    return !(process.env.GOATCITADEL_AUTH_BASIC_USERNAME?.trim() && process.env.GOATCITADEL_AUTH_BASIC_PASSWORD?.trim());
+  }
+  return true;
+}
+
+function isLoopbackHost(value: string): boolean {
+  const host = value.trim().toLowerCase();
+  if (!host) {
+    return false;
+  }
+  return host === "127.0.0.1"
+    || host === "localhost"
+    || host === "::1"
+    || host === "[::1]";
 }
 
 main().catch((error) => {

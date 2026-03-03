@@ -23,6 +23,7 @@ export class PromptPackRunRepository {
   private readonly patchStmt;
   private readonly listByPackStmt;
   private readonly listByTestStmt;
+  private readonly deleteByPackStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.getStmt = db.prepare("SELECT * FROM prompt_pack_runs WHERE run_id = ?");
@@ -38,12 +39,12 @@ export class PromptPackRunRepository {
     this.patchStmt = db.prepare(`
       UPDATE prompt_pack_runs
       SET
-        status = @status,
-        response_text = @responseText,
-        trace_json = @traceJson,
-        citations_json = @citationsJson,
-        error = @error,
-        finished_at = @finishedAt
+        status = COALESCE(@status, status),
+        response_text = CASE WHEN @hasResponseText = 1 THEN @responseText ELSE response_text END,
+        trace_json = CASE WHEN @hasTrace = 1 THEN @traceJson ELSE trace_json END,
+        citations_json = CASE WHEN @hasCitations = 1 THEN @citationsJson ELSE citations_json END,
+        error = CASE WHEN @hasError = 1 THEN @error ELSE error END,
+        finished_at = CASE WHEN @hasFinishedAt = 1 THEN @finishedAt ELSE finished_at END
       WHERE run_id = @runId
     `);
     this.listByPackStmt = db.prepare(`
@@ -58,6 +59,7 @@ export class PromptPackRunRepository {
       ORDER BY started_at DESC
       LIMIT @limit
     `);
+    this.deleteByPackStmt = db.prepare("DELETE FROM prompt_pack_runs WHERE pack_id = ?");
   }
 
   public get(runId: string): PromptPackRunRecord {
@@ -109,18 +111,23 @@ export class PromptPackRunRepository {
     error?: string;
     finishedAt?: string;
   }): PromptPackRunRecord {
-    const current = this.get(runId);
-    this.patchStmt.run({
+    const result = this.patchStmt.run({
       runId,
-      status: input.status ?? current.status,
-      responseText: input.responseText !== undefined ? input.responseText : (current.responseText ?? null),
-      traceJson: input.trace !== undefined ? JSON.stringify(input.trace) : (current.trace ? JSON.stringify(current.trace) : null),
-      citationsJson: input.citations !== undefined
-        ? JSON.stringify(input.citations)
-        : (current.citations ? JSON.stringify(current.citations) : null),
-      error: input.error !== undefined ? input.error : (current.error ?? null),
-      finishedAt: input.finishedAt !== undefined ? input.finishedAt : (current.finishedAt ?? null),
+      status: input.status ?? null,
+      hasResponseText: input.responseText !== undefined ? 1 : 0,
+      responseText: input.responseText ?? null,
+      hasTrace: input.trace !== undefined ? 1 : 0,
+      traceJson: input.trace !== undefined ? JSON.stringify(input.trace) : null,
+      hasCitations: input.citations !== undefined ? 1 : 0,
+      citationsJson: input.citations !== undefined ? JSON.stringify(input.citations) : null,
+      hasError: input.error !== undefined ? 1 : 0,
+      error: input.error ?? null,
+      hasFinishedAt: input.finishedAt !== undefined ? 1 : 0,
+      finishedAt: input.finishedAt ?? null,
     });
+    if (Number(result.changes ?? 0) < 1) {
+      throw new Error(`Prompt pack run ${runId} not found`);
+    }
     return this.get(runId);
   }
 
@@ -138,6 +145,11 @@ export class PromptPackRunRepository {
       limit: Math.max(1, Math.min(limit, 5000)),
     }) as unknown as PromptPackRunRow[];
     return rows.map(mapRow);
+  }
+
+  public deleteByPack(packId: string): number {
+    const result = this.deleteByPackStmt.run(packId);
+    return Number(result.changes ?? 0);
   }
 }
 

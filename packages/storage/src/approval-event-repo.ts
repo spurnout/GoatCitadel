@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ApprovalReplayEvent } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface ApprovalEventRow {
   event_id: string;
@@ -65,7 +66,7 @@ export class ApprovalEventRepository {
       eventType: row.event_type,
       actorId: row.actor_id,
       timestamp: row.timestamp,
-      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+      payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {}),
     }));
   }
 }

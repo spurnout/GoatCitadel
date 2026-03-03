@@ -1130,6 +1130,7 @@ export class GatewayService {
     }
     this.proactiveScheduler = setInterval(() => {
       const task = this.runProactiveSchedulerTick().catch((error) => {
+        console.error("[goatcitadel] proactive scheduler tick failed", error);
         this.publishRealtime("system", "chat", {
           type: "proactive_scheduler_error",
           message: (error as Error).message,
@@ -1160,6 +1161,10 @@ export class GatewayService {
           reason: "Background proactive scheduler tick.",
         });
       } catch (error) {
+        console.error(
+          "[goatcitadel] proactive scheduler session trigger failed",
+          { sessionId: session.sessionId, error },
+        );
         this.publishRealtime("system", "chat", {
           type: "proactive_scheduler_session_error",
           sessionId: session.sessionId,
@@ -1175,6 +1180,7 @@ export class GatewayService {
     }
     this.improvementScheduler = setInterval(() => {
       const task = this.runImprovementSchedulerTick().catch((error) => {
+        console.error("[goatcitadel] improvement scheduler tick failed", error);
         this.publishRealtime("system", "improvement", {
           type: "improvement_scheduler_error",
           message: (error as Error).message,
@@ -3340,6 +3346,65 @@ export class GatewayService {
   public exportPromptPack(packId: string): PromptPackExportRecord {
     this.storage.promptPacks.getPack(packId);
     return this.refreshPromptPackExportFile(packId);
+  }
+
+  public resetPromptPackRunsAndScores(
+    packId: string,
+    options: {
+      clearRuns?: boolean;
+      clearScores?: boolean;
+    } = {},
+  ): {
+    packId: string;
+    deletedRuns: number;
+    deletedScores: number;
+    export: PromptPackExportRecord;
+  } {
+    const pack = this.storage.promptPacks.getPack(packId);
+    const clearRuns = options.clearRuns ?? true;
+    const clearScores = options.clearScores ?? true;
+    if (!clearRuns && !clearScores) {
+      return {
+        packId,
+        deletedRuns: 0,
+        deletedScores: 0,
+        export: this.readPromptPackExportRecord(pack),
+      };
+    }
+
+    let deletedRuns = 0;
+    let deletedScores = 0;
+    this.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (clearScores) {
+        deletedScores = this.storage.promptPackScores.deleteByPack(packId);
+      }
+      if (clearRuns) {
+        deletedRuns = this.storage.promptPackRuns.deleteByPack(packId);
+      }
+      this.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.storage.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const exportPath = this.resolvePromptPackExportPath(pack);
+    if (clearRuns) {
+      try {
+        fsSync.rmSync(exportPath, { force: true });
+      } catch {
+        // no-op
+      }
+    } else if (clearScores) {
+      this.refreshPromptPackExportFile(packId);
+    }
+
+    return {
+      packId,
+      deletedRuns,
+      deletedScores,
+      export: this.readPromptPackExportRecord(pack),
+    };
   }
 
   public listImprovementReports(limit = 24): WeeklyImprovementReportRecord[] {
@@ -6936,8 +7001,8 @@ export class GatewayService {
       if (!this.config.assistant.npu.enabled) {
         void this.npuSidecar.stop("disabled");
       } else if (this.config.assistant.npu.autoStart) {
-        void this.npuSidecar.start("config_autostart").catch(() => {
-          // surfaced via status + realtime events
+        void this.npuSidecar.start("config_autostart").catch((error) => {
+          console.error("[goatcitadel] npu sidecar autostart failed after settings update", error);
         });
       }
       persistAssistant = true;
@@ -7298,7 +7363,7 @@ export class GatewayService {
       .sort((left, right) => left.toolName.localeCompare(right.toolName));
   }
 
-  public invokeMcpTool(input: McpInvokeRequest): McpInvokeResponse {
+  public async invokeMcpTool(input: McpInvokeRequest): Promise<McpInvokeResponse> {
     const server = this.requireMcpServer(input.serverId);
     if (!server.enabled || server.status !== "connected") {
       return {
@@ -7339,6 +7404,63 @@ export class GatewayService {
         ok: false,
         error: `First-use approval required for ${input.toolName}. Approve this tool in MCP policy or disable first-use approval.`,
       };
+    }
+
+    const policyAgentId = input.agentId?.trim() || "operator";
+    const policySessionId = input.sessionId?.trim() || `mcp:${input.serverId}`;
+    const access = this.policyEngine.evaluateAccess({
+      toolName: "mcp.invoke",
+      args: {
+        serverId: input.serverId,
+        toolName: input.toolName,
+        arguments: input.arguments ?? {},
+      },
+      agentId: policyAgentId,
+      sessionId: policySessionId,
+      taskId: input.taskId,
+    });
+    if (!access.allowed) {
+      return {
+        ok: false,
+        error: `MCP invoke blocked by policy: ${access.reasonCodes.join(", ")}`,
+        policyReason: "blocked by tool policy",
+        reasonCodes: access.reasonCodes,
+      };
+    }
+    if (access.requiresApproval) {
+      const decision = await this.policyEngine.invoke({
+        toolName: "mcp.invoke",
+        args: {
+          serverId: input.serverId,
+          toolName: input.toolName,
+          arguments: input.arguments ?? {},
+        },
+        agentId: policyAgentId,
+        sessionId: policySessionId,
+        taskId: input.taskId,
+        consentContext: {
+          source: "agent",
+          reason: `MCP tool invoke ${input.serverId}/${input.toolName}`,
+        },
+      });
+      if (decision.outcome === "approval_required") {
+        return {
+          ok: false,
+          error: "MCP invoke requires approval.",
+          approvalRequired: true,
+          approvalId: decision.approvalId,
+          policyReason: decision.policyReason,
+          reasonCodes: access.reasonCodes,
+        };
+      }
+      if (decision.outcome === "blocked") {
+        return {
+          ok: false,
+          error: decision.policyReason,
+          policyReason: decision.policyReason,
+          reasonCodes: access.reasonCodes,
+        };
+      }
     }
 
     const output = {

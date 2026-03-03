@@ -4,16 +4,20 @@ import {
   autoScorePromptPackBatch,
   autoScorePromptPackTest,
   exportPromptPackReport,
+  fetchLlmConfig,
+  fetchLlmModels,
   fetchPromptPackExport,
   fetchPromptPackReport,
   fetchPromptPacks,
   fetchPromptPackTests,
   importPromptPack,
+  resetPromptPack,
   runPromptPackTest,
   scorePromptPackTest,
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { ChatModelPicker, type ChatModelProviderOption } from "../components/ChatModelPicker";
 import { pageCopy } from "../content/copy";
 
 interface ScoreDraft {
@@ -46,6 +50,9 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [savingScore, setSavingScore] = useState(false);
   const [autoScoring, setAutoScoring] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetClearRuns, setResetClearRuns] = useState(true);
+  const [resetClearScores, setResetClearScores] = useState(true);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -68,6 +75,9 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   } | null>(null);
   const [reuseLastModel, setReuseLastModel] = useState(true);
   const [autoScoreOnRun, setAutoScoreOnRun] = useState(true);
+  const [providerOptions, setProviderOptions] = useState<ChatModelProviderOption[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
   const [exportInfo, setExportInfo] = useState<{
     packId: string;
     path: string;
@@ -77,6 +87,36 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   } | null>(null);
   const [scoreDraft, setScoreDraft] = useState<ScoreDraft>(DEFAULT_SCORE_DRAFT);
   const running = activeRun !== null;
+
+  const loadLlmCatalog = useCallback(async () => {
+    const config = await fetchLlmConfig();
+    const options = await Promise.all(config.providers.map(async (provider) => {
+      let discoveredModels: string[] = [];
+      try {
+        const models = await fetchLlmModels(provider.providerId);
+        discoveredModels = models.items.map((item) => item.id);
+      } catch {
+        // Keep the provider visible with known defaults even if remote model discovery fails.
+      }
+      return {
+        providerId: provider.providerId,
+        label: provider.label,
+        models: dedupeStrings([
+          provider.defaultModel,
+          provider.providerId === config.activeProviderId ? config.activeModel : undefined,
+          ...discoveredModels,
+        ]),
+      } satisfies ChatModelProviderOption;
+    }));
+
+    setProviderOptions(options.filter((item) => item.models.length > 0));
+    setSelectedProviderId((current) => {
+      if (current && options.some((item) => item.providerId === current)) {
+        return current;
+      }
+      return config.activeProviderId ?? options[0]?.providerId ?? "";
+    });
+  }, []);
 
   const loadPack = useCallback(async (packId: string) => {
     const [testsResponse, reportResponse, exportResponse] = await Promise.all([
@@ -131,6 +171,10 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }, [load, refreshKey]);
 
   useEffect(() => {
+    void loadLlmCatalog().catch((err: Error) => setError((current) => current ?? err.message));
+  }, [loadLlmCatalog, refreshKey]);
+
+  useEffect(() => {
     if (!selectedPackId) {
       return;
     }
@@ -177,6 +221,40 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
   }).length, [latestRunByTest, latestScoreByTest, tests]);
 
   useEffect(() => {
+    if (providerOptions.length === 0) {
+      setSelectedModel("");
+      return;
+    }
+    const activeProvider = providerOptions.find((item) => item.providerId === selectedProviderId) ?? providerOptions[0];
+    if (!activeProvider) {
+      setSelectedModel("");
+      return;
+    }
+    if (!selectedProviderId) {
+      setSelectedProviderId(activeProvider.providerId);
+    }
+    setSelectedModel((current) => current && activeProvider.models.includes(current)
+      ? current
+      : activeProvider.models[0] ?? "");
+  }, [providerOptions, selectedProviderId]);
+
+  const selectedRunModel = useMemo(() => {
+    if (reuseLastModel && lastSuccessfulModel) {
+      return {
+        providerId: lastSuccessfulModel.providerId,
+        model: lastSuccessfulModel.model,
+      };
+    }
+    if (!selectedProviderId) {
+      return undefined;
+    }
+    return {
+      providerId: selectedProviderId,
+      model: selectedModel || undefined,
+    };
+  }, [lastSuccessfulModel, reuseLastModel, selectedModel, selectedProviderId]);
+
+  useEffect(() => {
     if (selectedScore) {
       setScoreDraft({
         routingScore: selectedScore.routingScore,
@@ -199,9 +277,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setError(null);
     setSuccess(null);
     try {
-      const input = reuseLastModel && lastSuccessfulModel
-        ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
-        : undefined;
+      const input = selectedRunModel;
       const run = await runPromptPackTest(selectedPackId, test.testId, input);
       let autoScoreSummary = "";
       if (autoScoreOnRun && run.status === "completed") {
@@ -222,7 +298,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } finally {
       setActiveRun(null);
     }
-  }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId]);
+  }, [autoScoreOnRun, loadPack, selectedPackId, selectedRunModel]);
 
   const runAll = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -232,14 +308,12 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setError(null);
     setSuccess(null);
     try {
+      const input = selectedRunModel;
       let completed = 0;
       let failed = 0;
       let autoScored = 0;
       for (const test of tests) {
         setActiveRun({ mode: "all", testId: test.testId, testCode: test.code });
-        const input = reuseLastModel && lastSuccessfulModel
-          ? { providerId: lastSuccessfulModel.providerId, model: lastSuccessfulModel.model }
-          : undefined;
         const run = await runPromptPackTest(selectedPackId, test.testId, input);
         if (run.status === "failed") {
           failed += 1;
@@ -262,7 +336,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } finally {
       setActiveRun(null);
     }
-  }, [autoScoreOnRun, lastSuccessfulModel, loadPack, reuseLastModel, selectedPackId, tests]);
+  }, [autoScoreOnRun, loadPack, selectedPackId, selectedRunModel, tests]);
 
   const runNext = useCallback(async () => {
     if (!selectedPackId || tests.length === 0) {
@@ -299,6 +373,44 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setExporting(false);
     }
   }, [selectedPackId]);
+
+  const resetPack = useCallback(async () => {
+    if (!selectedPackId) {
+      return;
+    }
+    if (!resetClearRuns && !resetClearScores) {
+      setError("Select at least one reset option (runs or scores).");
+      return;
+    }
+    const scopeLabel = resetClearRuns && resetClearScores
+      ? "run history and scores"
+      : resetClearRuns
+        ? "run history"
+        : "scores";
+    const confirmed = window.confirm(
+      `Reset this prompt pack? This will clear ${scopeLabel} for this pack.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    setResetting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await resetPromptPack(selectedPackId, {
+        clearRuns: resetClearRuns,
+        clearScores: resetClearScores,
+      });
+      await loadPack(selectedPackId);
+      setSuccess(
+        `Reset complete: removed ${result.deletedRuns} run(s) and ${result.deletedScores} score(s).`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setResetting(false);
+    }
+  }, [loadPack, resetClearRuns, resetClearScores, selectedPackId]);
 
   const copyExportPath = useCallback(async () => {
     if (!exportInfo?.path) {
@@ -442,8 +554,14 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <ActionButton
             label="Export now"
             pending={exporting}
-            disabled={!selectedPackId || running}
+            disabled={!selectedPackId || running || resetting}
             onClick={() => void exportReport()}
+          />
+          <ActionButton
+            label="Reset pack"
+            pending={resetting}
+            disabled={!selectedPackId || running || exporting || importing || autoScoring}
+            onClick={() => void resetPack()}
           />
         </div>
       </header>
@@ -455,6 +573,27 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
           Run in progress: {activeRun.testCode ?? "prompt-pack run"} ({activeRun.mode})
         </div>
       ) : null}
+      <div className="status-banner">
+        <span style={{ marginRight: 12 }}>Reset options:</span>
+        <label style={{ marginRight: 12 }}>
+          <input
+            type="checkbox"
+            checked={resetClearRuns}
+            onChange={(event) => setResetClearRuns(event.target.checked)}
+            disabled={running || resetting || exporting || importing || autoScoring}
+          />{" "}
+          Clear runs
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={resetClearScores}
+            onChange={(event) => setResetClearScores(event.target.checked)}
+            disabled={running || resetting || exporting || importing || autoScoring}
+          />{" "}
+          Clear scores
+        </label>
+      </div>
       <div className="status-banner warning">
         {autoScoreOnRun
           ? "Auto-score is ON (model + rule checks). You can still edit any score manually."
@@ -501,6 +640,31 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number }) {
               </li>
             ))}
           </ul>
+          <div className="prompt-lab-model-picker">
+            <p className="office-subtitle">
+              {reuseLastModel && lastSuccessfulModel
+                ? `Running with last successful model: ${lastSuccessfulModel.providerId}/${lastSuccessfulModel.model}`
+                : selectedRunModel?.providerId
+                  ? `Running with selected model: ${selectedRunModel.providerId}/${selectedRunModel.model ?? "(provider default)"}`
+                  : "Select a provider/model for this prompt-pack run."}
+            </p>
+            <ChatModelPicker
+              providers={providerOptions}
+              providerId={selectedProviderId}
+              model={selectedModel}
+              disabled={running || providerOptions.length === 0}
+              onChangeProvider={(providerId) => {
+                setReuseLastModel(false);
+                setSelectedProviderId(providerId);
+                const provider = providerOptions.find((item) => item.providerId === providerId);
+                setSelectedModel(provider?.models[0] ?? "");
+              }}
+              onChangeModel={(model) => {
+                setReuseLastModel(false);
+                setSelectedModel(model);
+              }}
+            />
+          </div>
           <label className="prompt-lab-toggle">
             <input
               type="checkbox"
@@ -660,4 +824,16 @@ function statusChipClass(status?: PromptPackRunRecord["status"]): string {
   if (status === "completed") return "run-completed";
   if (status === "failed") return "run-failed";
   return "run-not-run";
+}
+
+function dedupeStrings(values: Array<string | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
 }

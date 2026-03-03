@@ -1,10 +1,28 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "::1", "bld", ".ts.net"];
+
+export function resolveViteAllowedHosts(env: Record<string, string | undefined> = process.env): string[] {
+  const raw = env.GOATCITADEL_VITE_ALLOWED_HOSTS?.trim();
+  if (!raw) {
+    return [...DEFAULT_ALLOWED_HOSTS];
+  }
+  const fromEnv = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const merged = new Set<string>([...DEFAULT_ALLOWED_HOSTS, ...fromEnv]);
+  return [...merged];
+}
+
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: "0.0.0.0",
     port: 5173,
+    // Keep Tailnet/MagicDNS support while preserving explicit host checks.
+    allowedHosts: resolveViteAllowedHosts(),
   },
   build: {
     rollupOptions: {

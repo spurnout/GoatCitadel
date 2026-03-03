@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { safeJsonParse } from "./safe-json.js";
 
 export interface KnowledgeDocumentRecord {
   docId: string;
@@ -163,7 +164,7 @@ export class KnowledgeRepository {
       sourceType: row.source_type,
       sourceRef: row.source_ref,
       title: row.title,
-      metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
+      metadata: safeJsonParse<Record<string, unknown>>(row.metadata_json, {}),
       createdAt: row.created_at,
     }));
   }
@@ -198,7 +199,7 @@ function mapChunkRow(row: KnowledgeChunkRow): KnowledgeChunkRecord {
     docId: row.doc_id,
     seq: row.seq,
     content: row.content,
-    embedding: row.embedding_json ? JSON.parse(row.embedding_json) as number[] : undefined,
+    embedding: safeJsonParse<number[] | undefined>(row.embedding_json, undefined),
     tokenEstimate: row.token_estimate,
     createdAt: row.created_at,
   };

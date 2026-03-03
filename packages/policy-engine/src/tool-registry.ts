@@ -301,6 +301,23 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     pack: "core",
   },
   {
+    name: "mcp.invoke",
+    category: "ops",
+    riskLevel: "danger",
+    requiresApproval: true,
+    description: "Invoke a managed MCP tool through policy-gated execution.",
+    argSchema: {
+      type: "object",
+      properties: {
+        serverId: { type: "string" },
+        toolName: { type: "string" },
+        arguments: { type: "object" },
+      },
+      required: ["serverId", "toolName"],
+    },
+    pack: "core",
+  },
+  {
     name: "citations.build",
     category: "research",
     riskLevel: "safe",
