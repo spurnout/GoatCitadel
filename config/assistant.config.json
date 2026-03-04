@@ -104,7 +104,7 @@
     "replayOverridesV1Enabled": false,
     "memoryLifecycleAdminV1Enabled": false,
     "connectorDiagnosticsV1Enabled": false,
-    "computerUseGuardrailsV1Enabled": false,
+    "computerUseGuardrailsV1Enabled": true,
     "cronReviewQueueV1Enabled": false,
     "replayRegressionV1Enabled": false
   },

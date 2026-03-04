@@ -16,6 +16,7 @@ import {
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { ConfirmModal } from "../components/ConfirmModal";
 import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { GCSelect, GCSwitch } from "../components/ui";
@@ -90,6 +91,10 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleteServer, setConfirmDeleteServer] = useState<{
+    serverId: string;
+    label: string;
+  } | null>(null);
   const [diagnosticByServerId, setDiagnosticByServerId] = useState<Record<string, {
     connectorType: "mcp_server" | "integration_connection";
     connectorId: string;
@@ -518,17 +523,11 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
                   label="Delete"
                   pending={busy}
                   danger
-                  onClick={async () => {
-                    setBusy(true);
-                    try {
-                      await deleteMcpServer(selected.serverId);
-                      await loadServers();
-                      setError(null);
-                    } catch (err) {
-                      setError((err as Error).message);
-                    } finally {
-                      setBusy(false);
-                    }
+                  onClick={() => {
+                    setConfirmDeleteServer({
+                      serverId: selected.serverId,
+                      label: selected.label,
+                    });
                   }}
                 />
                 <ActionButton
@@ -698,6 +697,33 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
           <pre>{result}</pre>
         ) : null}
       </article>
+      <ConfirmModal
+        open={Boolean(confirmDeleteServer)}
+        title="Delete MCP Server"
+        message={`Delete "${confirmDeleteServer?.label ?? "this MCP server"}"? This cannot be undone.`}
+        confirmLabel={busy ? "Deleting..." : "Delete"}
+        danger
+        onCancel={() => setConfirmDeleteServer(null)}
+        onConfirm={() => {
+          const target = confirmDeleteServer;
+          if (!target) {
+            return;
+          }
+          setConfirmDeleteServer(null);
+          void (async () => {
+            setBusy(true);
+            try {
+              await deleteMcpServer(target.serverId);
+              await loadServers();
+              setError(null);
+            } catch (err) {
+              setError((err as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+      />
     </section>
   );
 }

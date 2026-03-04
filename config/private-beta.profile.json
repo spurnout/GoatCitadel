@@ -8,6 +8,9 @@
       "token": {
         "queryParam": "access_token"
       }
+    },
+    "features": {
+      "computerUseGuardrailsV1Enabled": true
     }
   },
   "cronJobs": {

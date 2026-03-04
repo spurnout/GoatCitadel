@@ -1,8 +1,9 @@
 import { buildApp } from "./app.js";
 
 const port = Number(process.env.GATEWAY_PORT ?? 8787);
-const host = process.env.GATEWAY_HOST ?? "0.0.0.0";
+const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const warnUnauthNonLoopback = resolveWarnUnauthNonLoopback();
+const allowUnauthNetwork = resolveAllowUnauthNetwork();
 
 const app = await buildApp();
 let shuttingDown = false;
@@ -31,14 +32,30 @@ process.on("SIGTERM", () => {
 });
 
 try {
-  if (warnUnauthNonLoopback && shouldWarnUnauthNonLoopbackBind(host, app.gatewayConfig.assistant.auth)) {
-    app.log.warn(
-      {
-        host,
-        authMode: app.gatewayConfig.assistant.auth.mode,
-      },
-      "Binding gateway to non-loopback host without configured auth. Set GOATCITADEL_AUTH_TOKEN or GOATCITADEL_AUTH_MODE=basic for safer remote access.",
-    );
+  const unsafeBind = shouldWarnUnauthNonLoopbackBind(host, app.gatewayConfig.assistant.auth);
+  if (unsafeBind) {
+    if (!allowUnauthNetwork) {
+      app.log.error(
+        {
+          host,
+          authMode: app.gatewayConfig.assistant.auth.mode,
+          overrideEnv: "GOATCITADEL_ALLOW_UNAUTH_NETWORK=1",
+        },
+        "Refusing to bind gateway to non-loopback host without configured auth.",
+      );
+      throw new Error(
+        "Unsafe gateway bind blocked: non-loopback host requires auth. Set GOATCITADEL_AUTH_MODE and credentials or GOATCITADEL_ALLOW_UNAUTH_NETWORK=1 to override.",
+      );
+    }
+    if (warnUnauthNonLoopback) {
+      app.log.warn(
+        {
+          host,
+          authMode: app.gatewayConfig.assistant.auth.mode,
+        },
+        "Binding gateway to non-loopback host without configured auth. Set GOATCITADEL_AUTH_TOKEN or GOATCITADEL_AUTH_MODE=basic for safer remote access.",
+      );
+    }
   }
   await app.listen({ port, host });
   app.log.info(`gateway listening on http://${host}:${port}`);
@@ -51,6 +68,14 @@ function resolveWarnUnauthNonLoopback(): boolean {
   const raw = process.env.GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK?.trim().toLowerCase();
   if (!raw) {
     return true;
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function resolveAllowUnauthNetwork(): boolean {
+  const raw = process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK?.trim().toLowerCase();
+  if (!raw) {
+    return false;
   }
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }

@@ -84,4 +84,85 @@ describe("executeTool", () => {
       toolName: "custom.unknown",
     });
   });
+
+  it("executes shell commands via execFile parsing", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const request: ToolInvokeRequest = {
+      toolName: "shell.exec",
+      args: { command: 'node -e "process.stdout.write(\'ok\')"' },
+      agentId: "agent",
+      sessionId: "sess-3",
+    };
+
+    const result = await executeTool(request, policyConfig, storageStub);
+    expect(result).toMatchObject({
+      command: request.args.command,
+      executable: "node",
+      exitCode: 0,
+    });
+    expect(String(result.stdout ?? "")).toContain("ok");
+  });
+
+  it("rejects malformed shell command parsing", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const request: ToolInvokeRequest = {
+      toolName: "shell.exec",
+      args: { command: "echo \"unterminated" },
+      agentId: "agent",
+      sessionId: "sess-4",
+    };
+
+    await expect(executeTool(request, policyConfig, storageStub)).rejects.toThrow(
+      "unmatched quotes or escape sequence",
+    );
+  });
+
+  it("blocks risky shell command without approval context", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const riskyPolicy: ToolPolicyConfig = {
+      ...policyConfig,
+      sandbox: {
+        ...policyConfig.sandbox,
+        riskyShellPatterns: ["rm -rf"],
+        requireApprovalForRiskyShell: true,
+      },
+    };
+    const request: ToolInvokeRequest = {
+      toolName: "shell.exec",
+      args: { command: "rm -rf ./tmp" },
+      agentId: "agent",
+      sessionId: "sess-5",
+    };
+
+    await expect(executeTool(request, riskyPolicy, storageStub)).rejects.toThrow(
+      "Risky shell command requires approval",
+    );
+  });
+
+  it("allows risky shell command when approval context is provided", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const riskyPolicy: ToolPolicyConfig = {
+      ...policyConfig,
+      sandbox: {
+        ...policyConfig.sandbox,
+        riskyShellPatterns: ["node --version"],
+        requireApprovalForRiskyShell: true,
+      },
+    };
+    const request: ToolInvokeRequest = {
+      toolName: "shell.exec",
+      args: { command: "node --version" },
+      agentId: "agent",
+      sessionId: "sess-6",
+      consentContext: {
+        source: "ui",
+        reason: "approval:apr_123",
+      },
+    };
+
+    const result = await executeTool(request, riskyPolicy, storageStub);
+    expect(result).toMatchObject({
+      command: "node --version",
+    });
+  });
 });

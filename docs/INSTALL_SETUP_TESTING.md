@@ -101,7 +101,8 @@ VITE_GATEWAY_ALLOWED_HOSTS=localhost,127.0.0.1,bld,.ts.net
 
 Notes:
 
-- Current posture is warn-first (non-loopback without auth prints startup warning but does not hard-block).
+- Current posture is fail-closed by default: non-loopback bind with weak/no auth is blocked at startup.
+- Break-glass override is available only when explicitly set: `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`.
 - Keep `GOATCITADEL_AUTH_MODE=token` or `basic` for any shared network access.
 
 GoatCitadel now auto-loads `.env` on gateway startup.  

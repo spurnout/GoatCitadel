@@ -3145,17 +3145,24 @@ async function buildEventStreamUrl(): Promise<string> {
     return url.toString();
   }
 
-  if (auth.mode === "token" && auth.token?.trim()) {
-    url.searchParams.set(auth.tokenQueryParam?.trim() || "access_token", auth.token.trim());
-    return url.toString();
-  }
-
-  if (auth.mode === "basic" && auth.username && auth.password) {
-    const issued = await request<SseTokenIssueResponse>("/api/v1/auth/sse-token", {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    url.searchParams.set("sse_token", issued.token);
+  if (
+    auth.mode === "token"
+    || auth.mode === "basic"
+    || Boolean(auth.token?.trim())
+    || Boolean(auth.username && auth.password)
+  ) {
+    try {
+      const issued = await request<SseTokenIssueResponse>("/api/v1/auth/sse-token", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      url.searchParams.set("sse_token", issued.token);
+    } catch (error) {
+      if ((error as Error).message.includes("API error 400")) {
+        return url.toString();
+      }
+      throw error;
+    }
   }
 
   return url.toString();

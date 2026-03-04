@@ -51,6 +51,9 @@ const forgetManySchema = z.object({
 });
 
 export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
+  const resolveActorId = (request: { authActorId?: string; ip?: string }) =>
+    request.authActorId?.trim() || `ip:${request.ip ?? "unknown"}`;
+
   fastify.post("/api/v1/memory/context/compose", async (request, reply) => {
     const parsed = composeSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -120,7 +123,7 @@ export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
             pinned: body.data.pinned,
             ttlOverrideSeconds: body.data.ttlOverrideSeconds,
           },
-          body.data.actorId,
+          resolveActorId(request),
         ),
       );
     } catch (error) {
@@ -142,7 +145,7 @@ export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.forgetMemoryItem(params.data.itemId, body.data.actorId));
+      return reply.send(fastify.gateway.forgetMemoryItem(params.data.itemId, resolveActorId(request)));
     } catch (error) {
       const message = (error as Error).message;
       const notFound = message.toLowerCase().includes("not found");
@@ -178,7 +181,12 @@ export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: body.error.flatten() });
     }
     try {
-      return reply.send(fastify.gateway.forgetMemory(body.data));
+      return reply.send(fastify.gateway.forgetMemory({
+        itemIds: body.data.itemIds,
+        namespace: body.data.namespace,
+        query: body.data.query,
+        actorId: resolveActorId(request),
+      }));
     } catch (error) {
       return reply.code(409).send({ error: (error as Error).message });
     }

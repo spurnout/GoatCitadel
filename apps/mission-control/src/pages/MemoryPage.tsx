@@ -8,6 +8,7 @@ import {
   patchMemoryItem,
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { ConfirmModal } from "../components/ConfirmModal";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -67,6 +68,10 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
     createdAt: string;
   }>>([]);
   const [memoryBusyItemId, setMemoryBusyItemId] = useState<string | null>(null);
+  const [confirmForgetItem, setConfirmForgetItem] = useState<{
+    itemId: string;
+    title: string;
+  } | null>(null);
 
   const workspacePrefix = useMemo(
     () => (workspaceId && workspaceId !== "default" ? `workspaces/${workspaceId}/` : ""),
@@ -473,7 +478,7 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
                           type="button"
                           className="danger"
                           disabled={item.status === "forgotten" || memoryBusyItemId === item.itemId}
-                          onClick={() => void forgetItem(item.itemId)}
+                          onClick={() => setConfirmForgetItem({ itemId: item.itemId, title: item.title })}
                         >
                           Forget
                         </button>
@@ -507,6 +512,22 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
           </div>
         )}
       </article>
+      <ConfirmModal
+        open={Boolean(confirmForgetItem)}
+        title="Forget Memory Item"
+        message={`Forget "${confirmForgetItem?.title ?? "this memory item"}"? This cannot be undone.`}
+        confirmLabel={memoryBusyItemId ? "Forgetting..." : "Forget"}
+        danger
+        onCancel={() => setConfirmForgetItem(null)}
+        onConfirm={() => {
+          const target = confirmForgetItem;
+          if (!target) {
+            return;
+          }
+          setConfirmForgetItem(null);
+          void forgetItem(target.itemId);
+        }}
+      />
     </section>
   );
 }

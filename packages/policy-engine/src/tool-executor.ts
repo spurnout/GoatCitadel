@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ToolInvokeRequest, ToolPolicyConfig } from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
 import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
 import { executeBrowserTool, isBrowserToolName } from "./browser-tools.js";
+import { classifyShellRisk } from "./sandbox/shell-risk-gate.js";
 import {
   appendBankrActionAudit,
   applyBankrBudgetUsage,
@@ -14,7 +15,6 @@ import {
   readBankrSafetyPolicy,
 } from "./bankr-guard.js";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_HTTP_REDIRECTS = 5;
 
@@ -57,7 +57,7 @@ export async function executeTool(
     case "http.post":
       return httpPost(request.args, config);
     case "shell.exec":
-      return shellExec(request.args);
+      return shellExec(request.args, config, request.consentContext?.reason);
     case "git.status":
       return gitStatus();
     case "git.diff":
@@ -389,15 +389,40 @@ async function httpPost(args: Record<string, unknown>, config: ToolPolicyConfig)
   return { url: res.finalUrl, status: res.response.status, bodySnippet: text.slice(0, 4000) };
 }
 
-async function shellExec(args: Record<string, unknown>) {
+async function shellExec(
+  args: Record<string, unknown>,
+  config: ToolPolicyConfig,
+  consentReason?: string,
+) {
   const command = required(args.command, "command");
+  const shellRisk = classifyShellRisk(command, config.sandbox.riskyShellPatterns);
+  const approvalBypass = typeof consentReason === "string" && consentReason.startsWith("approval:");
+  if (shellRisk.risky && config.sandbox.requireApprovalForRiskyShell && !approvalBypass) {
+    throw new Error(
+      `Risky shell command requires approval (matched pattern: ${shellRisk.matchedPattern ?? "unknown"})`,
+    );
+  }
+  const parsed = parseExecFileCommand(command);
   try {
-    const { stdout, stderr } = await execAsync(command, { timeout: 20000, windowsHide: true, maxBuffer: 1024 * 1024 });
-    return { command, stdout: stdout.slice(0, 8000), stderr: stderr.slice(0, 8000), exitCode: 0 };
+    const { stdout, stderr } = await execFileAsync(parsed.file, parsed.args, {
+      timeout: 20000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    });
+    return {
+      command,
+      executable: parsed.file,
+      argv: parsed.args,
+      stdout: stdout.slice(0, 8000),
+      stderr: stderr.slice(0, 8000),
+      exitCode: 0,
+    };
   } catch (error) {
     const err = error as { stdout?: string; stderr?: string; code?: number | string; message: string };
     return {
       command,
+      executable: parsed.file,
+      argv: parsed.args,
       stdout: (err.stdout ?? "").slice(0, 8000),
       stderr: (err.stderr ?? err.message).slice(0, 8000),
       exitCode: typeof err.code === "number" ? err.code : -1,
@@ -888,4 +913,72 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function parseExecFileCommand(command: string): { file: string; args: string[] } {
+  const input = command.trim();
+  if (!input) {
+    throw new Error("shell.exec command is required");
+  }
+  if (input.includes("\u0000")) {
+    throw new Error("shell.exec command contains invalid null byte");
+  }
+
+  const tokens: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaping = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index] ?? "";
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\") {
+      const next = input[index + 1] ?? "";
+      const escapable = next === "\"" || next === "'" || next === "\\" || /\s/.test(next);
+      if (!escapable) {
+        current += char;
+        continue;
+      }
+      escaping = true;
+      continue;
+    }
+    if (char === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (char === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (!inSingle && !inDouble && /\s/.test(char)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (escaping || inSingle || inDouble) {
+    throw new Error("shell.exec command has unmatched quotes or escape sequence");
+  }
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+  if (tokens.length === 0) {
+    throw new Error("shell.exec command is required");
+  }
+
+  const file = tokens[0];
+  if (!file) {
+    throw new Error("shell.exec command is required");
+  }
+  const args = tokens.slice(1);
+  return { file, args };
 }

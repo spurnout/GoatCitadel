@@ -22,6 +22,13 @@ const listQuerySchema = z.object({
 
 export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/api/v1/approvals", async (request, reply) => {
+    const allowRemoteCreate = isTruthy(process.env.GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE);
+    if (!allowRemoteCreate && !isLoopbackRequest(request)) {
+      return reply.code(403).send({
+        error: "Approval creation is restricted to loopback callers.",
+      });
+    }
+
     const parsed = createSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
@@ -67,3 +74,25 @@ export const approvalsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(replay);
   });
 };
+
+function isLoopbackRequest(request: {
+  ip?: string;
+  raw: { socket: { remoteAddress?: string | null } };
+  headers: Record<string, unknown>;
+}): boolean {
+  const forwardedFor = request.headers["x-forwarded-for"];
+  if (typeof forwardedFor === "string" && forwardedFor.trim()) {
+    return false;
+  }
+  const remoteAddress = request.raw.socket.remoteAddress ?? request.ip ?? "";
+  const normalized = remoteAddress.replace("::ffff:", "").trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function isTruthy(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}

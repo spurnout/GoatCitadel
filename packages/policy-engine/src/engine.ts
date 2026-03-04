@@ -15,6 +15,7 @@ import { resolveEffectivePolicy } from "./policy-resolver.js";
 import { createDefaultToolRegistry, type ToolDefinition, type ToolRegistry } from "./tool-registry.js";
 import { assertReadPathAllowed, assertWritePathInJail } from "./sandbox/path-jail.js";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
+import { classifyShellRisk } from "./sandbox/shell-risk-gate.js";
 import { executeTool } from "./tool-executor.js";
 
 interface AccessEvaluation {
@@ -210,14 +211,22 @@ export class ToolPolicyEngine {
     }
 
     const request = asToolInvokeRequest(pending.request);
+    const approvedRequest: ToolInvokeRequest = {
+      ...request,
+      consentContext: {
+        ...(request.consentContext ?? {}),
+        source: request.consentContext?.source ?? "ui",
+        reason: `approval:${approvalId}`,
+      },
+    };
     const auditEventId = randomUUID();
-    const evaluation = this.evaluateAccessInternal(request);
+    const evaluation = this.evaluateAccessInternal(approvedRequest);
 
     this.storage.toolAccessDecisions.record({
-      toolName: request.toolName,
-      agentId: request.agentId,
-      sessionId: request.sessionId,
-      taskId: request.taskId,
+      toolName: approvedRequest.toolName,
+      agentId: approvedRequest.agentId,
+      sessionId: approvedRequest.sessionId,
+      taskId: approvedRequest.taskId,
       allowed: evaluation.allowed,
       reasonCodes: evaluation.reasonCodes,
       matchedGrantId: evaluation.matchedGrantId,
@@ -227,7 +236,7 @@ export class ToolPolicyEngine {
 
     if (!evaluation.allowed) {
       const reason = `blocked: ${evaluation.policyReason}`;
-      await this.recordBlocked(auditEventId, request, reason, {
+      await this.recordBlocked(auditEventId, approvedRequest, reason, {
         reasonCodes: evaluation.reasonCodes,
         riskLevel: evaluation.riskLevel,
         matchedGrantId: evaluation.matchedGrantId,
@@ -248,7 +257,7 @@ export class ToolPolicyEngine {
     }
 
     const result = await this.executeAllowedRequest(
-      request,
+      approvedRequest,
       auditEventId,
       `allowed_via_approval:${approvalId}`,
       evaluation.grantToConsume,
@@ -269,13 +278,13 @@ export class ToolPolicyEngine {
       approvalId,
       eventType: "approved_action_executed",
       actorId: "system",
-      payload: {
-        toolName: request.toolName,
-        outcome: result.outcome,
-        policyReason: result.policyReason,
-        auditEventId,
-      },
-    });
+        payload: {
+          toolName: approvedRequest.toolName,
+          outcome: result.outcome,
+          policyReason: result.policyReason,
+          auditEventId,
+        },
+      });
 
     return result;
   }
@@ -283,6 +292,7 @@ export class ToolPolicyEngine {
   private evaluateAccessInternal(request: ToolAccessEvaluateRequest): AccessEvaluation {
     const toolDef = this.registry.get(request.toolName);
     const riskLevel = toolDef?.riskLevel ?? "caution";
+    const shellRisk = this.evaluateShellRisk(request);
 
     const policy = resolveEffectivePolicy(this.config, request.agentId);
     if (matchesAnyPattern(policy.denySet, request.toolName)) {
@@ -348,15 +358,43 @@ export class ToolPolicyEngine {
     if (riskLevel === "nuclear") {
       requiresApproval = true;
     }
+    if (shellRisk?.risky) {
+      requiresApproval = true;
+    }
+
+    const reasonCodes = ["allowed"];
+    let policyReason = requiresApproval ? "approval required by risk gate" : "allowed";
+    if (shellRisk?.risky) {
+      reasonCodes.push("shell_risky_requires_approval");
+      policyReason = `risky shell command matched policy pattern "${shellRisk.matchedPattern}"`;
+    }
 
     return {
       allowed: true,
-      reasonCodes: ["allowed"],
+      reasonCodes,
       requiresApproval,
       matchedGrantId: grantDecision?.grant.grantId,
       riskLevel,
-      policyReason: requiresApproval ? "approval required by risk gate" : "allowed",
+      policyReason,
       grantToConsume: grantDecision?.grant.grantId,
+    };
+  }
+
+  private evaluateShellRisk(request: ToolAccessEvaluateRequest): { risky: true; matchedPattern: string } | undefined {
+    if (request.toolName !== "shell.exec") {
+      return undefined;
+    }
+    const command = typeof request.args?.command === "string" ? request.args.command : "";
+    if (!command.trim()) {
+      return undefined;
+    }
+    const risk = classifyShellRisk(command, this.config.sandbox.riskyShellPatterns);
+    if (!risk.risky || !this.config.sandbox.requireApprovalForRiskyShell) {
+      return undefined;
+    }
+    return {
+      risky: true,
+      matchedPattern: risk.matchedPattern ?? "unknown",
     };
   }
 

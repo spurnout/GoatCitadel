@@ -1,10 +1,15 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { SseTokenIssueResponse } from "@goatcitadel/contracts";
 import fp from "fastify-plugin";
 
 declare module "fastify" {
   interface FastifyInstance {
     issueSseToken: (scope: "events:stream", ttlMs?: number) => SseTokenIssueResponse;
+  }
+
+  interface FastifyRequest {
+    authActorId: string;
+    authActorSource: "none" | "token" | "basic" | "loopback" | "sse";
   }
 }
 
@@ -16,11 +21,16 @@ interface SseTokenRecord {
 
 const MAX_AUTH_TOKEN_LENGTH = 4096;
 const MAX_BASIC_CREDENTIAL_LENGTH = 8192;
+const MAX_ACTIVE_SSE_TOKENS = 10_000;
 
 export const authPlugin = fp(async (fastify) => {
   const sseTokens = new Map<string, SseTokenRecord>();
+  fastify.decorateRequest("authActorId", "anonymous");
+  fastify.decorateRequest("authActorSource", "none");
 
   fastify.decorate("issueSseToken", (scope: "events:stream", ttlMs = 2 * 60 * 1000) => {
+    purgeExpiredSseTokens(sseTokens);
+    enforceSseTokenCapacity(sseTokens, MAX_ACTIVE_SSE_TOKENS);
     const token = randomBytes(32).toString("base64url");
     const expiresAt = Date.now() + Math.max(30_000, Math.min(10 * 60 * 1000, ttlMs));
     sseTokens.set(token, {
@@ -28,7 +38,6 @@ export const authPlugin = fp(async (fastify) => {
       scope,
       expiresAt,
     });
-    purgeExpiredSseTokens(sseTokens);
     return {
       token,
       expiresAt: new Date(expiresAt).toISOString(),
@@ -37,6 +46,7 @@ export const authPlugin = fp(async (fastify) => {
   });
 
   fastify.addHook("onRequest", async (request, reply) => {
+    setAuthActor(request, "anonymous", "none");
     if (request.method === "OPTIONS") {
       return;
     }
@@ -46,6 +56,7 @@ export const authPlugin = fp(async (fastify) => {
 
     const auth = fastify.gatewayConfig.assistant.auth;
     if (auth.mode === "none") {
+      setAuthActor(request, "auth:none", "none");
       return;
     }
 
@@ -56,6 +67,7 @@ export const authPlugin = fp(async (fastify) => {
       && !forwardedFor
       && isLoopbackAddress(remoteAddress)
     ) {
+      setAuthActor(request, `loopback:${normalizeActorSuffix(remoteAddress)}`, "loopback");
       return;
     }
 
@@ -63,6 +75,7 @@ export const authPlugin = fp(async (fastify) => {
     if (request.url.startsWith("/api/v1/events/stream")) {
       const sseToken = readQueryToken(request.query, "sse_token");
       if (sseToken && validateSseToken(sseToken, "events:stream", sseTokens)) {
+        setAuthActor(request, `sse:${tokenFingerprint(sseToken)}`, "sse");
         return;
       }
     }
@@ -85,6 +98,7 @@ export const authPlugin = fp(async (fastify) => {
           authMode: "token",
         });
       }
+      setAuthActor(request, `token:${tokenFingerprint(provided)}`, "token");
       return;
     }
 
@@ -109,6 +123,7 @@ export const authPlugin = fp(async (fastify) => {
           authMode: "basic",
         });
       }
+      setAuthActor(request, `basic:${normalizeActorSuffix(username)}`, "basic");
       return;
     }
   });
@@ -187,14 +202,9 @@ function isLoopbackAddress(ip: string): boolean {
 }
 
 function timingSafeStringEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.alloc(256);
-  const rightBuffer = Buffer.alloc(256);
-  const leftSource = Buffer.from(left);
-  const rightSource = Buffer.from(right);
-  leftSource.copy(leftBuffer, 0, 0, Math.min(leftSource.length, leftBuffer.length));
-  rightSource.copy(rightBuffer, 0, 0, Math.min(rightSource.length, rightBuffer.length));
-  const equal = timingSafeEqual(leftBuffer, rightBuffer);
-  return equal && leftSource.length === rightSource.length && left === right;
+  const leftDigest = hashForTimingCompare(left);
+  const rightDigest = hashForTimingCompare(right);
+  return timingSafeEqual(leftDigest, rightDigest);
 }
 
 function validateSseToken(
@@ -224,4 +234,35 @@ function purgeExpiredSseTokens(store: Map<string, SseTokenRecord>): void {
       store.delete(key);
     }
   }
+}
+
+function enforceSseTokenCapacity(store: Map<string, SseTokenRecord>, maxItems: number): void {
+  while (store.size >= maxItems) {
+    const oldestKey = store.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+    store.delete(oldestKey);
+  }
+}
+
+function setAuthActor(
+  request: { authActorId?: string; authActorSource?: "none" | "token" | "basic" | "loopback" | "sse" },
+  actorId: string,
+  source: "none" | "token" | "basic" | "loopback" | "sse",
+): void {
+  request.authActorId = actorId;
+  request.authActorSource = source;
+}
+
+function hashForTimingCompare(value: string): Buffer {
+  return createHash("sha256").update(value, "utf8").digest();
+}
+
+function tokenFingerprint(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
+}
+
+function normalizeActorSuffix(value: string): string {
+  return value.trim().replace(/\s+/g, "_").slice(0, 80) || "unknown";
 }

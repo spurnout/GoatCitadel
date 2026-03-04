@@ -46,6 +46,9 @@ const actorBodySchema = z.object({
 });
 
 export const durableRoutes: FastifyPluginAsync = async (fastify) => {
+  const resolveActorId = (request: { authActorId?: string; ip?: string }) =>
+    request.authActorId?.trim() || `ip:${request.ip ?? "unknown"}`;
+
   fastify.get("/api/v1/durable/diagnostics", async () => {
     return fastify.gateway.getDurableDiagnostics();
   });
@@ -144,7 +147,7 @@ export const durableRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.pauseDurableRun(params.data.runId, body.data.actorId));
+      return reply.send(fastify.gateway.pauseDurableRun(params.data.runId, resolveActorId(request)));
     } catch (error) {
       return reply.code(409).send({ error: (error as Error).message });
     }
@@ -162,7 +165,7 @@ export const durableRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.resumeDurableRun(params.data.runId, body.data.actorId));
+      return reply.send(fastify.gateway.resumeDurableRun(params.data.runId, resolveActorId(request)));
     } catch (error) {
       return reply.code(409).send({ error: (error as Error).message });
     }
@@ -180,7 +183,7 @@ export const durableRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.cancelDurableRun(params.data.runId, body.data.actorId));
+      return reply.send(fastify.gateway.cancelDurableRun(params.data.runId, resolveActorId(request)));
     } catch (error) {
       return reply.code(409).send({ error: (error as Error).message });
     }
@@ -198,7 +201,7 @@ export const durableRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.retryDurableRun(params.data.runId, body.data.reason, body.data.actorId));
+      return reply.send(fastify.gateway.retryDurableRun(params.data.runId, body.data.reason, resolveActorId(request)));
     } catch (error) {
       return reply.code(409).send({ error: (error as Error).message });
     }
@@ -234,7 +237,7 @@ export const durableRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
     try {
-      return reply.send(fastify.gateway.recoverDurableDeadLetter(params.data.entryId, body.data.actorId));
+      return reply.send(fastify.gateway.recoverDurableDeadLetter(params.data.entryId, resolveActorId(request)));
     } catch (error) {
       const message = (error as Error).message;
       const notFound = message.toLowerCase().includes("not found");

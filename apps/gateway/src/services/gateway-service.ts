@@ -7257,11 +7257,13 @@ export class GatewayService {
     const now = new Date();
     const timestamp = formatBackupTimestamp(now);
     const backupId = sanitizeBackupName(input?.name) ?? `backup-${timestamp}-${randomUUID().slice(0, 8)}`;
-    const backupDir = this.getBackupDirectory();
+    const backupDir = path.resolve(this.getBackupDirectory());
     const outputPath = input?.outputPath
-      ? path.resolve(this.config.rootDir, input.outputPath)
+      ? path.resolve(backupDir, input.outputPath)
       : path.join(backupDir, `${backupId}.backup`);
+    ensurePathWithinRoot(outputPath, backupDir);
     const tempDir = `${outputPath}.tmp-${randomUUID().slice(0, 8)}`;
+    ensurePathWithinRoot(tempDir, backupDir);
     const payloadDir = path.join(tempDir, "payload");
 
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -7307,7 +7309,9 @@ export class GatewayService {
       throw new Error("Backup restore requires explicit confirm=true");
     }
 
-    const backupPath = path.resolve(this.config.rootDir, input.filePath);
+    const backupDir = path.resolve(this.getBackupDirectory());
+    const backupPath = path.resolve(backupDir, input.filePath);
+    ensurePathWithinRoot(backupPath, backupDir);
     const manifestPath = path.join(backupPath, "manifest.json");
     const payloadDir = path.join(backupPath, "payload");
     const manifestRaw = await fs.readFile(manifestPath, "utf8");
@@ -7318,7 +7322,8 @@ export class GatewayService {
     }
 
     for (const file of manifest.files) {
-      const source = path.join(payloadDir, file.path);
+      const source = path.resolve(payloadDir, file.path);
+      ensurePathWithinRoot(source, payloadDir);
       const bytes = await fs.readFile(source);
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== file.sha256) {
@@ -7327,7 +7332,8 @@ export class GatewayService {
     }
 
     for (const file of manifest.files) {
-      const source = path.join(payloadDir, file.path);
+      const source = path.resolve(payloadDir, file.path);
+      ensurePathWithinRoot(source, payloadDir);
       const target = path.resolve(this.config.rootDir, file.path);
       ensurePathWithinRoot(target, this.config.rootDir);
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -8323,7 +8329,7 @@ export class GatewayService {
 
     const result = {
       relativePath: normalized,
-      fullPath,
+      fullPath: this.serializeRootPath(fullPath),
       bytes: Buffer.byteLength(content, "utf8"),
     };
 
@@ -8373,7 +8379,7 @@ export class GatewayService {
 
     const stat = await fs.stat(fullPath);
     if (stat.isDirectory()) {
-      throw new Error(`Path is a directory: ${fullPath}`);
+      throw new Error(`Path is a directory: ${normalized}`);
     }
 
     const contentType = detectMimeType(fullPath);
@@ -8384,7 +8390,7 @@ export class GatewayService {
 
     return {
       relativePath: normalized,
-      fullPath,
+      fullPath: this.serializeRootPath(fullPath),
       size: stat.size,
       modifiedAt: stat.mtime.toISOString(),
       contentType,
