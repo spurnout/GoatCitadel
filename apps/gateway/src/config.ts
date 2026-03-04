@@ -18,11 +18,22 @@ export interface AssistantConfig {
   mesh: MeshConfig;
   npu: NpuConfig;
   durable: DurableConfig;
+  features: FeatureFlagsConfig;
   budgets: {
     dailyUsdWarning: number;
     dailyUsdHardCap: number;
     sessionTokenHardCap: number;
   };
+}
+
+export interface FeatureFlagsConfig {
+  durableKernelV1Enabled: boolean;
+  replayOverridesV1Enabled: boolean;
+  memoryLifecycleAdminV1Enabled: boolean;
+  connectorDiagnosticsV1Enabled: boolean;
+  computerUseGuardrailsV1Enabled: boolean;
+  cronReviewQueueV1Enabled: boolean;
+  replayRegressionV1Enabled: boolean;
 }
 
 export interface MemoryConfig {
@@ -264,6 +275,22 @@ function applyEnvironmentOverrides(assistant: AssistantConfig): void {
     assistant.durable.diagnosticsEnabled = durableDiagnosticsEnabled === "1"
       || durableDiagnosticsEnabled.toLowerCase() === "true";
   }
+
+  const featureFlagMap: Array<[keyof FeatureFlagsConfig, string | undefined]> = [
+    ["durableKernelV1Enabled", process.env.GOATCITADEL_FEATURE_DURABLE_KERNEL_V1_ENABLED],
+    ["replayOverridesV1Enabled", process.env.GOATCITADEL_FEATURE_REPLAY_OVERRIDES_V1_ENABLED],
+    ["memoryLifecycleAdminV1Enabled", process.env.GOATCITADEL_FEATURE_MEMORY_LIFECYCLE_ADMIN_V1_ENABLED],
+    ["connectorDiagnosticsV1Enabled", process.env.GOATCITADEL_FEATURE_CONNECTOR_DIAGNOSTICS_V1_ENABLED],
+    ["computerUseGuardrailsV1Enabled", process.env.GOATCITADEL_FEATURE_COMPUTER_USE_GUARDRAILS_V1_ENABLED],
+    ["cronReviewQueueV1Enabled", process.env.GOATCITADEL_FEATURE_CRON_REVIEW_QUEUE_V1_ENABLED],
+    ["replayRegressionV1Enabled", process.env.GOATCITADEL_FEATURE_REPLAY_REGRESSION_V1_ENABLED],
+  ];
+  for (const [flag, raw] of featureFlagMap) {
+    if (!raw) {
+      continue;
+    }
+    assistant.features[flag] = raw === "1" || raw.toLowerCase() === "true";
+  }
 }
 
 function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig {
@@ -288,6 +315,7 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
   const npuSidecar = (npuInput.sidecar ?? {}) as Partial<NpuConfig["sidecar"]>;
   const npuRestart = (npuSidecar.restartBudget ?? {}) as Partial<NpuConfig["sidecar"]["restartBudget"]>;
   const durableInput = (input.durable ?? {}) as Partial<DurableConfig>;
+  const featuresInput = (input.features ?? {}) as Partial<FeatureFlagsConfig>;
   const memoryInput = (input.memory ?? {}) as Partial<MemoryConfig>;
   const qmdInput = (memoryInput.qmd ?? {}) as Partial<MemoryConfig["qmd"]>;
   const distillerInput = (qmdInput.distiller ?? {}) as Partial<MemoryConfig["qmd"]["distiller"]>;
@@ -396,6 +424,15 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
       enabled: durableInput.enabled ?? false,
       diagnosticsEnabled: durableInput.diagnosticsEnabled ?? false,
       maxAttemptsDefault: Math.max(1, Math.floor(durableInput.maxAttemptsDefault ?? 3)),
+    },
+    features: {
+      durableKernelV1Enabled: featuresInput.durableKernelV1Enabled ?? false,
+      replayOverridesV1Enabled: featuresInput.replayOverridesV1Enabled ?? false,
+      memoryLifecycleAdminV1Enabled: featuresInput.memoryLifecycleAdminV1Enabled ?? false,
+      connectorDiagnosticsV1Enabled: featuresInput.connectorDiagnosticsV1Enabled ?? false,
+      computerUseGuardrailsV1Enabled: featuresInput.computerUseGuardrailsV1Enabled ?? false,
+      cronReviewQueueV1Enabled: featuresInput.cronReviewQueueV1Enabled ?? false,
+      replayRegressionV1Enabled: featuresInput.replayRegressionV1Enabled ?? false,
     },
     budgets: {
       dailyUsdWarning: input.budgets?.dailyUsdWarning ?? 10,

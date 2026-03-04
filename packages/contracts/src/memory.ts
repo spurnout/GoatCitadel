@@ -78,3 +78,35 @@ export interface MemoryQmdStatsResponse {
   expansionPercent: number;
   efficiencyLabel: "reduced" | "expanded" | "neutral";
 }
+
+export interface MemoryItemRecord {
+  itemId: string;
+  namespace: string;
+  title: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  pinned: boolean;
+  ttlOverrideSeconds?: number;
+  expiresAt?: string;
+  status: "active" | "forgotten";
+  createdAt: string;
+  updatedAt: string;
+  forgottenAt?: string;
+}
+
+export interface MemoryLifecyclePatch {
+  title?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
+  pinned?: boolean;
+  ttlOverrideSeconds?: number | null;
+}
+
+export interface MemoryChangeEvent {
+  changeId: string;
+  itemId: string;
+  changeType: "created" | "updated" | "forgotten" | "ttl_changed" | "pin_changed";
+  actorId?: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}

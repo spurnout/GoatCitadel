@@ -9,6 +9,18 @@ const cronJobParamsSchema = z.object({
   jobId: z.string().min(1),
 });
 
+const cronRunParamsSchema = z.object({
+  runId: z.string().min(1),
+});
+
+const cronReviewParamsSchema = z.object({
+  itemId: z.string().min(1),
+});
+
+const cronReviewQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(1000).default(200),
+});
+
 const cronJobCreateSchema = z.object({
   jobId: z.string().min(3).max(64),
   name: z.string().min(1).max(120),
@@ -72,6 +84,15 @@ const updateSettingsSchema = z.object({
     enabled: z.boolean().optional(),
     autoStart: z.boolean().optional(),
     sidecarUrl: z.string().url().optional(),
+  }).optional(),
+  features: z.object({
+    durableKernelV1Enabled: z.boolean().optional(),
+    replayOverridesV1Enabled: z.boolean().optional(),
+    memoryLifecycleAdminV1Enabled: z.boolean().optional(),
+    connectorDiagnosticsV1Enabled: z.boolean().optional(),
+    computerUseGuardrailsV1Enabled: z.boolean().optional(),
+    cronReviewQueueV1Enabled: z.boolean().optional(),
+    replayRegressionV1Enabled: z.boolean().optional(),
   }).optional(),
 });
 
@@ -193,6 +214,46 @@ export const dashboardRoutes: FastifyPluginAsync = async (fastify) => {
       const notFound = message.toLowerCase().includes("not found");
       const protectedJob = message.toLowerCase().includes("cannot be deleted");
       return reply.code(notFound ? 404 : protectedJob ? 409 : 400).send({ error: message });
+    }
+  });
+
+  fastify.get("/api/v1/cron/review-queue", async (request, reply) => {
+    const parsed = cronReviewQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send({ items: fastify.gateway.listCronReviewQueue(parsed.data.limit) });
+    } catch (error) {
+      return reply.code(409).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/cron/review-queue/:itemId/retry", async (request, reply) => {
+    const parsed = cronReviewParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.retryCronReviewQueueItem(parsed.data.itemId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
+    }
+  });
+
+  fastify.get("/api/v1/cron/runs/:runId/diff", async (request, reply) => {
+    const parsed = cronRunParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getCronRunDiff(parsed.data.runId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
     }
   });
 

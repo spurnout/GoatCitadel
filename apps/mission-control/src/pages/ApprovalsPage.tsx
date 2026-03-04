@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import {
   fetchApprovalReplay,
   fetchApprovals,
+  fetchDurableRun,
+  fetchDurableRunTimeline,
   resolveApproval,
+  resumeDurableRun,
   type ApprovalReplayResponse,
   type ApprovalsResponse,
 } from "../api/client";
@@ -12,9 +15,46 @@ import { CardSkeleton } from "../components/CardSkeleton";
 import { useAction } from "../hooks/useAction";
 import { pageCopy } from "../content/copy";
 
+interface ApprovalDurableStatus {
+  runId: string;
+  status: string;
+  blockedStep?: string;
+  blockedReason?: string;
+  updatedAt: string;
+}
+
+function findDurableRunId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const stack: unknown[] = [payload];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || typeof current !== "object") {
+      continue;
+    }
+    const record = current as Record<string, unknown>;
+    for (const [key, value] of Object.entries(record)) {
+      if (
+        typeof value === "string"
+        && value.trim().length >= 8
+        && /(runid|run_id|durablerunid|durable_run_id)$/i.test(key)
+      ) {
+        return value.trim();
+      }
+      if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+  return undefined;
+}
+
 export function ApprovalsPage(_props: { refreshKey?: number }) {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
   const [replayById, setReplayById] = useState<Record<string, ApprovalReplayResponse>>({});
+  const [durableByApprovalId, setDurableByApprovalId] = useState<Record<string, ApprovalDurableStatus | null>>({});
+  const [durableBusyByApprovalId, setDurableBusyByApprovalId] = useState<Record<string, boolean>>({});
   const [pendingDecision, setPendingDecision] = useState<{ approvalId: string; decision: "approve" | "reject" } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const resolveAction = useAction();
@@ -54,6 +94,71 @@ export function ApprovalsPage(_props: { refreshKey?: number }) {
     }
   };
 
+  const resolveApprovalRunId = async (approvalId: string): Promise<string | null> => {
+    const replay = replayById[approvalId] ?? await fetchApprovalReplay(approvalId);
+    if (!replayById[approvalId]) {
+      setReplayById((prev) => ({ ...prev, [approvalId]: replay }));
+    }
+    const runId =
+      findDurableRunId(replay.pendingAction?.request)
+      ?? findDurableRunId(replay.approval.payload)
+      ?? findDurableRunId(replay.approval.preview);
+    return runId ?? null;
+  };
+
+  const loadDurableStatus = async (approvalId: string) => {
+    setDurableBusyByApprovalId((prev) => ({ ...prev, [approvalId]: true }));
+    try {
+      const runId = await resolveApprovalRunId(approvalId);
+      if (!runId) {
+        setDurableByApprovalId((prev) => ({ ...prev, [approvalId]: null }));
+        setError("No durable run id found in this approval payload yet.");
+        return;
+      }
+      const [run, timeline] = await Promise.all([
+        fetchDurableRun(runId),
+        fetchDurableRunTimeline(runId, 120),
+      ]);
+      const blockingEvent = [...timeline.items]
+        .reverse()
+        .find((event) => event.eventType === "run_paused" || event.eventType === "run_waiting");
+      const blockedStep = (blockingEvent?.payload?.stepKey as string | undefined) ?? blockingEvent?.stepKey;
+      const blockedReason = blockingEvent?.payload?.reason;
+      setDurableByApprovalId((prev) => ({
+        ...prev,
+        [approvalId]: {
+          runId,
+          status: run.status,
+          blockedStep,
+          blockedReason: typeof blockedReason === "string" ? blockedReason : undefined,
+          updatedAt: run.updatedAt,
+        },
+      }));
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDurableBusyByApprovalId((prev) => ({ ...prev, [approvalId]: false }));
+    }
+  };
+
+  const resumeFromCheckpoint = async (approvalId: string) => {
+    const current = durableByApprovalId[approvalId];
+    if (!current?.runId) {
+      setError("Load durable status first so we can resume from the exact checkpoint.");
+      return;
+    }
+    setDurableBusyByApprovalId((prev) => ({ ...prev, [approvalId]: true }));
+    try {
+      await resumeDurableRun(current.runId, "operator");
+      await loadDurableStatus(approvalId);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDurableBusyByApprovalId((prev) => ({ ...prev, [approvalId]: false }));
+    }
+  };
+
   if (!data) {
     return <CardSkeleton lines={7} />;
   }
@@ -72,6 +177,8 @@ export function ApprovalsPage(_props: { refreshKey?: number }) {
       {data.items.length === 0 ? <p>No pending approvals right now.</p> : null}
       {data.items.map((approval) => {
         const replay = replayById[approval.approvalId];
+        const durable = durableByApprovalId[approval.approvalId];
+        const durableBusy = Boolean(durableBusyByApprovalId[approval.approvalId]);
         const explanationLabel =
           approval.explanationStatus === "pending"
             ? "Pending explanation"
@@ -155,6 +262,39 @@ export function ApprovalsPage(_props: { refreshKey?: number }) {
                 ) : null}
               </div>
             ) : null}
+            <div className="replay-box">
+              <h4>Checkpoint Resume</h4>
+              <p>
+                Load durable status to see the exact blocked step. Resume continues from the last checkpoint instead of restarting.
+              </p>
+              <div className="actions">
+                <button
+                  type="button"
+                  onClick={() => { void loadDurableStatus(approval.approvalId); }}
+                  disabled={durableBusy}
+                >
+                  {durableBusy ? "Loading..." : "Load durable status"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void resumeFromCheckpoint(approval.approvalId); }}
+                  disabled={durableBusy || !durable?.runId}
+                >
+                  Resume from checkpoint
+                </button>
+              </div>
+              {durable ? (
+                <p className="office-subtitle">
+                  Run: {durable.runId} | Status: {durable.status}
+                  {durable.blockedStep ? ` | Blocked step: ${durable.blockedStep}` : ""}
+                  {durable.blockedReason ? ` | Reason: ${durable.blockedReason}` : ""}
+                  {" | "}
+                  Updated: {new Date(durable.updatedAt).toLocaleString()}
+                </p>
+              ) : (
+                <p className="office-subtitle">No checkpoint details loaded yet.</p>
+              )}
+            </div>
           </article>
         );
       })}

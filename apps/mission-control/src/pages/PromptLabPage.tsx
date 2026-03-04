@@ -10,6 +10,8 @@ import {
   autoScorePromptPackTest,
   exportPromptPackReport,
   fetchPromptPackBenchmark,
+  fetchPromptPackReplayRegressionStatus,
+  fetchPromptPackTrends,
   fetchLlmConfig,
   fetchLlmModels,
   fetchPromptPackExport,
@@ -20,6 +22,7 @@ import {
   resetPromptPack,
   runPromptPackTest,
   runPromptPackBenchmark,
+  runPromptPackReplayRegression,
   scorePromptPackTest,
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
@@ -111,6 +114,10 @@ export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: nu
   const [benchmarkRunId, setBenchmarkRunId] = useState<string | null>(null);
   const [benchmarkStatus, setBenchmarkStatus] = useState<PromptPackBenchmarkStatusRecord | null>(null);
   const [benchmarkPending, setBenchmarkPending] = useState(false);
+  const [regressionRunId, setRegressionRunId] = useState<string | null>(null);
+  const [regressionPending, setRegressionPending] = useState(false);
+  const [regressionStatus, setRegressionStatus] = useState<Awaited<ReturnType<typeof fetchPromptPackReplayRegressionStatus>> | null>(null);
+  const [trendSeries, setTrendSeries] = useState<Awaited<ReturnType<typeof fetchPromptPackTrends>>["items"]>([]);
   const [exportInfo, setExportInfo] = useState<{
     packId: string;
     path: string;
@@ -717,6 +724,45 @@ export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: nu
     }
   }, [benchmarkProvidersInput, benchmarkTestCodes, loadBenchmarkStatus, selectedPackId]);
 
+  const loadTrends = useCallback(async (packId: string) => {
+    const response = await fetchPromptPackTrends(packId);
+    setTrendSeries(response.items);
+  }, []);
+
+  const loadRegressionStatus = useCallback(async (runId: string) => {
+    const status = await fetchPromptPackReplayRegressionStatus(runId);
+    setRegressionStatus(status);
+    if (status.run.status !== "queued" && status.run.status !== "running") {
+      setRegressionPending(false);
+    }
+  }, []);
+
+  const runRegression = useCallback(async () => {
+    if (!selectedPackId) {
+      return;
+    }
+    const testCodes = parseBenchmarkTestCodes(benchmarkTestCodes);
+    if (testCodes.length < 1) {
+      setError("Replay regression needs at least one test code.");
+      return;
+    }
+    setRegressionPending(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const started = await runPromptPackReplayRegression(selectedPackId, {
+        testCodes,
+        baselineRef: benchmarkRunId ?? undefined,
+      });
+      setRegressionRunId(started.regressionRunId);
+      await loadRegressionStatus(started.regressionRunId);
+      setSuccess(`Replay regression started: ${started.regressionRunId}`);
+    } catch (err) {
+      setRegressionPending(false);
+      setError((err as Error).message);
+    }
+  }, [benchmarkRunId, benchmarkTestCodes, loadRegressionStatus, selectedPackId]);
+
   useEffect(() => {
     if (!benchmarkRunId) {
       return;
@@ -731,6 +777,31 @@ export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: nu
     }, 2500);
     return () => window.clearInterval(timer);
   }, [benchmarkPending, benchmarkRunId, benchmarkStatus?.run.status, loadBenchmarkStatus]);
+
+  useEffect(() => {
+    if (!selectedPackId) {
+      setTrendSeries([]);
+      return;
+    }
+    void loadTrends(selectedPackId).catch(() => {
+      setTrendSeries([]);
+    });
+  }, [loadTrends, selectedPackId]);
+
+  useEffect(() => {
+    if (!regressionRunId) {
+      return;
+    }
+    if (!regressionPending && regressionStatus?.run.status !== "queued" && regressionStatus?.run.status !== "running") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadRegressionStatus(regressionRunId).catch(() => {
+        // keep polling until terminal state; transient errors are expected.
+      });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [loadRegressionStatus, regressionPending, regressionRunId, regressionStatus?.run.status]);
 
   const handleImport = useCallback(async () => {
     const content = importText.trim();
@@ -983,7 +1054,28 @@ export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: nu
                   void loadBenchmarkStatus(benchmarkRunId).catch((err: Error) => setError(err.message));
                 }}
               />
+              <ActionButton
+                label="Run replay regression"
+                pending={regressionPending}
+                disabled={!selectedPackId || running}
+                onClick={() => void runRegression()}
+              />
+              <ActionButton
+                label="Refresh regression"
+                disabled={!regressionRunId}
+                onClick={() => {
+                  if (!regressionRunId) return;
+                  void loadRegressionStatus(regressionRunId).catch((err: Error) => setError(err.message));
+                }}
+              />
             </div>
+            {regressionStatus ? (
+              <p className="office-subtitle">
+                Replay regression: <code>{regressionStatus.run.regressionRunId}</code> • {regressionStatus.run.status}
+                {" • "}
+                results: {regressionStatus.results.length}
+              </p>
+            ) : null}
           </details>
         </article>
       </div>
@@ -1194,6 +1286,58 @@ export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: nu
               ) : (
                 <p className="office-subtitle">No benchmark items recorded yet.</p>
               )}
+            </section>
+          ) : null}
+          {regressionStatus ? (
+            <section>
+              <h4>Latest replay regression</h4>
+              <p>
+                Run: <code>{regressionStatus.run.regressionRunId}</code> • {regressionStatus.run.status}
+                {regressionStatus.run.finishedAt ? ` • finished ${formatDateTime(regressionStatus.run.finishedAt)}` : ""}
+              </p>
+              {regressionStatus.run.error ? <p className="error">{regressionStatus.run.error}</p> : null}
+              {regressionStatus.results.length > 0 ? (
+                <table className="prompt-lab-benchmark-table">
+                  <thead>
+                    <tr>
+                      <th>Test</th>
+                      <th>Capability</th>
+                      <th>Score Δ</th>
+                      <th>Pass Δ</th>
+                      <th>Latency Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {regressionStatus.results.slice(0, 30).map((item) => (
+                      <tr key={item.resultId}>
+                        <td>{item.testCode}</td>
+                        <td>{item.capability}</td>
+                        <td>{item.scoreDelta.toFixed(2)}</td>
+                        <td>{item.passDelta.toFixed(2)}</td>
+                        <td>{Math.round(item.latencyDeltaMs)} ms</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="office-subtitle">No regression results recorded yet.</p>
+              )}
+            </section>
+          ) : null}
+          {trendSeries.length > 0 ? (
+            <section>
+              <h4>Capability trend alerts</h4>
+              <div className="token-row">
+                {trendSeries.map((series) => (
+                  <span
+                    key={series.capability}
+                    className={`token-chip${series.breached ? " token-chip-alert" : ""}`}
+                  >
+                    {series.capability}: {series.points.length > 0 ? series.points[series.points.length - 1]?.value.toFixed(2) : "n/a"}
+                    {series.breached ? " (threshold breached)" : ""}
+                  </span>
+                ))}
+              </div>
             </section>
           ) : null}
         </article>

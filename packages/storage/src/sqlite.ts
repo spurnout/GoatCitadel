@@ -173,6 +173,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "durable_run_foundation_schema",
     up: createDurableRunFoundationSchema,
   },
+  {
+    version: 22,
+    name: "gap_closure_extension_schema",
+    up: createGapClosureExtensionSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1718,6 +1723,158 @@ function createDurableRunFoundationSchema(db: DatabaseSync): void {
       ON durable_dead_letters(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_durable_dead_letters_resolved
       ON durable_dead_letters(resolved_at, created_at DESC);
+  `);
+}
+
+function createGapClosureExtensionSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS durable_run_events (
+      event_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      step_key TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES durable_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_durable_run_events_run_created
+      ON durable_run_events(run_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS replay_override_runs (
+      replay_run_id TEXT PRIMARY KEY,
+      source_run_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      overrides_json TEXT NOT NULL,
+      diff_json TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_text TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_replay_override_runs_source
+      ON replay_override_runs(source_run_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_replay_override_runs_status
+      ON replay_override_runs(status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS replay_override_steps (
+      step_id TEXT PRIMARY KEY,
+      replay_run_id TEXT NOT NULL,
+      step_key TEXT NOT NULL,
+      override_kind TEXT NOT NULL,
+      override_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(replay_run_id) REFERENCES replay_override_runs(replay_run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_replay_override_steps_run
+      ON replay_override_steps(replay_run_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS memory_items (
+      item_id TEXT PRIMARY KEY,
+      namespace TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      ttl_override_seconds INTEGER,
+      expires_at TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      forgotten_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_items_namespace_status
+      ON memory_items(namespace, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_items_pinned_updated
+      ON memory_items(pinned DESC, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_change_history (
+      change_id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      change_type TEXT NOT NULL,
+      actor_id TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(item_id) REFERENCES memory_items(item_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_change_history_item
+      ON memory_change_history(item_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS connector_health_runs (
+      health_run_id TEXT PRIMARY KEY,
+      connector_type TEXT NOT NULL,
+      connector_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_connector_health_runs_connector
+      ON connector_health_runs(connector_type, connector_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cron_review_items (
+      item_id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      status TEXT NOT NULL,
+      summary_json TEXT NOT NULL,
+      diff_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cron_review_items_status_updated
+      ON cron_review_items(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cron_review_items_job_created
+      ON cron_review_items(job_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cron_run_diffs (
+      diff_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      previous_run_id TEXT,
+      diff_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cron_run_diffs_run
+      ON cron_run_diffs(run_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS replay_regression_runs (
+      regression_run_id TEXT PRIMARY KEY,
+      pack_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      test_codes_json TEXT NOT NULL,
+      baseline_ref TEXT,
+      summary_json TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_text TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_replay_regression_runs_pack_started
+      ON replay_regression_runs(pack_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_replay_regression_runs_status_started
+      ON replay_regression_runs(status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS replay_regression_results (
+      result_id TEXT PRIMARY KEY,
+      regression_run_id TEXT NOT NULL,
+      test_code TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      score_delta REAL NOT NULL,
+      pass_delta REAL NOT NULL,
+      latency_delta_ms REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(regression_run_id) REFERENCES replay_regression_runs(regression_run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_replay_regression_results_run_capability
+      ON replay_regression_results(regression_run_id, capability, created_at DESC);
   `);
 }
 

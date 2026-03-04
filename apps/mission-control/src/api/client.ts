@@ -53,6 +53,7 @@ import type {
   IntegrationPluginRecord,
   McpInvokeResponse,
   McpOAuthStartResponse,
+  McpTemplateDiscoveryResult,
   McpServerRecord,
   McpServerTemplateRecord,
   McpToolRecord,
@@ -88,6 +89,20 @@ import type {
   PromptPackBenchmarkStatusRecord,
   PromptPackReportRecord,
   PromptPackExportRecord,
+  ReplayDiffSummary,
+  ReplayOverrideDraft,
+  DurableRunCreateRequest,
+  DurableRunRecord,
+  DurableRunTimelineEvent,
+  MemoryItemRecord,
+  MemoryLifecyclePatch,
+  MemoryChangeEvent,
+  ConnectorDiagnosticReport,
+  CronReviewItem,
+  CronRunDiff,
+  ReplayRegressionRun,
+  ReplayRegressionResult,
+  CapabilityTrendSeries,
   ProactivePolicy,
   ProactiveRunRecord,
   LearnedMemoryConflictRecord,
@@ -519,6 +534,15 @@ export interface RuntimeSettingsResponse {
     autoStart: boolean;
     sidecarUrl: string;
     status: NpuRuntimeStatus;
+  };
+  features: {
+    durableKernelV1Enabled: boolean;
+    replayOverridesV1Enabled: boolean;
+    memoryLifecycleAdminV1Enabled: boolean;
+    connectorDiagnosticsV1Enabled: boolean;
+    computerUseGuardrailsV1Enabled: boolean;
+    cronReviewQueueV1Enabled: boolean;
+    replayRegressionV1Enabled: boolean;
   };
 }
 
@@ -1343,6 +1367,36 @@ export async function fetchPromptPackBenchmark(
   );
 }
 
+export async function runPromptPackReplayRegression(
+  packId: string,
+  input: {
+    testCodes: string[];
+    baselineRef?: string;
+  },
+): Promise<{ regressionRunId: string }> {
+  return request<{ regressionRunId: string }>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/replay-regression/run`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function fetchPromptPackReplayRegressionStatus(
+  runId: string,
+): Promise<{ run: ReplayRegressionRun; results: ReplayRegressionResult[] }> {
+  return request<{ run: ReplayRegressionRun; results: ReplayRegressionResult[] }>(
+    `/api/v1/prompt-packs/replay-regression/${encodeURIComponent(runId)}`,
+  );
+}
+
+export async function fetchPromptPackTrends(packId: string): Promise<{ items: CapabilityTrendSeries[] }> {
+  return request<{ items: CapabilityTrendSeries[] }>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/trends`,
+  );
+}
+
 export async function fetchPromptPackExport(packId: string): Promise<PromptPackExportRecord> {
   return request<PromptPackExportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/export`);
 }
@@ -1425,6 +1479,34 @@ export async function fetchImprovementReplayRun(runId: string): Promise<{
     autoTunes: DecisionAutoTuneRecord[];
     report?: WeeklyImprovementReportRecord;
   }>(`/api/v1/improvement/replay/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function draftReplayOverride(
+  runId: string,
+  input: {
+    overrides: ReplayOverrideDraft["overrides"];
+  },
+): Promise<ReplayOverrideDraft> {
+  return request<ReplayOverrideDraft>(`/api/v1/replay/runs/${encodeURIComponent(runId)}/draft`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function executeReplayOverride(
+  runId: string,
+  input: {
+    overrides: ReplayOverrideDraft["overrides"];
+  },
+): Promise<ReplayOverrideDraft> {
+  return request<ReplayOverrideDraft>(`/api/v1/replay/runs/${encodeURIComponent(runId)}/execute`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchReplayDiff(replayRunId: string): Promise<ReplayDiffSummary> {
+  return request<ReplayDiffSummary>(`/api/v1/replay/${encodeURIComponent(replayRunId)}/diff`);
 }
 
 export async function approveImprovementAutoTune(tuneId: string): Promise<DecisionAutoTuneRecord> {
@@ -1984,9 +2066,88 @@ export async function runCronJobNow(jobId: string): Promise<{ jobId: string; sta
   });
 }
 
+export async function fetchCronReviewQueue(limit = 200): Promise<{ items: CronReviewItem[] }> {
+  return request<{ items: CronReviewItem[] }>(
+    `/api/v1/cron/review-queue?limit=${Math.max(1, Math.min(limit, 1000))}`,
+  );
+}
+
+export async function retryCronReviewQueueItem(itemId: string): Promise<CronReviewItem> {
+  return request<CronReviewItem>(`/api/v1/cron/review-queue/${encodeURIComponent(itemId)}/retry`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchCronRunDiff(runId: string): Promise<CronRunDiff> {
+  return request<CronRunDiff>(`/api/v1/cron/runs/${encodeURIComponent(runId)}/diff`);
+}
+
 export async function deleteCronJob(jobId: string): Promise<{ deleted: boolean; jobId: string }> {
   return request<{ deleted: boolean; jobId: string }>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}`, {
     method: "DELETE",
+  });
+}
+
+export async function createDurableRun(input: DurableRunCreateRequest): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>("/api/v1/durable/runs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchDurableRun(runId: string): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function fetchDurableRunTimeline(runId: string, limit = 300): Promise<{ items: DurableRunTimelineEvent[] }> {
+  return request<{ items: DurableRunTimelineEvent[] }>(
+    `/api/v1/durable/runs/${encodeURIComponent(runId)}/timeline?limit=${Math.max(1, Math.min(limit, 2000))}`,
+  );
+}
+
+export async function pauseDurableRun(runId: string, actorId?: string): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}/pause`, {
+    method: "POST",
+    body: JSON.stringify({ actorId }),
+  });
+}
+
+export async function resumeDurableRun(runId: string, actorId?: string): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ actorId }),
+  });
+}
+
+export async function cancelDurableRun(runId: string, actorId?: string): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ actorId }),
+  });
+}
+
+export async function retryDurableRun(runId: string, input?: { reason?: string; actorId?: string }): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}/retry`, {
+    method: "POST",
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
+export async function wakeDurableRun(
+  runId: string,
+  input: { eventKey: string; payload?: Record<string, unknown>; correlationId?: string },
+): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/runs/${encodeURIComponent(runId)}/events/wake`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function recoverDurableDeadLetter(entryId: string, actorId?: string): Promise<DurableRunRecord> {
+  return request<DurableRunRecord>(`/api/v1/durable/dead-letters/${encodeURIComponent(entryId)}/recover`, {
+    method: "POST",
+    body: JSON.stringify({ actorId }),
   });
 }
 
@@ -2322,6 +2483,7 @@ export async function patchSettings(input: {
     autoStart?: boolean;
     sidecarUrl?: string;
   };
+  features?: Partial<RuntimeSettingsResponse["features"]>;
 }): Promise<RuntimeSettingsResponse> {
   return request<RuntimeSettingsResponse>("/api/v1/settings", {
     method: "PATCH",
@@ -2358,6 +2520,55 @@ export async function fetchMemoryQmdStats(from?: string, to?: string, limit = 60
   return request<MemoryQmdStatsResponse & { recent: MemoryContextPack[] }>(
     `/api/v1/memory/qmd/stats?${search.toString()}`,
   );
+}
+
+export async function fetchMemoryItems(input?: {
+  namespace?: string;
+  status?: "active" | "forgotten" | "all";
+  query?: string;
+  limit?: number;
+}): Promise<{ items: MemoryItemRecord[] }> {
+  const params = new URLSearchParams();
+  if (input?.namespace) params.set("namespace", input.namespace);
+  if (input?.status) params.set("status", input.status);
+  if (input?.query) params.set("query", input.query);
+  params.set("limit", String(Math.max(1, Math.min(input?.limit ?? 200, 500))));
+  return request<{ items: MemoryItemRecord[] }>(`/api/v1/memory/items?${params.toString()}`);
+}
+
+export async function patchMemoryItem(
+  itemId: string,
+  patch: MemoryLifecyclePatch & { actorId?: string },
+): Promise<MemoryItemRecord> {
+  return request<MemoryItemRecord>(`/api/v1/memory/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function forgetMemoryItem(itemId: string, actorId?: string): Promise<MemoryItemRecord> {
+  return request<MemoryItemRecord>(`/api/v1/memory/items/${encodeURIComponent(itemId)}/forget`, {
+    method: "POST",
+    body: JSON.stringify({ actorId }),
+  });
+}
+
+export async function fetchMemoryItemHistory(itemId: string, limit = 200): Promise<{ items: MemoryChangeEvent[] }> {
+  return request<{ items: MemoryChangeEvent[] }>(
+    `/api/v1/memory/items/${encodeURIComponent(itemId)}/history?limit=${Math.max(1, Math.min(limit, 2000))}`,
+  );
+}
+
+export async function forgetMemory(input: {
+  itemIds?: string[];
+  namespace?: string;
+  query?: string;
+  actorId?: string;
+}): Promise<{ forgottenCount: number; itemIds: string[] }> {
+  return request<{ forgottenCount: number; itemIds: string[] }>("/api/v1/memory/forget", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function fetchOrchestrationRunContext(runId: string): Promise<{ items: MemoryContextPack[] }> {
@@ -2421,6 +2632,12 @@ export async function deleteIntegrationConnection(connectionId: string): Promise
     method: "DELETE",
     body: JSON.stringify({}),
   });
+}
+
+export async function fetchIntegrationConnectionDiagnostics(connectionId: string): Promise<ConnectorDiagnosticReport> {
+  return request<ConnectorDiagnosticReport>(
+    `/api/v1/integrations/connections/${encodeURIComponent(connectionId)}/diagnostics`,
+  );
 }
 
 export async function fetchIntegrationPlugins(): Promise<{ items: IntegrationPluginRecord[] }> {
@@ -2632,6 +2849,10 @@ export async function fetchMcpTemplates(): Promise<{ items: Array<McpServerTempl
   return request<{ items: Array<McpServerTemplateRecord & { installed: boolean }> }>("/api/v1/mcp/templates");
 }
 
+export async function fetchMcpTemplateDiscovery(): Promise<{ items: McpTemplateDiscoveryResult[] }> {
+  return request<{ items: McpTemplateDiscoveryResult[] }>("/api/v1/mcp/templates/discovery");
+}
+
 export async function createMcpServer(input: {
   label: string;
   transport: "stdio" | "http" | "sse";
@@ -2734,6 +2955,13 @@ export async function invokeMcpTool(input: {
   return request<McpInvokeResponse>("/api/v1/mcp/invoke", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export async function runMcpServerHealthCheck(serverId: string): Promise<ConnectorDiagnosticReport> {
+  return request<ConnectorDiagnosticReport>(`/api/v1/mcp/servers/${encodeURIComponent(serverId)}/health-check`, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 

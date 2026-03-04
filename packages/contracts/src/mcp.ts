@@ -118,3 +118,28 @@ export interface McpInvokeResponse {
   policyReason?: string;
   reasonCodes?: string[];
 }
+
+export interface McpTemplateDiscoveryResult {
+  templateId: string;
+  label: string;
+  installed: boolean;
+  readiness: "ready" | "needs_auth" | "needs_command" | "needs_url" | "unknown";
+  dependencyChecks: Array<{
+    key: string;
+    status: "pass" | "warn" | "fail";
+    message: string;
+  }>;
+}
+
+export interface ConnectorDiagnosticReport {
+  connectorType: "mcp_server" | "integration_connection";
+  connectorId: string;
+  status: "ok" | "warn" | "error";
+  checks: Array<{
+    key: string;
+    status: "pass" | "warn" | "fail";
+    message: string;
+  }>;
+  recommendedNextAction?: string;
+  checkedAt: string;
+}

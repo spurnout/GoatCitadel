@@ -2,9 +2,32 @@ export type DurableRunStatus =
   | "queued"
   | "running"
   | "waiting"
+  | "paused"
   | "completed"
   | "failed"
+  | "cancelled"
   | "dead_lettered";
+
+export interface DurableRetryPolicy {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+}
+
+export interface DurableEventWait {
+  eventKey: string;
+  timeoutMs?: number;
+  correlationId?: string;
+}
+
+export interface DurableRunCreateRequest {
+  workflowKey: string;
+  payload?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  retryPolicy?: Partial<DurableRetryPolicy>;
+  waitForEvent?: DurableEventWait;
+}
 
 export interface DurableRunRecord {
   runId: string;
@@ -69,3 +92,23 @@ export interface DurableDiagnosticsResponse {
   generatedAt: string;
 }
 
+export interface DurableRunTimelineEvent {
+  eventId: string;
+  runId: string;
+  eventType:
+    | "run_created"
+    | "run_started"
+    | "run_paused"
+    | "run_resumed"
+    | "run_waiting"
+    | "run_woken"
+    | "run_retry_scheduled"
+    | "run_cancelled"
+    | "run_completed"
+    | "run_failed"
+    | "run_dead_lettered"
+    | "dead_letter_recovered";
+  stepKey?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}

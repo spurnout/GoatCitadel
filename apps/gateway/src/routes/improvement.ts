@@ -17,12 +17,26 @@ const runParamsSchema = z.object({
   runId: z.string().min(1),
 });
 
+const replayRunParamsSchema = z.object({
+  replayRunId: z.string().min(1),
+});
+
 const tuneParamsSchema = z.object({
   tuneId: z.string().min(1),
 });
 
 const manualReplayBodySchema = z.object({
   sampleSize: z.coerce.number().int().positive().max(2000).optional(),
+});
+
+const replayOverrideStepSchema = z.object({
+  stepKey: z.string().min(1),
+  overrideKind: z.enum(["tool_output", "prompt_patch", "policy_decision"]),
+  override: z.record(z.unknown()).default({}),
+});
+
+const replayDraftBodySchema = z.object({
+  overrides: z.array(replayOverrideStepSchema).default([]),
 });
 
 export const improvementRoutes: FastifyPluginAsync = async (fastify) => {
@@ -103,6 +117,56 @@ export const improvementRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(fastify.gateway.revertDecisionAutoTune(params.data.tuneId));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/replay/runs/:runId/draft", async (request, reply) => {
+    const params = runParamsSchema.safeParse(request.params);
+    const body = replayDraftBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.createReplayOverrideDraft(params.data.runId, body.data.overrides));
+    } catch (error) {
+      return reply.code(409).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/replay/runs/:runId/execute", async (request, reply) => {
+    const params = runParamsSchema.safeParse(request.params);
+    const body = replayDraftBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.executeReplayOverride(params.data.runId, body.data.overrides));
+    } catch (error) {
+      return reply.code(409).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/replay/:replayRunId/diff", async (request, reply) => {
+    const params = replayRunParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getReplayDiffSummary(params.data.replayRunId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
     }
   });
 };

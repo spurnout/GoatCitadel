@@ -69,3 +69,24 @@ export interface OperatorSummary {
   activeSessions: number;
   lastActivityAt?: string;
 }
+
+export interface CronReviewItem {
+  itemId: string;
+  jobId: string;
+  runId: string;
+  severity: "low" | "medium" | "high" | "critical";
+  status: "open" | "resolved" | "retrying" | "ignored";
+  summary: Record<string, unknown>;
+  diff?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt?: string;
+}
+
+export interface CronRunDiff {
+  diffId: string;
+  runId: string;
+  previousRunId?: string;
+  diff: Record<string, unknown>;
+  createdAt: string;
+}

@@ -5,10 +5,12 @@ import {
   createMcpServer,
   deleteMcpServer,
   disconnectMcpServer,
+  fetchMcpTemplateDiscovery,
   fetchMcpTemplates,
   fetchMcpServers,
   fetchMcpTools,
   invokeMcpTool,
+  runMcpServerHealthCheck,
   startMcpOAuth,
   updateMcpServerPolicy,
 } from "../api/client";
@@ -49,6 +51,17 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
     lastError?: string;
   }>>([]);
   const [templates, setTemplates] = useState<Array<Awaited<ReturnType<typeof fetchMcpTemplates>>["items"][number]>>([]);
+  const [templateDiscovery, setTemplateDiscovery] = useState<Array<{
+    templateId: string;
+    label: string;
+    installed: boolean;
+    readiness: "ready" | "needs_auth" | "needs_command" | "needs_url" | "unknown";
+    dependencyChecks: Array<{
+      key: string;
+      status: "pass" | "warn" | "fail";
+      message: string;
+    }>;
+  }>>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [tools, setTools] = useState<Array<{
     serverId: string;
@@ -77,14 +90,28 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [diagnosticByServerId, setDiagnosticByServerId] = useState<Record<string, {
+    connectorType: "mcp_server" | "integration_connection";
+    connectorId: string;
+    status: "ok" | "warn" | "error";
+    checks: Array<{
+      key: string;
+      status: "pass" | "warn" | "fail";
+      message: string;
+    }>;
+    recommendedNextAction?: string;
+    checkedAt: string;
+  }>>({});
 
   const loadServers = useCallback(async () => {
-    const [response, templateResponse] = await Promise.all([
+    const [response, templateResponse, discoveryResponse] = await Promise.all([
       fetchMcpServers(),
       fetchMcpTemplates(),
+      fetchMcpTemplateDiscovery().catch(() => ({ items: [] })),
     ]);
     setServers(response.items);
     setTemplates(templateResponse.items);
+    setTemplateDiscovery(discoveryResponse.items);
     setSelectedServerId((current) => {
       if (current && response.items.some((item) => item.serverId === current)) {
         return current;
@@ -167,6 +194,7 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
     () => servers.find((item) => item.serverId === selectedServerId) ?? null,
     [selectedServerId, servers],
   );
+  const selectedDiagnostic = selected ? diagnosticByServerId[selected.serverId] : undefined;
 
   useEffect(() => {
     if (!selected) {
@@ -298,6 +326,41 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
           ))}
           {templates.length === 0 ? <p className="office-subtitle">No templates available.</p> : null}
         </div>
+      </article>
+
+      <article className="card">
+        <h3>Template Discovery Readiness</h3>
+        <p className="office-subtitle">
+          Before installing a template, check whether required auth, command, or URL settings are ready.
+        </p>
+        {templateDiscovery.length === 0 ? (
+          <p className="office-subtitle">Discovery metadata is unavailable right now. You can still install templates manually.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Template</th>
+                <th>Installed</th>
+                <th>Readiness</th>
+                <th>Dependency checks</th>
+              </tr>
+            </thead>
+            <tbody>
+              {templateDiscovery.map((item) => (
+                <tr key={item.templateId}>
+                  <td>{item.label}</td>
+                  <td>{item.installed ? "yes" : "no"}</td>
+                  <td>{item.readiness}</td>
+                  <td>
+                    {item.dependencyChecks.length === 0
+                      ? "No checks reported"
+                      : item.dependencyChecks.map((check) => `${check.key}:${check.status}`).join(", ")}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </article>
 
       <div className="split-grid">
@@ -468,8 +531,48 @@ export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }
                     }
                   }}
                 />
+                <ActionButton
+                  label="Health Check"
+                  pending={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const diagnostic = await runMcpServerHealthCheck(selected.serverId);
+                      setDiagnosticByServerId((current) => ({
+                        ...current,
+                        [selected.serverId]: diagnostic,
+                      }));
+                      setError(null);
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
               </div>
               <p className="office-subtitle">{describeMcpBlockReason(selected)}</p>
+              {selectedDiagnostic ? (
+                <details open>
+                  <summary>
+                    Latest health check: {selectedDiagnostic.status}
+                    {" • "}
+                    {new Date(selectedDiagnostic.checkedAt).toLocaleString()}
+                  </summary>
+                  <ul className="improvement-simple-list">
+                    {selectedDiagnostic.checks.map((check) => (
+                      <li key={`${check.key}:${check.message}`}>
+                        <strong>{check.key}</strong> [{check.status}] - {check.message}
+                      </li>
+                    ))}
+                  </ul>
+                  {selectedDiagnostic.recommendedNextAction ? (
+                    <p className="office-subtitle">
+                      Next step: {selectedDiagnostic.recommendedNextAction}
+                    </p>
+                  ) : null}
+                </details>
+              ) : null}
               <div className="controls-row">
                 <label className="checkbox-inline">
                   <GCSwitch

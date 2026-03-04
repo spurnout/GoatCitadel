@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   approveImprovementAutoTune,
+  draftReplayOverride,
+  executeReplayOverride,
+  fetchReplayDiff,
   fetchImprovementReplayRun,
   fetchImprovementReplayRuns,
   fetchImprovementReports,
@@ -9,6 +12,7 @@ import {
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
@@ -27,6 +31,11 @@ export function ImprovementPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: 
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<Awaited<ReturnType<typeof fetchImprovementReplayRun>> | null>(null);
+  const [overrideStepKey, setOverrideStepKey] = useState("");
+  const [overrideKind, setOverrideKind] = useState<"tool_output" | "prompt_patch" | "policy_decision">("tool_output");
+  const [overrideJson, setOverrideJson] = useState("{\"note\":\"override\"}");
+  const [overrideBusy, setOverrideBusy] = useState<null | "draft" | "execute">(null);
+  const [replayDiff, setReplayDiff] = useState<Awaited<ReturnType<typeof fetchReplayDiff>> | null>(null);
 
   const load = useCallback(async (options?: { background?: boolean }) => {
     const background = options?.background ?? false;
@@ -204,6 +213,85 @@ export function ImprovementPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: 
     }
   }, [load]);
 
+  const parseOverridePayload = useCallback((): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(overrideJson) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Override payload must be a JSON object.");
+      }
+      return parsed;
+    } catch (err) {
+      setError((err as Error).message);
+      return null;
+    }
+  }, [overrideJson]);
+
+  const handleDraftReplay = useCallback(async () => {
+    if (!selectedRunId) {
+      setError("Select a replay run first.");
+      return;
+    }
+    if (!overrideStepKey.trim()) {
+      setError("Step key is required for replay override.");
+      return;
+    }
+    const payload = parseOverridePayload();
+    if (!payload) {
+      return;
+    }
+    setOverrideBusy("draft");
+    setError(null);
+    setSuccess(null);
+    try {
+      const draft = await draftReplayOverride(selectedRunId, {
+        overrides: [{
+          stepKey: overrideStepKey.trim(),
+          overrideKind,
+          override: payload,
+        }],
+      });
+      setSuccess(`Replay draft ${draft.replayRunId.slice(0, 8)} created (${draft.status}).`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setOverrideBusy(null);
+    }
+  }, [overrideKind, overrideStepKey, parseOverridePayload, selectedRunId]);
+
+  const handleExecuteReplay = useCallback(async () => {
+    if (!selectedRunId) {
+      setError("Select a replay run first.");
+      return;
+    }
+    if (!overrideStepKey.trim()) {
+      setError("Step key is required for replay override.");
+      return;
+    }
+    const payload = parseOverridePayload();
+    if (!payload) {
+      return;
+    }
+    setOverrideBusy("execute");
+    setError(null);
+    setSuccess(null);
+    try {
+      const replay = await executeReplayOverride(selectedRunId, {
+        overrides: [{
+          stepKey: overrideStepKey.trim(),
+          overrideKind,
+          override: payload,
+        }],
+      });
+      const diff = await fetchReplayDiff(replay.replayRunId);
+      setReplayDiff(diff);
+      setSuccess(`Replay override executed (${replay.replayRunId.slice(0, 8)}).`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setOverrideBusy(null);
+    }
+  }, [overrideKind, overrideStepKey, parseOverridePayload, selectedRunId]);
+
   const handleApproveTune = useCallback(async (tuneId: string) => {
     setPendingTuneId(tuneId);
     setError(null);
@@ -273,6 +361,64 @@ export function ImprovementPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: 
           {lastRunUpdateAt ? ` Last update: ${new Date(lastRunUpdateAt).toLocaleTimeString()}.` : ""}
         </p>
       ) : null}
+
+      <article className="card">
+        <h3>Replay Override + Diff</h3>
+        <p className="office-subtitle">
+          Draft or execute a step-level override to compare outcomes against the original run.
+        </p>
+        <div className="controls-row">
+          <label htmlFor="overrideStepKey">Step key</label>
+          <input
+            id="overrideStepKey"
+            value={overrideStepKey}
+            onChange={(event) => setOverrideStepKey(event.target.value)}
+            placeholder="tool:memory.search"
+          />
+          <label htmlFor="overrideKind">Override type</label>
+          <GCSelect
+            id="overrideKind"
+            value={overrideKind}
+            onChange={(value) => setOverrideKind(value as "tool_output" | "prompt_patch" | "policy_decision")}
+            options={[
+              { value: "tool_output", label: "tool_output" },
+              { value: "prompt_patch", label: "prompt_patch" },
+              { value: "policy_decision", label: "policy_decision" },
+            ]}
+          />
+        </div>
+        <label htmlFor="overrideJson">Override payload (JSON object)</label>
+        <textarea
+          id="overrideJson"
+          rows={4}
+          value={overrideJson}
+          onChange={(event) => setOverrideJson(event.target.value)}
+          placeholder='{"replacement":"value"}'
+        />
+        <div className="prompt-lab-actions">
+          <ActionButton
+            label="Draft replay"
+            pending={overrideBusy === "draft"}
+            disabled={!selectedRunId}
+            onClick={() => void handleDraftReplay()}
+          />
+          <ActionButton
+            label="Execute replay"
+            pending={overrideBusy === "execute"}
+            disabled={!selectedRunId}
+            onClick={() => void handleExecuteReplay()}
+          />
+        </div>
+        {replayDiff ? (
+          <details open>
+            <summary>Latest replay diff ({replayDiff.replayRunId.slice(0, 8)})</summary>
+            <p className="office-subtitle">
+              latencyΔ {replayDiff.summary.latencyDeltaMs} ms | inTokΔ {replayDiff.summary.inputTokensDelta} | outTokΔ {replayDiff.summary.outputTokensDelta} | costΔ ${replayDiff.summary.costUsdDelta.toFixed(4)}
+            </p>
+            <p className="office-subtitle">Error changed: {replayDiff.summary.errorChanged ? "yes" : "no"}</p>
+          </details>
+        ) : null}
+      </article>
 
       <article className="card">
         <h3>Recent Replay Runs</h3>

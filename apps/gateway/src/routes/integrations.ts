@@ -326,6 +326,20 @@ export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(404).send({ error: (error as Error).message });
     }
   });
+
+  fastify.get("/api/v1/integrations/connections/:connectionId/diagnostics", async (request, reply) => {
+    const params = connectionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.runIntegrationConnectionDiagnostics(params.data.connectionId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("unknown integration connection");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
+    }
+  });
 };
 
 function parseContentLength(value: string | string[] | undefined): number | undefined {

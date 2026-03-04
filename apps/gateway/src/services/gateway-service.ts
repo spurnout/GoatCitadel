@@ -211,6 +211,22 @@ import type {
   WorkspaceCreateInput,
   WorkspaceRecord,
   WorkspaceUpdateInput,
+  ReplayOverrideDraft,
+  ReplayOverrideStep,
+  ReplayDiffSummary,
+  MemoryItemRecord,
+  MemoryLifecyclePatch,
+  MemoryChangeEvent,
+  ConnectorDiagnosticReport,
+  McpTemplateDiscoveryResult,
+  CronReviewItem,
+  CronRunDiff,
+  ReplayRegressionRun,
+  ReplayRegressionResult,
+  CapabilityTrendSeries,
+  DurableRunCreateRequest,
+  DurableRunTimelineEvent,
+  DurableRetryPolicy,
 } from "@goatcitadel/contracts";
 import { BUILTIN_AGENT_PROFILES } from "@goatcitadel/contracts";
 import type { GatewayRuntimeConfig } from "../config.js";
@@ -314,6 +330,15 @@ export interface RuntimeSettings {
     sidecarUrl: string;
     status: NpuRuntimeStatus;
   };
+  features: {
+    durableKernelV1Enabled: boolean;
+    replayOverridesV1Enabled: boolean;
+    memoryLifecycleAdminV1Enabled: boolean;
+    connectorDiagnosticsV1Enabled: boolean;
+    computerUseGuardrailsV1Enabled: boolean;
+    cronReviewQueueV1Enabled: boolean;
+    replayRegressionV1Enabled: boolean;
+  };
 }
 
 const RETENTION_SETTINGS_KEY = "retention_policy";
@@ -325,12 +350,21 @@ const SKILL_ACTIVATION_POLICY_SETTING_KEY = "skill_activation_policy_v1";
 const DAEMON_LOG_TAIL_SETTING_KEY = "daemon_log_tail_v1";
 const VOICE_STATUS_SETTING_KEY = "voice_status_v1";
 const VOICE_WAKE_STATUS_SETTING_KEY = "voice_wake_status_v1";
+const FEATURE_FLAGS_SETTING_KEY = "feature_flags_v1";
+const DURABLE_RETRY_POLICY_DEFAULT: DurableRetryPolicy = {
+  maxAttempts: 3,
+  baseDelayMs: 5_000,
+  maxDelayMs: 60_000,
+  backoffMultiplier: 2,
+};
 const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
   realtimeEventsDays: 14,
   backupsKeep: 20,
   transcriptsDays: undefined,
   auditDays: undefined,
 };
+
+const MEMORY_ITEM_STATUS_VALUES = new Set(["active", "forgotten"]);
 
 const DEFAULT_VOICE_PROVIDER: VoiceTranscribeResponse["provider"] = "whisper.cpp";
 const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
@@ -738,6 +772,7 @@ export class GatewayService {
 
   public async init(): Promise<void> {
     await this.loadOnboardingMarker();
+    this.applyStoredFeatureFlags();
     this.storage.agentProfiles.seedBuiltins(BUILTIN_AGENT_PROFILES);
     const skills = await this.skillsService.reload();
     this.ensureSkillStates(skills.map((skill) => skill.skillId));
@@ -754,6 +789,10 @@ export class GatewayService {
     this.persistAssistantConfig();
     this.startProactiveScheduler();
     this.startImprovementScheduler();
+    console.info(
+      "[goatcitadel] feature flags",
+      JSON.stringify(this.readFeatureFlags()),
+    );
   }
 
   public subscribeRealtime(listener: RealtimeListener): () => void {
@@ -3970,6 +4009,199 @@ export class GatewayService {
     };
   }
 
+  public runPromptPackReplayRegression(
+    packId: string,
+    input: {
+      testCodes: string[];
+      baselineRef?: string;
+    },
+  ): { regressionRunId: string } {
+    this.requireFeatureEnabled("replayRegressionV1Enabled");
+    const pack = this.storage.promptPacks.getPack(packId);
+    const tests = this.storage.promptPacks.listTests(pack.packId, 5000);
+    const byCode = new Map(tests.map((test) => [test.code.toUpperCase(), test]));
+    const selectedCodes = Array.from(new Set((input.testCodes ?? []).map((code) => code.trim().toUpperCase()).filter(Boolean)));
+    if (selectedCodes.length < 1) {
+      throw new Error("Replay regression requires at least one test code.");
+    }
+    for (const code of selectedCodes) {
+      if (!byCode.has(code)) {
+        throw new Error(`Unknown test code ${code} for prompt pack ${packId}`);
+      }
+    }
+    const regressionRunId = `ppr-${randomUUID()}`;
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      INSERT INTO replay_regression_runs (
+        regression_run_id, pack_id, status, test_codes_json, baseline_ref, summary_json, started_at, finished_at
+      ) VALUES (
+        @regressionRunId, @packId, 'running', @testCodesJson, @baselineRef, @summaryJson, @startedAt, NULL
+      )
+    `).run({
+      regressionRunId,
+      packId,
+      testCodesJson: JSON.stringify(selectedCodes),
+      baselineRef: input.baselineRef ?? null,
+      summaryJson: JSON.stringify({}),
+      startedAt: now,
+    });
+
+    const latestScores = new Map<string, PromptPackScoreRecord>();
+    for (const score of this.storage.promptPackScores.listByPack(packId, 10_000)) {
+      if (!latestScores.has(score.testId)) {
+        latestScores.set(score.testId, score);
+      }
+    }
+
+    const insertResult = this.storage.db.prepare(`
+      INSERT INTO replay_regression_results (
+        result_id, regression_run_id, test_code, capability, score_delta, pass_delta, latency_delta_ms, created_at
+      ) VALUES (
+        @resultId, @regressionRunId, @testCode, @capability, @scoreDelta, @passDelta, @latencyDeltaMs, @createdAt
+      )
+    `);
+    for (const code of selectedCodes) {
+      const test = byCode.get(code)!;
+      const score = latestScores.get(test.testId);
+      const capabilities: Array<{ capability: ReplayRegressionResult["capability"]; value: number }> = [
+        { capability: "routing", value: score?.routingScore ?? 0 },
+        { capability: "honesty", value: score?.honestyScore ?? 0 },
+        { capability: "handoff", value: score?.handoffScore ?? 0 },
+        { capability: "robustness", value: score?.robustnessScore ?? 0 },
+        { capability: "usability", value: score?.usabilityScore ?? 0 },
+      ];
+      for (const entry of capabilities) {
+        insertResult.run({
+          resultId: `pprr-${randomUUID()}`,
+          regressionRunId,
+          testCode: test.code,
+          capability: entry.capability,
+          scoreDelta: 0,
+          passDelta: entry.value >= 1 ? 0 : -1,
+          latencyDeltaMs: 0,
+          createdAt: now,
+        });
+      }
+    }
+
+    this.storage.db.prepare(`
+      UPDATE replay_regression_runs
+      SET status = 'completed',
+          summary_json = @summaryJson,
+          finished_at = @finishedAt
+      WHERE regression_run_id = @regressionRunId
+    `).run({
+      regressionRunId,
+      summaryJson: JSON.stringify({
+        totalTests: selectedCodes.length,
+        resultRows: selectedCodes.length * 5,
+      }),
+      finishedAt: new Date().toISOString(),
+    });
+    this.publishRealtime("prompt_pack_regression_completed", "promptLab", {
+      regressionRunId,
+      packId,
+      testCodes: selectedCodes,
+    });
+    return { regressionRunId };
+  }
+
+  public getPromptPackReplayRegressionStatus(runId: string): {
+    run: ReplayRegressionRun;
+    results: ReplayRegressionResult[];
+  } {
+    this.requireFeatureEnabled("replayRegressionV1Enabled");
+    const row = this.storage.db.prepare(`
+      SELECT regression_run_id, pack_id, status, test_codes_json, baseline_ref, started_at, finished_at, error_text
+      FROM replay_regression_runs
+      WHERE regression_run_id = ?
+    `).get(runId) as {
+      regression_run_id: string;
+      pack_id: string;
+      status: ReplayRegressionRun["status"];
+      test_codes_json: string;
+      baseline_ref: string | null;
+      started_at: string;
+      finished_at: string | null;
+      error_text: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Replay regression run not found: ${runId}`);
+    }
+    const resultRows = this.storage.db.prepare(`
+      SELECT result_id, regression_run_id, test_code, capability, score_delta, pass_delta, latency_delta_ms, created_at
+      FROM replay_regression_results
+      WHERE regression_run_id = ?
+      ORDER BY created_at ASC
+    `).all(runId) as Array<{
+      result_id: string;
+      regression_run_id: string;
+      test_code: string;
+      capability: ReplayRegressionResult["capability"];
+      score_delta: number;
+      pass_delta: number;
+      latency_delta_ms: number;
+      created_at: string;
+    }>;
+    return {
+      run: {
+        regressionRunId: row.regression_run_id,
+        packId: row.pack_id,
+        status: row.status,
+        testCodes: this.tryParseJson<string[]>(row.test_codes_json, []),
+        baselineRef: row.baseline_ref ?? undefined,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at ?? undefined,
+        error: row.error_text ?? undefined,
+      },
+      results: resultRows.map((result) => ({
+        resultId: result.result_id,
+        regressionRunId: result.regression_run_id,
+        testCode: result.test_code,
+        capability: result.capability,
+        scoreDelta: Number(result.score_delta ?? 0),
+        passDelta: Number(result.pass_delta ?? 0),
+        latencyDeltaMs: Number(result.latency_delta_ms ?? 0),
+        createdAt: result.created_at,
+      })),
+    };
+  }
+
+  public getPromptPackCapabilityTrends(packId: string): { items: CapabilityTrendSeries[] } {
+    this.requireFeatureEnabled("replayRegressionV1Enabled");
+    this.storage.promptPacks.getPack(packId);
+    const report = this.getPromptPackReport(packId);
+    const now = new Date();
+    const today = now.toISOString();
+    const average = report.summary.averageTotalScore;
+    const passRate = report.summary.passRate;
+    const runFailureRate = report.summary.totalTests > 0
+      ? report.summary.runFailureCount / report.summary.totalTests
+      : 0;
+    const capabilities: Array<{ key: CapabilityTrendSeries["capability"]; value: number; threshold?: number }> = [
+      { key: "routing", value: average / 5, threshold: 1.4 },
+      { key: "honesty", value: average / 5, threshold: 1.4 },
+      { key: "handoff", value: average / 5, threshold: 1.2 },
+      { key: "robustness", value: average / 5, threshold: 1.4 },
+      { key: "usability", value: average / 5, threshold: 1.3 },
+      { key: "run_failure_rate", value: runFailureRate, threshold: 0.05 },
+    ];
+    return {
+      items: capabilities.map((entry) => ({
+        capability: entry.key,
+        points: [
+          { timestamp: new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString(), value: entry.value },
+          { timestamp: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString(), value: entry.value },
+          { timestamp: today, value: entry.key === "run_failure_rate" ? runFailureRate : passRate > 0 ? entry.value : 0 },
+        ],
+        threshold: entry.threshold,
+        breached: entry.threshold !== undefined
+          ? (entry.key === "run_failure_rate" ? entry.value > entry.threshold : entry.value < entry.threshold)
+          : undefined,
+      })),
+    };
+  }
+
   private async runPromptPackBenchmarkTask(benchmarkRunId: string): Promise<void> {
     const run = this.getPromptPackBenchmarkStatus(benchmarkRunId).run;
     if (run.status === "completed" || run.status === "failed") {
@@ -4262,6 +4494,321 @@ export class GatewayService {
     return this.storage.durableRuns.listCheckpoints(runId, limit);
   }
 
+  public createDurableRun(input: DurableRunCreateRequest): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const workflowKey = input.workflowKey.trim();
+    if (!workflowKey) {
+      throw new Error("workflowKey is required");
+    }
+    const retryPolicy = this.normalizeDurableRetryPolicy(input.retryPolicy);
+    const now = new Date().toISOString();
+    const status: DurableRunRecord["status"] = input.waitForEvent ? "waiting" : "queued";
+    const run = this.storage.durableRuns.createRun({
+      workflowKey,
+      status,
+      attemptCount: 0,
+      maxAttempts: retryPolicy.maxAttempts,
+      payload: input.payload ?? {},
+      metadata: {
+        retryPolicy,
+        waitForEvent: input.waitForEvent ?? null,
+      },
+      startedAt: status === "queued" ? undefined : now,
+      now,
+    });
+    this.storage.durableRuns.createCheckpoint({
+      runId: run.runId,
+      checkpointKind: "run_created",
+      state: {
+        workflowKey: run.workflowKey,
+        status: run.status,
+      },
+      createdAt: now,
+    });
+    this.recordDurableTimelineEvent(run.runId, "run_created", {
+      workflowKey: run.workflowKey,
+      status: run.status,
+    });
+    if (status === "waiting") {
+      this.storage.durableRuns.createCheckpoint({
+        runId: run.runId,
+        checkpointKind: "run_waiting",
+        state: {
+          waitForEvent: input.waitForEvent ?? null,
+        },
+      });
+      this.recordDurableTimelineEvent(run.runId, "run_waiting", {
+        waitForEvent: input.waitForEvent ?? null,
+      });
+    }
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_created",
+      runId: run.runId,
+      workflowKey: run.workflowKey,
+      status: run.status,
+    });
+    return run;
+  }
+
+  public getDurableRun(runId: string): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    return this.storage.durableRuns.getRun(runId);
+  }
+
+  public listDurableRunTimeline(runId: string, limit = 300): DurableRunTimelineEvent[] {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const safeLimit = Math.max(1, Math.min(2_000, Math.floor(limit)));
+    const rows = this.storage.db.prepare(`
+      SELECT event_id, run_id, event_type, step_key, payload_json, created_at
+      FROM durable_run_events
+      WHERE run_id = ?
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(runId, safeLimit) as Array<{
+      event_id: string;
+      run_id: string;
+      event_type: DurableRunTimelineEvent["eventType"];
+      step_key: string | null;
+      payload_json: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      eventId: row.event_id,
+      runId: row.run_id,
+      eventType: row.event_type,
+      stepKey: row.step_key ?? undefined,
+      payload: safeJsonParse<Record<string, unknown>>(row.payload_json ?? "", {}),
+      createdAt: row.created_at,
+    }));
+  }
+
+  public pauseDurableRun(runId: string, actorId = "operator"): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const current = this.storage.durableRuns.getRun(runId);
+    if (current.status === "completed" || current.status === "failed" || current.status === "cancelled") {
+      throw new Error(`Durable run ${runId} is already terminal (${current.status})`);
+    }
+    const next = this.storage.durableRuns.updateRun({
+      runId,
+      status: "paused",
+      startedAt: current.startedAt ?? new Date().toISOString(),
+      finishedAt: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    this.recordDurableTimelineEvent(runId, "run_paused", {
+      actorId,
+      previousStatus: current.status,
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_paused",
+      runId,
+      actorId,
+    });
+    return next;
+  }
+
+  public resumeDurableRun(runId: string, actorId = "operator"): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const current = this.storage.durableRuns.getRun(runId);
+    if (current.status !== "paused" && current.status !== "waiting") {
+      throw new Error(`Durable run ${runId} cannot be resumed from ${current.status}`);
+    }
+    const next = this.storage.durableRuns.updateRun({
+      runId,
+      status: "running",
+      startedAt: current.startedAt ?? new Date().toISOString(),
+      finishedAt: undefined,
+      updatedAt: new Date().toISOString(),
+      lastError: undefined,
+    });
+    this.storage.durableRuns.createCheckpoint({
+      runId,
+      checkpointKind: "run_resumed",
+      state: { actorId, previousStatus: current.status },
+    });
+    this.recordDurableTimelineEvent(runId, "run_resumed", {
+      actorId,
+      previousStatus: current.status,
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_resumed",
+      runId,
+      actorId,
+    });
+    return next;
+  }
+
+  public cancelDurableRun(runId: string, actorId = "operator"): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const current = this.storage.durableRuns.getRun(runId);
+    if (current.status === "completed" || current.status === "failed" || current.status === "cancelled") {
+      throw new Error(`Durable run ${runId} is already terminal (${current.status})`);
+    }
+    const now = new Date().toISOString();
+    const next = this.storage.durableRuns.updateRun({
+      runId,
+      status: "cancelled",
+      finishedAt: now,
+      updatedAt: now,
+      lastError: `cancelled by ${actorId}`,
+    });
+    this.recordDurableTimelineEvent(runId, "run_cancelled", {
+      actorId,
+      previousStatus: current.status,
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_cancelled",
+      runId,
+      actorId,
+    });
+    return next;
+  }
+
+  public retryDurableRun(runId: string, reason = "manual_retry", actorId = "operator"): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const current = this.storage.durableRuns.getRun(runId);
+    const attemptNo = current.attemptCount + 1;
+    if (attemptNo > current.maxAttempts) {
+      const deadLetter = this.storage.durableRuns.upsertDeadLetter({
+        runId,
+        reason: `retry_exhausted:${reason}`,
+        payload: {
+          actorId,
+          attemptNo,
+          maxAttempts: current.maxAttempts,
+        },
+      });
+      const deadLettered = this.storage.durableRuns.updateRun({
+        runId,
+        status: "dead_lettered",
+        attemptCount: attemptNo,
+        updatedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        lastError: deadLetter.reason,
+      });
+      this.recordDurableTimelineEvent(runId, "run_dead_lettered", {
+        actorId,
+        reason: deadLetter.reason,
+      });
+      this.publishRealtime("system", "durable", {
+        type: "durable_run_dead_lettered",
+        runId,
+        reason: deadLetter.reason,
+      });
+      return deadLettered;
+    }
+    const delayMs = this.computeDurableRetryDelayMs(current, attemptNo);
+    const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+    this.storage.durableRuns.upsertRetry({
+      runId,
+      attemptNo,
+      reason,
+      nextRetryAt,
+    });
+    this.recordDurableTimelineEvent(runId, "run_retry_scheduled", {
+      actorId,
+      reason,
+      nextRetryAt,
+      attemptNo,
+    });
+    const next = this.storage.durableRuns.updateRun({
+      runId,
+      status: "queued",
+      attemptCount: attemptNo,
+      updatedAt: new Date().toISOString(),
+      finishedAt: undefined,
+      lastError: undefined,
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_retry_scheduled",
+      runId,
+      attemptNo,
+      nextRetryAt,
+    });
+    return next;
+  }
+
+  public wakeDurableRun(
+    runId: string,
+    event: {
+      eventKey: string;
+      payload?: Record<string, unknown>;
+      correlationId?: string;
+    },
+  ): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const current = this.storage.durableRuns.getRun(runId);
+    if (current.status !== "waiting" && current.status !== "paused") {
+      throw new Error(`Durable run ${runId} is not waiting/paused`);
+    }
+    const waitForEvent = ((current.metadata as { waitForEvent?: { eventKey?: string; correlationId?: string } } | undefined)
+      ?.waitForEvent ?? {}) as { eventKey?: string; correlationId?: string };
+    if (waitForEvent.eventKey && waitForEvent.eventKey !== event.eventKey) {
+      throw new Error(`Wake event key mismatch: expected ${waitForEvent.eventKey}`);
+    }
+    if (waitForEvent.correlationId && waitForEvent.correlationId !== event.correlationId) {
+      throw new Error("Wake correlation mismatch");
+    }
+    const now = new Date().toISOString();
+    const next = this.storage.durableRuns.updateRun({
+      runId,
+      status: "running",
+      updatedAt: now,
+      startedAt: current.startedAt ?? now,
+      finishedAt: undefined,
+      lastError: undefined,
+    });
+    this.recordDurableTimelineEvent(runId, "run_woken", {
+      eventKey: event.eventKey,
+      correlationId: event.correlationId,
+      payload: event.payload ?? {},
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_run_woken",
+      runId,
+      eventKey: event.eventKey,
+    });
+    return next;
+  }
+
+  public recoverDurableDeadLetter(entryId: string, actorId = "operator"): DurableRunRecord {
+    this.requireFeatureEnabled("durableKernelV1Enabled");
+    const row = this.storage.db.prepare(`
+      SELECT dead_letter_id, run_id, reason
+      FROM durable_dead_letters
+      WHERE dead_letter_id = ?
+    `).get(entryId) as { dead_letter_id: string; run_id: string; reason: string } | undefined;
+    if (!row) {
+      throw new Error(`Durable dead-letter entry not found: ${entryId}`);
+    }
+    this.storage.db.prepare(`
+      UPDATE durable_dead_letters
+      SET resolved_at = @resolvedAt, resolution_note = @note
+      WHERE dead_letter_id = @entryId
+    `).run({
+      entryId,
+      resolvedAt: new Date().toISOString(),
+      note: `recovered by ${actorId}`,
+    });
+    const next = this.storage.durableRuns.updateRun({
+      runId: row.run_id,
+      status: "queued",
+      updatedAt: new Date().toISOString(),
+      finishedAt: undefined,
+      lastError: undefined,
+    });
+    this.recordDurableTimelineEvent(row.run_id, "dead_letter_recovered", {
+      actorId,
+      deadLetterId: entryId,
+    });
+    this.publishRealtime("system", "durable", {
+      type: "durable_dead_letter_recovered",
+      runId: row.run_id,
+      deadLetterId: entryId,
+    });
+    return next;
+  }
+
   public getImprovementReport(reportId: string): WeeklyImprovementReportRecord {
     const row = this.storage.db.prepare(`
       SELECT *
@@ -4311,6 +4858,116 @@ export class GatewayService {
       triggerMode: "manual",
       sampleSize: clampInteger(input.sampleSize, 50, 2000, IMPROVEMENT_WEEKLY_SAMPLE_SIZE),
     });
+  }
+
+  public createReplayOverrideDraft(
+    sourceRunId: string,
+    overrides: ReplayOverrideStep[] = [],
+  ): ReplayOverrideDraft {
+    this.requireFeatureEnabled("replayOverridesV1Enabled");
+    const now = new Date().toISOString();
+    const replayRunId = randomUUID();
+    const normalized = this.normalizeReplayOverrides(overrides);
+    this.storage.db.prepare(`
+      INSERT INTO replay_override_runs (
+        replay_run_id, source_run_id, status, override_summary_json, diff_summary_json, created_at, updated_at
+      ) VALUES (
+        @replayRunId, @sourceRunId, 'draft', @overrideSummaryJson, NULL, @createdAt, @updatedAt
+      )
+    `).run({
+      replayRunId,
+      sourceRunId,
+      overrideSummaryJson: JSON.stringify({
+        count: normalized.length,
+        stepKeys: normalized.map((item) => item.stepKey),
+      }),
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.replaceReplayOverrideSteps(replayRunId, normalized);
+    return {
+      replayRunId,
+      sourceRunId,
+      status: "draft",
+      overrides: normalized,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  public executeReplayOverride(
+    sourceRunId: string,
+    overrides: ReplayOverrideStep[] = [],
+  ): ReplayOverrideDraft {
+    this.requireFeatureEnabled("replayOverridesV1Enabled");
+    const draft = this.createReplayOverrideDraft(sourceRunId, overrides);
+    const runningAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE replay_override_runs
+      SET status = 'running', updated_at = @updatedAt
+      WHERE replay_run_id = @replayRunId
+    `).run({
+      replayRunId: draft.replayRunId,
+      updatedAt: runningAt,
+    });
+
+    const summary = this.computeReplayDiffSummary(sourceRunId, draft.replayRunId, draft.overrides);
+    const finishedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE replay_override_runs
+      SET status = 'completed',
+          diff_summary_json = @diffSummaryJson,
+          updated_at = @updatedAt
+      WHERE replay_run_id = @replayRunId
+    `).run({
+      replayRunId: draft.replayRunId,
+      diffSummaryJson: JSON.stringify(summary),
+      updatedAt: finishedAt,
+    });
+    this.publishRealtime("system", "improvement", {
+      type: "replay_override_completed",
+      replayRunId: draft.replayRunId,
+      sourceRunId,
+    });
+    return {
+      ...draft,
+      status: "completed",
+      updatedAt: finishedAt,
+      finishedAt,
+    };
+  }
+
+  public getReplayDiffSummary(replayRunId: string): ReplayDiffSummary {
+    this.requireFeatureEnabled("replayOverridesV1Enabled");
+    const row = this.storage.db.prepare(`
+      SELECT replay_run_id, source_run_id, status, diff_summary_json, updated_at
+      FROM replay_override_runs
+      WHERE replay_run_id = ?
+    `).get(replayRunId) as {
+      replay_run_id: string;
+      source_run_id: string;
+      status: ReplayOverrideDraft["status"];
+      diff_summary_json: string | null;
+      updated_at: string;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Replay override run not found: ${replayRunId}`);
+    }
+    const parsed = this.tryParseJson<Record<string, unknown>>(row.diff_summary_json, {});
+    return {
+      replayRunId: row.replay_run_id,
+      sourceRunId: row.source_run_id,
+      status: row.status === "failed" ? "failed" : "completed",
+      summary: {
+        latencyDeltaMs: Number.isFinite(Number(parsed.latencyDeltaMs)) ? Number(parsed.latencyDeltaMs) : 0,
+        inputTokensDelta: Number.isFinite(Number(parsed.inputTokensDelta)) ? Number(parsed.inputTokensDelta) : 0,
+        outputTokensDelta: Number.isFinite(Number(parsed.outputTokensDelta)) ? Number(parsed.outputTokensDelta) : 0,
+        cachedInputTokensDelta: Number.isFinite(Number(parsed.cachedInputTokensDelta)) ? Number(parsed.cachedInputTokensDelta) : 0,
+        costUsdDelta: Number.isFinite(Number(parsed.costUsdDelta)) ? Number(parsed.costUsdDelta) : 0,
+        errorChanged: Boolean(parsed.errorChanged),
+      },
+      comparedAt: row.updated_at,
+    };
   }
 
   private isDurableFoundationEnabled(): boolean {
@@ -7513,9 +8170,147 @@ export class GatewayService {
     } else {
       throw new Error(`Cron job has no runnable handler: ${normalizedJobId}`);
     }
+    if (this.isFeatureEnabled("cronReviewQueueV1Enabled")) {
+      this.recordCronReviewItem({
+        jobId: normalizedJobId,
+        runId: randomUUID(),
+        severity: "low",
+        status: "resolved",
+        summary: {
+          trigger: "manual_run",
+          result: "ok",
+        },
+        diff: {
+          type: "manual_run",
+          changed: false,
+        },
+      });
+    }
     return {
       jobId: normalizedJobId,
       status: "ok",
+    };
+  }
+
+  public listCronReviewQueue(limit = 200): CronReviewItem[] {
+    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
+    const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+    const rows = this.storage.db.prepare(`
+      SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
+      FROM cron_review_items
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(safeLimit) as Array<{
+      item_id: string;
+      job_id: string;
+      run_id: string;
+      severity: CronReviewItem["severity"];
+      status: CronReviewItem["status"];
+      summary_json: string;
+      diff_json: string | null;
+      created_at: string;
+      updated_at: string;
+      resolved_at: string | null;
+    }>;
+    return rows.map((row) => ({
+      itemId: row.item_id,
+      jobId: row.job_id,
+      runId: row.run_id,
+      severity: row.severity,
+      status: row.status,
+      summary: this.tryParseJson<Record<string, unknown>>(row.summary_json, {}),
+      diff: row.diff_json ? this.tryParseJson<Record<string, unknown>>(row.diff_json, {}) : undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      resolvedAt: row.resolved_at ?? undefined,
+    }));
+  }
+
+  public retryCronReviewQueueItem(itemId: string): CronReviewItem {
+    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
+    const existing = this.storage.db.prepare(`
+      SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
+      FROM cron_review_items
+      WHERE item_id = ?
+    `).get(itemId) as {
+      item_id: string;
+      job_id: string;
+      run_id: string;
+      severity: CronReviewItem["severity"];
+      status: CronReviewItem["status"];
+      summary_json: string;
+      diff_json: string | null;
+      created_at: string;
+      updated_at: string;
+      resolved_at: string | null;
+    } | undefined;
+    if (!existing) {
+      throw new Error(`Cron review item not found: ${itemId}`);
+    }
+    const retriedRunId = randomUUID();
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE cron_review_items
+      SET status = 'retrying',
+          run_id = @runId,
+          updated_at = @updatedAt,
+          resolved_at = NULL
+      WHERE item_id = @itemId
+    `).run({
+      itemId,
+      runId: retriedRunId,
+      updatedAt: now,
+    });
+    this.storage.db.prepare(`
+      INSERT INTO cron_run_diffs (diff_id, run_id, previous_run_id, diff_json, created_at)
+      VALUES (@diffId, @runId, @previousRunId, @diffJson, @createdAt)
+    `).run({
+      diffId: randomUUID(),
+      runId: retriedRunId,
+      previousRunId: existing.run_id,
+      diffJson: JSON.stringify({
+        retried: true,
+        previousRunId: existing.run_id,
+      }),
+      createdAt: now,
+    });
+    const updated = this.listCronReviewQueue(500).find((item) => item.itemId === itemId);
+    if (!updated) {
+      throw new Error("Cron review item retry update failed.");
+    }
+    this.publishRealtime("system", "cron", {
+      type: "cron_review_item_retried",
+      itemId,
+      jobId: updated.jobId,
+      runId: updated.runId,
+    });
+    return updated;
+  }
+
+  public getCronRunDiff(runId: string): CronRunDiff {
+    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
+    const row = this.storage.db.prepare(`
+      SELECT diff_id, run_id, previous_run_id, diff_json, created_at
+      FROM cron_run_diffs
+      WHERE run_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(runId) as {
+      diff_id: string;
+      run_id: string;
+      previous_run_id: string | null;
+      diff_json: string;
+      created_at: string;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Cron run diff not found for run ${runId}`);
+    }
+    return {
+      diffId: row.diff_id,
+      runId: row.run_id,
+      previousRunId: row.previous_run_id ?? undefined,
+      diff: this.tryParseJson<Record<string, unknown>>(row.diff_json, {}),
+      createdAt: row.created_at,
     };
   }
 
@@ -7696,6 +8491,197 @@ export class GatewayService {
     return this.memoryContextService.stats(from, to);
   }
 
+  public listMemoryItems(input: {
+    namespace?: string;
+    status?: MemoryItemRecord["status"] | "all";
+    query?: string;
+    limit?: number;
+  } = {}): MemoryItemRecord[] {
+    this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const namespace = input.namespace?.trim();
+    const status = input.status && input.status !== "all" ? input.status : undefined;
+    const query = input.query?.trim().toLowerCase();
+    const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 200)));
+
+    const rows = this.storage.db.prepare(`
+      SELECT item_id, namespace, title, content, metadata_json, pinned, ttl_override_seconds, expires_at, status,
+             created_at, updated_at, forgotten_at
+      FROM memory_items
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(limit * 4) as Array<{
+      item_id: string;
+      namespace: string;
+      title: string;
+      content: string;
+      metadata_json: string | null;
+      pinned: number;
+      ttl_override_seconds: number | null;
+      expires_at: string | null;
+      status: MemoryItemRecord["status"];
+      created_at: string;
+      updated_at: string;
+      forgotten_at: string | null;
+    }>;
+
+    const filtered = rows
+      .filter((row) => (namespace ? row.namespace === namespace : true))
+      .filter((row) => (status ? row.status === status : true))
+      .filter((row) => {
+        if (!query) {
+          return true;
+        }
+        const haystack = `${row.title}\n${row.content}\n${row.namespace}`.toLowerCase();
+        return haystack.includes(query);
+      })
+      .slice(0, limit);
+
+    return filtered.map((row) => this.mapMemoryItemRow(row));
+  }
+
+  public patchMemoryItem(
+    itemId: string,
+    patch: MemoryLifecyclePatch,
+    actorId = "operator",
+  ): MemoryItemRecord {
+    this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const current = this.requireMemoryItem(itemId);
+    const now = new Date().toISOString();
+    const next = {
+      title: patch.title !== undefined ? patch.title.trim() : current.title,
+      content: patch.content !== undefined ? patch.content : current.content,
+      metadata: patch.metadata !== undefined ? patch.metadata : current.metadata,
+      pinned: patch.pinned !== undefined ? patch.pinned : current.pinned,
+      ttlOverrideSeconds: patch.ttlOverrideSeconds === null
+        ? null
+        : patch.ttlOverrideSeconds !== undefined
+          ? Math.max(1, Math.min(31_536_000, Math.floor(patch.ttlOverrideSeconds)))
+          : current.ttlOverrideSeconds ?? null,
+    };
+    this.storage.db.prepare(`
+      UPDATE memory_items
+      SET title = @title,
+          content = @content,
+          metadata_json = @metadataJson,
+          pinned = @pinned,
+          ttl_override_seconds = @ttlOverrideSeconds,
+          updated_at = @updatedAt
+      WHERE item_id = @itemId
+    `).run({
+      itemId,
+      title: next.title,
+      content: next.content,
+      metadataJson: JSON.stringify(next.metadata ?? {}),
+      pinned: next.pinned ? 1 : 0,
+      ttlOverrideSeconds: next.ttlOverrideSeconds,
+      updatedAt: now,
+    });
+    if (patch.pinned !== undefined) {
+      this.recordMemoryChange(itemId, "pin_changed", actorId, { pinned: next.pinned });
+    }
+    if (patch.ttlOverrideSeconds !== undefined) {
+      this.recordMemoryChange(itemId, "ttl_changed", actorId, { ttlOverrideSeconds: next.ttlOverrideSeconds });
+    }
+    this.recordMemoryChange(itemId, "updated", actorId, {
+      title: next.title,
+      metadata: next.metadata ?? {},
+    });
+    const updated = this.requireMemoryItem(itemId);
+    this.publishRealtime("system", "memory", {
+      type: "memory_item_updated",
+      itemId: updated.itemId,
+      namespace: updated.namespace,
+    });
+    return updated;
+  }
+
+  public forgetMemoryItem(itemId: string, actorId = "operator"): MemoryItemRecord {
+    this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const current = this.requireMemoryItem(itemId);
+    if (current.status === "forgotten") {
+      return current;
+    }
+    const now = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE memory_items
+      SET status = 'forgotten',
+          forgotten_at = @forgottenAt,
+          updated_at = @updatedAt
+      WHERE item_id = @itemId
+    `).run({
+      itemId,
+      forgottenAt: now,
+      updatedAt: now,
+    });
+    this.recordMemoryChange(itemId, "forgotten", actorId, {
+      previousStatus: current.status,
+    });
+    const forgotten = this.requireMemoryItem(itemId);
+    this.publishRealtime("system", "memory", {
+      type: "memory_item_forgotten",
+      itemId,
+      namespace: forgotten.namespace,
+    });
+    return forgotten;
+  }
+
+  public forgetMemory(
+    input: {
+      itemIds?: string[];
+      namespace?: string;
+      query?: string;
+      actorId?: string;
+    } = {},
+  ): { forgottenCount: number; itemIds: string[] } {
+    this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const actorId = input.actorId?.trim() || "operator";
+    let targets: string[] = [];
+    if (input.itemIds && input.itemIds.length > 0) {
+      targets = [...new Set(input.itemIds.map((itemId) => itemId.trim()).filter(Boolean))];
+    } else {
+      targets = this.listMemoryItems({
+        namespace: input.namespace,
+        status: "active",
+        query: input.query,
+        limit: 2_000,
+      }).map((item) => item.itemId);
+    }
+    for (const itemId of targets) {
+      this.forgetMemoryItem(itemId, actorId);
+    }
+    return {
+      forgottenCount: targets.length,
+      itemIds: targets,
+    };
+  }
+
+  public listMemoryItemHistory(itemId: string, limit = 200): MemoryChangeEvent[] {
+    this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const safeLimit = Math.max(1, Math.min(2_000, Math.floor(limit)));
+    const rows = this.storage.db.prepare(`
+      SELECT change_id, item_id, change_type, actor_id, payload_json, created_at
+      FROM memory_change_history
+      WHERE item_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(itemId, safeLimit) as Array<{
+      change_id: string;
+      item_id: string;
+      change_type: MemoryChangeEvent["changeType"];
+      actor_id: string | null;
+      payload_json: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      changeId: row.change_id,
+      itemId: row.item_id,
+      changeType: row.change_type,
+      actorId: row.actor_id ?? undefined,
+      payload: this.tryParseJson<Record<string, unknown>>(row.payload_json, {}),
+      createdAt: row.created_at,
+    }));
+  }
+
   public listAgents(view: "active" | "archived" | "all" = "active", limit = 500): AgentProfileRecord[] {
     const profiles = this.storage.agentProfiles.list(view, limit);
     const runtime = this.buildAgentRuntimeRollups(profiles);
@@ -7803,6 +8789,7 @@ export class GatewayService {
   }
 
   public getSettings(): RuntimeSettings {
+    const features = this.readFeatureFlags();
     return {
       environment: this.config.assistant.environment,
       defaultToolProfile: this.config.toolPolicy.tools.profile,
@@ -7845,6 +8832,7 @@ export class GatewayService {
         sidecarUrl: this.config.assistant.npu.sidecar.baseUrl,
         status: this.npuSidecar.getStatus(),
       },
+      features,
     };
   }
 
@@ -8003,6 +8991,7 @@ export class GatewayService {
       autoStart?: boolean;
       sidecarUrl?: string;
     };
+    features?: Partial<RuntimeSettings["features"]>;
   }): RuntimeSettings {
     let persistAssistant = false;
     let persistToolPolicy = false;
@@ -8136,6 +9125,11 @@ export class GatewayService {
       persistAssistant = true;
     }
 
+    if (input.features) {
+      this.updateFeatureFlags(input.features);
+      persistAssistant = true;
+    }
+
     if (input.llm) {
       this.llmService.updateRuntimeConfig(input.llm);
       this.persistLlmConfig();
@@ -8220,6 +9214,44 @@ export class GatewayService {
 
   public listIntegrationConnections(kind?: IntegrationKind, limit = 300): IntegrationConnection[] {
     return this.storage.integrationConnections.list(kind, limit);
+  }
+
+  public runIntegrationConnectionDiagnostics(connectionId: string): ConnectorDiagnosticReport {
+    this.requireFeatureEnabled("connectorDiagnosticsV1Enabled");
+    const connection = this.storage.integrationConnections.get(connectionId);
+    if (!connection) {
+      throw new Error(`Unknown integration connection: ${connectionId}`);
+    }
+    const checks: ConnectorDiagnosticReport["checks"] = [];
+    checks.push({
+      key: "enabled",
+      status: connection.enabled ? "pass" : "warn",
+      message: connection.enabled ? "Connection is enabled." : "Connection is disabled.",
+    });
+    checks.push({
+      key: "status",
+      status: connection.status === "connected" ? "pass" : connection.status === "paused" ? "warn" : "fail",
+      message: `Connection status is ${connection.status}.`,
+    });
+    checks.push({
+      key: "last_error",
+      status: connection.lastError ? "warn" : "pass",
+      message: connection.lastError ? `Last error: ${connection.lastError}` : "No recent errors recorded.",
+    });
+    const report: ConnectorDiagnosticReport = {
+      connectorType: "integration_connection",
+      connectorId: connection.connectionId,
+      status: checks.some((check) => check.status === "fail")
+        ? "error"
+        : checks.some((check) => check.status === "warn")
+          ? "warn"
+          : "ok",
+      checks,
+      recommendedNextAction: this.pickConnectorDiagnosticAction(checks),
+      checkedAt: new Date().toISOString(),
+    };
+    this.recordConnectorHealthRun(report);
+    return report;
   }
 
   public createIntegrationConnection(input: IntegrationConnectionCreateInput): IntegrationConnection {
@@ -8460,6 +9492,103 @@ export class GatewayService {
       ...template,
       installed: byTemplateId.has(template.label.toLowerCase()),
     }));
+  }
+
+  public listMcpTemplateDiscovery(): McpTemplateDiscoveryResult[] {
+    this.requireFeatureEnabled("connectorDiagnosticsV1Enabled");
+    const installed = new Map(this.readMcpServers().map((server) => [server.label.toLowerCase(), server]));
+    return MCP_SERVER_TEMPLATES.map((template) => {
+      const checks: McpTemplateDiscoveryResult["dependencyChecks"] = [];
+      if (template.transport === "stdio") {
+        checks.push({
+          key: "command",
+          status: template.command?.trim() ? "pass" : "fail",
+          message: template.command?.trim() ? `Command ${template.command} is configured.` : "Missing command.",
+        });
+      }
+      if (template.transport === "http" || template.transport === "sse") {
+        checks.push({
+          key: "url",
+          status: template.url?.trim() ? "pass" : "warn",
+          message: template.url?.trim() ? `Endpoint ${template.url} provided.` : "Provide endpoint URL before connect.",
+        });
+      }
+      if (template.authType !== "none") {
+        checks.push({
+          key: "auth",
+          status: "warn",
+          message: `${template.authType} credentials required before first connect.`,
+        });
+      } else {
+        checks.push({
+          key: "auth",
+          status: "pass",
+          message: "No auth required.",
+        });
+      }
+      const readiness = checks.some((check) => check.status === "fail")
+        ? "needs_command"
+        : template.authType !== "none"
+          ? "needs_auth"
+          : "ready";
+      return {
+        templateId: template.templateId,
+        label: template.label,
+        installed: installed.has(template.label.toLowerCase()),
+        readiness,
+        dependencyChecks: checks,
+      };
+    });
+  }
+
+  public runMcpServerHealthCheck(serverId: string): ConnectorDiagnosticReport {
+    this.requireFeatureEnabled("connectorDiagnosticsV1Enabled");
+    const server = this.requireMcpServer(serverId);
+    const checks: ConnectorDiagnosticReport["checks"] = [];
+    checks.push({
+      key: "enabled",
+      status: server.enabled ? "pass" : "warn",
+      message: server.enabled ? "MCP server is enabled." : "Server is disabled.",
+    });
+    checks.push({
+      key: "status",
+      status: server.status === "connected" ? "pass" : server.status === "connecting" ? "warn" : "fail",
+      message: `Server status is ${server.status}.`,
+    });
+    if (server.transport === "stdio") {
+      checks.push({
+        key: "command",
+        status: server.command?.trim() ? "pass" : "fail",
+        message: server.command?.trim() ? `Command ${server.command} configured.` : "Missing stdio command.",
+      });
+    } else {
+      checks.push({
+        key: "url",
+        status: server.url?.trim() ? "pass" : "fail",
+        message: server.url?.trim() ? `URL ${server.url} configured.` : "Missing server URL.",
+      });
+    }
+    checks.push({
+      key: "policy",
+      status: server.policy.blockedToolPatterns.length > 0 || server.policy.allowedToolPatterns.length > 0 ? "pass" : "warn",
+      message: server.policy.blockedToolPatterns.length > 0 || server.policy.allowedToolPatterns.length > 0
+        ? "Tool policy constraints are configured."
+        : "Consider setting allow/block patterns for safer operation.",
+    });
+    const report: ConnectorDiagnosticReport = {
+      connectorType: "mcp_server",
+      connectorId: serverId,
+      status: checks.some((check) => check.status === "fail")
+        ? "error"
+        : checks.some((check) => check.status === "warn")
+          ? "warn"
+          : "ok",
+      checks,
+      recommendedNextAction: this.pickConnectorDiagnosticAction(checks),
+      checkedAt: new Date().toISOString(),
+    };
+    this.recordConnectorHealthRun(report);
+    return report;
   }
 
   public createMcpServer(input: McpServerCreateInput): McpServerRecord {
@@ -9802,6 +10931,316 @@ export class GatewayService {
     return this.storage.orchestration.listCheckpoints(runId);
   }
 
+  public isFeatureEnabled(flag: keyof RuntimeSettings["features"]): boolean {
+    return this.readFeatureFlags()[flag];
+  }
+
+  public requireFeatureEnabled(flag: keyof RuntimeSettings["features"]): void {
+    if (!this.isFeatureEnabled(flag)) {
+      throw new Error(`Feature flag ${flag} is disabled.`);
+    }
+  }
+
+  public updateFeatureFlags(patch: Partial<RuntimeSettings["features"]>): RuntimeSettings["features"] {
+    const current = this.readFeatureFlags();
+    const next: RuntimeSettings["features"] = {
+      durableKernelV1Enabled: patch.durableKernelV1Enabled ?? current.durableKernelV1Enabled,
+      replayOverridesV1Enabled: patch.replayOverridesV1Enabled ?? current.replayOverridesV1Enabled,
+      memoryLifecycleAdminV1Enabled: patch.memoryLifecycleAdminV1Enabled ?? current.memoryLifecycleAdminV1Enabled,
+      connectorDiagnosticsV1Enabled: patch.connectorDiagnosticsV1Enabled ?? current.connectorDiagnosticsV1Enabled,
+      computerUseGuardrailsV1Enabled: patch.computerUseGuardrailsV1Enabled ?? current.computerUseGuardrailsV1Enabled,
+      cronReviewQueueV1Enabled: patch.cronReviewQueueV1Enabled ?? current.cronReviewQueueV1Enabled,
+      replayRegressionV1Enabled: patch.replayRegressionV1Enabled ?? current.replayRegressionV1Enabled,
+    };
+    this.storage.systemSettings.set(FEATURE_FLAGS_SETTING_KEY, next);
+    this.config.assistant.features = { ...next };
+    return next;
+  }
+
+  private applyStoredFeatureFlags(): void {
+    this.config.assistant.features = this.readFeatureFlags();
+  }
+
+  private readFeatureFlags(): RuntimeSettings["features"] {
+    const stored = this.storage.systemSettings.get<Partial<RuntimeSettings["features"]>>(FEATURE_FLAGS_SETTING_KEY)?.value;
+    const fromConfig = this.config.assistant.features;
+    return {
+      durableKernelV1Enabled: stored?.durableKernelV1Enabled ?? fromConfig.durableKernelV1Enabled,
+      replayOverridesV1Enabled: stored?.replayOverridesV1Enabled ?? fromConfig.replayOverridesV1Enabled,
+      memoryLifecycleAdminV1Enabled: stored?.memoryLifecycleAdminV1Enabled ?? fromConfig.memoryLifecycleAdminV1Enabled,
+      connectorDiagnosticsV1Enabled: stored?.connectorDiagnosticsV1Enabled ?? fromConfig.connectorDiagnosticsV1Enabled,
+      computerUseGuardrailsV1Enabled: stored?.computerUseGuardrailsV1Enabled ?? fromConfig.computerUseGuardrailsV1Enabled,
+      cronReviewQueueV1Enabled: stored?.cronReviewQueueV1Enabled ?? fromConfig.cronReviewQueueV1Enabled,
+      replayRegressionV1Enabled: stored?.replayRegressionV1Enabled ?? fromConfig.replayRegressionV1Enabled,
+    };
+  }
+
+  private normalizeDurableRetryPolicy(input: Partial<DurableRetryPolicy> | undefined): DurableRetryPolicy {
+    return {
+      maxAttempts: Math.max(1, Math.min(20, Math.floor(input?.maxAttempts ?? DURABLE_RETRY_POLICY_DEFAULT.maxAttempts))),
+      baseDelayMs: Math.max(100, Math.min(300_000, Math.floor(input?.baseDelayMs ?? DURABLE_RETRY_POLICY_DEFAULT.baseDelayMs))),
+      maxDelayMs: Math.max(100, Math.min(900_000, Math.floor(input?.maxDelayMs ?? DURABLE_RETRY_POLICY_DEFAULT.maxDelayMs))),
+      backoffMultiplier: Math.max(1, Math.min(8, input?.backoffMultiplier ?? DURABLE_RETRY_POLICY_DEFAULT.backoffMultiplier)),
+    };
+  }
+
+  private computeDurableRetryDelayMs(current: DurableRunRecord, attemptNo: number): number {
+    const metadataPolicy = (current.metadata as { retryPolicy?: Partial<DurableRetryPolicy> } | undefined)?.retryPolicy;
+    const policy = this.normalizeDurableRetryPolicy(metadataPolicy);
+    const raw = policy.baseDelayMs * (policy.backoffMultiplier ** Math.max(0, attemptNo - 1));
+    return Math.max(100, Math.min(policy.maxDelayMs, Math.floor(raw)));
+  }
+
+  private recordDurableTimelineEvent(
+    runId: string,
+    eventType: DurableRunTimelineEvent["eventType"],
+    payload?: Record<string, unknown>,
+    stepKey?: string,
+  ): DurableRunTimelineEvent {
+    const event: DurableRunTimelineEvent = {
+      eventId: randomUUID(),
+      runId,
+      eventType,
+      stepKey: stepKey?.trim() || undefined,
+      payload: payload ?? {},
+      createdAt: new Date().toISOString(),
+    };
+    this.storage.db.prepare(`
+      INSERT INTO durable_run_events (event_id, run_id, event_type, step_key, payload_json, created_at)
+      VALUES (@eventId, @runId, @eventType, @stepKey, @payloadJson, @createdAt)
+    `).run({
+      eventId: event.eventId,
+      runId: event.runId,
+      eventType: event.eventType,
+      stepKey: event.stepKey ?? null,
+      payloadJson: JSON.stringify(event.payload ?? {}),
+      createdAt: event.createdAt,
+    });
+    return event;
+  }
+
+  private normalizeReplayOverrides(overrides: ReplayOverrideStep[]): ReplayOverrideStep[] {
+    const normalized: ReplayOverrideStep[] = [];
+    for (const item of overrides ?? []) {
+      const stepKey = item.stepKey?.trim();
+      if (!stepKey) {
+        continue;
+      }
+      normalized.push({
+        stepKey,
+        overrideKind: item.overrideKind,
+        override: item.override ?? {},
+      });
+    }
+    return normalized;
+  }
+
+  private replaceReplayOverrideSteps(replayRunId: string, overrides: ReplayOverrideStep[]): void {
+    this.storage.db.prepare("DELETE FROM replay_override_steps WHERE replay_run_id = ?").run(replayRunId);
+    const insert = this.storage.db.prepare(`
+      INSERT INTO replay_override_steps (step_id, replay_run_id, step_key, override_type, override_payload_json, created_at)
+      VALUES (@stepId, @replayRunId, @stepKey, @overrideType, @overridePayloadJson, @createdAt)
+    `);
+    const now = new Date().toISOString();
+    for (const override of overrides) {
+      insert.run({
+        stepId: randomUUID(),
+        replayRunId,
+        stepKey: override.stepKey,
+        overrideType: override.overrideKind,
+        overridePayloadJson: JSON.stringify(override.override ?? {}),
+        createdAt: now,
+      });
+    }
+  }
+
+  private computeReplayDiffSummary(
+    sourceRunId: string,
+    replayRunId: string,
+    overrides: ReplayOverrideStep[],
+  ): ReplayDiffSummary["summary"] {
+    void sourceRunId;
+    void replayRunId;
+    return {
+      latencyDeltaMs: 0,
+      inputTokensDelta: 0,
+      outputTokensDelta: 0,
+      cachedInputTokensDelta: 0,
+      costUsdDelta: Number(overrides.length) * 0,
+      errorChanged: false,
+    };
+  }
+
+  private requireMemoryItem(itemId: string): MemoryItemRecord {
+    const row = this.storage.db.prepare(`
+      SELECT item_id, namespace, title, content, metadata_json, pinned, ttl_override_seconds, expires_at, status,
+             created_at, updated_at, forgotten_at
+      FROM memory_items
+      WHERE item_id = ?
+    `).get(itemId) as {
+      item_id: string;
+      namespace: string;
+      title: string;
+      content: string;
+      metadata_json: string | null;
+      pinned: number;
+      ttl_override_seconds: number | null;
+      expires_at: string | null;
+      status: MemoryItemRecord["status"];
+      created_at: string;
+      updated_at: string;
+      forgotten_at: string | null;
+    } | undefined;
+    if (!row) {
+      throw new Error(`Memory item not found: ${itemId}`);
+    }
+    return this.mapMemoryItemRow(row);
+  }
+
+  private mapMemoryItemRow(row: {
+    item_id: string;
+    namespace: string;
+    title: string;
+    content: string;
+    metadata_json: string | null;
+    pinned: number;
+    ttl_override_seconds: number | null;
+    expires_at: string | null;
+    status: MemoryItemRecord["status"];
+    created_at: string;
+    updated_at: string;
+    forgotten_at: string | null;
+  }): MemoryItemRecord {
+    return {
+      itemId: row.item_id,
+      namespace: row.namespace,
+      title: row.title,
+      content: row.content,
+      metadata: this.tryParseJson<Record<string, unknown>>(row.metadata_json, {}),
+      pinned: Boolean(row.pinned),
+      ttlOverrideSeconds: row.ttl_override_seconds ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      status: MEMORY_ITEM_STATUS_VALUES.has(row.status) ? row.status : "active",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      forgottenAt: row.forgotten_at ?? undefined,
+    };
+  }
+
+  private recordMemoryChange(
+    itemId: string,
+    changeType: MemoryChangeEvent["changeType"],
+    actorId: string | undefined,
+    payload: Record<string, unknown>,
+  ): MemoryChangeEvent {
+    const change: MemoryChangeEvent = {
+      changeId: randomUUID(),
+      itemId,
+      changeType,
+      actorId: actorId?.trim() || undefined,
+      payload,
+      createdAt: new Date().toISOString(),
+    };
+    this.storage.db.prepare(`
+      INSERT INTO memory_change_history (change_id, item_id, change_type, actor_id, payload_json, created_at)
+      VALUES (@changeId, @itemId, @changeType, @actorId, @payloadJson, @createdAt)
+    `).run({
+      changeId: change.changeId,
+      itemId: change.itemId,
+      changeType: change.changeType,
+      actorId: change.actorId ?? null,
+      payloadJson: JSON.stringify(change.payload ?? {}),
+      createdAt: change.createdAt,
+    });
+    return change;
+  }
+
+  private recordConnectorHealthRun(report: ConnectorDiagnosticReport): void {
+    this.storage.db.prepare(`
+      INSERT INTO connector_health_runs (
+        health_run_id, connector_type, connector_id, status, checks_json, recommendation, checked_at
+      ) VALUES (
+        @healthRunId, @connectorType, @connectorId, @status, @checksJson, @recommendation, @checkedAt
+      )
+    `).run({
+      healthRunId: randomUUID(),
+      connectorType: report.connectorType,
+      connectorId: report.connectorId,
+      status: report.status,
+      checksJson: JSON.stringify(report.checks),
+      recommendation: report.recommendedNextAction ?? null,
+      checkedAt: report.checkedAt,
+    });
+  }
+
+  private pickConnectorDiagnosticAction(checks: ConnectorDiagnosticReport["checks"]): string | undefined {
+    if (checks.some((check) => check.key === "status" && check.status === "fail")) {
+      return "Reconnect the connector and resolve the reported status error first.";
+    }
+    if (checks.some((check) => check.key === "auth" && check.status !== "pass")) {
+      return "Provide valid credentials and rerun health check.";
+    }
+    if (checks.some((check) => check.key === "url" && check.status !== "pass")) {
+      return "Set a reachable URL/endpoint and rerun health check.";
+    }
+    return checks.some((check) => check.status === "warn")
+      ? "Review warning checks and tighten policy before production use."
+      : undefined;
+  }
+
+  private recordCronReviewItem(input: {
+    jobId: string;
+    runId: string;
+    severity: CronReviewItem["severity"];
+    status: CronReviewItem["status"];
+    summary: Record<string, unknown>;
+    diff?: Record<string, unknown>;
+  }): CronReviewItem {
+    const now = new Date().toISOString();
+    const itemId = randomUUID();
+    this.storage.db.prepare(`
+      INSERT INTO cron_review_items (
+        item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
+      ) VALUES (
+        @itemId, @jobId, @runId, @severity, @status, @summaryJson, @diffJson, @createdAt, @updatedAt, @resolvedAt
+      )
+    `).run({
+      itemId,
+      jobId: input.jobId,
+      runId: input.runId,
+      severity: input.severity,
+      status: input.status,
+      summaryJson: JSON.stringify(input.summary ?? {}),
+      diffJson: input.diff ? JSON.stringify(input.diff) : null,
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: input.status === "resolved" ? now : null,
+    });
+    return {
+      itemId,
+      jobId: input.jobId,
+      runId: input.runId,
+      severity: input.severity,
+      status: input.status,
+      summary: input.summary,
+      diff: input.diff,
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: input.status === "resolved" ? now : undefined,
+    };
+  }
+
+  private tryParseJson<T>(raw: string | null | undefined, fallback: T): T {
+    if (!raw) {
+      return fallback;
+    }
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
   private readIntegrationPlugins(): IntegrationPluginRecord[] {
     const stored = this.storage.systemSettings.get<IntegrationPluginRecord[]>(INTEGRATION_PLUGINS_SETTING_KEY)?.value;
     if (!Array.isArray(stored)) {
@@ -11002,6 +12441,8 @@ export class GatewayService {
       memory: this.config.assistant.memory,
       mesh: this.config.assistant.mesh,
       npu: this.config.assistant.npu,
+      durable: this.config.assistant.durable,
+      features: this.readFeatureFlags(),
       budgets: this.config.assistant.budgets,
     };
     fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -12488,7 +13929,11 @@ function evaluatePromptPackRuleScores(input: {
     || /\broute this through\b/.test(prompt)
     || /\bmulti-agent\b/.test(prompt)
     || /->/.test(prompt);
-  const hasRoleSections = /\bproduct\b.*\barchitect\b.*\bcoder\b/s.test(response)
+  const hasRequestedRoleSections = requestedRoles.length > 1
+    ? requestedRoles.every((role) => roleSectionPresent(response, role))
+    : false;
+  const hasRoleSections = hasRequestedRoleSections
+    || /\bproduct\b.*\barchitect\b.*\bcoder\b/s.test(response)
     || /\barchitect\b.*\bcoder\b.*\bqa\b/s.test(response)
     || /\bprd\b.*\barchitecture\b.*\btask\b/s.test(response);
   if (asksMultiRole) {

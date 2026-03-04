@@ -77,6 +77,14 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ items: fastify.gateway.listMcpTemplates() });
   });
 
+  fastify.get("/api/v1/mcp/templates/discovery", async (_request, reply) => {
+    try {
+      return reply.send({ items: fastify.gateway.listMcpTemplateDiscovery() });
+    } catch (error) {
+      return reply.code(409).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.post("/api/v1/mcp/servers", async (request, reply) => {
     const parsed = createServerSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -210,6 +218,20 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(fastify.gateway.updateMcpServerPolicy(params.data.serverId, body.data));
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/mcp/servers/:serverId/health-check", async (request, reply) => {
+    const params = serverParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.runMcpServerHealthCheck(params.data.serverId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("unknown mcp server");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
     }
   });
 };

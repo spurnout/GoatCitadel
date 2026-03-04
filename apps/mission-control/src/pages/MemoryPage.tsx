@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchFilesList, fetchMemoryQmdStats } from "../api/client";
+import {
+  fetchFilesList,
+  fetchMemoryItemHistory,
+  fetchMemoryItems,
+  fetchMemoryQmdStats,
+  forgetMemoryItem,
+  patchMemoryItem,
+} from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
@@ -41,6 +48,25 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
   const [selectedArea, setSelectedArea] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [memoryAdminError, setMemoryAdminError] = useState<string | null>(null);
+  const [memoryItems, setMemoryItems] = useState<Array<{
+    itemId: string;
+    namespace: string;
+    title: string;
+    content: string;
+    pinned: boolean;
+    status: "active" | "forgotten";
+    updatedAt: string;
+    ttlOverrideSeconds?: number;
+  }>>([]);
+  const [selectedMemoryItemId, setSelectedMemoryItemId] = useState<string | null>(null);
+  const [memoryHistory, setMemoryHistory] = useState<Array<{
+    changeId: string;
+    changeType: string;
+    actorId?: string;
+    createdAt: string;
+  }>>([]);
+  const [memoryBusyItemId, setMemoryBusyItemId] = useState<string | null>(null);
 
   const workspacePrefix = useMemo(
     () => (workspaceId && workspaceId !== "default" ? `workspaces/${workspaceId}/` : ""),
@@ -59,6 +85,26 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
         fetchFilesList(".", 3000),
         fetchMemoryQmdStats(),
       ]);
+      try {
+        const memoryRes = await fetchMemoryItems({ limit: 200, status: "all" });
+        setMemoryItems(memoryRes.items.map((item) => ({
+          itemId: item.itemId,
+          namespace: item.namespace,
+          title: item.title,
+          content: item.content,
+          pinned: item.pinned,
+          status: item.status,
+          updatedAt: item.updatedAt,
+          ttlOverrideSeconds: item.ttlOverrideSeconds,
+        })));
+        setSelectedMemoryItemId((current) => current ?? memoryRes.items[0]?.itemId ?? null);
+        setMemoryAdminError(null);
+      } catch (memoryErr) {
+        setMemoryItems([]);
+        setSelectedMemoryItemId(null);
+        setMemoryHistory([]);
+        setMemoryAdminError((memoryErr as Error).message);
+      }
       const scopedFiles = workspacePrefix
         ? filesRes.items
           .filter((item) => item.relativePath.startsWith(workspacePrefix))
@@ -136,6 +182,67 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
     [files],
   );
   const hottestArea = useMemo(() => areas[0], [areas]);
+  const selectedMemoryItem = useMemo(
+    () => memoryItems.find((item) => item.itemId === selectedMemoryItemId) ?? null,
+    [memoryItems, selectedMemoryItemId],
+  );
+
+  const loadMemoryHistory = useCallback(async (itemId: string) => {
+    try {
+      const history = await fetchMemoryItemHistory(itemId, 100);
+      setMemoryHistory(history.items.map((item) => ({
+        changeId: item.changeId,
+        changeType: item.changeType,
+        actorId: item.actorId,
+        createdAt: item.createdAt,
+      })));
+    } catch (historyErr) {
+      setMemoryAdminError((historyErr as Error).message);
+    }
+  }, []);
+
+  const togglePin = useCallback(async (itemId: string, pinned: boolean) => {
+    setMemoryBusyItemId(itemId);
+    try {
+      const updated = await patchMemoryItem(itemId, { pinned: !pinned });
+      setMemoryItems((current) => current.map((item) => (
+        item.itemId === itemId
+          ? {
+            ...item,
+            pinned: updated.pinned,
+            ttlOverrideSeconds: updated.ttlOverrideSeconds,
+            updatedAt: updated.updatedAt,
+          }
+          : item
+      )));
+      setMemoryAdminError(null);
+    } catch (pinErr) {
+      setMemoryAdminError((pinErr as Error).message);
+    } finally {
+      setMemoryBusyItemId(null);
+    }
+  }, []);
+
+  const forgetItem = useCallback(async (itemId: string) => {
+    setMemoryBusyItemId(itemId);
+    try {
+      const updated = await forgetMemoryItem(itemId);
+      setMemoryItems((current) => current.map((item) => (
+        item.itemId === itemId
+          ? {
+            ...item,
+            status: updated.status,
+            updatedAt: updated.updatedAt,
+          }
+          : item
+      )));
+      setMemoryAdminError(null);
+    } catch (forgetErr) {
+      setMemoryAdminError((forgetErr as Error).message);
+    } finally {
+      setMemoryBusyItemId(null);
+    }
+  }, []);
 
   return (
     <section className="memory-v2">
@@ -315,6 +422,90 @@ export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default
             ))}
           </tbody>
         </table>
+      </article>
+
+      <article className="card">
+        <h3>Memory Lifecycle Admin</h3>
+        <p className="office-subtitle">
+          Manage memory records directly (pin, inspect history, targeted forget). This panel is available when memory lifecycle admin is enabled.
+        </p>
+        {memoryAdminError ? <p className="error">{memoryAdminError}</p> : null}
+        {memoryItems.length === 0 ? (
+          <p className="office-subtitle">No memory lifecycle records available.</p>
+        ) : (
+          <div className="split-grid">
+            <div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Namespace</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {memoryItems.slice(0, 80).map((item) => (
+                    <tr key={item.itemId} className={item.itemId === selectedMemoryItemId ? "row-selected" : ""}>
+                      <td>{item.title}</td>
+                      <td>{item.namespace}</td>
+                      <td>{item.status}{item.pinned ? " • pinned" : ""}</td>
+                      <td>{new Date(item.updatedAt).toLocaleString()}</td>
+                      <td className="actions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedMemoryItemId(item.itemId);
+                            void loadMemoryHistory(item.itemId);
+                          }}
+                        >
+                          Inspect
+                        </button>
+                        <button
+                          type="button"
+                          disabled={memoryBusyItemId === item.itemId}
+                          onClick={() => void togglePin(item.itemId, item.pinned)}
+                        >
+                          {item.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={item.status === "forgotten" || memoryBusyItemId === item.itemId}
+                          onClick={() => void forgetItem(item.itemId)}
+                        >
+                          Forget
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h4>{selectedMemoryItem ? selectedMemoryItem.title : "Select a memory item"}</h4>
+              {selectedMemoryItem ? (
+                <>
+                  <p><strong>Item ID:</strong> {selectedMemoryItem.itemId}</p>
+                  <p><strong>Status:</strong> {selectedMemoryItem.status}</p>
+                  <p><strong>TTL Override:</strong> {selectedMemoryItem.ttlOverrideSeconds ?? "-"}</p>
+                  <pre>{selectedMemoryItem.content}</pre>
+                </>
+              ) : null}
+              <h4>Change History</h4>
+              {memoryHistory.length === 0 ? <p className="office-subtitle">No history loaded.</p> : null}
+              <ul className="compact-list">
+                {memoryHistory.map((event) => (
+                  <li key={event.changeId}>
+                    <strong>{event.changeType}</strong> · {new Date(event.createdAt).toLocaleString()}
+                    {event.actorId ? ` · ${event.actorId}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
       </article>
     </section>
   );

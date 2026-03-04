@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createCronJob,
   deleteCronJob,
+  fetchCronReviewQueue,
+  fetchCronRunDiff,
   fetchCronJob,
   fetchCronJobs,
   pauseCronJob,
+  retryCronReviewQueueItem,
   runCronJobNow,
   startCronJob,
   updateCronJob,
@@ -42,6 +45,16 @@ export function CronPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reviewQueue, setReviewQueue] = useState<Array<{
+    itemId: string;
+    jobId: string;
+    runId: string;
+    severity: "low" | "medium" | "high" | "critical";
+    status: "open" | "resolved" | "retrying" | "ignored";
+    createdAt: string;
+    updatedAt: string;
+  }>>([]);
+  const [selectedRunDiff, setSelectedRunDiff] = useState<{ runId: string; diff: Record<string, unknown> } | null>(null);
 
   const load = useCallback(async (options?: { background?: boolean }) => {
     const background = options?.background ?? false;
@@ -51,8 +64,12 @@ export function CronPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number 
       setIsInitialLoading(true);
     }
     try {
-      const response = await fetchCronJobs();
+      const [response, review] = await Promise.all([
+        fetchCronJobs(),
+        fetchCronReviewQueue(100).catch(() => ({ items: [] })),
+      ]);
       setData(response);
+      setReviewQueue(review.items);
       setSelectedJobId((current) => current ?? response.items[0]?.jobId ?? null);
     } finally {
       if (background) {
@@ -246,6 +263,33 @@ export function CronPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number 
     }
   }, [load]);
 
+  const handleRetryReviewItem = useCallback(async (itemId: string) => {
+    setBusyJobId(itemId);
+    try {
+      const updated = await retryCronReviewQueueItem(itemId);
+      setStatus(`Retried queue item ${updated.itemId.slice(0, 8)}`);
+      await load({ background: true });
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyJobId(null);
+    }
+  }, [load]);
+
+  const handleOpenDiff = useCallback(async (runId: string) => {
+    setBusyJobId(runId);
+    try {
+      const diff = await fetchCronRunDiff(runId);
+      setSelectedRunDiff({ runId, diff: diff.diff });
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyJobId(null);
+    }
+  }, []);
+
   if (error && !data) {
     return <p className="error">{error}</p>;
   }
@@ -411,6 +455,58 @@ export function CronPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number 
             ))}
           </tbody>
         </table>
+      </article>
+
+      <article className="card">
+        <h3>Review Queue</h3>
+        <p className="office-subtitle">
+          Flagged or notable cron outputs that need operator review, diff check, or retry.
+        </p>
+        {reviewQueue.length === 0 ? (
+          <p className="office-subtitle">No review items recorded yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Run</th>
+                <th>Severity</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reviewQueue.map((item) => (
+                <tr key={item.itemId}>
+                  <td>{item.jobId}</td>
+                  <td><code>{item.runId.slice(0, 8)}</code></td>
+                  <td>{item.severity}</td>
+                  <td>{item.status}</td>
+                  <td>{new Date(item.updatedAt).toLocaleString()}</td>
+                  <td className="cron-actions">
+                    <ActionButton
+                      label="Diff"
+                      disabled={busyJobId === item.runId}
+                      onClick={() => void handleOpenDiff(item.runId)}
+                    />
+                    <ActionButton
+                      label="Retry"
+                      disabled={busyJobId === item.itemId}
+                      onClick={() => void handleRetryReviewItem(item.itemId)}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {selectedRunDiff ? (
+          <details open>
+            <summary>Run diff: {selectedRunDiff.runId}</summary>
+            <pre>{JSON.stringify(selectedRunDiff.diff, null, 2)}</pre>
+          </details>
+        ) : null}
       </article>
     </section>
   );

@@ -301,6 +301,15 @@ const promptPackBenchmarkParamsSchema = z.object({
   benchmarkRunId: z.string().min(1),
 });
 
+const promptPackReplayRegressionRunBodySchema = z.object({
+  testCodes: z.array(z.string().min(1)).min(1).max(200),
+  baselineRef: z.string().optional(),
+});
+
+const promptPackReplayRegressionParamsSchema = z.object({
+  runId: z.string().min(1),
+});
+
 const chatToolDecisionSchema = z.object({
   sessionId: z.string().min(1),
   approvalId: z.string().min(1),
@@ -1199,6 +1208,52 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send(fastify.gateway.getPromptPackBenchmarkStatus(params.data.benchmarkRunId));
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/replay-regression/run", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    const body = promptPackReplayRegressionRunBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(fastify.gateway.runPromptPackReplayRegression(params.data.packId, body.data));
+    } catch (error) {
+      return reply.code(409).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/prompt-packs/replay-regression/:runId", async (request, reply) => {
+    const params = promptPackReplayRegressionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getPromptPackReplayRegressionStatus(params.data.runId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
+    }
+  });
+
+  fastify.get("/api/v1/prompt-packs/:packId/trends", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getPromptPackCapabilityTrends(params.data.packId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 409).send({ error: message });
     }
   });
 

@@ -12,6 +12,7 @@ import {
   fetchObsidianIntegrationStatus,
   installIntegrationPlugin,
   patchObsidianIntegrationConfig,
+  fetchIntegrationConnectionDiagnostics,
   searchObsidianNotes,
   testObsidianIntegration,
   captureObsidianInboxEntry,
@@ -103,6 +104,8 @@ export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?:
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnosticsByConnectionId, setDiagnosticsByConnectionId] = useState<Record<string, Awaited<ReturnType<typeof fetchIntegrationConnectionDiagnostics>>>>({});
+  const [selectedDiagnosticConnectionId, setSelectedDiagnosticConnectionId] = useState<string | null>(null);
   const requestSeq = useRef(0);
   const createAction = useAction();
   const deleteAction = useAction();
@@ -365,6 +368,23 @@ export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?:
     }
   };
 
+  const onRunDiagnostics = async (connectionId: string) => {
+    setPluginBusyId(`diag:${connectionId}`);
+    try {
+      const report = await fetchIntegrationConnectionDiagnostics(connectionId);
+      setDiagnosticsByConnectionId((current) => ({
+        ...current,
+        [connectionId]: report,
+      }));
+      setSelectedDiagnosticConnectionId(connectionId);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPluginBusyId(null);
+    }
+  };
+
   const onInstallPlugin = async () => {
     const source = pluginSource.trim();
     if (!source) {
@@ -501,6 +521,9 @@ export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?:
   };
 
   const blockCreate = changeReview.overall === "critical" && !criticalConfirmed;
+  const selectedDiagnostics = selectedDiagnosticConnectionId
+    ? diagnosticsByConnectionId[selectedDiagnosticConnectionId]
+    : undefined;
 
   return (
     <section>
@@ -870,6 +893,13 @@ export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?:
                   <button type="button" onClick={() => void onToggle(connection)}>
                     {connection.enabled ? "Pause" : "Enable"}
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => void onRunDiagnostics(connection.connectionId)}
+                    disabled={pluginBusyId === `diag:${connection.connectionId}`}
+                  >
+                    {pluginBusyId === `diag:${connection.connectionId}` ? "Running..." : "Diagnose"}
+                  </button>
                   <button type="button"
                     className="danger"
                     onClick={() => setDeleteTarget(connection)}
@@ -882,6 +912,33 @@ export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?:
             ))}
           </tbody>
         </table>
+        {selectedDiagnosticConnectionId && selectedDiagnostics ? (
+          <details open style={{ marginTop: 12 }}>
+            <summary>
+              Diagnostics for {connections.find((item) => item.connectionId === selectedDiagnosticConnectionId)?.label ?? selectedDiagnosticConnectionId}
+              {" • "}
+              {selectedDiagnostics.status}
+              {" • "}
+              {new Date(selectedDiagnostics.checkedAt).toLocaleString()}
+            </summary>
+            <ul className="improvement-simple-list">
+              {selectedDiagnostics.checks.map((check: {
+                key: string;
+                status: "pass" | "warn" | "fail";
+                message: string;
+              }) => (
+                <li key={`${check.key}:${check.message}`}>
+                  <strong>{check.key}</strong> [{check.status}] - {check.message}
+                </li>
+              ))}
+            </ul>
+            {selectedDiagnostics.recommendedNextAction ? (
+              <p className="office-subtitle">
+                Next step: {selectedDiagnostics.recommendedNextAction}
+              </p>
+            ) : null}
+          </details>
+        ) : null}
       </article>
 
       <article className="card">

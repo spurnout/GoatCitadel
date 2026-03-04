@@ -5,6 +5,8 @@ import {
   createTask,
   deleteTask,
   fetchAgents,
+  fetchDurableRun,
+  fetchDurableRunTimeline,
   fetchSessions,
   fetchTaskActivities,
   fetchTaskDeliverables,
@@ -12,8 +14,10 @@ import {
   fetchTaskSubagents,
   registerTaskSubagent,
   restoreTask,
+  resumeDurableRun,
   updateTask,
   updateTaskSubagent,
+  wakeDurableRun,
   type TaskActivityRecord,
   type TaskDeliverableRecord,
   type TaskRecord,
@@ -86,6 +90,22 @@ export function TasksPage({ refreshKey: _refreshKey = 0, workspaceId = "default"
   const [subagentName, setSubagentName] = useState(BUILTIN_AGENT_ROSTER[0]?.name ?? "");
   const [agentProfiles, setAgentProfiles] = useState<Array<{ roleId: string; name: string; title: string }>>([]);
   const [sessionHints, setSessionHints] = useState<string[]>([]);
+  const [durableRunId, setDurableRunId] = useState("");
+  const [durableWakeKey, setDurableWakeKey] = useState("manual.resume");
+  const [durableStatus, setDurableStatus] = useState<{
+    runId: string;
+    status: string;
+    blockedStep?: string;
+    blockedReason?: string;
+    updatedAt: string;
+  } | null>(null);
+  const [durableTimeline, setDurableTimeline] = useState<Array<{
+    eventId: string;
+    eventType: string;
+    stepKey?: string;
+    createdAt: string;
+  }>>([]);
+  const [durableBusy, setDurableBusy] = useState<null | "load" | "resume" | "wake">(null);
   const [loadingTasks, setLoadingTasks] = useState(true);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -329,6 +349,79 @@ export function TasksPage({ refreshKey: _refreshKey = 0, workspaceId = "default"
     }
   };
 
+  const loadDurableState = async (runId: string) => {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) {
+      setError("Enter a durable run ID first.");
+      return;
+    }
+    setDurableBusy("load");
+    try {
+      const [run, timeline] = await Promise.all([
+        fetchDurableRun(normalizedRunId),
+        fetchDurableRunTimeline(normalizedRunId, 200),
+      ]);
+      setDurableRunId(normalizedRunId);
+      setDurableTimeline(timeline.items);
+      const blockingEvent = [...timeline.items]
+        .reverse()
+        .find((event) => event.eventType === "run_paused" || event.eventType === "run_waiting");
+      const blockedStep = (blockingEvent?.payload?.stepKey as string | undefined) ?? blockingEvent?.stepKey;
+      const blockedReason = blockingEvent?.payload?.reason;
+      setDurableStatus({
+        runId: normalizedRunId,
+        status: run.status,
+        blockedStep,
+        blockedReason: typeof blockedReason === "string" ? blockedReason : undefined,
+        updatedAt: run.updatedAt,
+      });
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDurableBusy(null);
+    }
+  };
+
+  const onResumeDurable = async () => {
+    if (!durableStatus?.runId) {
+      setError("Load durable status first so we can resume from the exact checkpoint.");
+      return;
+    }
+    setDurableBusy("resume");
+    try {
+      await resumeDurableRun(durableStatus.runId, "operator");
+      await loadDurableState(durableStatus.runId);
+      setInfo("Durable run resumed from last checkpoint.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDurableBusy(null);
+    }
+  };
+
+  const onWakeDurable = async () => {
+    if (!durableStatus?.runId) {
+      setError("Load durable status first.");
+      return;
+    }
+    const eventKey = durableWakeKey.trim();
+    if (!eventKey) {
+      setError("Provide an event key before waking a waiting run.");
+      return;
+    }
+    setDurableBusy("wake");
+    try {
+      await wakeDurableRun(durableStatus.runId, { eventKey });
+      await loadDurableState(durableStatus.runId);
+      setInfo(`Wake event "${eventKey}" sent.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDurableBusy(null);
+    }
+  };
+
   const onMoveToTrash = async (task: TaskRecord) => {
     try {
       await deleteAction.run(async () => deleteTask(task.taskId, {
@@ -504,6 +597,80 @@ export function TasksPage({ refreshKey: _refreshKey = 0, workspaceId = "default"
                   </button>
                 ))}
               </div>
+
+              <h4>Run Checkpoint Resume</h4>
+              <p className="office-subtitle">
+                Use this when a long-running workflow is paused or waiting. Resume continues from the exact checkpoint.
+              </p>
+              <div className="controls-row">
+                <label htmlFor="taskDurableRunId">Run ID</label>
+                <input
+                  id="taskDurableRunId"
+                  value={durableRunId}
+                  onChange={(event) => setDurableRunId(event.target.value)}
+                  placeholder="durable run id"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void loadDurableState(durableRunId); }}
+                  disabled={durableBusy !== null}
+                >
+                  {durableBusy === "load" ? "Loading..." : "Load run"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void onResumeDurable(); }}
+                  disabled={durableBusy !== null || !durableStatus}
+                >
+                  {durableBusy === "resume" ? "Resuming..." : "Resume from checkpoint"}
+                </button>
+              </div>
+              {durableStatus?.status === "waiting" ? (
+                <div className="controls-row">
+                  <label htmlFor="taskDurableWake">Wake event</label>
+                  <input
+                    id="taskDurableWake"
+                    value={durableWakeKey}
+                    onChange={(event) => setDurableWakeKey(event.target.value)}
+                    placeholder="manual.resume"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { void onWakeDurable(); }}
+                    disabled={durableBusy !== null}
+                  >
+                    {durableBusy === "wake" ? "Waking..." : "Wake waiting run"}
+                  </button>
+                </div>
+              ) : null}
+              {durableStatus ? (
+                <p className="office-subtitle">
+                  Status: {durableStatus.status}
+                  {durableStatus.blockedStep ? ` | Blocked step: ${durableStatus.blockedStep}` : ""}
+                  {durableStatus.blockedReason ? ` | Reason: ${durableStatus.blockedReason}` : ""}
+                  {" | "}
+                  Updated: {new Date(durableStatus.updatedAt).toLocaleString()}
+                </p>
+              ) : (
+                <p className="office-subtitle">
+                  No run loaded yet. If unsure, copy a run ID from Improvement or durable diagnostics.
+                </p>
+              )}
+              {durableTimeline.length > 0 ? (
+                <details>
+                  <summary>Checkpoint timeline ({durableTimeline.length})</summary>
+                  <ul className="compact-list">
+                    {durableTimeline.slice(-12).reverse().map((event) => (
+                      <li key={event.eventId}>
+                        <strong>{event.eventType}</strong>
+                        {event.stepKey ? ` | ${event.stepKey}` : ""}
+                        {" | "}
+                        {new Date(event.createdAt).toLocaleString()}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
 
               <h4>Activities</h4>
               {loadingDetails ? <p className="office-subtitle">Refreshing task details...</p> : null}

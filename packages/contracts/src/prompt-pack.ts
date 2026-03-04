@@ -164,6 +164,38 @@ export interface PromptPackBenchmarkStatusRecord {
   modelSummaries: PromptPackBenchmarkModelSummary[];
 }
 
+export interface ReplayRegressionRun {
+  regressionRunId: string;
+  packId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  testCodes: string[];
+  baselineRef?: string;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+
+export interface ReplayRegressionResult {
+  resultId: string;
+  regressionRunId: string;
+  testCode: string;
+  capability: "routing" | "honesty" | "handoff" | "robustness" | "usability";
+  scoreDelta: number;
+  passDelta: number;
+  latencyDeltaMs: number;
+  createdAt: string;
+}
+
+export interface CapabilityTrendSeries {
+  capability: "routing" | "honesty" | "handoff" | "robustness" | "usability" | "run_failure_rate";
+  points: Array<{
+    timestamp: string;
+    value: number;
+  }>;
+  threshold?: number;
+  breached?: boolean;
+}
+
 export interface PromptPackExportRecord {
   packId: string;
   path: string;
