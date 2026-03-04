@@ -24,7 +24,10 @@
     "admin": "pnpm --filter @goatcitadel/gateway admin",
     "brand:derive": "node scripts/brand/derive-assets.mjs",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
-    "docs:check": "node scripts/validate-governance-docs.mjs",
+    "prompt:gates": "pnpm tsx scripts/run-prompt-pack-gates.ts",
+    "prompt:gates:targeted": "pnpm tsx scripts/run-prompt-pack-gates.ts --target-only",
+    "docs:check": "node scripts/validate-governance-docs.mjs && node scripts/check-button-types.mjs",
+    "check:buttons": "node scripts/check-button-types.mjs",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },

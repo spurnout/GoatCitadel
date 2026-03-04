@@ -18,7 +18,7 @@ interface WorkspaceAreaSummary {
   latestModifiedAt?: string;
 }
 
-export function MemoryPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
@@ -91,7 +91,7 @@ export function MemoryPage({ refreshKey = 0, workspaceId = "default" }: { refres
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "memory",
@@ -220,7 +220,7 @@ export function MemoryPage({ refreshKey = 0, workspaceId = "default" }: { refres
           <ul className="compact-list workspace-area-list">
             {areas.map((area) => (
               <li key={area.area}>
-                <button
+                <button type="button"
                   className={selectedArea === area.area ? "active" : ""}
                   onClick={() => setSelectedArea(area.area)}
                 >
@@ -413,3 +413,4 @@ function formatTokenDelta(delta: number): string {
   }
   return "no change";
 }
+

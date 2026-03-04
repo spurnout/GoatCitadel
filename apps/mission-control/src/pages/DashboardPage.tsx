@@ -17,7 +17,7 @@ import { pageCopy } from "../content/copy";
 type DashboardTab = "approvals" | "tasks" | "sessions" | "settings" | "integrations" | "office";
 
 export function DashboardPage({
-  refreshKey = 0,
+  refreshKey: _refreshKey = 0,
   onNavigate,
 }: {
   refreshKey?: number;
@@ -46,7 +46,7 @@ export function DashboardPage({
         setMemoryFiles(memoryRes.items);
       })
       .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+  }, []);
 
   if (error && (!state || !vitals || !cron || !operators)) {
     return (

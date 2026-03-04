@@ -174,7 +174,7 @@ export function App() {
     setActiveWorkspaceId,
   } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
-  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshKey = 0;
   const [clock, setClock] = useState(() => new Date().toLocaleTimeString());
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
   const [streamStatus, setStreamStatus] = useState<EventStreamStatus>({
@@ -187,6 +187,18 @@ export function App() {
   const [showBrandWordmark, setShowBrandWordmark] = useState(true);
   const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+
+  const loadWorkspaceOptions = useCallback(async () => {
+    try {
+      const response = await fetchWorkspaces("all", 400);
+      setWorkspaceOptions(response.items.map((item) => ({
+        workspaceId: item.workspaceId,
+        name: item.name,
+      })));
+    } catch {
+      setWorkspaceOptions([]);
+    }
+  }, []);
 
   const pushNotification = useCallback((tone: NotificationItem["tone"], message: string) => {
     setNotifications((current) => {
@@ -202,9 +214,9 @@ export function App() {
 
   const handleOnboardingCompleted = useCallback(() => {
     setOnboardingComplete(true);
-    setRefreshKey((value) => value + 1);
     setTab("dashboard");
-  }, []);
+    void loadWorkspaceOptions();
+  }, [loadWorkspaceOptions]);
 
   useEffect(() => {
     const close = connectEventStream(
@@ -261,25 +273,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void fetchWorkspaces("all", 400)
-      .then((response) => {
-        if (!cancelled) {
-          setWorkspaceOptions(response.items.map((item) => ({
-            workspaceId: item.workspaceId,
-            name: item.name,
-          })));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setWorkspaceOptions([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+    void loadWorkspaceOptions();
+  }, [loadWorkspaceOptions]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -444,7 +439,7 @@ export function App() {
                   return null;
                 }
                 return (
-                  <button
+                  <button type="button"
                     key={item.id}
                     onClick={() => setTab(item.id)}
                     className={tab === item.id ? "active" : ""}
@@ -507,6 +502,9 @@ export function App() {
                 Advanced
               </button>
             </div>
+            <span className="ui-experience-note">
+              {uiMode === "simple" ? "Guided defaults" : "Full controls"}
+            </span>
             <label className="ui-technical-toggle">
               <GCSwitch
                 checked={showTechnicalDetails}
@@ -552,3 +550,4 @@ export function App() {
     </div>
   );
 }
+

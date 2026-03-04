@@ -95,6 +95,12 @@ const PROVIDER_TEMPLATES: Array<{
     defaultModel: "phi-3.5-mini-instruct",
   },
   {
+    providerId: "genie-ir20",
+    label: "Genie IR20 (Tailnet)",
+    baseUrl: "http://100.64.0.4:8910/v1",
+    defaultModel: "IBM-Granite",
+  },
+  {
     providerId: "openrouter",
     label: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
@@ -160,6 +166,11 @@ const ALLOWLIST_PRESETS: Array<{ id: string; label: string; hosts: string[] }> =
     label: "Common providers + local",
     hosts: ["127.0.0.1", "localhost", "api.openai.com", "openrouter.ai"],
   },
+  {
+    id: "tailnet-genie",
+    label: "Tailnet + Genie IR20",
+    hosts: ["127.0.0.1", "localhost", "100.64.0.4", "ir20"],
+  },
 ];
 
 const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> = [
@@ -178,7 +189,7 @@ const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> 
 
 const GATEWAY_AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 
-export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function SettingsPage(_props: { refreshKey?: number }) {
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
   const [profile, setProfile] = useState("");
   const [budgetMode, setBudgetMode] = useState<"saver" | "balanced" | "power">("balanced");
@@ -293,7 +304,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     load();
-  }, [refreshKey]);
+  }, []);
 
   useEffect(() => {
     void fetchVoiceStatus()
@@ -306,7 +317,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       .catch(() => {
         setVoiceStatus(null);
       });
-  }, [refreshKey]);
+  }, []);
 
   useEffect(() => {
     if (!settings) {
@@ -750,7 +761,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <p className="office-subtitle">
           Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
         </p>
-        <button onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
+        <button type="button" onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
       </article>
 
       <article className="card">
@@ -813,21 +824,21 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               { value: "wake", label: "Wake triggered" },
             ]}
           />
-          <button onClick={onStartVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state === "running"}>
+          <button type="button" onClick={onStartVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state === "running"}>
             Start Talk Mode
           </button>
-          <button onClick={onStopVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state !== "running"}>
+          <button type="button" onClick={onStopVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state !== "running"}>
             Stop Talk Mode
           </button>
         </div>
         <div className="controls-row">
-          <button onClick={onStartWake} disabled={voiceBusy || voiceStatus?.wake.enabled}>
+          <button type="button" onClick={onStartWake} disabled={voiceBusy || voiceStatus?.wake.enabled}>
             Enable Wake
           </button>
-          <button onClick={onStopWake} disabled={voiceBusy || !voiceStatus?.wake.enabled}>
+          <button type="button" onClick={onStopWake} disabled={voiceBusy || !voiceStatus?.wake.enabled}>
             Disable Wake
           </button>
-          <button onClick={() => void refreshVoiceRuntime()} disabled={voiceBusy}>
+          <button type="button" onClick={() => void refreshVoiceRuntime()} disabled={voiceBusy}>
             Refresh Voice Status
           </button>
         </div>
@@ -839,7 +850,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             accept="audio/*"
             onChange={(event) => setVoiceFile(event.target.files?.[0] ?? null)}
           />
-          <button onClick={onRunVoiceTranscribeTest} disabled={voiceBusy || !voiceFile}>
+          <button type="button" onClick={onRunVoiceTranscribeTest} disabled={voiceBusy || !voiceFile}>
             Run Local Transcription
           </button>
         </div>
@@ -909,7 +920,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             }}
           />
         </details>
-        <button onClick={onSaveRuntime} disabled={blockSaves}>Save Runtime Controls</button>
+        <button type="button" onClick={onSaveRuntime} disabled={blockSaves}>Save Runtime Controls</button>
       </article>
 
       <article className="card">
@@ -923,8 +934,8 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <p className="office-subtitle">Base URL: <code>http://127.0.0.1:11434/v1</code> | model id: installed tag, for example <code>llama3.2</code>.</p>
           <p className="office-subtitle">If GoatCitadel is remote, replace <code>127.0.0.1</code> with the host IP/tailnet name and include that host in your outbound allowlist.</p>
           <div className="controls-row">
-            <button onClick={() => applyLocalProviderPreset("lmstudio")}>Use LM Studio Preset</button>
-            <button onClick={() => applyLocalProviderPreset("ollama")}>Use Ollama Preset</button>
+            <button type="button" onClick={() => applyLocalProviderPreset("lmstudio")}>Use LM Studio Preset</button>
+            <button type="button" onClick={() => applyLocalProviderPreset("ollama")}>Use Ollama Preset</button>
           </div>
         </details>
 
@@ -953,7 +964,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             customPlaceholder="Custom model id"
             customLabel="Custom active model"
           />
-          <button onClick={onLoadModels}>Load Models</button>
+          <button type="button" onClick={onLoadModels}>Load Models</button>
         </div>
         {models.length > 0 ? (
           <ul className="compact-list">
@@ -962,9 +973,9 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             ))}
           </ul>
         ) : null}
-        <button onClick={onSaveActiveLlm} disabled={blockSaves}>Save Active Provider/Model</button>
+        <button type="button" onClick={onSaveActiveLlm} disabled={blockSaves}>Save Active Provider/Model</button>
 
-        <button onClick={() => setShowAdvanced((current) => !current)}>
+        <button type="button" onClick={() => setShowAdvanced((current) => !current)}>
           {showAdvanced ? "Hide advanced provider settings" : "Show advanced provider settings"}
         </button>
         {showAdvanced ? (
@@ -1033,10 +1044,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               Key source: {providerSecretStatus?.source ?? providerOptions.find((provider) => provider.providerId === providerId)?.apiKeySource ?? "none"}
             </p>
             <div className="controls-row">
-              <button onClick={onSaveProviderKeyToSecureStore} disabled={!providerApiKey.trim()}>
+              <button type="button" onClick={onSaveProviderKeyToSecureStore} disabled={!providerApiKey.trim()}>
                 Save Key to Secure Store
               </button>
-              <button onClick={onDeleteProviderKeyFromSecureStore}>
+              <button type="button" onClick={onDeleteProviderKeyFromSecureStore}>
                 Remove Secure Key
               </button>
             </div>
@@ -1060,7 +1071,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 customLabel="Custom env var"
               />
             </div>
-            <button onClick={onSaveProvider} disabled={blockSaves}>Save Provider Settings</button>
+            <button type="button" onClick={onSaveProvider} disabled={blockSaves}>Save Provider Settings</button>
           </div>
         ) : null}
       </article>
@@ -1106,7 +1117,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           />
         </div>
         <div className="controls-row">
-          <button onClick={onTestChat}>Run Test Prompt</button>
+          <button type="button" onClick={onTestChat}>Run Test Prompt</button>
         </div>
         {chatResponse ? <pre>{chatResponse}</pre> : null}
       </article>
@@ -1197,3 +1208,4 @@ function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+

@@ -168,6 +168,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "workspace_isolation_schema",
     up: createWorkspaceIsolationSchema,
   },
+  {
+    version: 21,
+    name: "durable_run_foundation_schema",
+    up: createDurableRunFoundationSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1646,6 +1651,73 @@ function createWorkspaceIsolationSchema(db: DatabaseSync): void {
       name = CASE WHEN COALESCE(TRIM(workspaces.name), '') = '' THEN excluded.name ELSE workspaces.name END,
       slug = CASE WHEN COALESCE(TRIM(workspaces.slug), '') = '' THEN excluded.slug ELSE workspaces.slug END,
       updated_at = CASE WHEN workspaces.updated_at IS NULL THEN excluded.updated_at ELSE workspaces.updated_at END;
+  `);
+}
+
+function createDurableRunFoundationSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS durable_runs (
+      run_id TEXT PRIMARY KEY,
+      workflow_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      payload_json TEXT NOT NULL,
+      metadata_json TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_durable_runs_status_updated
+      ON durable_runs(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_durable_runs_workflow_created
+      ON durable_runs(workflow_key, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS durable_checkpoints (
+      checkpoint_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      checkpoint_kind TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES durable_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_durable_checkpoints_run_created
+      ON durable_checkpoints(run_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS durable_retries (
+      retry_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      next_retry_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(run_id) REFERENCES durable_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_retries_run_attempt
+      ON durable_retries(run_id, attempt_no);
+    CREATE INDEX IF NOT EXISTS idx_durable_retries_next_retry
+      ON durable_retries(next_retry_at, run_id);
+
+    CREATE TABLE IF NOT EXISTS durable_dead_letters (
+      dead_letter_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL UNIQUE,
+      reason TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolution_note TEXT,
+      FOREIGN KEY(run_id) REFERENCES durable_runs(run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_durable_dead_letters_created
+      ON durable_dead_letters(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_durable_dead_letters_resolved
+      ON durable_dead_letters(resolved_at, created_at DESC);
   `);
 }
 

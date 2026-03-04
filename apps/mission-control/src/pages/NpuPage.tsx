@@ -20,7 +20,7 @@ interface NpuPageProps {
   settings?: RuntimeSettingsResponse | null;
 }
 
-export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
+export function NpuPage({ refreshKey: _refreshKey = 0, settings }: NpuPageProps) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof fetchNpuStatus>> | null>(null);
   const [models, setModels] = useState<Awaited<ReturnType<typeof fetchNpuModels>>["items"]>([]);
   const [npuEnabled, setNpuEnabled] = useState(settings?.npu.enabled ?? false);
@@ -73,7 +73,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
 
   useEffect(() => {
     load({ background: false });
-  }, [refreshKey]);
+  }, []);
 
   useRefreshSubscription(
     "npu",
@@ -248,15 +248,15 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
             onChange={(event) => setSidecarUrl(event.target.value)}
           />
         </div>
-        <button onClick={onSaveConfig} disabled={busy || blockConfigSave}>Save NPU Config</button>
+        <button type="button" onClick={onSaveConfig} disabled={busy || blockConfigSave}>Save NPU Config</button>
       </article>
 
       <article className="card">
         <h3>Runtime Control</h3>
         <div className="controls-row">
-          <button onClick={onStart} disabled={busy}>Start</button>
-          <button onClick={onStop} disabled={busy}>Stop</button>
-          <button onClick={onRefresh} disabled={busy}>Refresh</button>
+          <button type="button" onClick={onStart} disabled={busy}>Start</button>
+          <button type="button" onClick={onStop} disabled={busy}>Stop</button>
+          <button type="button" onClick={onRefresh} disabled={busy}>Refresh</button>
         </div>
         {settings ? (
           <p className="office-subtitle">
@@ -333,3 +333,4 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     </section>
   );
 }
+

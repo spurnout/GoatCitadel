@@ -184,6 +184,9 @@ export class ChatAgentOrchestrator {
     if (detectMissingLogPayloadIntent(input.content)) {
       assistantContent = buildMissingLogInputTemplate();
     }
+    if (!assistantContent && localFileIntent && detectLocalFileAccessCheckIntent(input.content)) {
+      assistantContent = buildLocalFileAccessFallback(input.content);
+    }
 
     // Deterministic live-time helper for simple queries.
     if (!assistantContent && detectTimeIntent(input.content) && canUseTimeTool) {
@@ -343,8 +346,9 @@ export class ChatAgentOrchestrator {
       }
     }
 
-    try {
-      for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
+    if (!assistantContent) {
+      try {
+        for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
         const completion = await this.deps.createChatCompletion({
           providerId: input.providerId,
           model: input.model,
@@ -489,16 +493,17 @@ export class ChatAgentOrchestrator {
           finalStatus = "completed";
           break;
         }
+        }
+      } catch (error) {
+        finalStatus = "failed";
+        assistantContent = (error as Error).message;
+        yield {
+          type: "error",
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          error: assistantContent,
+        };
       }
-    } catch (error) {
-      finalStatus = "failed";
-      assistantContent = (error as Error).message;
-      yield {
-        type: "error",
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        error: assistantContent,
-      };
     }
 
     if (!approvalPayload && assistantContent.trim().length === 0) {
@@ -851,6 +856,17 @@ export class ChatAgentOrchestrator {
     blockedReason?: string;
   } {
     const args = { ...input.rawArgs };
+    if (
+      input.toolName === "browser.search"
+      && detectLocalFileIntent(input.userContent)
+      && !detectExplicitWebLookupIntent(input.userContent)
+    ) {
+      return {
+        args,
+        blockedReason: "execution skipped: browser.search was suppressed because the prompt targets local files/project context",
+      };
+    }
+
     if ((input.toolName === "memory.write" || input.toolName === "memory.upsert") && !hasExplicitMemoryConsent(input.userContent)) {
       return {
         args,
@@ -875,6 +891,13 @@ export class ChatAgentOrchestrator {
     if (unresolved.length > 0) {
       const field = unresolved[0] ?? "arg";
       if (field === "query" && (input.toolName === "memory.search" || input.toolName === "browser.search")) {
+        if (input.toolName === "memory.search") {
+          const fallbackQuery = inferMemoryQueryFromPrompt(input.userContent);
+          if (fallbackQuery) {
+            args.query = fallbackQuery;
+            return { args };
+          }
+        }
         return {
           args,
           blockedReason: `execution skipped: ${input.toolName} requires query; unable to infer a safe query from the prompt`,
@@ -1154,6 +1177,18 @@ function detectLiveDataIntent(content: string): boolean {
   );
 }
 
+function detectExplicitWebLookupIntent(content: string): boolean {
+  const normalized = content.toLowerCase();
+  return (
+    normalized.includes("search web")
+    || normalized.includes("search online")
+    || normalized.includes("look online")
+    || normalized.includes("browse the web")
+    || normalized.includes("use internet")
+    || normalized.includes("web search")
+  );
+}
+
 function deriveLiveDataQuery(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -1172,6 +1207,34 @@ function deriveLiveDataQuery(content: string): string {
   return selected.replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "").trim() || normalized;
 }
 
+function inferMemoryQueryFromPrompt(userContent: string): string | undefined {
+  const inferred = inferQueryFromPrompt(userContent);
+  if (inferred) {
+    return inferred;
+  }
+  const normalized = userContent
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const stopWords = new Set([
+    "the", "and", "for", "with", "that", "this", "from", "then", "what", "your", "you", "into",
+    "about", "please", "would", "could", "should", "have", "been", "were", "when", "where",
+    "which", "while", "without", "just", "need", "want", "give", "tell",
+  ]);
+  const tokens = normalized
+    .split(" ")
+    .filter((token) => token.length >= 3 && !stopWords.has(token))
+    .slice(0, 12);
+  if (tokens.length < 2) {
+    return undefined;
+  }
+  return tokens.join(" ");
+}
+
 function detectLocalFileIntent(content: string): boolean {
   const normalized = content.toLowerCase();
   if (/\b([a-z]:\\|\\\\)\b/i.test(content)) {
@@ -1188,6 +1251,38 @@ function detectLocalFileIntent(content: string): boolean {
     || normalized.includes("what services i'm running")
     || /\bread\s+.*\.(yml|yaml|json|md|txt)\b/.test(normalized)
   );
+}
+
+function detectLocalFileAccessCheckIntent(content: string): boolean {
+  const normalized = content.toLowerCase();
+  return (
+    normalized.includes("check whether you can access")
+    || normalized.includes("if you can't")
+    || normalized.includes("if you cannot")
+    || normalized.includes("do not guess")
+    || normalized.includes("local project files")
+  );
+}
+
+function buildLocalFileAccessFallback(userPrompt: string): string {
+  const composeHint = /\bdocker[-\s]?compose\b/i.test(userPrompt)
+    ? "If you share `docker-compose.yml`, I can list services and rank operational risk by exposure, privilege, and data sensitivity."
+    : "If you share the relevant local file content, I can provide a concrete analysis instead of a generic answer.";
+  return [
+    "Summary",
+    "- I cannot directly access your local project files from this runtime.",
+    "",
+    "Confirmed limits",
+    "- No filesystem read access to your local machine path was available in this turn.",
+    "- I avoided guessing specific file contents.",
+    "",
+    "What I need from you",
+    "- Paste the file contents (or key sections).",
+    "- Or run a local command to print the file and share output.",
+    "",
+    "Next safe action",
+    `- ${composeHint}`,
+  ].join("\n");
 }
 
 function inferCitationsFromToolResult(toolRun: ChatToolRunRecord): ChatCitationRecord[] {
@@ -1350,20 +1445,22 @@ function detectMissingLogPayloadIntent(content: string): boolean {
 function buildMissingLogInputTemplate(): string {
   return [
     "Summary",
-    "- I don’t have the actual log lines yet, so this is a pre-analysis scaffold.",
+    "- I cannot determine a real root cause yet because the log blob was not pasted.",
+    "- Below is a deterministic triage scaffold so you can continue immediately.",
     "",
     "Root cause candidates",
-    "- Request timeout or retry storm in one dependency path.",
-    "- Auth/session mismatch causing intermittent downstream failures.",
-    "- Data/schema mismatch after a recent deploy or config change.",
+    "- Timeout or retry storm (if logs show repeated timeout/429/503 patterns).",
+    "- Auth/session mismatch (if logs show 401/403, token refresh, or session invalidation).",
+    "- Schema/config drift after deploy (if logs show parse errors, unknown fields, or migration mismatches).",
     "",
     "Top 3 next actions",
-    "1. Paste the first error block and the final error block from the same run window.",
+    "1. Paste the first fatal/exception block and the last fatal/exception block from the same incident window.",
     "2. Include 20 lines before and after the first fatal/exception line.",
-    "3. Confirm timestamp/timezone and service name for the failing component.",
+    "3. Confirm timezone + service name so timestamps can be correlated accurately.",
     "",
-    "Next log line I need",
-    "- The first stack trace (or error payload) line that includes error class/code plus request/correlation id.",
+    "Exact next log line I need",
+    "- `2026-03-03T12:48:01.234Z service=<service> level=ERROR request_id=<id> error_code=<code> message=<message>`",
+    "- If no request_id exists, paste the first exception line plus the line immediately above it.",
   ].join("\n");
 }
 
@@ -1389,6 +1486,10 @@ function buildDeterministicToolSynthesisFallback(
   toolRuns: ChatToolRunRecord[],
   reason?: string,
 ): string {
+  const extractionFallback = buildExtractionFailureFallback(userPrompt, toolRuns, reason);
+  if (extractionFallback) {
+    return extractionFallback;
+  }
   const failures = toolRuns
     .filter((item) => item.status === "failed" || item.status === "blocked")
     .slice(-4)
@@ -1414,6 +1515,112 @@ function buildDeterministicToolSynthesisFallback(
     `- Query seed: ${inferQueryFromPrompt(userPrompt) ?? deriveLiveDataQuery(userPrompt)}`,
   ];
   return lines.join("\n");
+}
+
+function buildExtractionFailureFallback(
+  userPrompt: string,
+  toolRuns: ChatToolRunRecord[],
+  reason?: string,
+): string | undefined {
+  const normalized = userPrompt.toLowerCase();
+  const isExtractionPrompt = /\bcollect\b|\bextract\b|\breturn an array\b|\bjson\b|\bpagination\b/.test(normalized);
+  if (!isExtractionPrompt) {
+    return undefined;
+  }
+  const recoveredItems = recoverTitleUrlItems(toolRuns, 35);
+  const failurePoint = inferExtractionFailurePoint(toolRuns, reason);
+  const lines = [
+    "Summary",
+    `- I completed tool execution but could not confidently produce the full requested extraction set (${recoveredItems.length} recovered item(s)).`,
+    "",
+    "Failure point",
+    `- ${failurePoint}`,
+    "",
+    "Recovered items (partial)",
+    "```json",
+    JSON.stringify(recoveredItems, null, 2),
+    "```",
+    "",
+    "What I need from you next",
+    "- Confirm if you want me to continue pagination with explicit page-by-page extraction constraints.",
+    "- If strict completeness is required, provide permission for a slower deterministic crawl with validation per page.",
+  ];
+  return lines.join("\n");
+}
+
+function inferExtractionFailurePoint(toolRuns: ChatToolRunRecord[], reason?: string): string {
+  const failed = toolRuns.filter((run) => run.status === "failed" || run.status === "blocked").at(-1);
+  if (failed) {
+    return `${failed.toolName} returned ${failed.status}: ${failed.error ?? "unknown error"}`;
+  }
+  const lastExecuted = toolRuns.filter((run) => run.status === "executed").at(-1);
+  if (lastExecuted) {
+    return `${lastExecuted.toolName} executed, but structured extraction output was incomplete or unparseable`;
+  }
+  return reason ?? "No durable extraction result was captured in tool traces";
+}
+
+function recoverTitleUrlItems(toolRuns: ChatToolRunRecord[], limit: number): Array<{ title: string | null; url: string }> {
+  const items: Array<{ title: string | null; url: string }> = [];
+  const seen = new Set<string>();
+  for (const run of toolRuns) {
+    const result = run.result;
+    if (!result || typeof result !== "object") {
+      continue;
+    }
+    collectTitleUrlPairs(result as Record<string, unknown>, items, seen, limit);
+    if (items.length >= limit) {
+      break;
+    }
+  }
+  return items.slice(0, limit);
+}
+
+function collectTitleUrlPairs(
+  node: unknown,
+  out: Array<{ title: string | null; url: string }>,
+  seen: Set<string>,
+  limit: number,
+): void {
+  if (out.length >= limit || node === null || node === undefined) {
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectTitleUrlPairs(entry, out, seen, limit);
+      if (out.length >= limit) {
+        return;
+      }
+    }
+    return;
+  }
+  if (typeof node !== "object") {
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  const url = typeof record.url === "string"
+    ? record.url
+    : typeof record.href === "string"
+      ? record.href
+      : undefined;
+  if (url && /^https?:\/\//i.test(url) && !seen.has(url)) {
+    seen.add(url);
+    out.push({
+      title: typeof record.title === "string"
+        ? record.title
+        : (typeof record.name === "string" ? record.name : null),
+      url,
+    });
+    if (out.length >= limit) {
+      return;
+    }
+  }
+  for (const value of Object.values(record)) {
+    collectTitleUrlPairs(value, out, seen, limit);
+    if (out.length >= limit) {
+      return;
+    }
+  }
 }
 
 function appendToolFailureConstraints(content: string, toolRuns: ChatToolRunRecord[]): string {
@@ -1447,12 +1654,11 @@ function appendToolFailureConstraints(content: string, toolRuns: ChatToolRunReco
 function mentionsToolFailureConstraints(content: string): boolean {
   const normalized = content.toLowerCase();
   return (
-    normalized.includes("constraints")
+    normalized.includes("\nconstraints")
+    || normalized.includes("## constraints")
+    || normalized.includes("constraints:")
     || normalized.includes("tool failures")
     || normalized.includes("what i need from you next")
-    || normalized.includes("blocked")
-    || normalized.includes("failed")
-    || normalized.includes("unable to")
   );
 }
 

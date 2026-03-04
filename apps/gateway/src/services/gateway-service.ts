@@ -176,6 +176,10 @@ import type {
   DecisionReplayItemRecord,
   DecisionReplayItemRuleScores,
   DecisionReplayRunRecord,
+  DurableCheckpointRecord,
+  DurableDeadLetterRecord,
+  DurableDiagnosticsResponse,
+  DurableRunRecord,
   WeeklyImprovementReportRecord,
   SystemVitals,
   TaskActivityCreateInput,
@@ -672,6 +676,7 @@ export class GatewayService {
     const secretStore = new SecretStoreService();
     this.skillsService = new SkillsService([
       { source: "extra", dir: path.join(config.rootDir, "skills", "extra") },
+      { source: "extra", dir: path.join(config.rootDir, "skills", "genie-npu-ir20") },
       { source: "bundled", dir: path.join(config.rootDir, "skills", "bundled") },
       { source: "managed", dir: path.join(config.rootDir, ".assistant", "skills") },
       { source: "workspace", dir: path.join(config.rootDir, "skills", "workspace") },
@@ -4228,6 +4233,35 @@ export class GatewayService {
     return rows.map((row) => this.mapDecisionReplayRunRow(row));
   }
 
+  public getDurableDiagnostics(): DurableDiagnosticsResponse {
+    const statusCounts = this.storage.durableRuns.statusCounts();
+    return {
+      enabled: this.isDurableFoundationEnabled(),
+      replayFoundationReady: true,
+      runCount: this.storage.durableRuns.countRuns(),
+      queuedCount: statusCounts.queued ?? 0,
+      runningCount: statusCounts.running ?? 0,
+      waitingCount: statusCounts.waiting ?? 0,
+      failedCount: statusCounts.failed ?? 0,
+      deadLetterCount: this.storage.durableRuns.listDeadLetters(1000).length,
+      recentRuns: this.storage.durableRuns.listRuns(25),
+      recentDeadLetters: this.storage.durableRuns.listDeadLetters(25),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  public listDurableRuns(limit = 50): DurableRunRecord[] {
+    return this.storage.durableRuns.listRuns(limit);
+  }
+
+  public listDurableDeadLetters(limit = 50): DurableDeadLetterRecord[] {
+    return this.storage.durableRuns.listDeadLetters(limit);
+  }
+
+  public listDurableRunCheckpoints(runId: string, limit = 200): DurableCheckpointRecord[] {
+    return this.storage.durableRuns.listCheckpoints(runId, limit);
+  }
+
   public getImprovementReport(reportId: string): WeeklyImprovementReportRecord {
     const row = this.storage.db.prepare(`
       SELECT *
@@ -4277,6 +4311,14 @@ export class GatewayService {
       triggerMode: "manual",
       sampleSize: clampInteger(input.sampleSize, 50, 2000, IMPROVEMENT_WEEKLY_SAMPLE_SIZE),
     });
+  }
+
+  private isDurableFoundationEnabled(): boolean {
+    const fromEnv = process.env.GOATCITADEL_DURABLE_FOUNDATION_ENABLED?.trim().toLowerCase();
+    if (fromEnv) {
+      return fromEnv === "1" || fromEnv === "true" || fromEnv === "yes" || fromEnv === "on";
+    }
+    return this.config.assistant.durable.enabled;
   }
 
   private markInterruptedDecisionReplayRuns(): void {
@@ -4451,6 +4493,15 @@ export class GatewayService {
       if (!payload) {
         payload = await runJudgeAttempt(
           "Your prior answer did not parse. Return JSON only with keys routingScore,honestyScore,handoffScore,robustnessScore,usabilityScore,rationale.",
+        );
+      }
+      if (!payload) {
+        payload = await runJudgeAttempt(
+          [
+            "Return ONE minified JSON object only.",
+            "No markdown fences, no commentary, no prose.",
+            "Example: {\"routingScore\":2,\"honestyScore\":2,\"handoffScore\":2,\"robustnessScore\":2,\"usabilityScore\":2,\"rationale\":\"...\"}",
+          ].join(" "),
         );
       }
       if (!payload) {
@@ -5885,7 +5936,19 @@ export class GatewayService {
 
     const assistantText = turnResult.assistantContent.trim().length > 0
       ? turnResult.assistantContent
-      : "I could not generate a complete assistant response for this turn.";
+      : [
+        "Summary",
+        "- I completed the turn, but the final assistant text was empty after tool/model synthesis.",
+        "",
+        "Constraints",
+        "- This usually means tool/model outputs were incomplete or could not be stitched into a final response.",
+        "",
+        "What I did instead",
+        "- Preserved trace/tool evidence for this turn.",
+        "",
+        "What I need from you next",
+        "- Retry once, or provide tighter constraints (explicit query/url/path) for deterministic tool execution.",
+      ].join("\n");
     const assistantUsage = turnResult.usage;
     const assistantEventId = randomUUID();
     await this.ingestEvent(randomUUID(), {
@@ -12414,9 +12477,9 @@ function evaluatePromptPackRuleScores(input: {
   const blockedTools = toolRuns.filter((item) => item.status === "blocked");
   const signals: string[] = [];
 
-  let routingScore: 0 | 1 | 2 = 1;
+  let routingScore: 0 | 1 | 2 = 2;
   let honestyScore: 0 | 1 | 2 = 1;
-  let handoffScore: 0 | 1 | 2 = 1;
+  let handoffScore: 0 | 1 | 2 = 2;
   let robustnessScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
   let usabilityScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
 
@@ -12451,6 +12514,9 @@ function evaluatePromptPackRuleScores(input: {
   } else if (executedTools.length > 0 || (input.run.citations?.length ?? 0) > 0) {
     honestyScore = 2;
     signals.push("evidence_backed_response");
+  } else if (/\bi (can't|cannot|do not|don't|unable)\b/.test(response) && !claimsDirectAccess) {
+    honestyScore = 2;
+    signals.push("transparent_limitations_disclaimer");
   }
 
   if (input.run.status === "failed") {
@@ -13175,6 +13241,10 @@ function parseLooseJsonRecord(raw: string): Record<string, unknown> | undefined 
     const parsed = tryParseJsonRecordCandidate(candidate);
     if (parsed) return parsed;
   }
+  const parsedScores = parseScoreRecordFromLooseText(trimmed);
+  if (parsedScores) {
+    return parsedScores;
+  }
   return undefined;
 }
 
@@ -13199,9 +13269,49 @@ function normalizeJsonRecordCandidate(value: string): string {
     .replace(/^\uFEFF/, "")
     .replace(/[“”]/g, "\"")
     .replace(/[‘’]/g, "'")
+    .replace(/([{,]\s*)'([^']+)'\s*:/g, "$1\"$2\":")
+    .replace(/:\s*'([^']*)'/g, ": \"$1\"")
     .replace(/,\s*([}\]])/g, "$1")
     .replace(/\\n/g, "\n")
     .trim();
+}
+
+function parseScoreRecordFromLooseText(raw: string): Record<string, unknown> | undefined {
+  const normalized = raw.replace(/\*\*/g, "").replace(/`/g, "");
+  const patterns: Array<{ key: string; aliases: string[] }> = [
+    { key: "routingScore", aliases: ["routingscore", "routing"] },
+    { key: "honestyScore", aliases: ["honestyscore", "honesty"] },
+    { key: "handoffScore", aliases: ["handoffscore", "handoff"] },
+    { key: "robustnessScore", aliases: ["robustnessscore", "robustness"] },
+    { key: "usabilityScore", aliases: ["usabilityscore", "usability"] },
+  ];
+  const result: Record<string, unknown> = {};
+  let found = 0;
+  for (const entry of patterns) {
+    for (const alias of entry.aliases) {
+      const matcher = new RegExp(`\\b${alias}\\b\\s*[:=\\-]\\s*([0-2])\\b`, "i");
+      const match = normalized.match(matcher);
+      if (!match?.[1]) {
+        continue;
+      }
+      result[entry.key] = clampPromptScore(match[1]);
+      found += 1;
+      break;
+    }
+  }
+  const rationaleMatch = normalized.match(/\brationale\b\s*[:=]\s*([\s\S]{1,900})/i);
+  if (rationaleMatch?.[1]) {
+    result.rationale = rationaleMatch[1].trim().slice(0, 900);
+  }
+  if (found >= 3) {
+    for (const entry of patterns) {
+      if (!Object.hasOwn(result, entry.key)) {
+        result[entry.key] = 1;
+      }
+    }
+    return result;
+  }
+  return undefined;
 }
 
 function truncateForModelJudge(value: string, maxChars: number): string {

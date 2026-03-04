@@ -7,7 +7,7 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 type CostScope = "day" | "session" | "agent" | "task";
 
-export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function CostConsolePage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
@@ -61,7 +61,7 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "system",
@@ -121,7 +121,7 @@ export function CostConsolePage({ refreshKey = 0 }: { refreshKey?: number }) {
             { value: "task", label: "task" },
           ]}
         />
-        <button onClick={onRunCheaper}>Run Leaner</button>
+        <button type="button" onClick={onRunCheaper}>Run Leaner</button>
       </div>
       {recommendation ? (
         <ul>
@@ -217,3 +217,4 @@ function formatTokenDelta(delta: number): string {
   }
   return "no token change";
 }
+

@@ -85,7 +85,7 @@ export function WorkspacesPage(props: {
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, props.refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "system",

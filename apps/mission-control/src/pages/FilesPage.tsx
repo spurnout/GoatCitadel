@@ -41,7 +41,7 @@ const IMAGE_EXTENSIONS = new Set([
   "tiff",
 ]);
 
-export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function FilesPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
@@ -119,7 +119,7 @@ export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refresh
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "files",
@@ -309,7 +309,7 @@ export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refresh
         </p>
         <div className="actions">
           {templates.map((template) => (
-            <button key={template.templateId} onClick={() => void onCreateTemplate(template.templateId)}>
+            <button type="button" key={template.templateId} onClick={() => void onCreateTemplate(template.templateId)}>
               {template.title}
             </button>
           ))}
@@ -333,7 +333,7 @@ export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refresh
               data={filteredFiles}
               itemContent={(_index, file) => (
                 <div className="virtual-list-item files-list-item" key={file.relativePath}>
-                  <button
+                  <button type="button"
                     className={selectedPath === file.relativePath ? "active" : ""}
                     onClick={() => setSelectedPath(file.relativePath)}
                   >
@@ -356,8 +356,8 @@ export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refresh
             </p>
           ) : null}
           <div className="actions">
-            <button onClick={onUseSelectedPath} disabled={!selectedPath}>Use Selected Path</button>
-            <button onClick={onEditSelectedFile} disabled={!selectedPath || !selectedCanEdit}>Edit Selected File</button>
+            <button type="button" onClick={onUseSelectedPath} disabled={!selectedPath}>Use Selected Path</button>
+            <button type="button" onClick={onEditSelectedFile} disabled={!selectedPath || !selectedCanEdit}>Edit Selected File</button>
           </div>
           {selectedFile ? (
             selectedIsImage ? (
@@ -405,13 +405,13 @@ export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refresh
           helpText="Pick a suggested path or use custom mode for advanced locations."
         />
         <div className="actions">
-          <button onClick={() => void onSaveFile()}>Save File</button>
+          <button type="button" onClick={() => void onSaveFile()}>Save File</button>
         </div>
         <div className="controls-row">
           <ChangeBadge level={pathRisk.overall} />
           {autoPathEdited ? <span className="office-subtitle">Path edited after auto-populate.</span> : null}
         </div>
-        <button onClick={() => setShowAdvancedUpload((current) => !current)}>
+        <button type="button" onClick={() => setShowAdvancedUpload((current) => !current)}>
           {showAdvancedUpload ? "Hide advanced save details" : "Show advanced save details"}
         </button>
         {showAdvancedUpload ? (
@@ -460,3 +460,4 @@ function formatFileSize(bytes: number): string {
   }
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
+

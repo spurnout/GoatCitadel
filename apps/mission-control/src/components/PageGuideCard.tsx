@@ -30,6 +30,11 @@ export function PageGuideCard(props: PageGuideCardProps) {
           </button>
         ) : null}
       </header>
+      <p className="office-subtitle">
+        {mode === "simple"
+          ? "Simple mode: essentials and safer defaults are emphasized."
+          : "Advanced mode: full operational controls and deeper details are shown."}
+      </p>
       <p className="page-guide-what"><strong>{globalCopy.guideCard.what}:</strong> {props.what}</p>
       {!compact || expanded ? (
         <>

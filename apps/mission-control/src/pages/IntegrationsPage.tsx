@@ -64,7 +64,7 @@ const KIND_DESCRIPTIONS: Record<Exclude<IntegrationKind, "all">, string> = {
   platform: "Connects platform-level services and APIs.",
 };
 
-export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
   const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [plugins, setPlugins] = useState<Awaited<ReturnType<typeof fetchIntegrationPlugins>>["items"]>([]);
@@ -164,7 +164,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     load({ background: false });
-  }, [kindFilter, refreshKey]);
+  }, [kindFilter]);
 
   useRefreshSubscription(
     "integrations",
@@ -810,7 +810,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 />
               </>
             )}
-            <button onClick={() => void onCreate()} disabled={blockCreate || createAction.pending}>
+            <button type="button" onClick={() => void onCreate()} disabled={blockCreate || createAction.pending}>
               {createAction.pending ? "Saving..." : "Save Connection"}
             </button>
           </>
@@ -867,10 +867,10 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <td>{connection.enabled ? "yes" : "no"}</td>
                 <td>{new Date(connection.updatedAt).toLocaleString()}</td>
                 <td className="actions">
-                  <button onClick={() => void onToggle(connection)}>
+                  <button type="button" onClick={() => void onToggle(connection)}>
                     {connection.enabled ? "Pause" : "Enable"}
                   </button>
-                  <button
+                  <button type="button"
                     className="danger"
                     onClick={() => setDeleteTarget(connection)}
                     disabled={deleteAction.pending}
@@ -897,7 +897,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               onChange={(event) => setPluginSource(event.target.value)}
               placeholder="Plugin source (file path, URL, or package id)"
             />
-            <button onClick={() => void onInstallPlugin()} disabled={pluginBusyId === "install"}>
+            <button type="button" onClick={() => void onInstallPlugin()} disabled={pluginBusyId === "install"}>
               {pluginBusyId === "install" ? "Installing..." : "Install Plugin"}
             </button>
           </div>
@@ -929,7 +929,7 @@ export function IntegrationsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <td>{plugin.enabled ? "enabled" : "disabled"}</td>
                 <td>{new Date(plugin.updatedAt).toLocaleString()}</td>
                 <td>
-                  <button
+                  <button type="button"
                     onClick={() => void onTogglePlugin(plugin.pluginId, plugin.enabled)}
                     disabled={pluginBusyId === plugin.pluginId}
                   >
@@ -1156,3 +1156,4 @@ function describeMaturity(maturity: IntegrationCatalogEntry["maturity"]): string
       return "";
   }
 }
+

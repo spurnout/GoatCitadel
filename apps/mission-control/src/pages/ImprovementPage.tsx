@@ -12,7 +12,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
-export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
+export function ImprovementPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
@@ -73,7 +73,7 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number; works
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "improvement",

@@ -87,7 +87,7 @@ interface CommandCatalogItem {
   description: string;
 }
 
-export function ChatPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function ChatPage({ workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [projects, setProjects] = useState<ChatProjectsResponse | null>(null);
   const [sessions, setSessions] = useState<ChatSessionsResponse | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
@@ -189,18 +189,25 @@ export function ChatPage({ refreshKey = 0, workspaceId = "default" }: { refreshK
     }
   }, []);
 
-  const refreshSidebar = useCallback(async (
+  const refreshViewState = useCallback(async (
     options: {
+      refreshSidebar?: boolean;
       refreshSession?: "none" | "light" | "full";
     } = {},
   ) => {
     if (!initializedRef.current) {
       return;
     }
+    const shouldRefreshSidebar = options.refreshSidebar ?? true;
     const refreshSession = options.refreshSession ?? "light";
+    if (!shouldRefreshSidebar && refreshSession === "none") {
+      return;
+    }
     setIsRefreshing(true);
     try {
-      await loadSidebar();
+      if (shouldRefreshSidebar) {
+        await loadSidebar();
+      }
       if (selectedSessionId && refreshSession !== "none") {
         await loadSessionState(selectedSessionId, {
           background: true,
@@ -231,24 +238,29 @@ export function ChatPage({ refreshKey = 0, workspaceId = "default" }: { refreshK
     };
   }, [loadRuntimeCatalog, loadSidebar]);
 
-  useEffect(() => {
-    if (!initializedRef.current) return;
-    const timer = window.setTimeout(() => {
-      void refreshSidebar({ refreshSession: "none" });
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [refreshKey, refreshSidebar]);
-
   useRefreshSubscription(
     "chat",
     async (signal) => {
       const now = Date.now();
       const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
+      if (signal.eventType === "fallback_poll") {
+        await refreshViewState({
+          refreshSidebar: true,
+          refreshSession: "light",
+        });
+        return;
+      }
       const localPrefEcho = now - lastLocalPrefMutationAtRef.current < 2500
         && /\b(pref|policy|session|proactive|retrieval|reflection|mode)\b/.test(haystack);
       const mentionsMessages = /\b(message|turn|assistant|user|tool|trace|approval)\b/.test(haystack);
-      await refreshSidebar({
-        refreshSession: localPrefEcho ? "none" : (mentionsMessages ? "full" : "light"),
+      const affectsSidebar = /\b(project|archive|restore|pin|unpin|binding|workspace|external|session_created|session_deleted)\b/.test(haystack);
+      const mentionsSessionState = /\b(pref|policy|proactive|retrieval|reflection|mode|learned_memory)\b/.test(haystack);
+      const refreshSession = localPrefEcho
+        ? "none"
+        : (mentionsMessages ? "full" : (mentionsSessionState ? "light" : "none"));
+      await refreshViewState({
+        refreshSidebar: affectsSidebar,
+        refreshSession,
       });
     },
     {

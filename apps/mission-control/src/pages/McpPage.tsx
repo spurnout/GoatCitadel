@@ -25,7 +25,7 @@ type McpCategory = "development" | "browser" | "automation" | "research" | "data
 type McpTrustTier = "trusted" | "restricted" | "quarantined";
 type McpCostTier = "free" | "mixed" | "paid" | "unknown";
 
-export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
   const [servers, setServers] = useState<Array<{
     serverId: string;
     label: string;
@@ -85,7 +85,12 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     ]);
     setServers(response.items);
     setTemplates(templateResponse.items);
-    setSelectedServerId((current) => current ?? response.items[0]?.serverId ?? null);
+    setSelectedServerId((current) => {
+      if (current && response.items.some((item) => item.serverId === current)) {
+        return current;
+      }
+      return response.items[0]?.serverId ?? null;
+    });
   }, []);
 
   const loadTools = useCallback(async (serverId: string) => {
@@ -104,7 +109,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       })
       .catch((err: Error) => {
         if (!cancelled) {
-          setError(err.message);
+          setError(formatMcpError(err.message));
         }
       })
       .finally(() => {
@@ -115,7 +120,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return () => {
       cancelled = true;
     };
-  }, [loadServers, refreshKey]);
+  }, [loadServers]);
 
   useRefreshSubscription(
     "mcp",
@@ -127,7 +132,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
           await loadTools(selectedServerId);
         }
       } catch (err) {
-        setError((err as Error).message);
+        setError(formatMcpError((err as Error).message));
       } finally {
         setIsRefreshing(false);
       }
@@ -146,9 +151,17 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       return;
     }
     void loadTools(selectedServerId).catch((err: Error) => {
-      setError(err.message);
+      const message = formatMcpError(err.message);
+      setError(message);
+      if (err.message.includes("Unknown MCP server")) {
+        const fallback = servers.find((item) => item.serverId !== selectedServerId)?.serverId ?? null;
+        setSelectedServerId(fallback);
+        if (!fallback) {
+          setTools([]);
+        }
+      }
     });
-  }, [loadTools, selectedServerId]);
+  }, [loadTools, selectedServerId, servers]);
 
   const selected = useMemo(
     () => servers.find((item) => item.serverId === selectedServerId) ?? null,
@@ -241,6 +254,21 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
         actions={pageCopy.mcp.guide?.actions ?? []}
         terms={pageCopy.mcp.guide?.terms}
       />
+      <article className="card">
+        <h3>MCP basics (for first-time users)</h3>
+        <p className="office-subtitle">
+          MCP servers are adapters that let GoatCitadel use outside tools safely. Start disabled, test one server, then expand.
+        </p>
+        <ol>
+          <li>Choose a template in the library below and add it.</li>
+          <li>Connect the server and confirm status is <strong>connected</strong>.</li>
+          <li>Set trust/policy rules before first live invocation.</li>
+          <li>Invoke one low-risk tool to validate behavior.</li>
+        </ol>
+        <p className="office-subtitle">
+          If something fails, disconnect and review policy/tool patterns before trying again.
+        </p>
+      </article>
       {error ? <p className="error">{error}</p> : null}
       {isRefreshing ? <p className="status-banner">Refreshing MCP servers...</p> : null}
 
@@ -569,6 +597,16 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
     </section>
   );
+}
+
+function formatMcpError(message: string): string {
+  if (message.includes("Unknown MCP server")) {
+    return "That MCP server no longer exists. Select another server from the list or add one from the template library.";
+  }
+  if (message.startsWith("API error")) {
+    return `MCP request failed: ${message}`;
+  }
+  return message;
 }
 
 function describeMcpBlockReason(server: {

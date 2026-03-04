@@ -12,7 +12,7 @@ import { CardSkeleton } from "../components/CardSkeleton";
 import { useAction } from "../hooks/useAction";
 import { pageCopy } from "../content/copy";
 
-export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function ApprovalsPage(_props: { refreshKey?: number }) {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
   const [replayById, setReplayById] = useState<Record<string, ApprovalReplayResponse>>({});
   const [pendingDecision, setPendingDecision] = useState<{ approvalId: string; decision: "approve" | "reject" } | null>(null);
@@ -27,7 +27,7 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     load();
-  }, [refreshKey]);
+  }, []);
 
   const onResolve = async (approvalId: string, decision: "approve" | "reject") => {
     try {
@@ -136,9 +136,9 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
             <pre>{JSON.stringify(approval.preview, null, 2)}</pre>
             <div className="actions">
-              <button onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "approve" })}>Approve</button>
-              <button className="danger" onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "reject" })}>Reject</button>
-              <button onClick={() => onReplay(approval.approvalId)}>Replay</button>
+              <button type="button" onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "approve" })}>Approve</button>
+              <button type="button" className="danger" onClick={() => setPendingDecision({ approvalId: approval.approvalId, decision: "reject" })}>Reject</button>
+              <button type="button" onClick={() => onReplay(approval.approvalId)}>Replay</button>
             </div>
             {replay ? (
               <div className="replay-box">
@@ -181,3 +181,4 @@ export function ApprovalsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     </section>
   );
 }
+

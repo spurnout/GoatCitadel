@@ -699,14 +699,14 @@ export function OfficePage(_props: { refreshKey?: number }) {
               </Suspense>
             </OfficeCanvasErrorBoundary>
             <div className="office-desk-list">
-              <button
+              <button type="button"
                 className={selectedEntityId === "operator" ? "active" : ""}
                 onClick={() => setSelectedEntityId("operator")}
               >
                 {operatorPrefs.name}
               </button>
               {officeAgents.map((agent) => (
-                <button
+                <button type="button"
                   key={agent.roleId}
                   className={selectedEntityId === agent.roleId ? "active" : ""}
                   onClick={() => setSelectedEntityId(agent.roleId)}
@@ -723,7 +723,7 @@ export function OfficePage(_props: { refreshKey?: number }) {
         <article className="card office-dock-card">
           <div className="office-dock-tabs">
             {availableDockTabs.map((tab) => (
-              <button
+              <button type="button"
                 key={tab}
                 className={dockTab === tab ? "active" : ""}
                 onClick={() => setDockTab(tab)}
@@ -1419,3 +1419,4 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   }
   return fallback;
 }
+

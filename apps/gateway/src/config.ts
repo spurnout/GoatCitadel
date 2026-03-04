@@ -17,6 +17,7 @@ export interface AssistantConfig {
   memory: MemoryConfig;
   mesh: MeshConfig;
   npu: NpuConfig;
+  durable: DurableConfig;
   budgets: {
     dailyUsdWarning: number;
     dailyUsdHardCap: number;
@@ -113,6 +114,12 @@ export interface NpuConfig {
       backoffMs: number;
     };
   };
+}
+
+export interface DurableConfig {
+  enabled: boolean;
+  diagnosticsEnabled: boolean;
+  maxAttemptsDefault: number;
 }
 
 export interface BudgetConfig {
@@ -246,6 +253,17 @@ function applyEnvironmentOverrides(assistant: AssistantConfig): void {
   if (qmdEnabled) {
     assistant.memory.qmd.enabled = qmdEnabled === "1" || qmdEnabled.toLowerCase() === "true";
   }
+
+  const durableEnabled = process.env.GOATCITADEL_DURABLE_FOUNDATION_ENABLED;
+  if (durableEnabled) {
+    assistant.durable.enabled = durableEnabled === "1" || durableEnabled.toLowerCase() === "true";
+  }
+
+  const durableDiagnosticsEnabled = process.env.GOATCITADEL_DURABLE_DIAGNOSTICS_ENABLED;
+  if (durableDiagnosticsEnabled) {
+    assistant.durable.diagnosticsEnabled = durableDiagnosticsEnabled === "1"
+      || durableDiagnosticsEnabled.toLowerCase() === "true";
+  }
 }
 
 function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig {
@@ -269,6 +287,7 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
   const npuInput = (input.npu ?? {}) as Partial<NpuConfig>;
   const npuSidecar = (npuInput.sidecar ?? {}) as Partial<NpuConfig["sidecar"]>;
   const npuRestart = (npuSidecar.restartBudget ?? {}) as Partial<NpuConfig["sidecar"]["restartBudget"]>;
+  const durableInput = (input.durable ?? {}) as Partial<DurableConfig>;
   const memoryInput = (input.memory ?? {}) as Partial<MemoryConfig>;
   const qmdInput = (memoryInput.qmd ?? {}) as Partial<MemoryConfig["qmd"]>;
   const distillerInput = (qmdInput.distiller ?? {}) as Partial<MemoryConfig["qmd"]["distiller"]>;
@@ -372,6 +391,11 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
           backoffMs: npuRestart.backoffMs ?? 2_000,
         },
       },
+    },
+    durable: {
+      enabled: durableInput.enabled ?? false,
+      diagnosticsEnabled: durableInput.diagnosticsEnabled ?? false,
+      maxAttemptsDefault: Math.max(1, Math.floor(durableInput.maxAttemptsDefault ?? 3)),
     },
     budgets: {
       dailyUsdWarning: input.budgets?.dailyUsdWarning ?? 10,

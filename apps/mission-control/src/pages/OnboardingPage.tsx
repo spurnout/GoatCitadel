@@ -329,7 +329,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
         <div className="controls-row">
           <strong>Progress</strong>
           <span>{STEP_TITLES[step]}</span>
-          <button onClick={() => void load()}>Refresh</button>
+          <button type="button" onClick={() => void load()}>Refresh</button>
         </div>
         <div className="compact-list">
           {state?.checklist.map((item) => (
@@ -657,7 +657,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
               tailnetEnabled: meshTailnetEnabled,
             },
           }, null, 2)}</pre>
-          <button onClick={() => void submit()} disabled={applying}>
+          <button type="button" onClick={() => void submit()} disabled={applying}>
             {applying ? "Applying..." : "Apply onboarding"}
           </button>
           <p className="office-subtitle">After apply, use sidebar navigation to continue setup and testing.</p>
@@ -666,10 +666,10 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
 
       <article className="card">
         <div className="actions">
-          <button onClick={() => setStep((current) => Math.max(0, current - 1) as StepId)} disabled={step === 0 || applying}>
+          <button type="button" onClick={() => setStep((current) => Math.max(0, current - 1) as StepId)} disabled={step === 0 || applying}>
             Back
           </button>
-          <button onClick={() => setStep((current) => Math.min(4, current + 1) as StepId)} disabled={step === 4 || applying}>
+          <button type="button" onClick={() => setStep((current) => Math.min(4, current + 1) as StepId)} disabled={step === 4 || applying}>
             Next
           </button>
         </div>
@@ -698,3 +698,4 @@ function matchAllowlistPreset(allowlist: string[]): string {
   }
   return "custom";
 }
+

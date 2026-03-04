@@ -70,7 +70,7 @@ const DELIVERABLE_PATH_OPTIONS = [
   "src/",
 ].map((value) => ({ value, label: value }));
 
-export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function TasksPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
   const [activities, setActivities] = useState<TaskActivityRecord[]>([]);
@@ -87,6 +87,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
   const [agentProfiles, setAgentProfiles] = useState<Array<{ roleId: string; name: string; title: string }>>([]);
   const [sessionHints, setSessionHints] = useState<string[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{
     task: TaskRecord;
@@ -107,6 +108,21 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
   const canAddActivity = Boolean(selectedTask) && !isSelectedTaskDeleted && activityMessage.trim().length > 0;
   const canAddDeliverable = Boolean(selectedTask) && !isSelectedTaskDeleted && deliverableTitle.trim().length > 0;
   const canAddSubagent = Boolean(selectedTask) && !isSelectedTaskDeleted && subagentSessionId.trim().length > 0;
+  const activityBlockedReason = !selectedTask
+    ? "Pick a task first."
+    : (isSelectedTaskDeleted
+      ? "Restore this task before adding activity."
+      : (!activityMessage.trim() ? "Enter or select an activity message first." : ""));
+  const deliverableBlockedReason = !selectedTask
+    ? "Pick a task first."
+    : (isSelectedTaskDeleted
+      ? "Restore this task before adding deliverables."
+      : (!deliverableTitle.trim() ? "Enter or select a deliverable title first." : ""));
+  const subagentBlockedReason = !selectedTask
+    ? "Pick a task first."
+    : (isSelectedTaskDeleted
+      ? "Restore this task before linking subagent sessions."
+      : (!subagentSessionId.trim() ? "Choose or enter a subagent session ID first." : ""));
 
   const loadTasks = () => {
     setLoadingTasks(true);
@@ -126,6 +142,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
 
   const loadTaskDetail = (taskId: string) => {
     const requestId = ++detailRequestSeq.current;
+    setLoadingDetails(true);
     void Promise.all([
       fetchTaskActivities(taskId),
       fetchTaskDeliverables(taskId),
@@ -139,18 +156,23 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
         setDeliverables(d.items);
         setSubagents(s.items);
       })
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => setError(err.message))
+      .finally(() => {
+        if (requestId === detailRequestSeq.current) {
+          setLoadingDetails(false);
+        }
+      });
   };
 
   useEffect(() => {
     loadTasks();
-  }, [refreshKey, viewFilter, workspaceId]);
+  }, [viewFilter, workspaceId]);
 
   useEffect(() => {
     void fetchSessions()
       .then((res) => setSessionHints(res.items.map((item) => item.sessionId)))
       .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+  }, []);
 
   useEffect(() => {
     void fetchAgents("active", 500)
@@ -164,14 +186,18 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
       .catch(() => {
         // keep builtin fallback
       });
-  }, [refreshKey]);
+  }, []);
 
   useEffect(() => {
     if (!selectedTaskId) {
+      setActivities([]);
+      setDeliverables([]);
+      setSubagents([]);
+      setLoadingDetails(false);
       return;
     }
     loadTaskDetail(selectedTaskId);
-  }, [selectedTaskId, refreshKey]);
+  }, [selectedTaskId]);
 
   const onCreateTask = async () => {
     if (!createTitle.trim()) {
@@ -180,10 +206,12 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
     }
 
     try {
-      await createTask({ workspaceId, title: createTitle.trim() });
+      const created = await createTask({ workspaceId, title: createTitle.trim() });
       setCreateTitle("");
+      setSelectedTaskId(created.taskId);
       setInfo("Task created.");
       loadTasks();
+      loadTaskDetail(created.taskId);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -466,7 +494,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
               <div className="controls-row">
                 <span>Status:</span>
                 {statuses.map((status) => (
-                  <button
+                  <button type="button"
                     key={status}
                     className={selectedTask.status === status ? "active" : ""}
                     disabled={isSelectedTaskDeleted}
@@ -478,6 +506,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
               </div>
 
               <h4>Activities</h4>
+              {loadingDetails ? <p className="office-subtitle">Refreshing task details...</p> : null}
               <div className="controls-row">
                 <SelectOrCustom
                   value={activityMessage}
@@ -489,6 +518,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                 />
                 <button type="button" disabled={!canAddActivity} onClick={() => void onAddActivity()}>Add Activity</button>
               </div>
+              {!canAddActivity ? <p className="office-subtitle">{activityBlockedReason}</p> : null}
               <ul className="compact-list">
                 {activities.map((activity) => (
                   <li key={activity.activityId}>
@@ -497,6 +527,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                   </li>
                 ))}
               </ul>
+              {activities.length === 0 ? <p className="office-subtitle">No activities yet.</p> : null}
 
               <h4>Deliverables</h4>
               <div className="controls-row">
@@ -517,6 +548,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                 />
                 <button type="button" disabled={!canAddDeliverable} onClick={() => void onAddDeliverable()}>Add Deliverable</button>
               </div>
+              {!canAddDeliverable ? <p className="office-subtitle">{deliverableBlockedReason}</p> : null}
               <ul className="compact-list">
                 {deliverables.map((deliverable) => (
                   <li key={deliverable.deliverableId}>
@@ -525,6 +557,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                   </li>
                 ))}
               </ul>
+              {deliverables.length === 0 ? <p className="office-subtitle">No deliverables yet.</p> : null}
 
               <h4>Goat Subagent Sessions</h4>
               <div className="controls-row">
@@ -562,6 +595,12 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                 />
                 <button type="button" disabled={!canAddSubagent} onClick={() => void onAddSubagent()}>Add Subagent</button>
               </div>
+              {!canAddSubagent ? <p className="office-subtitle">{subagentBlockedReason}</p> : null}
+              {!showAdvanced && subagentSessionOptions.length === 0 ? (
+                <p className="office-subtitle">
+                  No existing session IDs found yet. Create a chat session first, or open advanced mode to enter an external session ID.
+                </p>
+              ) : null}
               <button type="button" onClick={() => setShowAdvanced((current) => !current)}>
                 {showAdvanced ? "Hide advanced subagent details" : "Show advanced subagent details"}
               </button>
@@ -580,6 +619,7 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
                   </li>
                 ))}
               </ul>
+              {subagents.length === 0 ? <p className="office-subtitle">No subagent sessions linked yet.</p> : null}
             </article>
           ) : null}
         </div>
@@ -608,3 +648,4 @@ export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refresh
     </section>
   );
 }
+

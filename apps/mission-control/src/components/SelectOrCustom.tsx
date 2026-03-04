@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { globalCopy } from "../content/copy";
 
 export interface SelectOption {
@@ -37,6 +37,23 @@ export function SelectOrCustom(props: SelectOrCustomProps) {
     : autoSelectFirstOption
       ? dedupedOptions[0]?.value ?? ""
       : "";
+
+  useEffect(() => {
+    if (!autoSelectFirstOption) {
+      return;
+    }
+    if (isCustomMode) {
+      return;
+    }
+    if (isKnownValue) {
+      return;
+    }
+    const fallback = dedupedOptions[0]?.value;
+    if (!fallback) {
+      return;
+    }
+    props.onChange(fallback);
+  }, [autoSelectFirstOption, dedupedOptions, isCustomMode, isKnownValue, props.onChange]);
 
   return (
     <div className="select-or-custom">

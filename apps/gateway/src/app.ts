@@ -39,6 +39,7 @@ import { mediaRoutes } from "./routes/media.js";
 import { daemonRoutes } from "./routes/daemon.js";
 import { improvementRoutes } from "./routes/improvement.js";
 import { workspacesRoutes } from "./routes/workspaces.js";
+import { durableRoutes } from "./routes/durable.js";
 import { isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
 import { isSuspiciousEncodedPath } from "./path-guard.js";
 
@@ -148,6 +149,7 @@ export async function buildApp() {
   await app.register(daemonRoutes);
   await app.register(improvementRoutes);
   await app.register(workspacesRoutes);
+  await app.register(durableRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
 

@@ -43,7 +43,7 @@ const TITLE_OPTIONS = [
   "Runtime Operator",
 ].map((value) => ({ value, label: value }));
 
-export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function AgentsPage(_props: { refreshKey?: number }) {
   const [agentsResponse, setAgentsResponse] = useState<AgentsResponse>({ items: [], view: "active" });
   const [view, setView] = useState<AgentView>("active");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -157,7 +157,7 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     load();
-  }, [refreshKey, view]);
+  }, [view]);
 
   useEffect(() => {
     if (!creating && selected) {
@@ -378,8 +378,8 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <option value="archived">Archived</option>
           <option value="all">All</option>
         </select>
-        <button onClick={onNew}>Create Custom Agent</button>
-        {creating ? <button onClick={onCancelNew}>{globalCopy.common.cancel}</button> : null}
+        <button type="button" onClick={onNew}>Create Custom Agent</button>
+        {creating ? <button type="button" onClick={onCancelNew}>{globalCopy.common.cancel}</button> : null}
       </div>
 
       <div className="split-grid">
@@ -537,7 +537,7 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               />
 
               <div className="controls-row">
-                <button
+                <button type="button"
                   onClick={() => void onSave()}
                   disabled={saving || Boolean(createDisabledReason)}
                   title={createDisabledReason ?? undefined}
@@ -546,15 +546,15 @@ export function AgentsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 </button>
                 {creating && createDisabledReason ? <span className="office-subtitle">{createDisabledReason}</span> : null}
                 {!creating && selected && selected.lifecycleStatus === "active" ? (
-                  <button onClick={() => setConfirmAction({ type: "archive", name: selected.name })}>
+                  <button type="button" onClick={() => setConfirmAction({ type: "archive", name: selected.name })}>
                     {globalCopy.common.archive}
                   </button>
                 ) : null}
                 {!creating && selected && selected.lifecycleStatus === "archived" ? (
-                  <button onClick={() => void onRestore()}>{globalCopy.common.restore}</button>
+                  <button type="button" onClick={() => void onRestore()}>{globalCopy.common.restore}</button>
                 ) : null}
                 {!creating && selected && !selected.isBuiltin ? (
-                  <button className="danger" onClick={() => setConfirmAction({ type: "hardDelete", name: selected.name })}>
+                  <button type="button" className="danger" onClick={() => setConfirmAction({ type: "hardDelete", name: selected.name })}>
                     {globalCopy.common.deletePermanently}
                   </button>
                 ) : null}
@@ -663,3 +663,4 @@ function buildFormChanges(current: AgentFormState, baseline: AgentFormState): Ar
   }
   return changes;
 }
+

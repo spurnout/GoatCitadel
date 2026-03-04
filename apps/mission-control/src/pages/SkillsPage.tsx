@@ -40,7 +40,7 @@ interface BankrPolicyState extends BankrSafetyPolicy {
 
 const STATE_OPTIONS: SkillRuntimeState[] = ["enabled", "sleep", "disabled"];
 
-export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
   const { mode } = useUiPreferences();
   const [skills, setSkills] = useState<SkillListItem[]>([]);
   const [policy, setPolicy] = useState<SkillActivationPolicyState | null>(null);
@@ -137,7 +137,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     void load({ background: false });
-  }, [load, refreshKey]);
+  }, [load]);
 
   useRefreshSubscription(
     "skills",
@@ -567,7 +567,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
             }))}
             label="Require first-use confirmation for sleep skills"
           />
-          <button onClick={() => void onSavePolicy()} disabled={savingPolicy}>
+          <button type="button" onClick={() => void onSavePolicy()} disabled={savingPolicy}>
             {savingPolicy ? "Saving..." : "Save policy"}
           </button>
         </div>
@@ -706,7 +706,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   );
                 })}
               </div>
-              <button onClick={() => void onSaveBankrPolicy()} disabled={savingBankrPolicy}>
+              <button type="button" onClick={() => void onSaveBankrPolicy()} disabled={savingBankrPolicy}>
                 {savingBankrPolicy ? "Saving..." : "Save Bankr policy"}
               </button>
             </div>
@@ -730,7 +730,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   value={bankrPreviewUsd}
                   onChange={(event) => setBankrPreviewUsd(event.target.value)}
                 />
-                <button onClick={() => void onRunBankrPreview()} disabled={runningBankrPreview}>
+                <button type="button" onClick={() => void onRunBankrPreview()} disabled={runningBankrPreview}>
                   {runningBankrPreview ? "Running..." : "Run preview"}
                 </button>
               </div>
@@ -777,7 +777,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <article className="card">
         <div className="controls-row">
           <h3>Skills</h3>
-          <button onClick={() => void onReload()}>Reload Playbook</button>
+          <button type="button" onClick={() => void onReload()}>Reload Playbook</button>
           <label htmlFor="skillsFilter">Filter</label>
           <GCSelect
             id="skillsFilter"
@@ -839,7 +839,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     />
                   </td>
                   <td>
-                    <button
+                    <button type="button"
                       disabled={!changed || busySkillId === skill.skillId}
                       onClick={() => void onSaveSkillState(skill)}
                     >
@@ -867,3 +867,4 @@ function splitList(value: string, lowercase = false): string[] {
   }
   return [...out];
 }
+

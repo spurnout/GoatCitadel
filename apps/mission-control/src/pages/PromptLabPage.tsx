@@ -63,7 +63,7 @@ type TestResultFilter =
 
 const DEFAULT_BENCHMARK_TEST_CODES = "TEST-03, TEST-06, TEST-10, TEST-12, TEST-15, TEST-28";
 
-export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
+export function PromptLabPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
   const hasLoadedOnceRef = useRef(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -214,7 +214,7 @@ export function PromptLabPage({ refreshKey = 0 }: { refreshKey?: number; workspa
 
   useEffect(() => {
     void load();
-  }, [load, refreshKey]);
+  }, [load]);
 
   useEffect(() => {
     void loadLlmCatalog().catch((err: Error) => setError((current) => current ?? err.message));

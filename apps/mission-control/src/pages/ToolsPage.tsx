@@ -21,7 +21,7 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { useUiPreferences } from "../state/ui-preferences";
 
 interface ToolsPageProps {
-  refreshKey: number;
+  refreshKey?: number;
 }
 
 interface IdOption {
@@ -68,7 +68,7 @@ const TOOL_PROFILE_PRESETS: ToolProfilePreset[] = [
   { id: "danger", label: "Power Day", helper: "High-risk profile. Use only when you intentionally need broad power." },
 ];
 
-export function ToolsPage({ refreshKey }: ToolsPageProps) {
+export function ToolsPage({ refreshKey: _refreshKey }: ToolsPageProps) {
   const {
     mode: uiMode,
     showTechnicalDetails,
@@ -182,7 +182,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
 
   useEffect(() => {
     void load({ background: false });
-  }, [refreshKey]);
+  }, []);
 
   useRefreshSubscription(
     "tools",
@@ -641,13 +641,13 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
           {grantWizardStep === 2 ? (
             <div className="advanced-block">
               <div className="actions">
-                <button disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("web")}>
+                <button type="button" disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("web")}>
                   {workingPreset === "web" ? "Applying..." : "Quick: Web Assistant"}
                 </button>
-                <button disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("files-read")}>
+                <button type="button" disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("files-read")}>
                   {workingPreset === "files-read" ? "Applying..." : "Quick: File Read"}
                 </button>
-                <button disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("devops")}>
+                <button type="button" disabled={workingPreset !== null} onClick={() => void onApplyQuickPreset("devops")}>
                   {workingPreset === "devops" ? "Applying..." : "Quick: DevOps Read"}
                 </button>
               </div>
@@ -743,7 +743,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
             {grantWizardStep < 3 ? (
               <button type="button" onClick={onWizardNext}>Next</button>
             ) : (
-              <button disabled={creatingGrant || !canCreateGrant} onClick={() => void onCreateGrant()}>
+              <button type="button" disabled={creatingGrant || !canCreateGrant} onClick={() => void onCreateGrant()}>
                 {creatingGrant ? "Creating..." : "Create Grant"}
               </button>
             )}
@@ -797,7 +797,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
             </div>
           </details>
           <div className="actions">
-            <button onClick={() => void onEvaluate()}>Check Access</button>
+            <button type="button" onClick={() => void onEvaluate()}>Check Access</button>
           </div>
           {evaluateResult ? (
             <div className="replay-box">
@@ -881,7 +881,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
             onChange={(event) => setDryRunForm((current) => ({ ...current, argsJson: event.target.value }))}
           />
           <div className="actions">
-            <button onClick={() => void onDryRun()}>Run Dry-Run</button>
+            <button type="button" onClick={() => void onDryRun()}>Run Dry-Run</button>
           </div>
           {dryRunResult ? (
             <div className="replay-box">
@@ -919,7 +919,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                     {grant.revokedAt ? (
                       <span>revoked</span>
                     ) : (
-                      <button className="danger" onClick={() => void onRevoke(grant.grantId)}>Revoke</button>
+                      <button type="button" className="danger" onClick={() => void onRevoke(grant.grantId)}>Revoke</button>
                     )}
                   </td>
                 </tr>
@@ -1026,3 +1026,4 @@ function ensureCurrentOption(options: IdOption[], currentValue: string, fallback
   }
   return [{ value: currentValue, label: `${fallbackPrefix}: ${currentValue}` }, ...list];
 }
+

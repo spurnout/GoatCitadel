@@ -54,7 +54,7 @@
     ]
   },
   "tools": {
-    "profile": "standard",
+    "profile": "chat-agent",
     "allow": [],
     "deny": []
   },

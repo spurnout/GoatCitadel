@@ -40,35 +40,47 @@ async function loadSourceSkills(source: SkillSource): Promise<LoadedSkill[]> {
     const entries = await fs.readdir(source.dir, { withFileTypes: true });
     const skills: LoadedSkill[] = [];
 
+    const directSourceSkill = await loadSkillFromDir(source, source.dir);
+    if (directSourceSkill) {
+      skills.push(directSourceSkill);
+    }
+
     for (const entry of entries) {
       if (!entry.isDirectory()) {
         continue;
       }
 
       const skillDir = path.join(source.dir, entry.name);
-      const skillFile = path.join(skillDir, "SKILL.md");
-      try {
-        const raw = await fs.readFile(skillFile, "utf8");
-        const parsed = parseSkillMarkdown(raw);
-        const stat = await fs.stat(skillFile);
-        skills.push({
-          skillId: `${source.source}:${parsed.frontmatter.name}`,
-          name: parsed.frontmatter.name,
-          source: source.source,
-          dir: skillDir,
-          declaredTools: parsed.frontmatter.metadata?.tools ?? [],
-          requires: parsed.frontmatter.metadata?.requires ?? [],
-          keywords: parsed.frontmatter.metadata?.keywords ?? [],
-          instructionBody: parsed.body,
-          mtime: stat.mtime.toISOString(),
-        });
-      } catch {
-        continue;
+      const loaded = await loadSkillFromDir(source, skillDir);
+      if (loaded) {
+        skills.push(loaded);
       }
     }
 
     return skills;
   } catch {
     return [];
+  }
+}
+
+async function loadSkillFromDir(source: SkillSource, skillDir: string): Promise<LoadedSkill | undefined> {
+  const skillFile = path.join(skillDir, "SKILL.md");
+  try {
+    const raw = await fs.readFile(skillFile, "utf8");
+    const parsed = parseSkillMarkdown(raw);
+    const stat = await fs.stat(skillFile);
+    return {
+      skillId: `${source.source}:${parsed.frontmatter.name}`,
+      name: parsed.frontmatter.name,
+      source: source.source,
+      dir: skillDir,
+      declaredTools: parsed.frontmatter.metadata?.tools ?? [],
+      requires: parsed.frontmatter.metadata?.requires ?? [],
+      keywords: parsed.frontmatter.metadata?.keywords ?? [],
+      instructionBody: parsed.body,
+      mtime: stat.mtime.toISOString(),
+    };
+  } catch {
+    return undefined;
   }
 }

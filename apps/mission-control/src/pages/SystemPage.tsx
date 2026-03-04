@@ -12,7 +12,7 @@ import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 
-export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function SystemPage(_props: { refreshKey?: number }) {
   const [vitals, setVitals] = useState<SystemVitalsResponse | null>(null);
   const [daemonStatus, setDaemonStatus] = useState<Awaited<ReturnType<typeof fetchDaemonStatus>> | null>(null);
   const [daemonLogs, setDaemonLogs] = useState<Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>>([]);
@@ -40,7 +40,7 @@ export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
         setDaemonLogs(nextDaemonLogs.items);
       })
       .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+  }, []);
 
   if (error) {
     return <p className="error">{error}</p>;
@@ -120,10 +120,10 @@ export function SystemPage({ refreshKey = 0 }: { refreshKey?: number }) {
           Uptime: <strong>{Math.round(daemonStatus?.uptimeSeconds ?? 0)}s</strong>
         </p>
         <div className="actions">
-          <button onClick={onDaemonStart} disabled={daemonBusy || daemonStatus?.running}>Start</button>
-          <button onClick={onDaemonStop} disabled={daemonBusy || !daemonStatus?.running}>Stop</button>
-          <button onClick={onDaemonRestart} disabled={daemonBusy}>Restart</button>
-          <button onClick={() => void refreshDaemon()} disabled={daemonBusy}>Refresh</button>
+          <button type="button" onClick={onDaemonStart} disabled={daemonBusy || daemonStatus?.running}>Start</button>
+          <button type="button" onClick={onDaemonStop} disabled={daemonBusy || !daemonStatus?.running}>Stop</button>
+          <button type="button" onClick={onDaemonRestart} disabled={daemonBusy}>Restart</button>
+          <button type="button" onClick={() => void refreshDaemon()} disabled={daemonBusy}>Refresh</button>
         </div>
         {daemonLogs.length > 0 ? (
           <pre>
@@ -149,3 +149,4 @@ function formatBytes(bytes: number): string {
   }
   return `${bytes} B`;
 }
+
