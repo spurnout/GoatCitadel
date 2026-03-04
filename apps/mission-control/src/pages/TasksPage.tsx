@@ -23,6 +23,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { TableSkeleton } from "../components/TableSkeleton";
+import { GCSelect } from "../components/ui";
 import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 import { useAction } from "../hooks/useAction";
 import { pageCopy } from "../content/copy";
@@ -69,7 +70,7 @@ const DELIVERABLE_PATH_OPTIONS = [
   "src/",
 ].map((value) => ({ value, label: value }));
 
-export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function TasksPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
   const [activities, setActivities] = useState<TaskActivityRecord[]>([]);
@@ -102,10 +103,14 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   );
 
   const isSelectedTaskDeleted = Boolean(selectedTask?.deletedAt);
+  const canCreateTask = createTitle.trim().length > 0;
+  const canAddActivity = Boolean(selectedTask) && !isSelectedTaskDeleted && activityMessage.trim().length > 0;
+  const canAddDeliverable = Boolean(selectedTask) && !isSelectedTaskDeleted && deliverableTitle.trim().length > 0;
+  const canAddSubagent = Boolean(selectedTask) && !isSelectedTaskDeleted && subagentSessionId.trim().length > 0;
 
   const loadTasks = () => {
     setLoadingTasks(true);
-    void fetchTasksByView(viewFilter)
+    void fetchTasksByView(viewFilter, undefined, workspaceId)
       .then((res) => {
         setTasks(res.items);
         setSelectedTaskId((current) => {
@@ -139,7 +144,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     loadTasks();
-  }, [refreshKey, viewFilter]);
+  }, [refreshKey, viewFilter, workspaceId]);
 
   useEffect(() => {
     void fetchSessions()
@@ -170,11 +175,12 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   const onCreateTask = async () => {
     if (!createTitle.trim()) {
+      setError("Enter a task title before creating a task.");
       return;
     }
 
     try {
-      await createTask({ title: createTitle.trim() });
+      await createTask({ workspaceId, title: createTitle.trim() });
       setCreateTitle("");
       setInfo("Task created.");
       loadTasks();
@@ -199,7 +205,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onAddActivity = async () => {
-    if (!selectedTask || !activityMessage.trim() || isSelectedTaskDeleted) {
+    if (!selectedTask) {
+      setError("Select a task before adding activity.");
+      return;
+    }
+    if (isSelectedTaskDeleted) {
+      setError("Restore this task before adding activity.");
+      return;
+    }
+    if (!activityMessage.trim()) {
+      setError("Enter or select an activity message first.");
       return;
     }
     try {
@@ -216,7 +231,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onAddDeliverable = async () => {
-    if (!selectedTask || !deliverableTitle.trim() || isSelectedTaskDeleted) {
+    if (!selectedTask) {
+      setError("Select a task before adding a deliverable.");
+      return;
+    }
+    if (isSelectedTaskDeleted) {
+      setError("Restore this task before adding deliverables.");
+      return;
+    }
+    if (!deliverableTitle.trim()) {
+      setError("Enter or select a deliverable title first.");
       return;
     }
 
@@ -236,7 +260,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onAddSubagent = async () => {
-    if (!selectedTask || !subagentSessionId.trim() || isSelectedTaskDeleted) {
+    if (!selectedTask) {
+      setError("Select a task before linking a subagent session.");
+      return;
+    }
+    if (isSelectedTaskDeleted) {
+      setError("Restore this task before linking subagent sessions.");
+      return;
+    }
+    if (!subagentSessionId.trim()) {
+      setError("Choose or enter a subagent session ID first.");
       return;
     }
 
@@ -346,15 +379,16 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       <div className="controls-row">
         <label htmlFor="taskView">View</label>
-        <select
+        <GCSelect
           id="taskView"
           value={viewFilter}
-          onChange={(event) => setViewFilter(event.target.value as "active" | "trash" | "all")}
-        >
-          <option value="active">Active</option>
-          <option value="trash">Trash</option>
-          <option value="all">All</option>
-        </select>
+          onChange={(value) => setViewFilter(value as "active" | "trash" | "all")}
+          options={[
+            { value: "active", label: "Active" },
+            { value: "trash", label: "Trash" },
+            { value: "all", label: "All" },
+          ]}
+        />
       </div>
 
       <div className="controls-row">
@@ -364,8 +398,9 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
           options={TASK_TITLE_OPTIONS}
           customPlaceholder="Custom task title"
           customLabel="Task title"
+          autoSelectFirstOption
         />
-        <button onClick={onCreateTask}>Create Task</button>
+        <button type="button" onClick={onCreateTask} disabled={!canCreateTask}>Create Task</button>
       </div>
 
       {loadingTasks ? <TableSkeleton rows={6} cols={5} /> : null}
@@ -396,11 +431,12 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <td onClick={() => setSelectedTaskId(task.taskId)}>{new Date(task.updatedAt).toLocaleString()}</td>
                   <td className="actions">
                     {!task.deletedAt ? (
-                      <button onClick={() => setConfirmDelete({ task, mode: "soft" })}>Move to Trash</button>
+                      <button type="button" onClick={() => setConfirmDelete({ task, mode: "soft" })}>Move to Trash</button>
                     ) : (
-                      <button onClick={() => void onRestore(task)}>Restore</button>
+                      <button type="button" onClick={() => void onRestore(task)}>Restore</button>
                     )}
                     <button
+                      type="button"
                       className="danger"
                       onClick={() => setConfirmDelete({ task, mode: "hard" })}
                       disabled={deleteAction.pending}
@@ -449,8 +485,9 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   options={ACTIVITY_OPTIONS}
                   customPlaceholder="Custom activity message"
                   customLabel="Activity message"
+                  autoSelectFirstOption
                 />
-                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddActivity()}>Add Activity</button>
+                <button type="button" disabled={!canAddActivity} onClick={() => void onAddActivity()}>Add Activity</button>
               </div>
               <ul className="compact-list">
                 {activities.map((activity) => (
@@ -469,6 +506,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   options={DELIVERABLE_TITLE_OPTIONS}
                   customPlaceholder="Custom deliverable title"
                   customLabel="Deliverable title"
+                  autoSelectFirstOption
                 />
                 <SelectOrCustom
                   value={deliverablePath}
@@ -477,7 +515,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   customPlaceholder="Optional custom path"
                   customLabel="Deliverable path"
                 />
-                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddDeliverable()}>Add Deliverable</button>
+                <button type="button" disabled={!canAddDeliverable} onClick={() => void onAddDeliverable()}>Add Deliverable</button>
               </div>
               <ul className="compact-list">
                 {deliverables.map((deliverable) => (
@@ -496,6 +534,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   options={subagentSessionOptions}
                   customPlaceholder="Session id"
                   customLabel="Session id"
+                  autoSelectFirstOption
                 />
                 <SelectOrCustom
                   value={subagentRoleId}
@@ -521,9 +560,9 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   customPlaceholder="Optional agent name"
                   customLabel="Agent name"
                 />
-                <button disabled={isSelectedTaskDeleted} onClick={() => void onAddSubagent()}>Add Subagent</button>
+                <button type="button" disabled={!canAddSubagent} onClick={() => void onAddSubagent()}>Add Subagent</button>
               </div>
-              <button onClick={() => setShowAdvanced((current) => !current)}>
+              <button type="button" onClick={() => setShowAdvanced((current) => !current)}>
                 {showAdvanced ? "Hide advanced subagent details" : "Show advanced subagent details"}
               </button>
               {showAdvanced ? (
@@ -536,7 +575,7 @@ export function TasksPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <li key={session.subagentSessionId}>
                     <strong>{session.agentName ?? session.agentSessionId}</strong> - {session.status}
                     {session.status === "active" ? (
-                      <button disabled={isSelectedTaskDeleted} onClick={() => void onCompleteSubagent(session.agentSessionId)}>Mark Completed</button>
+                      <button type="button" disabled={isSelectedTaskDeleted} onClick={() => void onCompleteSubagent(session.agentSessionId)}>Mark Completed</button>
                     ) : null}
                   </li>
                 ))}

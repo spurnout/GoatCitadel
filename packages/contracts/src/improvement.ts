@@ -1,4 +1,4 @@
-export type DecisionReplayRunStatus = "running" | "completed" | "failed";
+export type DecisionReplayRunStatus = "queued" | "running" | "completed" | "failed";
 export type DecisionReplayTriggerMode = "scheduled" | "manual";
 export type DecisionReplayDecisionType = "chat_turn" | "tool_run";
 export type DecisionReplayLabel = "ok" | "uncertain" | "likely_wrong";

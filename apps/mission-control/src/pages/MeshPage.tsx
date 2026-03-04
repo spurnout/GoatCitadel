@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   fetchMeshLeases,
   fetchMeshNodes,
@@ -13,8 +13,12 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 export function MeshPage({ refreshKey = 0 }: { refreshKey?: number }) {
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
   const [status, setStatus] = useState<MeshStatusResponse | null>(null);
   const [nodes, setNodes] = useState<MeshNodeRecord[]>([]);
   const [leases, setLeases] = useState<MeshLeaseRecord[]>([]);
@@ -22,26 +26,57 @@ export function MeshPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [offsets, setOffsets] = useState<MeshReplicationOffsetRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void Promise.all([
-      fetchMeshStatus(),
-      fetchMeshNodes(),
-      fetchMeshLeases(),
-      fetchMeshSessionOwners(),
-      fetchMeshReplicationOffsets(),
-    ])
-      .then(([statusRes, nodesRes, leasesRes, ownersRes, offsetsRes]) => {
-        setStatus(statusRes);
-        setNodes(nodesRes.items);
-        setLeases(leasesRes.items);
-        setOwners(ownersRes.items);
-        setOffsets(offsetsRes.items);
-        setError(null);
-      })
-      .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
+    try {
+      const [statusRes, nodesRes, leasesRes, ownersRes, offsetsRes] = await Promise.all([
+        fetchMeshStatus(),
+        fetchMeshNodes(),
+        fetchMeshLeases(),
+        fetchMeshSessionOwners(),
+        fetchMeshReplicationOffsets(),
+      ]);
+      setStatus(statusRes);
+      setNodes(nodesRes.items);
+      setLeases(leasesRes.items);
+      setOwners(ownersRes.items);
+      setOffsets(offsetsRes.items);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
+    }
+  }, []);
 
-  if (!status) {
+  useEffect(() => {
+    void load({ background: false });
+  }, [load, refreshKey]);
+
+  useRefreshSubscription(
+    "system",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1200,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+      onFallbackStateChange: setIsFallbackRefreshing,
+    },
+  );
+
+  if (isInitialLoading || !status) {
     return <p>Loading mesh telemetry...</p>;
   }
 
@@ -52,10 +87,30 @@ export function MeshPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <PageGuideCard
         what={pageCopy.mesh.guide?.what ?? ""}
         when={pageCopy.mesh.guide?.when ?? ""}
+        mostCommonAction={pageCopy.mesh.guide?.mostCommonAction}
         actions={pageCopy.mesh.guide?.actions ?? []}
         terms={pageCopy.mesh.guide?.terms}
       />
+      {isRefreshing ? <p className="status-banner">Refreshing mesh status...</p> : null}
+      {isFallbackRefreshing ? (
+        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
+
+      <article className="card">
+        <h3>Mesh Health Summary</h3>
+        <p>
+          {status.enabled
+            ? `Mesh is enabled in ${status.mode} mode with ${status.nodesOnline} online node(s).`
+            : "Mesh is currently disabled for this runtime."}
+        </p>
+        <ul className="improvement-simple-list">
+          <li>{status.enabled ? "OK" : "Needs setup"} - Mesh feature is enabled.</li>
+          <li>{status.nodesOnline > 0 ? "OK" : "Needs attention"} - At least one node is online.</li>
+          <li>{status.tailnetEnabled ? "OK" : "Optional"} - Tailnet routing is {status.tailnetEnabled ? "on" : "off"}.</li>
+          <li>{status.activeLeases >= 0 ? "OK" : "Needs attention"} - Lease telemetry is reporting.</li>
+        </ul>
+      </article>
 
       <div className="metric-grid">
         <article className="card">

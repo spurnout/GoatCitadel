@@ -38,7 +38,9 @@ import { voiceRoutes } from "./routes/voice.js";
 import { mediaRoutes } from "./routes/media.js";
 import { daemonRoutes } from "./routes/daemon.js";
 import { improvementRoutes } from "./routes/improvement.js";
+import { workspacesRoutes } from "./routes/workspaces.js";
 import { isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
+import { isSuspiciousEncodedPath } from "./path-guard.js";
 
 loadLocalEnvFile();
 
@@ -65,6 +67,15 @@ export async function buildApp() {
       }
       cb(new Error("Origin not allowed by CORS policy"), false);
     },
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    const rawUrl = request.raw.url ?? request.url;
+    if (isSuspiciousEncodedPath(rawUrl)) {
+      return reply.code(400).send({
+        error: "Rejected request path due to suspicious encoded path segments.",
+      });
+    }
   });
 
   if (rateLimitConfig.enabled) {
@@ -136,6 +147,7 @@ export async function buildApp() {
   await app.register(mediaRoutes);
   await app.register(daemonRoutes);
   await app.register(improvementRoutes);
+  await app.register(workspacesRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
 

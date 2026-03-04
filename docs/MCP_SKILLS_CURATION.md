@@ -99,3 +99,52 @@ Decision: Playwright remains primary browser automation layer to avoid duplicate
 2. Verify license, maintainer activity, and security posture before enabling.
 3. Keep audit trails for state/policy changes and activation outcomes.
 4. Revalidate curated set monthly or before major release freezes.
+
+## Marketplace source governance (skills)
+
+GoatCitadel can discover skills from multiple marketplaces. Current providers:
+
+1. AgentSkill (`agentskill.sh`)
+2. SkillsMP (`skillsmp.com`)
+
+Source priority is equal by design. Ranking is based on quality/freshness/trust signals,
+not on provider favoritism.
+
+### Intake policy
+
+1. Discovery is allowed.
+2. Auto-install is not allowed.
+3. Validate before install is mandatory.
+4. Installed skills start `disabled`.
+5. High-risk installs require explicit operator confirmation.
+
+### Provenance policy
+
+Every installed third-party skill must keep provenance metadata:
+
+- source provider
+- source reference URL/path
+- canonical key
+- validation checks and risk level at install time
+
+Store provenance in `source.json` under installed skill directory.
+
+### Source outage behavior
+
+When marketplace providers are unavailable:
+
+1. Mark provider status as degraded/unavailable.
+2. Continue supporting local folder/zip/git imports.
+3. Surface clear operator-facing status and avoid silent failures.
+
+## Skill review checklist (before enable)
+
+Use this checklist before switching an imported skill to `enabled`:
+
+1. `SKILL.md` frontmatter parses and includes required fields.
+2. Description is specific enough to understand intended behavior.
+3. Suspicious script indicators are reviewed.
+4. Network indicators are expected and acceptable.
+5. License signal exists or has an explicit exception decision.
+6. Tool requirements fit current policy and trust posture.
+7. Initial rollout state is `sleep` or `disabled` unless justified.

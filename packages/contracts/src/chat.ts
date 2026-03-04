@@ -44,6 +44,7 @@ export type ChatInputPart =
 
 export interface ChatProjectRecord {
   projectId: string;
+  workspaceId?: string;
   name: string;
   description?: string;
   workspacePath: string;
@@ -57,6 +58,7 @@ export interface ChatProjectRecord {
 export interface ChatSessionRecord {
   sessionId: string;
   sessionKey: string;
+  workspaceId?: string;
   scope: ChatSessionScope;
   title?: string;
   pinned: boolean;
@@ -85,6 +87,7 @@ export interface ChatSessionBindingRecord {
 export interface ChatAttachmentRecord {
   attachmentId: string;
   sessionId: string;
+  workspaceId?: string;
   projectId?: string;
   fileName: string;
   mimeType: string;
@@ -228,6 +231,12 @@ export interface ChatTurnTraceRecord {
     runId?: string;
     actionCount?: number;
     mode?: ChatProactiveMode;
+  };
+  guidance?: {
+    workspaceId: string;
+    globalFilesUsed: string[];
+    workspaceFilesUsed: string[];
+    truncated: boolean;
   };
 }
 

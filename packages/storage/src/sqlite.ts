@@ -158,6 +158,16 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "weekly_decision_replay_schema",
     up: createWeeklyDecisionReplaySchema,
   },
+  {
+    version: 19,
+    name: "prompt_pack_benchmark_schema",
+    up: createPromptPackBenchmarkSchema,
+  },
+  {
+    version: 20,
+    name: "workspace_isolation_schema",
+    up: createWorkspaceIsolationSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1522,6 +1532,120 @@ function createWeeklyDecisionReplaySchema(db: DatabaseSync): void {
       occurrence_count INTEGER NOT NULL DEFAULT 1,
       last_summary_hash TEXT
     );
+  `);
+}
+
+function createPromptPackBenchmarkSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prompt_pack_benchmark_runs (
+      benchmark_run_id TEXT PRIMARY KEY,
+      pack_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      test_codes_json TEXT NOT NULL,
+      providers_json TEXT NOT NULL,
+      total_items INTEGER NOT NULL DEFAULT 0,
+      completed_items INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_benchmark_runs_pack_started
+      ON prompt_pack_benchmark_runs(pack_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_benchmark_runs_status
+      ON prompt_pack_benchmark_runs(status, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS prompt_pack_benchmark_items (
+      item_id TEXT PRIMARY KEY,
+      benchmark_run_id TEXT NOT NULL,
+      pack_id TEXT NOT NULL,
+      test_id TEXT NOT NULL,
+      test_code TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      run_id TEXT,
+      score_id TEXT,
+      run_status TEXT NOT NULL,
+      total_score INTEGER,
+      failure_signal TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(benchmark_run_id) REFERENCES prompt_pack_benchmark_runs(benchmark_run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_benchmark_items_run
+      ON prompt_pack_benchmark_items(benchmark_run_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_benchmark_items_model
+      ON prompt_pack_benchmark_items(provider_id, model, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_pack_benchmark_items_test
+      ON prompt_pack_benchmark_items(test_code, created_at DESC);
+  `);
+}
+
+function createWorkspaceIsolationSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workspaces (
+      workspace_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      slug TEXT NOT NULL,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
+      archived_at TEXT,
+      workspace_prefs_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_slug_unique
+      ON workspaces(slug);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_updated
+      ON workspaces(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_lifecycle
+      ON workspaces(lifecycle_status, updated_at DESC);
+  `);
+
+  addColumnIfMissing(db, "chat_projects", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
+  addColumnIfMissing(db, "chat_session_meta", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
+  addColumnIfMissing(db, "chat_session_bindings", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
+  addColumnIfMissing(db, "chat_attachments", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
+  addColumnIfMissing(db, "chat_turn_traces", "guidance_json", "TEXT");
+  addColumnIfMissing(db, "tasks", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
+
+  db.exec(`
+    UPDATE chat_projects SET workspace_id = 'default' WHERE workspace_id IS NULL OR TRIM(workspace_id) = '';
+    UPDATE chat_session_meta SET workspace_id = 'default' WHERE workspace_id IS NULL OR TRIM(workspace_id) = '';
+    UPDATE chat_session_bindings SET workspace_id = 'default' WHERE workspace_id IS NULL OR TRIM(workspace_id) = '';
+    UPDATE chat_attachments SET workspace_id = 'default' WHERE workspace_id IS NULL OR TRIM(workspace_id) = '';
+    UPDATE tasks SET workspace_id = 'default' WHERE workspace_id IS NULL OR TRIM(workspace_id) = '';
+
+    CREATE INDEX IF NOT EXISTS idx_chat_projects_workspace_updated
+      ON chat_projects(workspace_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_meta_workspace_updated
+      ON chat_session_meta(workspace_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_bindings_workspace_updated
+      ON chat_session_bindings(workspace_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_attachments_workspace_created
+      ON chat_attachments(workspace_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tasks_workspace_updated
+      ON tasks(workspace_id, updated_at DESC);
+
+    INSERT INTO workspaces (
+      workspace_id, name, description, slug, lifecycle_status, archived_at, workspace_prefs_json, created_at, updated_at
+    )
+    VALUES (
+      'default',
+      'Default Workspace',
+      'Auto-migrated workspace for existing GoatCitadel data.',
+      'default',
+      'active',
+      NULL,
+      '{}',
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT(workspace_id) DO UPDATE SET
+      name = CASE WHEN COALESCE(TRIM(workspaces.name), '') = '' THEN excluded.name ELSE workspaces.name END,
+      slug = CASE WHEN COALESCE(TRIM(workspaces.slug), '') = '' THEN excluded.slug ELSE workspaces.slug END,
+      updated_at = CASE WHEN workspaces.updated_at IS NULL THEN excluded.updated_at ELSE workspaces.updated_at END;
   `);
 }
 

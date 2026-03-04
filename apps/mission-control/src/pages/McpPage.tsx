@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 import {
   connectMcpServer,
   createMcpServer,
   deleteMcpServer,
   disconnectMcpServer,
+  fetchMcpTemplates,
   fetchMcpServers,
   fetchMcpTools,
   invokeMcpTool,
@@ -14,7 +16,9 @@ import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 type Transport = "stdio" | "http" | "sse";
 type McpCategory = "development" | "browser" | "automation" | "research" | "data" | "creative" | "orchestration" | "other";
@@ -44,6 +48,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     verifiedAt?: string;
     lastError?: string;
   }>>([]);
+  const [templates, setTemplates] = useState<Array<Awaited<ReturnType<typeof fetchMcpTemplates>>["items"][number]>>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [tools, setTools] = useState<Array<{
     serverId: string;
@@ -67,14 +72,19 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [policyAllowed, setPolicyAllowed] = useState("");
   const [policyBlocked, setPolicyBlocked] = useState("");
   const [policyNotes, setPolicyNotes] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   const loadServers = useCallback(async () => {
-    const response = await fetchMcpServers();
+    const [response, templateResponse] = await Promise.all([
+      fetchMcpServers(),
+      fetchMcpTemplates(),
+    ]);
     setServers(response.items);
+    setTemplates(templateResponse.items);
     setSelectedServerId((current) => current ?? response.items[0]?.serverId ?? null);
   }, []);
 
@@ -85,7 +95,7 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    setIsInitialLoading(true);
     void loadServers()
       .then(() => {
         if (!cancelled) {
@@ -99,13 +109,36 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       })
       .finally(() => {
         if (!cancelled) {
-          setLoading(false);
+          setIsInitialLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [loadServers, refreshKey]);
+
+  useRefreshSubscription(
+    "mcp",
+    async () => {
+      setIsRefreshing(true);
+      try {
+        await loadServers();
+        if (selectedServerId) {
+          await loadTools(selectedServerId);
+        }
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1000,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+    },
+  );
 
   useEffect(() => {
     if (!selectedServerId) {
@@ -159,7 +192,36 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [authType, category, command, costTier, label, loadServers, transport, trustTier, url]);
 
-  if (loading) {
+  const handleCreateFromTemplate = useCallback(async (templateId: string) => {
+    const template = templates.find((item) => item.templateId === templateId);
+    if (!template || template.installed) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await createMcpServer({
+        label: template.label,
+        transport: template.transport,
+        command: template.command,
+        args: template.args,
+        url: template.url,
+        authType: template.authType,
+        enabled: template.enabledByDefault,
+        category: template.category,
+        trustTier: template.trustTier,
+        costTier: template.costTier,
+        policy: template.policy,
+      });
+      await loadServers();
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [loadServers, templates]);
+
+  if (isInitialLoading) {
     return (
       <section>
         <h2>{pageCopy.mcp.title}</h2>
@@ -175,10 +237,40 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <PageGuideCard
         what={pageCopy.mcp.guide?.what ?? ""}
         when={pageCopy.mcp.guide?.when ?? ""}
+        mostCommonAction={pageCopy.mcp.guide?.mostCommonAction}
         actions={pageCopy.mcp.guide?.actions ?? []}
         terms={pageCopy.mcp.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing MCP servers...</p> : null}
+
+      <article className="card">
+        <h3>Template Library (Disabled by Default)</h3>
+        <p className="office-subtitle">
+          Start from a known MCP server template, then connect and customize policy before first use.
+        </p>
+        <div className="stack-md">
+          {templates.map((template) => (
+            <div key={template.templateId} className="prompt-lab-run-summary">
+              <p>
+                <strong>{template.label}</strong> - {template.description}
+              </p>
+              <p className="office-subtitle">
+                {template.transport} | trust: {template.trustTier} | auth: {template.authType}
+                {" | "}
+                default enabled: {template.enabledByDefault ? "yes" : "no"}
+              </p>
+              <ActionButton
+                label={template.installed ? "Installed" : "Add Template"}
+                pending={busy}
+                disabled={busy || template.installed}
+                onClick={() => void handleCreateFromTemplate(template.templateId)}
+              />
+            </div>
+          ))}
+          {templates.length === 0 ? <p className="office-subtitle">No templates available.</p> : null}
+        </div>
+      </article>
 
       <div className="split-grid">
         <article className="card">
@@ -189,43 +281,68 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
           </div>
           <div className="controls-row">
             <label htmlFor="mcpTransport">Transport</label>
-            <select id="mcpTransport" value={transport} onChange={(event) => setTransport(event.target.value as Transport)}>
-              <option value="stdio">stdio</option>
-              <option value="http">http</option>
-              <option value="sse">sse</option>
-            </select>
+            <GCSelect
+              id="mcpTransport"
+              value={transport}
+              onChange={(value) => setTransport(value as Transport)}
+              options={[
+                { value: "stdio", label: "stdio" },
+                { value: "http", label: "http" },
+                { value: "sse", label: "sse" },
+              ]}
+            />
             <label htmlFor="mcpAuth">Auth</label>
-            <select id="mcpAuth" value={authType} onChange={(event) => setAuthType(event.target.value as "none" | "token" | "oauth2")}>
-              <option value="none">none</option>
-              <option value="token">token</option>
-              <option value="oauth2">oauth2</option>
-            </select>
+            <GCSelect
+              id="mcpAuth"
+              value={authType}
+              onChange={(value) => setAuthType(value as "none" | "token" | "oauth2")}
+              options={[
+                { value: "none", label: "none" },
+                { value: "token", label: "token" },
+                { value: "oauth2", label: "oauth2" },
+              ]}
+            />
           </div>
           <div className="controls-row">
             <label htmlFor="mcpCategory">Category</label>
-            <select id="mcpCategory" value={category} onChange={(event) => setCategory(event.target.value as McpCategory)}>
-              <option value="development">development</option>
-              <option value="browser">browser</option>
-              <option value="automation">automation</option>
-              <option value="research">research</option>
-              <option value="data">data</option>
-              <option value="creative">creative</option>
-              <option value="orchestration">orchestration</option>
-              <option value="other">other</option>
-            </select>
+            <GCSelect
+              id="mcpCategory"
+              value={category}
+              onChange={(value) => setCategory(value as McpCategory)}
+              options={[
+                { value: "development", label: "development" },
+                { value: "browser", label: "browser" },
+                { value: "automation", label: "automation" },
+                { value: "research", label: "research" },
+                { value: "data", label: "data" },
+                { value: "creative", label: "creative" },
+                { value: "orchestration", label: "orchestration" },
+                { value: "other", label: "other" },
+              ]}
+            />
             <label htmlFor="mcpTrustTier">Trust</label>
-            <select id="mcpTrustTier" value={trustTier} onChange={(event) => setTrustTier(event.target.value as McpTrustTier)}>
-              <option value="trusted">trusted</option>
-              <option value="restricted">restricted</option>
-              <option value="quarantined">quarantined</option>
-            </select>
+            <GCSelect
+              id="mcpTrustTier"
+              value={trustTier}
+              onChange={(value) => setTrustTier(value as McpTrustTier)}
+              options={[
+                { value: "trusted", label: "trusted" },
+                { value: "restricted", label: "restricted" },
+                { value: "quarantined", label: "quarantined" },
+              ]}
+            />
             <label htmlFor="mcpCostTier">Cost</label>
-            <select id="mcpCostTier" value={costTier} onChange={(event) => setCostTier(event.target.value as McpCostTier)}>
-              <option value="free">free</option>
-              <option value="mixed">mixed</option>
-              <option value="paid">paid</option>
-              <option value="unknown">unknown</option>
-            </select>
+            <GCSelect
+              id="mcpCostTier"
+              value={costTier}
+              onChange={(value) => setCostTier(value as McpCostTier)}
+              options={[
+                { value: "free", label: "free" },
+                { value: "mixed", label: "mixed" },
+                { value: "paid", label: "paid" },
+                { value: "unknown", label: "unknown" },
+              ]}
+            />
           </div>
           {transport === "stdio" ? (
             <div className="controls-row">
@@ -243,22 +360,25 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
         <article className="card">
           <h3>Servers</h3>
-          <ul className="compact-list chat-scroll">
-            {servers.map((server) => (
-              <li key={server.serverId} className="chat-list-item">
-                <button
-                  type="button"
-                  className={`chat-list-button${selectedServerId === server.serverId ? " active" : ""}`}
-                  onClick={() => setSelectedServerId(server.serverId)}
-                >
-                  {server.label}
-                </button>
-                <p className="chat-item-meta">
-                  {server.transport} | {server.status} | {server.trustTier} | {server.costTier}
-                </p>
-              </li>
-            ))}
-          </ul>
+          <div className="virtual-list-shell">
+            <Virtuoso
+              data={servers}
+              itemContent={(_index, server) => (
+                <div className="virtual-list-item chat-list-item" key={server.serverId}>
+                  <button
+                    type="button"
+                    className={`chat-list-button${selectedServerId === server.serverId ? " active" : ""}`}
+                    onClick={() => setSelectedServerId(server.serverId)}
+                  >
+                    {server.label}
+                  </button>
+                  <p className="chat-item-meta">
+                    {server.transport} | {server.status} | {server.trustTier} | {server.costTier}
+                  </p>
+                </div>
+              )}
+            />
+          </div>
           {selected ? (
             <div className="stack-md">
               <div className="actions">
@@ -321,25 +441,26 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   }}
                 />
               </div>
+              <p className="office-subtitle">{describeMcpBlockReason(selected)}</p>
               <div className="controls-row">
                 <label className="checkbox-inline">
-                  <input
-                    type="checkbox"
+                  <GCSwitch
                     checked={policyRequireFirst}
-                    onChange={(event) => setPolicyRequireFirst(event.target.checked)}
+                    onCheckedChange={setPolicyRequireFirst}
+                    label="Require first-use approval"
                   />
-                  Require first-use approval
                 </label>
                 <label htmlFor="mcpPolicyRedaction">Redaction mode</label>
-                <select
+                <GCSelect
                   id="mcpPolicyRedaction"
                   value={policyRedaction}
-                  onChange={(event) => setPolicyRedaction(event.target.value as "off" | "basic" | "strict")}
-                >
-                  <option value="off">off</option>
-                  <option value="basic">basic</option>
-                  <option value="strict">strict</option>
-                </select>
+                  onChange={(value) => setPolicyRedaction(value as "off" | "basic" | "strict")}
+                  options={[
+                    { value: "off", label: "off" },
+                    { value: "basic", label: "basic" },
+                    { value: "strict", label: "strict" },
+                  ]}
+                />
               </div>
               <div className="controls-row">
                 <label htmlFor="mcpAllowedPatterns">Allow patterns</label>
@@ -401,14 +522,17 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <article className="card">
         <h3>Tool Catalog</h3>
         {!selected ? <p className="office-subtitle">Select a server to inspect and invoke tools.</p> : null}
-        <ul className="compact-list">
-          {tools.map((tool) => (
-            <li key={`${tool.serverId}:${tool.toolName}`}>
-              <strong>{tool.toolName}</strong>
-              {tool.description ? <p className="chat-item-meta">{tool.description}</p> : null}
-            </li>
-          ))}
-        </ul>
+        <div className="virtual-list-shell">
+          <Virtuoso
+            data={tools}
+            itemContent={(_index, tool) => (
+              <div className="virtual-list-item" key={`${tool.serverId}:${tool.toolName}`}>
+                <strong>{tool.toolName}</strong>
+                {tool.description ? <p className="chat-item-meta">{tool.description}</p> : null}
+              </div>
+            )}
+          />
+        </div>
         {selected ? (
           <div className="controls-row">
             <input value={toolName} onChange={(event) => setToolName(event.target.value)} placeholder="tool name" />
@@ -445,4 +569,35 @@ export function McpPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
     </section>
   );
+}
+
+function describeMcpBlockReason(server: {
+  status: "disconnected" | "connecting" | "connected" | "error";
+  enabled: boolean;
+  trustTier: "trusted" | "restricted" | "quarantined";
+  policy: {
+    requireFirstToolApproval: boolean;
+    blockedToolPatterns: string[];
+    allowedToolPatterns: string[];
+  };
+}): string {
+  if (!server.enabled) {
+    return "Server is disabled. Enable it before any MCP tools can run.";
+  }
+  if (server.status !== "connected") {
+    return "Server is not connected yet. Connect first, then invoke tools.";
+  }
+  if (server.trustTier === "quarantined") {
+    return "Trust tier is quarantined, so all tool execution is blocked.";
+  }
+  if (server.policy.requireFirstToolApproval) {
+    return "First tool execution requires explicit approval.";
+  }
+  if (server.policy.blockedToolPatterns.length > 0) {
+    return "Some tool names are blocked by policy patterns.";
+  }
+  if (server.policy.allowedToolPatterns.length > 0) {
+    return "Only tool names matching allow patterns can run.";
+  }
+  return "No active policy blocks detected.";
 }

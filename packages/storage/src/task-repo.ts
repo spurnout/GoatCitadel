@@ -9,6 +9,7 @@ import type {
 
 interface TaskRow {
   task_id: string;
+  workspace_id: string;
   title: string;
   description: string | null;
   status: TaskStatus;
@@ -24,6 +25,7 @@ interface TaskRow {
 }
 
 export interface TaskListQuery {
+  workspaceId?: string;
   status?: TaskStatus;
   limit: number;
   cursor?: string;
@@ -48,10 +50,10 @@ export class TaskRepository {
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
       INSERT INTO tasks (
-        task_id, title, description, status, priority,
+        task_id, workspace_id, title, description, status, priority,
         assigned_agent_id, created_by, due_at, created_at, updated_at
       ) VALUES (
-        @taskId, @title, @description, @status, @priority,
+        @taskId, @workspaceId, @title, @description, @status, @priority,
         @assignedAgentId, @createdBy, @dueAt, @createdAt, @updatedAt
       )
     `);
@@ -61,6 +63,7 @@ export class TaskRepository {
     this.listStmt = db.prepare(`
       SELECT * FROM tasks
       WHERE (@status IS NULL OR status = @status)
+        AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
         AND (
           @view = 'all'
           OR (@view = 'active' AND deleted_at IS NULL)
@@ -114,6 +117,7 @@ export class TaskRepository {
       SELECT status, COUNT(*) AS count
       FROM tasks
       WHERE deleted_at IS NULL
+        AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
       GROUP BY status
       ORDER BY status ASC
     `);
@@ -123,6 +127,7 @@ export class TaskRepository {
     const taskId = randomUUID();
     this.insertStmt.run({
       taskId,
+      workspaceId: sanitizeWorkspaceId(input.workspaceId ?? "default"),
       title: input.title,
       description: input.description ?? null,
       status: input.status ?? "inbox",
@@ -157,6 +162,7 @@ export class TaskRepository {
     const parsedCursor = parseCompositeCursor(query.cursor);
     const rows = this.listStmt.all({
       status: query.status ?? null,
+      workspaceId: query.workspaceId ? sanitizeWorkspaceId(query.workspaceId) : null,
       view: query.view ?? "active",
       cursorUpdatedAt: parsedCursor?.timestamp ?? null,
       cursorTaskId: parsedCursor?.key ?? null,
@@ -224,7 +230,19 @@ export class TaskRepository {
   }
 
   public statusCounts(): TaskStatusCount[] {
-    const rows = this.statusCountsStmt.all() as unknown as Array<{ status: string; count: number }>;
+    const rows = this.statusCountsStmt.all({
+      workspaceId: null,
+    }) as unknown as Array<{ status: string; count: number }>;
+    return rows.map((row) => ({
+      status: row.status,
+      count: Number(row.count ?? 0),
+    }));
+  }
+
+  public statusCountsByWorkspace(workspaceId: string): TaskStatusCount[] {
+    const rows = this.statusCountsStmt.all({
+      workspaceId: sanitizeWorkspaceId(workspaceId),
+    }) as unknown as Array<{ status: string; count: number }>;
     return rows.map((row) => ({
       status: row.status,
       count: Number(row.count ?? 0),
@@ -235,6 +253,7 @@ export class TaskRepository {
 function mapTaskRow(row: TaskRow): TaskRecord {
   return {
     taskId: row.task_id,
+    workspaceId: row.workspace_id,
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
@@ -275,4 +294,15 @@ function parseCompositeCursor(cursor?: string): CompositeCursor | undefined {
   }
 
   return { timestamp, key };
+}
+
+function sanitizeWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("workspaceId is required");
+  }
+  if (!/^[a-zA-Z0-9._-]{1,80}$/.test(trimmed)) {
+    throw new Error("workspaceId contains unsupported characters");
+  }
+  return trimmed;
 }

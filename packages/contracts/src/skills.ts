@@ -137,3 +137,93 @@ export interface BankrActionAuditRecord {
   details?: Record<string, unknown>;
   createdAt: string;
 }
+
+export type SkillSourceProvider = "agentskill" | "skillsmp" | "github" | "local";
+
+export type SkillImportSourceType = "local_path" | "local_zip" | "git_url";
+
+export interface SkillImportCandidate {
+  sourceProvider: SkillSourceProvider;
+  sourceType: SkillImportSourceType;
+  sourceRef: string;
+  sourceUrl?: string;
+  repositoryUrl?: string;
+  canonicalKey: string;
+  skillRootPath?: string;
+}
+
+export interface SkillSourceSearchRecord {
+  provider: SkillSourceProvider;
+  providerLabel: string;
+  available: boolean;
+  status: "ok" | "degraded" | "unavailable";
+  error?: string;
+  latencyMs?: number;
+}
+
+export interface SkillSourceResultRecord {
+  sourceProvider: SkillSourceProvider;
+  sourceUrl: string;
+  repositoryUrl?: string;
+  name: string;
+  description: string;
+  tags: string[];
+  updatedAt?: string;
+}
+
+export interface SkillMergedSourceResult extends SkillSourceResultRecord {
+  canonicalKey: string;
+  alternateProviders: SkillSourceProvider[];
+  qualityScore: number;
+  freshnessScore: number;
+  trustScore: number;
+  combinedScore: number;
+}
+
+export interface SkillSourceListResponse {
+  query?: string;
+  generatedAt: string;
+  providers: SkillSourceSearchRecord[];
+  items: SkillMergedSourceResult[];
+}
+
+export interface SkillImportValidationChecks {
+  frontmatterValid: boolean;
+  descriptionQuality: boolean;
+  suspiciousScripts: boolean;
+  networkIndicators: boolean;
+  licenseDetected: boolean;
+}
+
+export interface SkillImportValidationResult {
+  valid: boolean;
+  riskLevel: "low" | "medium" | "high";
+  errors: string[];
+  warnings: string[];
+  checks: SkillImportValidationChecks;
+  candidate: SkillImportCandidate;
+  inferredSkillName?: string;
+  inferredSkillId?: string;
+  installPath?: string;
+  declaredTools: string[];
+  requires: string[];
+  networkSignals: string[];
+  suspiciousSignals: string[];
+  licenseFiles: string[];
+  instructionPreview?: string;
+}
+
+export interface SkillImportHistoryRecord {
+  importId: string;
+  action: "validate" | "install";
+  outcome: "accepted" | "rejected" | "failed";
+  sourceProvider: SkillSourceProvider;
+  sourceRef: string;
+  sourceType: SkillImportSourceType;
+  canonicalKey: string;
+  skillName?: string;
+  skillId?: string;
+  riskLevel?: "low" | "medium" | "high";
+  details?: Record<string, unknown>;
+  createdAt: string;
+}

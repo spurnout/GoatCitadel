@@ -60,4 +60,44 @@ describe("MemoryContextRepository", () => {
     assert.equal(fetched.citations.length, 1);
     assert.equal(repo.get(inserted.contextId).contextText, "distilled context");
   });
+
+  it("prunes expired and old context packs", () => {
+    const repo = createRepo();
+    repo.upsert({
+      cacheKey: "cache-expired",
+      scope: "chat",
+      sessionId: "session-1",
+      queryHash: "q-exp",
+      sourcesHash: "s-exp",
+      contextText: "expired context",
+      citations: [],
+      quality: { status: "generated" },
+      originalTokenEstimate: 200,
+      distilledTokenEstimate: 120,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+    });
+    repo.upsert({
+      cacheKey: "cache-fresh",
+      scope: "chat",
+      sessionId: "session-2",
+      queryHash: "q-fresh",
+      sourcesHash: "s-fresh",
+      contextText: "fresh context",
+      citations: [],
+      quality: { status: "generated" },
+      originalTokenEstimate: 220,
+      distilledTokenEstimate: 140,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      expiresAt: "2026-03-02T00:00:00.000Z",
+    });
+
+    const expiredRemoved = repo.pruneExpired("2026-02-01T00:00:00.000Z");
+    assert.equal(expiredRemoved, 1);
+    assert.equal(repo.listRecent(10).length, 1);
+
+    const oldRemoved = repo.pruneOlderThan("2026-03-02T00:00:00.000Z");
+    assert.equal(oldRemoved, 1);
+    assert.equal(repo.listRecent(10).length, 0);
+  });
 });

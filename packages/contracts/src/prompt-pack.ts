@@ -93,10 +93,75 @@ export interface PromptPackReportRecord {
     totalTests: number;
     completedRuns: number;
     failedRuns: number;
+    runFailureCount: number;
+    scoreFailureCount: number;
+    needsScoreCount: number;
+    passThreshold: number;
     averageTotalScore: number;
     passRate: number;
     failingCodes: string[];
   };
+}
+
+export interface PromptPackBenchmarkProviderInput {
+  providerId: string;
+  model: string;
+}
+
+export interface PromptPackBenchmarkRunRequest {
+  testCodes: string[];
+  providers: PromptPackBenchmarkProviderInput[];
+}
+
+export interface PromptPackBenchmarkRunRecord {
+  benchmarkRunId: string;
+  packId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  testCodes: string[];
+  providers: PromptPackBenchmarkProviderInput[];
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+
+export interface PromptPackBenchmarkItemRecord {
+  itemId: string;
+  benchmarkRunId: string;
+  packId: string;
+  testId: string;
+  testCode: string;
+  providerId: string;
+  model: string;
+  runId?: string;
+  scoreId?: string;
+  runStatus: PromptPackRunRecord["status"] | "missing_run";
+  totalScore?: number;
+  failureSignal?: string;
+  createdAt: string;
+}
+
+export interface PromptPackBenchmarkModelSummary {
+  providerId: string;
+  model: string;
+  total: number;
+  scored: number;
+  averageTotalScore: number;
+  passRate: number;
+  runFailures: number;
+  noOutputCount: number;
+  topFailureSignals: Array<{
+    signal: string;
+    count: number;
+  }>;
+}
+
+export interface PromptPackBenchmarkStatusRecord {
+  run: PromptPackBenchmarkRunRecord;
+  progress: {
+    totalItems: number;
+    completedItems: number;
+  };
+  modelSummaries: PromptPackBenchmarkModelSummary[];
 }
 
 export interface PromptPackExportRecord {

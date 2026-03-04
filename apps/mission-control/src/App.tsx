@@ -1,9 +1,11 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import {
   connectEventStream,
+  fetchWorkspaces,
   fetchOnboardingState,
   type EventStreamConnectionState,
   type EventStreamStatus,
+  type RealtimeEvent,
 } from "./api/client";
 import { DashboardPage } from "./pages/DashboardPage";
 import { SystemPage } from "./pages/SystemPage";
@@ -27,9 +29,15 @@ import { McpPage } from "./pages/McpPage";
 import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NpuPage } from "./pages/NpuPage";
+import { WorkspacesPage } from "./pages/WorkspacesPage";
 import { CommandPalette } from "./components/CommandPalette";
+import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
+import { NotificationStack, type NotificationItem } from "./components/NotificationStack";
 import { appCopy } from "./content/copy";
+import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
+import { useUiPreferences } from "./state/ui-preferences";
+import { GCSelect, GCSwitch } from "./components/ui";
 
 const OfficePage = lazy(async () => {
   const module = await import("./pages/OfficePage");
@@ -53,6 +61,7 @@ type Tab =
   | "skills"
   | "costs"
   | "settings"
+  | "workspaces"
   | "tools"
   | "approvals"
   | "tasks"
@@ -78,6 +87,7 @@ const allTabs: Tab[] = [
   "skills",
   "costs",
   "settings",
+  "workspaces",
   "tools",
   "approvals",
   "tasks",
@@ -92,6 +102,39 @@ const navItems: Array<{ id: Tab; label: string; code: string }> = appCopy.navIte
 const navSections: Array<{ label: string; items: Tab[] }> = appCopy.navSections;
 
 const nextStepByTab: Record<Tab, string> = appCopy.nextStepByTab;
+
+const refreshTopicRules: Array<{ topic: RefreshTopic; keywords: string[] }> = [
+  { topic: "promptLab", keywords: ["prompt_pack", "promptlab", "prompt_lab", "prompt-pack"] },
+  { topic: "chat", keywords: ["chat", "message", "session", "delegate", "proactive", "learned_memory"] },
+  { topic: "approvals", keywords: ["approval", "gatehouse"] },
+  { topic: "tools", keywords: ["tool", "grant", "policy"] },
+  { topic: "files", keywords: ["file", "artifact", "workspace"] },
+  { topic: "memory", keywords: ["memory", "qmd", "context"] },
+  { topic: "agents", keywords: ["agent", "goat", "herd"] },
+  { topic: "skills", keywords: ["skill", "bankr"] },
+  { topic: "mcp", keywords: ["mcp"] },
+  { topic: "tasks", keywords: ["task", "trailboard"] },
+  { topic: "improvement", keywords: ["improvement", "replay", "autotune", "self_improvement"] },
+  { topic: "integrations", keywords: ["integration", "plugin", "connection"] },
+  { topic: "npu", keywords: ["npu", "runtime", "sidecar", "model", "voice"] },
+];
+
+function deriveRefreshTopics(event: RealtimeEvent): RefreshTopic[] {
+  const haystack = `${event.eventType} ${event.source}`.toLowerCase();
+  const topics = new Set<RefreshTopic>();
+
+  for (const rule of refreshTopicRules) {
+    if (rule.keywords.some((keyword) => haystack.includes(keyword))) {
+      topics.add(rule.topic);
+    }
+  }
+
+  if (topics.size === 0) {
+    topics.add("system");
+  }
+
+  return [...topics];
+}
 
 function isTab(value: string | null): value is Tab {
   if (!value) {
@@ -122,6 +165,14 @@ function readTabFromLocation(): Tab {
 }
 
 export function App() {
+  const {
+    mode: uiMode,
+    setMode: setUiMode,
+    showTechnicalDetails,
+    setShowTechnicalDetails,
+    activeWorkspaceId,
+    setActiveWorkspaceId,
+  } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
   const [refreshKey, setRefreshKey] = useState(0);
   const [clock, setClock] = useState(() => new Date().toLocaleTimeString());
@@ -134,6 +185,20 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [showBrandMark, setShowBrandMark] = useState(true);
   const [showBrandWordmark, setShowBrandWordmark] = useState(true);
+  const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+
+  const pushNotification = useCallback((tone: NotificationItem["tone"], message: string) => {
+    setNotifications((current) => {
+      const item: NotificationItem = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        tone,
+        message,
+        timestamp: Date.now(),
+      };
+      return [item, ...current].slice(0, 6);
+    });
+  }, []);
 
   const handleOnboardingCompleted = useCallback(() => {
     setOnboardingComplete(true);
@@ -143,17 +208,34 @@ export function App() {
 
   useEffect(() => {
     const close = connectEventStream(
-      () => {
-        setRefreshKey((value) => value + 1);
+      (event) => {
+        const topics = deriveRefreshTopics(event);
+        for (const topic of topics) {
+          emitRefresh(topic, {
+            reason: event.eventType,
+            source: event.source,
+            eventType: event.eventType,
+            eventId: event.eventId,
+            timestamp: Date.now(),
+          });
+        }
       },
-      setStreamState,
+      (nextState) => {
+        setStreamState(nextState);
+        if (nextState === "error") {
+          pushNotification("warning", "Live updates degraded. GoatCitadel is reconnecting.");
+        }
+        if (nextState === "open") {
+          pushNotification("success", "Live updates connected.");
+        }
+      },
       setStreamStatus,
     );
 
     return () => {
       close();
     };
-  }, []);
+  }, [pushNotification]);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +259,27 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWorkspaces("all", 400)
+      .then((response) => {
+        if (!cancelled) {
+          setWorkspaceOptions(response.items.map((item) => ({
+            workspaceId: item.workspaceId,
+            name: item.name,
+          })));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWorkspaceOptions([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -232,10 +335,10 @@ export function App() {
       return <SystemPage refreshKey={refreshKey} />;
     }
     if (tab === "files") {
-      return <FilesPage refreshKey={refreshKey} />;
+      return <FilesPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "memory") {
-      return <MemoryPage refreshKey={refreshKey} />;
+      return <MemoryPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "agents") {
       return <AgentsPage refreshKey={refreshKey} />;
@@ -257,13 +360,13 @@ export function App() {
       return <SessionsPage refreshKey={refreshKey} />;
     }
     if (tab === "chat") {
-      return <ChatPage refreshKey={refreshKey} />;
+      return <ChatPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "promptLab") {
-      return <PromptLabPage refreshKey={refreshKey} />;
+      return <PromptLabPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "improvement") {
-      return <ImprovementPage refreshKey={refreshKey} />;
+      return <ImprovementPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "skills") {
       return <SkillsPage refreshKey={refreshKey} />;
@@ -274,6 +377,15 @@ export function App() {
     if (tab === "settings") {
       return <SettingsPage refreshKey={refreshKey} />;
     }
+    if (tab === "workspaces") {
+      return (
+        <WorkspacesPage
+          refreshKey={refreshKey}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceChange={setActiveWorkspaceId}
+        />
+      );
+    }
     if (tab === "tools") {
       return <ToolsPage refreshKey={refreshKey} />;
     }
@@ -281,7 +393,7 @@ export function App() {
       return <ApprovalsPage refreshKey={refreshKey} />;
     }
     if (tab === "tasks") {
-      return <TasksPage refreshKey={refreshKey} />;
+      return <TasksPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
     }
     if (tab === "mesh") {
       return <MeshPage refreshKey={refreshKey} />;
@@ -293,10 +405,12 @@ export function App() {
       return <NpuPage refreshKey={refreshKey} />;
     }
     return <IntegrationsPage refreshKey={refreshKey} />;
-  }, [refreshKey, tab, handleOnboardingCompleted]);
+  }, [activeWorkspaceId, refreshKey, tab, handleOnboardingCompleted, setActiveWorkspaceId]);
 
   return (
-    <div className="layout-shell">
+    <div
+      className={`layout-shell ui-mode-${uiMode}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+    >
       <aside className="sidebar">
         <div className="sidebar-brand">
           {showBrandMark ? (
@@ -376,11 +490,45 @@ export function App() {
             <p className="office-subtitle">{nextStepByTab[tab]}</p>
           </div>
           <div className="app-topbar-actions">
-            <span className={`stream-pill ${streamStatus.state}`}>{streamStatus.state}</span>
+            <div className="ui-experience-switch">
+              <span>Experience</span>
+              <button
+                type="button"
+                className={uiMode === "simple" ? "active" : ""}
+                onClick={() => setUiMode("simple")}
+              >
+                Simple
+              </button>
+              <button
+                type="button"
+                className={uiMode === "advanced" ? "active" : ""}
+                onClick={() => setUiMode("advanced")}
+              >
+                Advanced
+              </button>
+            </div>
+            <label className="ui-technical-toggle">
+              <GCSwitch
+                checked={showTechnicalDetails}
+                onCheckedChange={setShowTechnicalDetails}
+                label="Technical details"
+              />
+            </label>
+            <label className="ui-technical-toggle">
+              Workspace
+              <GCSelect
+                value={activeWorkspaceId}
+                onChange={setActiveWorkspaceId}
+                options={[...workspaceOptions, { workspaceId: activeWorkspaceId, name: activeWorkspaceId }]
+                  .filter((item, index, arr) => arr.findIndex((other) => other.workspaceId === item.workspaceId) === index)
+                  .map((item) => ({ value: item.workspaceId, label: item.name }))}
+              />
+            </label>
+            <GlobalFreshnessPill streamState={streamState} streamStatus={streamStatus} />
             <button type="button" onClick={() => setPaletteOpen(true)}>Quick Actions</button>
           </div>
         </header>
-        {streamState !== "open" ? (
+        {streamState === "error" || streamState === "closed" ? (
           <div className="status-banner warning">
             {appCopy.streamBanner.replace("{state}", streamState)}
           </div>
@@ -396,6 +544,10 @@ export function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         items={commandItems}
+      />
+      <NotificationStack
+        items={notifications}
+        onDismiss={(id) => setNotifications((current) => current.filter((item) => item.id !== id))}
       />
     </div>
   );

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { safeJsonParse } from "./safe-json.js";
 
 interface SystemSettingRow {
   setting_key: string;
@@ -54,9 +55,5 @@ export class SystemSettingsRepository {
 }
 
 function parseValue(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
-  }
+  return safeJsonParse<unknown>(raw, raw);
 }

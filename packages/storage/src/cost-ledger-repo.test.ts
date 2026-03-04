@@ -61,4 +61,41 @@ describe("CostLedgerRepository", () => {
     assert.equal(byAgent[0]?.tokenTotal, 40);
     assert.equal(byTask.length, 2);
   });
+
+  it("reports tracked vs unknown usage availability for agent events", () => {
+    const repo = createRepo();
+    repo.insert({
+      sessionId: "s1",
+      agentId: "assistant",
+      taskId: "task-1",
+      tokenInput: 100,
+      tokenOutput: 60,
+      tokenCachedInput: 10,
+      costUsd: 0.12,
+      createdAt: "2026-02-27T10:00:00.000Z",
+    });
+    repo.insert({
+      sessionId: "s1",
+      agentId: "assistant",
+      taskId: "task-1",
+      tokenInput: 0,
+      tokenOutput: 0,
+      tokenCachedInput: 0,
+      costUsd: 0,
+      createdAt: "2026-02-27T10:05:00.000Z",
+    });
+    repo.insert({
+      sessionId: "s1",
+      tokenInput: 0,
+      tokenOutput: 0,
+      tokenCachedInput: 0,
+      costUsd: 0,
+      createdAt: "2026-02-27T10:06:00.000Z",
+    });
+
+    const availability = repo.usageAvailability("2026-02-27T00:00:00.000Z", "2026-02-27T23:59:59.999Z");
+    assert.equal(availability.totalAgentEvents, 2);
+    assert.equal(availability.trackedEvents, 1);
+    assert.equal(availability.unknownEvents, 1);
+  });
 });

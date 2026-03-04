@@ -8,6 +8,21 @@ This document is the deep technical documentation for GoatCitadel. It is intende
 
 This handbook describes what is currently implemented in `F:\code\personal-ai` as of February 2026.
 
+## 0. OpenClaw-Informed Hardening Deltas (Current Cycle)
+
+This cycle applied targeted patterns inspired by OpenClaw changelog themes, adapted to GoatCitadel architecture:
+
+- Config and startup diagnostics with warn-first remote bind guidance.
+- Request hardening for suspicious encoded paths and webhook-style payload bounds.
+- Prompt Lab runtime continuity improvements for event storms (background refresh over full reload).
+- Explicit Prompt Lab separation of run failures vs score failures.
+- Prompt-pack report summary counters now expose run failure count, score failure count, needs-score count, and pass threshold.
+- Prompt-pack benchmark matrix endpoints are available for provider/model subset comparisons.
+- Tool-loop reduction via argument preflight + repeated-failure circuit breaker.
+- Controlled write-jail fallback to deterministic safe output paths.
+- Expanded safe JSON parsing coverage in storage row mappers.
+- Private-beta daily backup scheduler (`private_beta_backup_daily`) now runs with retention pruning.
+
 ## 1. Product Definition and System Goals
 
 GoatCitadel is a local-first, TypeScript monorepo for orchestrating personal AI agents with:
@@ -96,6 +111,7 @@ Mission Control is an API client, not a backend extension. It:
 - Uses Server-Sent Events (`/api/v1/events/stream`) for live updates.
 - Maintains local browser preferences for operator UX.
 - Never writes data directly to local storage files or SQLite.
+- Uses a topic-scoped refresh bus for SSE updates to avoid full-page refresh churn during active operations.
 
 ### 3.3 Shared Domain Packages
 
@@ -105,6 +121,35 @@ Mission Control is an API client, not a backend extension. It:
 - `@goatcitadel/policy-engine`: policy resolution and enforcement gates.
 - `@goatcitadel/skills`: skill loading and activation.
 - `@goatcitadel/orchestration`: orchestration run state transitions.
+
+### 3.4 Workspaces and Guidance Resolution
+
+Workspace model (v1):
+
+- First-class `workspaces` entity with logical isolation in a single runtime/DB process.
+- Existing records default to `workspace_id=default` for backward compatibility.
+- Core chat/task entities include workspace scope for list/create flows.
+
+Guidance resolution model:
+
+- Global docs loaded from repo root:
+  - `GOATCITADEL.md`
+  - `AGENTS.md`
+  - `CLAUDE.md`
+  - `CONTRIBUTING.md`
+  - `SECURITY.md`
+  - `VISION.md`
+- Workspace overrides loaded from `workspaces/<workspaceId>/` for same doc type.
+- Precedence: workspace override > global.
+- Runtime injection is bounded by token budget and can be disabled with:
+  - `GOATCITADEL_DISABLE_GUIDANCE_INJECTION=true`
+
+Safety invariants are non-overridable by docs:
+
+- deny-wins policy
+- approval gates
+- tool grants
+- sandbox/security boundaries
 
 ## 4. Canonical Workflows
 
@@ -274,6 +319,7 @@ The `packages/storage/src/sqlite.ts` migration creates and updates these tables:
 - `realtime_events`
 - `cron_jobs`
 - `skills_index`
+- `workspaces`
 - `orchestration_runs`
 - `orchestration_plans`
 - `orchestration_checkpoints`
@@ -284,6 +330,7 @@ Migration safeguards:
 
 - Approval explainer columns added idempotently if missing.
 - Legacy `openclaw_session_id` migrated to `agent_session_id` with fallback table rebuild.
+- Workspace migration backfills `workspace_id=default` across scoped entities.
 
 ### 5.3 Source-of-Truth Clarification
 
@@ -305,8 +352,15 @@ Configured in `assistant.config.json`:
 Features:
 
 - Optional loopback bypass for local trust.
+- Warn-first startup warning when binding non-loopback without configured auth.
 - Runtime updates through `PATCH /api/v1/auth/settings` and `PATCH /api/v1/settings`.
 - Client-side Mission Control stores auth credentials in browser local storage for API calls and event stream URL query auth.
+
+Related host/origin controls:
+
+- `GOATCITADEL_ALLOWED_ORIGINS`
+- `GOATCITADEL_VITE_ALLOWED_HOSTS`
+- `VITE_GATEWAY_ALLOWED_HOSTS`
 
 ### 6.2 Idempotency Enforcement
 
@@ -406,6 +460,7 @@ Navigation tabs currently implemented:
   - Includes task trash lifecycle (`active|trash|all`, soft delete, restore, hard delete).
 - Connections: integration catalog and connection management.
 - Tool Access: catalog, grant lifecycle (create/revoke), access evaluation, and dry-run invoke.
+- Prompt Lab: execution benchmarking with separate runtime-failure and quality-failure classification.
 - Every tab now includes a `PageGuideCard` with plain-English "what/when/actions/terms".
 - Editable tabs use shared change-awareness components with goat-themed risk badges.
 
@@ -455,6 +510,17 @@ All mutating endpoints require `Idempotency-Key`.
 
 - `GET /api/v1/costs/summary`
 - `POST /api/v1/costs/run-cheaper`
+
+### Prompt Lab
+
+- `POST /api/v1/prompt-packs/import`
+- `POST /api/v1/prompt-packs/:packId/tests/:testId/run`
+- `POST /api/v1/prompt-packs/:packId/tests/:testId/score`
+- `POST /api/v1/prompt-packs/:packId/tests/:testId/auto-score`
+- `POST /api/v1/prompt-packs/:packId/auto-score`
+- `GET /api/v1/prompt-packs/:packId/report`
+- `POST /api/v1/prompt-packs/:packId/benchmark/run`
+- `GET /api/v1/prompt-packs/benchmark/:benchmarkRunId`
 
 ### Skills
 
@@ -570,6 +636,11 @@ Manual sync command:
 pnpm config:sync
 ```
 
+Private-beta config snapshot:
+
+- `config/private-beta.profile.json` (auth + cron posture reference).
+- Environment companion: `.env.private-beta.example`.
+
 ### `config/assistant.config.json`
 
 Defines environment, directory roots, auth mode, and approval explainer defaults.
@@ -603,6 +674,13 @@ Defines model provider catalog, active provider, and default models.
 ### `config/cron-jobs.json`
 
 Optional list of scheduled jobs loaded into SQLite for dashboard visibility.
+
+Current convention:
+
+- Active runtime schedules are:
+  - `self_improvement_weekly_replay`
+  - `private_beta_backup_daily`
+- Non-runtime placeholders are marked with `[planned]` in name and `enabled: false`.
 
 ## 12. Development and Operations
 
@@ -670,6 +748,8 @@ These are implementation realities to include in architectural/code review:
 - No built-in secrets manager; provider keys can be runtime-persisted if provided inline.
 - No formal rate limiter for public-hosting scenarios.
 - Replay/import utilities for rebuilding SQLite from logs are not yet shipped.
+- Mobile companion runtime remains a placeholder track (docs-first, no production mobile control plane yet).
+- Mobile companion research lives in `docs/mobile_app_research_report.md` and is the input source for future implementation.
 
 ## 15. Suggested Review Tracks for Subagents
 

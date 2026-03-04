@@ -17,12 +17,14 @@ const prioritySchema = z.enum(["low", "normal", "high", "urgent"]);
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50),
   cursor: z.string().optional(),
+  workspaceId: z.string().min(1).optional(),
   status: statusSchema.optional(),
   view: z.enum(["active", "trash", "all"]).optional(),
   includeDeleted: z.coerce.boolean().optional(),
 });
 
 const createTaskSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   title: z.string().min(1),
   description: z.string().optional(),
   status: statusSchema.optional(),
@@ -84,7 +86,13 @@ export const tasksRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const view = parsed.data.view ?? (parsed.data.includeDeleted ? "all" : "active");
-    const items = fastify.gateway.listTasks(parsed.data.limit, parsed.data.status, parsed.data.cursor, view);
+    const items = fastify.gateway.listTasks(
+      parsed.data.limit,
+      parsed.data.status,
+      parsed.data.cursor,
+      view,
+      parsed.data.workspaceId,
+    );
     const last = items[items.length - 1];
     const nextCursor = items.length === parsed.data.limit && last
       ? `${last.updatedAt}|${last.taskId}`

@@ -12,6 +12,7 @@ export type TaskPriority = "low" | "normal" | "high" | "urgent";
 
 export interface TaskRecord {
   taskId: string;
+  workspaceId?: string;
   title: string;
   description?: string;
   status: TaskStatus;
@@ -27,6 +28,7 @@ export interface TaskRecord {
 }
 
 export interface TaskCreateInput {
+  workspaceId?: string;
   title: string;
   description?: string;
   status?: TaskStatus;

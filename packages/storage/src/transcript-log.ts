@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptEvent } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 export class TranscriptLog {
   private readonly writeQueues = new Map<string, Promise<number>>();
@@ -46,6 +47,7 @@ export class TranscriptLog {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as TranscriptEvent);
+      .map((line) => safeJsonParse<TranscriptEvent | undefined>(line, undefined))
+      .filter((event): event is TranscriptEvent => Boolean(event));
   }
 }

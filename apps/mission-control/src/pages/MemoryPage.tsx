@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchFilesList, fetchMemoryQmdStats } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 interface WorkspaceFile {
   relativePath: string;
@@ -17,7 +18,10 @@ interface WorkspaceAreaSummary {
   latestModifiedAt?: string;
 }
 
-export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function MemoryPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [qmdStats, setQmdStats] = useState<{
     totalRuns: number;
@@ -28,36 +32,80 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
     originalTokenEstimate: number;
     distilledTokenEstimate: number;
     savingsPercent: number;
+    netTokenDelta: number;
+    compressionPercent: number;
+    expansionPercent: number;
+    efficiencyLabel: "reduced" | "expanded" | "neutral";
     recent: Array<{ contextId: string; scope: string; createdAt: string; quality: { status: string } }>;
   } | null>(null);
   const [selectedArea, setSelectedArea] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void fetchFilesList(".", 3000)
-      .then((res) => {
-        setFiles(res.items);
-        setError(null);
-      })
-      .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+  const workspacePrefix = useMemo(
+    () => (workspaceId && workspaceId !== "default" ? `workspaces/${workspaceId}/` : ""),
+    [workspaceId],
+  );
+
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
+    try {
+      const [filesRes, stats] = await Promise.all([
+        fetchFilesList(".", 3000),
+        fetchMemoryQmdStats(),
+      ]);
+      const scopedFiles = workspacePrefix
+        ? filesRes.items
+          .filter((item) => item.relativePath.startsWith(workspacePrefix))
+          .map((item) => ({
+            ...item,
+            relativePath: item.relativePath.slice(workspacePrefix.length),
+          }))
+        : filesRes.items;
+      setFiles(scopedFiles);
+      setQmdStats({
+        ...stats,
+        recent: stats.recent.map((item) => ({
+          contextId: item.contextId,
+          scope: item.scope,
+          createdAt: item.createdAt,
+          quality: { status: item.quality.status },
+        })),
+      });
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
+    }
+  }, [workspacePrefix]);
 
   useEffect(() => {
-    void fetchMemoryQmdStats()
-      .then((stats) => {
-        setQmdStats({
-          ...stats,
-          recent: stats.recent.map((item) => ({
-            contextId: item.contextId,
-            scope: item.scope,
-            createdAt: item.createdAt,
-            quality: { status: item.quality.status },
-          })),
-        });
-      })
-      .catch((err: Error) => setError(err.message));
-  }, [refreshKey]);
+    void load({ background: false });
+  }, [load, refreshKey]);
+
+  useRefreshSubscription(
+    "memory",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1100,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+      onFallbackStateChange: setIsFallbackRefreshing,
+    },
+  );
 
   const areas = useMemo(() => summarizeAreas(files), [files]);
   const areaOptions = useMemo(() => ["all", ...areas.map((area) => area.area)], [areas]);
@@ -96,9 +144,15 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <PageGuideCard
         what={pageCopy.memory.guide?.what ?? ""}
         when={pageCopy.memory.guide?.when ?? ""}
+        mostCommonAction={pageCopy.memory.guide?.mostCommonAction}
         actions={pageCopy.memory.guide?.actions ?? []}
         terms={pageCopy.memory.guide?.terms}
       />
+      {isInitialLoading ? <p>Loading memory workspace...</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing memory workspace...</p> : null}
+      {isFallbackRefreshing ? (
+        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
 
       <div className="office-kpi-grid">
@@ -130,11 +184,11 @@ export function MemoryPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <p className="office-kpi-note">Generated {qmdStats?.generatedRuns ?? 0} / cache hits {qmdStats?.cacheHitRuns ?? 0}</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">QMD Savings</p>
-          <p className="office-kpi-value">{qmdStats ? `${qmdStats.savingsPercent.toFixed(1)}%` : "-"}</p>
+          <p className="office-kpi-label">QMD Context Impact</p>
+          <p className="office-kpi-value">{qmdStats ? describeQmdImpact(qmdStats) : "-"}</p>
           <p className="office-kpi-note">
             {qmdStats
-              ? `${qmdStats.originalTokenEstimate} -> ${qmdStats.distilledTokenEstimate} estimated tokens`
+              ? `Went from ${qmdStats.originalTokenEstimate} tokens to ${qmdStats.distilledTokenEstimate} (${formatTokenDelta(qmdStats.netTokenDelta)}).`
               : "No QMD samples yet"}
           </p>
         </article>
@@ -334,4 +388,28 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(2)} KB`;
   }
   return `${bytes} B`;
+}
+
+function describeQmdImpact(stats: {
+  efficiencyLabel: "reduced" | "expanded" | "neutral";
+  compressionPercent: number;
+  expansionPercent: number;
+}): string {
+  if (stats.efficiencyLabel === "reduced") {
+    return `Reduced ${stats.compressionPercent.toFixed(1)}%`;
+  }
+  if (stats.efficiencyLabel === "expanded") {
+    return `Grew ${stats.expansionPercent.toFixed(1)}%`;
+  }
+  return "Stable";
+}
+
+function formatTokenDelta(delta: number): string {
+  if (delta > 0) {
+    return `+${Math.round(delta)} tokens`;
+  }
+  if (delta < 0) {
+    return `${Math.round(delta)} tokens`;
+  }
+  return "no change";
 }

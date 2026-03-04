@@ -1,21 +1,27 @@
 {
   "jobs": [
     {
+      "jobId": "self_improvement_weekly_replay",
+      "name": "Self-Improvement Weekly Replay",
+      "schedule": "0 2 * * 0 America/Los_Angeles",
+      "enabled": true
+    },
+    {
+      "jobId": "private_beta_backup_daily",
+      "name": "Private Beta Daily Backup",
+      "schedule": "30 2 * * * America/Los_Angeles",
+      "enabled": true
+    },
+    {
       "jobId": "memory-flush-daily",
-      "name": "Memory Flush (planned)",
-      "schedule": "0 3 * * *",
-      "enabled": false
+      "name": "Memory Flush Daily",
+      "schedule": "0 3 * * * America/Los_Angeles",
+      "enabled": true
     },
     {
       "jobId": "cost-report-hourly",
-      "name": "Cost Report (planned)",
-      "schedule": "0 * * * *",
-      "enabled": false
-    },
-    {
-      "jobId": "self_improvement_weekly_replay",
-      "name": "Self-Improvement Weekly Replay",
-      "schedule": "Sunday 2:00 AM America/Los_Angeles",
+      "name": "Cost Report Hourly",
+      "schedule": "0 * * * * America/Los_Angeles",
       "enabled": true
     }
   ]

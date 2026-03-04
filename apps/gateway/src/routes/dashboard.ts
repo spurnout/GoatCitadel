@@ -5,6 +5,23 @@ const memoryQuerySchema = z.object({
   dir: z.string().default("memory"),
 });
 
+const cronJobParamsSchema = z.object({
+  jobId: z.string().min(1),
+});
+
+const cronJobCreateSchema = z.object({
+  jobId: z.string().min(3).max(64),
+  name: z.string().min(1).max(120),
+  schedule: z.string().min(1).max(128),
+  enabled: z.boolean().optional(),
+});
+
+const cronJobUpdateSchema = z.object({
+  name: z.string().min(1).max(120).optional(),
+  schedule: z.string().min(1).max(128).optional(),
+  enabled: z.boolean().optional(),
+});
+
 const authUpdateSchema = z.object({
   mode: z.enum(["none", "token", "basic"]).optional(),
   allowLoopbackBypass: z.boolean().optional(),
@@ -69,6 +86,114 @@ export const dashboardRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get("/api/v1/cron/jobs", async (_request, reply) => {
     return reply.send({ items: fastify.gateway.listCronJobs() });
+  });
+
+  fastify.get("/api/v1/cron/jobs/:jobId", async (request, reply) => {
+    const parsed = cronJobParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getCronJob(parsed.data.jobId));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/cron/jobs", async (request, reply) => {
+    const parsed = cronJobCreateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      const job = fastify.gateway.createCronJob(parsed.data);
+      return reply.code(201).send(job);
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/cron/jobs/:jobId", async (request, reply) => {
+    const parsedParams = cronJobParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ error: parsedParams.error.flatten() });
+    }
+    const parsedBody = cronJobUpdateSchema.safeParse(request.body);
+    if (!parsedBody.success) {
+      return reply.code(400).send({ error: parsedBody.error.flatten() });
+    }
+    if (Object.keys(parsedBody.data).length === 0) {
+      return reply.code(400).send({ error: "No update fields were provided." });
+    }
+    try {
+      return reply.send(fastify.gateway.updateCronJob(parsedParams.data.jobId, parsedBody.data));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 400).send({ error: message });
+    }
+  });
+
+  fastify.post("/api/v1/cron/jobs/:jobId/start", async (request, reply) => {
+    const parsed = cronJobParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.setCronJobEnabled(parsed.data.jobId, true));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 400).send({ error: message });
+    }
+  });
+
+  fastify.post("/api/v1/cron/jobs/:jobId/pause", async (request, reply) => {
+    const parsed = cronJobParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.setCronJobEnabled(parsed.data.jobId, false));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      return reply.code(notFound ? 404 : 400).send({ error: message });
+    }
+  });
+
+  fastify.post("/api/v1/cron/jobs/:jobId/run", async (request, reply) => {
+    const parsed = cronJobParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.runCronJobNow(parsed.data.jobId));
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      const noHandler = message.toLowerCase().includes("no runnable handler");
+      return reply.code(notFound ? 404 : noHandler ? 409 : 400).send({ error: message });
+    }
+  });
+
+  fastify.delete("/api/v1/cron/jobs/:jobId", async (request, reply) => {
+    const parsed = cronJobParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      const result = fastify.gateway.deleteCronJob(parsed.data.jobId);
+      if (!result.deleted) {
+        return reply.code(404).send({ error: `Cron job not found: ${result.jobId}` });
+      }
+      return reply.send(result);
+    } catch (error) {
+      const message = (error as Error).message;
+      const notFound = message.toLowerCase().includes("not found");
+      const protectedJob = message.toLowerCase().includes("cannot be deleted");
+      return reply.code(notFound ? 404 : protectedJob ? 409 : 400).send({ error: message });
+    }
   });
 
   fastify.get("/api/v1/operators", async (_request, reply) => {

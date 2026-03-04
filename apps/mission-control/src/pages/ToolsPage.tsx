@@ -5,15 +5,20 @@ import {
   evaluateToolAccess,
   fetchAgents,
   fetchChatSessions,
+  fetchSettings,
   fetchToolCatalog,
   fetchToolGrants,
   invokeTool,
+  patchSettings,
   revokeToolGrant,
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { HelpHint } from "../components/HelpHint";
+import { GCCombobox, GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
+import { useUiPreferences } from "../state/ui-preferences";
 
 interface ToolsPageProps {
   refreshKey: number;
@@ -28,6 +33,12 @@ type GrantScope = "global" | "session" | "agent" | "task";
 type GrantType = "one_time" | "ttl" | "persistent";
 type GrantDecision = "allow" | "deny";
 type QuickPreset = "web" | "files-read" | "devops";
+
+interface ToolProfilePreset {
+  id: string;
+  label: string;
+  helper: string;
+}
 
 const QUICK_PRESET_TOOLS: Record<QuickPreset, string[]> = {
   web: ["browser.search", "browser.navigate", "browser.extract", "http.get"],
@@ -48,16 +59,33 @@ const TOOL_ARG_EXAMPLES: Record<string, Record<string, unknown>> = {
   "tests.run": { manager: "pnpm", filter: "@goatcitadel/gateway" },
 };
 
+const TOOL_PROFILE_PRESETS: ToolProfilePreset[] = [
+  { id: "minimal", label: "Safe Day", helper: "Minimal tool access. Best for cautious tasks and review days." },
+  { id: "standard", label: "Balanced Day", helper: "General purpose profile for normal operations." },
+  { id: "coding", label: "Builder Day", helper: "Stronger coding/toolchain focus for implementation work." },
+  { id: "ops", label: "Ops Day", helper: "Operational tooling for deployment, diagnostics, and maintenance." },
+  { id: "research", label: "Research Day", helper: "Discovery and information gathering focused workflows." },
+  { id: "danger", label: "Power Day", helper: "High-risk profile. Use only when you intentionally need broad power." },
+];
+
 export function ToolsPage({ refreshKey }: ToolsPageProps) {
+  const {
+    mode: uiMode,
+    showTechnicalDetails,
+    setShowTechnicalDetails,
+  } = useUiPreferences();
   const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
   const [grants, setGrants] = useState<ToolGrantRecord[]>([]);
   const [agentOptions, setAgentOptions] = useState<IdOption[]>([{ value: "operator", label: "operator (you)" }]);
   const [sessionOptions, setSessionOptions] = useState<IdOption[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [grantFilter, setGrantFilter] = useState("");
   const [catalogFilter, setCatalogFilter] = useState("");
+  const [currentToolProfile, setCurrentToolProfile] = useState("standard");
+  const [profileSwitchBusy, setProfileSwitchBusy] = useState<string | null>(null);
 
   const [toolPattern, setToolPattern] = useState("fs.list");
   const [decision, setDecision] = useState<GrantDecision>("allow");
@@ -87,6 +115,12 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
     taskId: "",
   });
   const [dryRunResult, setDryRunResult] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    if (!showTechnicalDetails && grantAdvanced) {
+      setGrantAdvanced(false);
+    }
+  }, [grantAdvanced, showTechnicalDetails]);
 
   const catalogByPack = useMemo(() => {
     const q = catalogFilter.trim().toLowerCase();
@@ -147,21 +181,41 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
   }, [grantAdvanced, grantType]);
 
   useEffect(() => {
-    void load();
+    void load({ background: false });
   }, [refreshKey]);
 
-  async function load() {
-    setLoading(true);
+  useRefreshSubscription(
+    "tools",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 900,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+    },
+  );
+
+  async function load(options?: { background?: boolean }) {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
     setError(null);
     try {
-      const [catalogRes, grantsRes, sessionsRes, agentsRes] = await Promise.all([
+      const [catalogRes, grantsRes, sessionsRes, agentsRes, settingsRes] = await Promise.all([
         fetchToolCatalog(),
         fetchToolGrants({ limit: 500 }),
         fetchChatSessions({ scope: "all", view: "all", limit: 500 }),
         fetchAgents("all", 300),
+        fetchSettings(),
       ]);
       setCatalog(catalogRes.items);
       setGrants(grantsRes.items);
+      setCurrentToolProfile(settingsRes.defaultToolProfile || "standard");
       setSuccess(null);
       const nextSessionOptions = sessionsRes.items.map((session) => ({
         value: session.sessionId,
@@ -214,7 +268,11 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
     } catch (loadError) {
       setError((loadError as Error).message);
     } finally {
-      setLoading(false);
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
     }
   }
 
@@ -241,7 +299,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
         expiresAt: expiresAt.trim() || undefined,
       } as const;
       await createToolGrant(input);
-      await load();
+      await load({ background: true });
       setSuccess(`Grant created: ${input.decision} ${input.toolPattern}`);
     } catch (createError) {
       setError((createError as Error).message);
@@ -271,7 +329,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
           createdBy: createdBy.trim() || "operator",
         });
       }
-      await load();
+      await load({ background: true });
       setSuccess(`Applied preset "${preset}" (${tools.length} grants).`);
     } catch (presetError) {
       setError((presetError as Error).message);
@@ -280,11 +338,31 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
     }
   }
 
+  async function onApplyToolProfile(profileId: string) {
+    if (!profileId.trim()) {
+      return;
+    }
+    setProfileSwitchBusy(profileId);
+    setError(null);
+    setSuccess(null);
+    try {
+      const settings = await patchSettings({
+        defaultToolProfile: profileId.trim(),
+      });
+      setCurrentToolProfile(settings.defaultToolProfile || profileId.trim());
+      setSuccess(`Active tool profile switched to "${settings.defaultToolProfile || profileId.trim()}".`);
+    } catch (profileError) {
+      setError((profileError as Error).message);
+    } finally {
+      setProfileSwitchBusy(null);
+    }
+  }
+
   async function onRevoke(grantId: string) {
     try {
       setError(null);
       await revokeToolGrant(grantId);
-      await load();
+      await load({ background: true });
       setSuccess(`Grant revoked: ${grantId}`);
     } catch (revokeError) {
       setError((revokeError as Error).message);
@@ -439,7 +517,45 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
 
       {error ? <p className="error">{error}</p> : null}
       {success ? <p className="status-banner">{success}</p> : null}
-      {loading ? <CardSkeleton lines={8} /> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing tool access data...</p> : null}
+      {isInitialLoading ? <CardSkeleton lines={8} /> : null}
+
+      <div className="card">
+        <h3>Access Modes</h3>
+        <p className="office-subtitle">
+          One-click profile switching for safe days vs power days.
+          Current profile: <strong>{currentToolProfile}</strong>.
+        </p>
+        <div className="tool-profile-grid">
+          {TOOL_PROFILE_PRESETS.map((preset) => (
+            <button
+              type="button"
+              key={preset.id}
+              className={`tool-profile-card ${currentToolProfile === preset.id ? "active" : ""}`}
+              onClick={() => void onApplyToolProfile(preset.id)}
+              disabled={profileSwitchBusy !== null}
+            >
+              <strong>{preset.label}</strong>
+              <span>{preset.helper}</span>
+              <small>{preset.id}</small>
+              {profileSwitchBusy === preset.id ? <em>Applying…</em> : null}
+            </button>
+          ))}
+        </div>
+        <label className="tools-advanced-toggle">
+          <input
+            type="checkbox"
+            checked={showTechnicalDetails}
+            onChange={(event) => setShowTechnicalDetails(event.target.checked)}
+          />
+          Show technical controls on this and other pages
+        </label>
+        {uiMode === "simple" && !showTechnicalDetails ? (
+          <p className="tools-helper">
+            Simple mode is active. You can still grant access safely with the wizard below.
+          </p>
+        ) : null}
+      </div>
 
       <div className="split-grid">
         <div className="card">
@@ -452,14 +568,18 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
             <button type="button" className={grantWizardStep === 3 ? "active" : ""} onClick={() => onWizardJump(3)}>3. How Long</button>
           </div>
 
-          <label className="tools-advanced-toggle">
-            <input
-              type="checkbox"
-              checked={grantAdvanced}
-              onChange={(event) => setGrantAdvanced(event.target.checked)}
-            />
-            Advanced settings
-          </label>
+          {showTechnicalDetails ? (
+            <label className="tools-advanced-toggle">
+              <input
+                type="checkbox"
+                checked={grantAdvanced}
+                onChange={(event) => setGrantAdvanced(event.target.checked)}
+              />
+              Advanced settings
+            </label>
+          ) : (
+            <p className="tools-helper">Advanced settings are hidden. Turn on technical controls above to customize more.</p>
+          )}
 
           {grantWizardStep === 1 ? (
             <div className="advanced-block">
@@ -468,12 +588,16 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                   Scope
                   <HelpHint label="Scope help" text="More specific scopes win. Order is task > agent > session > global." />
                 </label>
-                <select value={scope} onChange={(event) => onScopeChange(event.target.value as GrantScope)}>
-                  <option value="global">Global</option>
-                  <option value="session">Session</option>
-                  <option value="agent">Agent</option>
-                  <option value="task">Task</option>
-                </select>
+                <GCSelect
+                  value={scope}
+                  onChange={(value) => onScopeChange(value as GrantScope)}
+                  options={[
+                    { value: "global", label: "Global" },
+                    { value: "session", label: "Session" },
+                    { value: "agent", label: "Agent" },
+                    { value: "task", label: "Task" },
+                  ]}
+                />
               </div>
               <div className={`tools-recommend ${isRecommendedScope ? "ok" : "warn"}`}>
                 <p>
@@ -492,18 +616,15 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                   <HelpHint label="Scope reference help" text="Choose exactly where this grant applies. Session and agent options are loaded for you." />
                 </label>
                 {scope === "session" || scope === "agent" ? (
-                  <select
+                  <GCCombobox
                     value={scopeRef}
-                    onChange={(event) => setScopeRef(event.target.value)}
+                    onChange={setScopeRef}
                     disabled={selectedScopeRefOptions.length === 0}
-                  >
-                    {selectedScopeRefOptions.length === 0 ? (
-                      <option value="">No {scope} options found</option>
-                    ) : null}
-                    {selectedScopeRefOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
+                    options={selectedScopeRefOptions.length === 0
+                      ? [{ value: "", label: `No ${scope} options found` }]
+                      : selectedScopeRefOptions}
+                    placeholder={`Choose ${scope}`}
+                  />
                 ) : (
                   <input
                     value={scopeRef}
@@ -535,14 +656,18 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                   Tool
                   <HelpHint label="Tool help" text="Pick the exact tool to allow or deny. Use * only for advanced wildcard rules." />
                 </label>
-                <select value={toolPattern} onChange={(event) => setToolPattern(event.target.value)}>
-                  {catalog.map((entry) => (
-                    <option key={entry.toolName} value={entry.toolName}>
-                      {entry.toolName} ({entry.riskLevel})
-                    </option>
-                  ))}
-                  {grantAdvanced ? <option value="*">*</option> : null}
-                </select>
+                <GCCombobox
+                  value={toolPattern}
+                  onChange={setToolPattern}
+                  placeholder="Pick tool"
+                  options={[
+                    ...catalog.map((entry) => ({
+                      value: entry.toolName,
+                      label: `${entry.toolName} (${entry.riskLevel})`,
+                    })),
+                    ...(grantAdvanced ? [{ value: "*", label: "*" }] : []),
+                  ]}
+                />
               </div>
               {selectedTool ? (
                 <p className="tools-helper">
@@ -555,10 +680,14 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                     Decision
                     <HelpHint label="Decision help" text="Allow lets the tool run in this scope. Deny blocks it, even if broader scopes allow it." />
                   </label>
-                  <select value={decision} onChange={(event) => setDecision(event.target.value as GrantDecision)}>
-                    <option value="allow">Allow</option>
-                    <option value="deny">Deny</option>
-                  </select>
+                  <GCSelect
+                    value={decision}
+                    onChange={(value) => setDecision(value as GrantDecision)}
+                    options={[
+                      { value: "allow", label: "Allow" },
+                      { value: "deny", label: "Deny" },
+                    ]}
+                  />
                 </div>
               ) : (
                 <p className="tools-helper">Decision: <strong>Allow</strong> (basic mode)</p>
@@ -573,14 +702,15 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                   Duration
                   <HelpHint label="Grant type help" text="One-time expires after one use. Persistent remains until revoked. TTL is available in advanced settings." />
                 </label>
-                <select
+                <GCSelect
                   value={grantType}
-                  onChange={(event) => setGrantType(event.target.value as GrantType)}
-                >
-                  <option value="one_time">One-time</option>
-                  <option value="persistent">Persistent</option>
-                  {grantAdvanced ? <option value="ttl">Expires at time (TTL)</option> : null}
-                </select>
+                  onChange={(value) => setGrantType(value as GrantType)}
+                  options={[
+                    { value: "one_time", label: "One-time" },
+                    { value: "persistent", label: "Persistent" },
+                    ...(grantAdvanced ? [{ value: "ttl", label: "Expires at time (TTL)" }] : []),
+                  ]}
+                />
               </div>
               {grantType === "ttl" ? (
                 <div className="controls-row">
@@ -628,42 +758,33 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
               Tool
               <HelpHint label="Evaluate tool help" text="Choose the tool you want to test against current policy and grants." />
             </label>
-            <select
+            <GCSelect
               value={evaluateForm.toolName}
-              onChange={(event) => setEvaluateForm((current) => ({ ...current, toolName: event.target.value }))}
-            >
-              {catalog.map((entry) => (
-                <option key={entry.toolName} value={entry.toolName}>{entry.toolName}</option>
-              ))}
-            </select>
+              onChange={(value) => setEvaluateForm((current) => ({ ...current, toolName: value }))}
+              options={catalog.map((entry) => ({ value: entry.toolName, label: entry.toolName }))}
+            />
           </div>
           <div className="controls-row">
             <label>Agent ID</label>
-            <select
+            <GCCombobox
               value={evaluateForm.agentId}
-              onChange={(event) => setEvaluateForm((current) => ({ ...current, agentId: event.target.value }))}
-            >
-              {evaluateAgentOptions.length === 0 ? (
-                <option value="">No agents found</option>
-              ) : null}
-              {evaluateAgentOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              onChange={(value) => setEvaluateForm((current) => ({ ...current, agentId: value }))}
+              options={evaluateAgentOptions.length === 0
+                ? [{ value: "", label: "No agents found" }]
+                : evaluateAgentOptions}
+              placeholder="Pick agent"
+            />
           </div>
           <div className="controls-row">
             <label>Session ID</label>
-            <select
+            <GCCombobox
               value={evaluateForm.sessionId}
-              onChange={(event) => setEvaluateForm((current) => ({ ...current, sessionId: event.target.value }))}
-            >
-              {evaluateSessionOptions.length === 0 ? (
-                <option value="">No sessions found</option>
-              ) : null}
-              {evaluateSessionOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              onChange={(value) => setEvaluateForm((current) => ({ ...current, sessionId: value }))}
+              options={evaluateSessionOptions.length === 0
+                ? [{ value: "", label: "No sessions found" }]
+                : evaluateSessionOptions}
+              placeholder="Pick session"
+            />
           </div>
           <details className="advanced-panel">
             <summary>Advanced fields</summary>
@@ -687,10 +808,12 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
                 {" | "}
                 Approval required: <strong>{evaluateResult.requiresApproval ? "Yes" : "No"}</strong>
               </p>
-              <details>
-                <summary>Raw response</summary>
-                <pre>{JSON.stringify(evaluateResult, null, 2)}</pre>
-              </details>
+              {showTechnicalDetails ? (
+                <details>
+                  <summary>Raw response</summary>
+                  <pre>{JSON.stringify(evaluateResult, null, 2)}</pre>
+                </details>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -705,43 +828,34 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
               Tool
               <HelpHint label="Dry-run tool help" text="Dry-run calls the tool with validation/safety checks so you can confirm behavior before live use." />
             </label>
-            <select
+            <GCSelect
               value={dryRunForm.toolName}
-              onChange={(event) => setDryRunForm((current) => ({ ...current, toolName: event.target.value }))}
-            >
-              {catalog.map((entry) => (
-                <option key={entry.toolName} value={entry.toolName}>{entry.toolName}</option>
-              ))}
-            </select>
+              onChange={(value) => setDryRunForm((current) => ({ ...current, toolName: value }))}
+              options={catalog.map((entry) => ({ value: entry.toolName, label: entry.toolName }))}
+            />
           </div>
           {selectedDryRunTool ? <p className="tools-helper">{selectedDryRunTool.description}</p> : null}
           <div className="controls-row">
             <label>Agent ID</label>
-            <select
+            <GCCombobox
               value={dryRunForm.agentId}
-              onChange={(event) => setDryRunForm((current) => ({ ...current, agentId: event.target.value }))}
-            >
-              {dryRunAgentOptions.length === 0 ? (
-                <option value="">No agents found</option>
-              ) : null}
-              {dryRunAgentOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              onChange={(value) => setDryRunForm((current) => ({ ...current, agentId: value }))}
+              options={dryRunAgentOptions.length === 0
+                ? [{ value: "", label: "No agents found" }]
+                : dryRunAgentOptions}
+              placeholder="Pick agent"
+            />
           </div>
           <div className="controls-row">
             <label>Session ID</label>
-            <select
+            <GCCombobox
               value={dryRunForm.sessionId}
-              onChange={(event) => setDryRunForm((current) => ({ ...current, sessionId: event.target.value }))}
-            >
-              {dryRunSessionOptions.length === 0 ? (
-                <option value="">No sessions found</option>
-              ) : null}
-              {dryRunSessionOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              onChange={(value) => setDryRunForm((current) => ({ ...current, sessionId: value }))}
+              options={dryRunSessionOptions.length === 0
+                ? [{ value: "", label: "No sessions found" }]
+                : dryRunSessionOptions}
+              placeholder="Pick session"
+            />
           </div>
           <details className="advanced-panel">
             <summary>Advanced fields</summary>
@@ -820,7 +934,7 @@ export function ToolsPage({ refreshKey }: ToolsPageProps) {
         </div>
       </div>
 
-      <div className="card">
+      <div className={`card ${showTechnicalDetails ? "" : "expert-only"}`}>
         <h3>Tool Catalog</h3>
         <div className="controls-row">
           <label>Filter</label>

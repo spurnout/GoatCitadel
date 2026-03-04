@@ -1,6 +1,6 @@
 {
   "environment": "local",
-  "defaultToolProfile": "chat-agent",
+  "defaultToolProfile": "standard",
   "dataDir": "./data",
   "transcriptsDir": "./data/transcripts",
   "auditDir": "./data/audit",

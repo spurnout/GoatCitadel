@@ -11,6 +11,7 @@ import type {
   MeshSessionOwnerRecord,
   MeshStatus,
 } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface MeshNodeRow {
   node_id: string;
@@ -494,7 +495,7 @@ function mapNodeRow(row: MeshNodeRow): MeshNodeRecord {
     advertiseAddress: row.advertise_address ?? undefined,
     transport: row.transport,
     status: row.status,
-    capabilities: JSON.parse(row.capabilities_json) as string[],
+    capabilities: safeJsonParse<string[]>(row.capabilities_json, []),
     tlsFingerprint: row.tls_fingerprint ?? undefined,
     joinedAt: row.joined_at,
     lastSeenAt: row.last_seen_at,
@@ -526,7 +527,7 @@ function mapReplicationRow(row: MeshReplicationRow): MeshReplicationRecord {
     replicationId: row.replication_id,
     sourceNodeId: row.source_node_id,
     eventType: row.event_type,
-    payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {}),
     idempotencyKey: row.idempotency_key,
     createdAt: row.created_at,
   };

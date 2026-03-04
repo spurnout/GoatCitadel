@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ToolRiskLevel } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 export interface ToolAccessDecisionRecord {
   decisionId: string;
@@ -117,7 +118,7 @@ export function mapToolAccessDecisionRow(row: ToolAccessDecisionRow): ToolAccess
     sessionId: row.session_id,
     taskId: row.task_id ?? undefined,
     allowed: Boolean(row.allowed),
-    reasonCodes: JSON.parse(row.reason_codes_json) as string[],
+    reasonCodes: safeJsonParse<string[]>(row.reason_codes_json, []),
     matchedGrantId: row.matched_grant_id ?? undefined,
     requiresApproval: Boolean(row.requires_approval),
     riskLevel: row.risk_level,

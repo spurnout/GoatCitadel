@@ -22,6 +22,7 @@ import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
+import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
@@ -209,6 +210,7 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [voiceTalkMode, setVoiceTalkMode] = useState<"push_to_talk" | "wake">("push_to_talk");
   const [voiceFile, setVoiceFile] = useState<File | null>(null);
   const [voiceTranscriptResult, setVoiceTranscriptResult] = useState("");
+  const [voiceActionInfo, setVoiceActionInfo] = useState("");
   const [criticalConfirmed, setCriticalConfirmed] = useState(false);
   const [changeReview, setChangeReview] = useState<{
     overall: "safe" | "warning" | "critical";
@@ -491,8 +493,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await startVoiceTalkSession({ mode: voiceTalkMode });
       await refreshVoiceRuntime();
+      setVoiceActionInfo(`Talk Mode started (${formatTalkModeLabel(voiceTalkMode)}).`);
       setError(null);
     } catch (err) {
+      setVoiceActionInfo("");
       setError((err as Error).message);
     } finally {
       setVoiceBusy(false);
@@ -507,8 +511,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await stopVoiceTalkSession(voiceStatus.talk.activeSessionId);
       await refreshVoiceRuntime();
+      setVoiceActionInfo("Talk Mode stopped.");
       setError(null);
     } catch (err) {
+      setVoiceActionInfo("");
       setError((err as Error).message);
     } finally {
       setVoiceBusy(false);
@@ -520,8 +526,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await startVoiceWake();
       await refreshVoiceRuntime();
+      setVoiceActionInfo("Wake listener enabled.");
       setError(null);
     } catch (err) {
+      setVoiceActionInfo("");
       setError((err as Error).message);
     } finally {
       setVoiceBusy(false);
@@ -533,8 +541,10 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await stopVoiceWake();
       await refreshVoiceRuntime();
+      setVoiceActionInfo("Wake listener disabled.");
       setError(null);
     } catch (err) {
+      setVoiceActionInfo("");
       setError((err as Error).message);
     } finally {
       setVoiceBusy(false);
@@ -555,8 +565,12 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       });
       setVoiceTranscriptResult(result.text);
       await refreshVoiceRuntime();
+      setVoiceActionInfo(
+        `Transcription completed with ${result.provider}${typeof result.durationMs === "number" ? ` in ${result.durationMs}ms` : ""}.`,
+      );
       setError(null);
     } catch (err) {
+      setVoiceActionInfo("");
       setError((err as Error).message);
     } finally {
       setVoiceBusy(false);
@@ -682,23 +696,23 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <p>Use auth modes for local/online hosting. Mission Control stores your client creds locally in this browser.</p>
         <div className="controls-row">
           <label htmlFor="authMode">Auth Mode</label>
-          <select
+          <GCSelect
             id="authMode"
             value={authMode}
-            onChange={(event) => setAuthMode(event.target.value as "none" | "token" | "basic")}
-          >
-            <option value="none">none (local trusted)</option>
-            <option value="token">token</option>
-            <option value="basic">basic</option>
-          </select>
+            onChange={(value) => setAuthMode(value as "none" | "token" | "basic")}
+            options={[
+              { value: "none", label: "none (local trusted)" },
+              { value: "token", label: "token" },
+              { value: "basic", label: "basic" },
+            ]}
+          />
         </div>
         <div className="controls-row">
-          <label htmlFor="allowLoopbackBypass">Allow loopback bypass</label>
-          <input
+          <GCSwitch
             id="allowLoopbackBypass"
-            type="checkbox"
             checked={allowLoopbackBypass}
-            onChange={(event) => setAllowLoopbackBypass(event.target.checked)}
+            onCheckedChange={setAllowLoopbackBypass}
+            label="Allow loopback bypass"
           />
         </div>
         {authMode === "token" ? (
@@ -745,22 +759,60 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <HelpHint label="Voice runtime help" text="Talk Mode and Wake use your local voice runtime. Whisper.cpp is the default offline transcription provider." />
         </h3>
         <p className="office-subtitle">Local-first voice controls with no required cloud API key.</p>
-        <div className="controls-row">
-          <p>STT provider: <strong>{voiceStatus?.stt.provider ?? "unknown"}</strong></p>
-          <p>STT state: <strong>{voiceStatus?.stt.state ?? "unknown"}</strong></p>
-          <p>Wake state: <strong>{voiceStatus?.wake.state ?? "unknown"}</strong></p>
-          <p>Talk state: <strong>{voiceStatus?.talk.state ?? "unknown"}</strong></p>
+        <div className="voice-status-grid">
+          <article className="voice-status-card">
+            <h4>Speech To Text</h4>
+            <p><strong>Provider:</strong> {voiceStatus?.stt.provider ?? "unknown"}</p>
+            <p><strong>State:</strong> {voiceStatus?.stt.state ?? "unknown"}</p>
+            <p className="table-subtext">{describeVoiceState(voiceStatus?.stt.state)}</p>
+            <p className="table-subtext">Updated: {formatVoiceDate(voiceStatus?.stt.updatedAt)}</p>
+          </article>
+          <article className="voice-status-card">
+            <h4>Talk Mode</h4>
+            <p><strong>State:</strong> {voiceStatus?.talk.state ?? "unknown"}</p>
+            <p><strong>Mode:</strong> {formatTalkModeLabel(voiceStatus?.talk.mode)}</p>
+            <p><strong>Active session:</strong> {voiceStatus?.talk.activeSessionId ?? "none"}</p>
+            <p className="table-subtext">{describeVoiceState(voiceStatus?.talk.state)}</p>
+            <p className="table-subtext">Updated: {formatVoiceDate(voiceStatus?.talk.updatedAt)}</p>
+          </article>
+          <article className="voice-status-card">
+            <h4>Wake Listener</h4>
+            <p><strong>Enabled:</strong> {voiceStatus?.wake.enabled ? "yes" : "no"}</p>
+            <p><strong>State:</strong> {voiceStatus?.wake.state ?? "unknown"}</p>
+            <p><strong>Model:</strong> {voiceStatus?.wake.model ?? "unknown"}</p>
+            <p className="table-subtext">{describeVoiceState(voiceStatus?.wake.state)}</p>
+            <p className="table-subtext">Updated: {formatVoiceDate(voiceStatus?.wake.updatedAt)}</p>
+          </article>
         </div>
+        {voiceStatus?.stt.lastError ? (
+          <p className="error">Last STT error: {voiceStatus.stt.lastError}</p>
+        ) : null}
+        {voiceActionInfo ? <p className="status-banner">{voiceActionInfo}</p> : null}
+        <article className="voice-help-card">
+          <h4>What Each Button Does</h4>
+          <ul className="voice-help-list">
+            <li><strong>Start Talk Mode:</strong> Creates a talk session and begins live listening flow using the selected mode.</li>
+            <li><strong>Stop Talk Mode:</strong> Stops the current talk session and clears active session state.</li>
+            <li><strong>Enable Wake:</strong> Turns on wake-word listener mode (for hands-free trigger workflows).</li>
+            <li><strong>Disable Wake:</strong> Turns wake-word listener off immediately.</li>
+            <li><strong>Refresh Voice Status:</strong> Re-reads current runtime status from gateway without changing state.</li>
+            <li><strong>Run Local Transcription:</strong> Uploads your selected audio file for one-shot local STT test.</li>
+          </ul>
+          <p className="office-subtitle">
+            Setup note: local transcription requires <code>GOATCITADEL_WHISPER_CPP_BIN</code> set to your whisper.cpp CLI binary path.
+          </p>
+        </article>
         <div className="controls-row">
           <label htmlFor="voiceTalkMode">Talk mode</label>
-          <select
+          <GCSelect
             id="voiceTalkMode"
             value={voiceTalkMode}
-            onChange={(event) => setVoiceTalkMode(event.target.value as "push_to_talk" | "wake")}
-          >
-            <option value="push_to_talk">Push to talk</option>
-            <option value="wake">Wake triggered</option>
-          </select>
+            onChange={(value) => setVoiceTalkMode(value as "push_to_talk" | "wake")}
+            options={[
+              { value: "push_to_talk", label: "Push to talk" },
+              { value: "wake", label: "Wake triggered" },
+            ]}
+          />
           <button onClick={onStartVoiceTalk} disabled={voiceBusy || voiceStatus?.talk.state === "running"}>
             Start Talk Mode
           </button>
@@ -811,39 +863,39 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         </div>
         <div className="controls-row">
           <label htmlFor="budgetMode">Budget Mode</label>
-          <select
+          <GCSelect
             id="budgetMode"
             value={budgetMode}
-            onChange={(event) => setBudgetMode(event.target.value as "saver" | "balanced" | "power")}
-          >
-            <option value="saver">saver</option>
-            <option value="balanced">balanced</option>
-            <option value="power">power</option>
-          </select>
+            onChange={(value) => setBudgetMode(value as "saver" | "balanced" | "power")}
+            options={[
+              { value: "saver", label: "saver" },
+              { value: "balanced", label: "balanced" },
+              { value: "power", label: "power" },
+            ]}
+          />
         </div>
         <details className="advanced-panel">
           <summary>Advanced runtime options</summary>
           <div className="controls-row">
             <label htmlFor="allowlistPreset">Allowlist Preset</label>
-            <select
+            <GCSelect
               id="allowlistPreset"
               value={allowlistPreset}
-              onChange={(event) => {
-                const nextPreset = event.target.value;
+              onChange={(nextPreset) => {
                 setAllowlistPreset(nextPreset);
                 const preset = ALLOWLIST_PRESETS.find((item) => item.id === nextPreset);
                 if (preset) {
                   setNetworkAllowlistText(preset.hosts.join("\n"));
                 }
               }}
-            >
-              {ALLOWLIST_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
-              <option value="custom">custom</option>
-            </select>
+              options={[
+                ...ALLOWLIST_PRESETS.map((preset) => ({
+                  value: preset.id,
+                  label: preset.label,
+                })),
+                { value: "custom", label: "custom" },
+              ]}
+            />
           </div>
           <label htmlFor="allowlist">Network Allowlist (one host/pattern per line)</label>
           <textarea
@@ -1020,25 +1072,24 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         </p>
         <div className="controls-row">
           <label htmlFor="chatPromptPreset">Prompt Preset</label>
-          <select
+          <GCSelect
             id="chatPromptPreset"
             value={chatPromptPresetId}
-            onChange={(event) => {
-              const nextPreset = event.target.value;
+            onChange={(nextPreset) => {
               setChatPromptPresetId(nextPreset);
               const preset = CHAT_PROMPT_PRESETS.find((item) => item.id === nextPreset);
               if (preset) {
                 setChatPrompt(preset.prompt);
               }
             }}
-          >
-            {CHAT_PROMPT_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-            <option value="custom">custom</option>
-          </select>
+            options={[
+              ...CHAT_PROMPT_PRESETS.map((preset) => ({
+                value: preset.id,
+                label: preset.label,
+              })),
+              { value: "custom", label: "custom" },
+            ]}
+          />
         </div>
         <textarea
           rows={4}
@@ -1047,12 +1098,11 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           onChange={(event) => setChatPrompt(event.target.value)}
         />
         <div className="controls-row">
-          <label htmlFor="chatUseMemory">Include memory context (QMD)</label>
-          <input
+          <GCSwitch
             id="chatUseMemory"
-            type="checkbox"
             checked={chatUseMemory}
-            onChange={(event) => setChatUseMemory(event.target.checked)}
+            onCheckedChange={setChatUseMemory}
+            label="Include memory context (QMD)"
           />
         </div>
         <div className="controls-row">
@@ -1062,6 +1112,40 @@ export function SettingsPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
     </section>
   );
+}
+
+function describeVoiceState(state?: VoiceStatus["stt"]["state"]): string {
+  if (state === "running") {
+    return "Runtime is currently active.";
+  }
+  if (state === "error") {
+    return "Runtime hit an error and needs attention.";
+  }
+  if (state === "stopped") {
+    return "Runtime is idle.";
+  }
+  return "State unknown.";
+}
+
+function formatTalkModeLabel(mode?: VoiceStatus["talk"]["mode"]): string {
+  if (mode === "push_to_talk") {
+    return "Push to talk";
+  }
+  if (mode === "wake") {
+    return "Wake triggered";
+  }
+  return "Not set";
+}
+
+function formatVoiceDate(value?: string): string {
+  if (!value) {
+    return "-";
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return value;
+  }
+  return new Date(parsed).toLocaleString();
 }
 
 function matchAllowlistPreset(allowlist: string[]): string {

@@ -73,4 +73,8 @@ export interface MemoryQmdStatsResponse {
   originalTokenEstimate: number;
   distilledTokenEstimate: number;
   savingsPercent: number;
+  netTokenDelta: number;
+  compressionPercent: number;
+  expansionPercent: number;
+  efficiencyLabel: "reduced" | "expanded" | "neutral";
 }

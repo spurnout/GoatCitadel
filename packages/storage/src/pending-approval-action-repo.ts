@@ -1,5 +1,6 @@
 import type { PendingApprovalAction } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
+import { safeJsonParse } from "./safe-json.js";
 
 interface PendingActionRow {
   approval_id: string;
@@ -100,10 +101,10 @@ function mapPendingRow(row: PendingActionRow): PendingApprovalAction {
   return {
     approvalId: row.approval_id,
     actionType: row.action_type,
-    request: JSON.parse(row.request_json) as Record<string, unknown>,
+    request: safeJsonParse<Record<string, unknown>>(row.request_json, {}),
     createdAt: row.created_at,
     resolvedAt: row.resolved_at ?? undefined,
     resolutionStatus: row.resolution_status,
-    result: row.result_json ? (JSON.parse(row.result_json) as Record<string, unknown>) : undefined,
+    result: row.result_json ? safeJsonParse<Record<string, unknown>>(row.result_json, {}) : undefined,
   };
 }

@@ -15,6 +15,7 @@ export type TabId =
   | "skills"
   | "costs"
   | "settings"
+  | "workspaces"
   | "tools"
   | "approvals"
   | "tasks"
@@ -33,6 +34,7 @@ export interface GuideTerm {
 export interface GuideCopy {
   what: string;
   when: string;
+  mostCommonAction?: string;
   actions: string[];
   terms?: GuideTerm[];
 }
@@ -49,6 +51,7 @@ export interface GlobalCopy {
     title: string;
     what: string;
     when: string;
+    mostCommonAction: string;
     actions: string;
     terms: string;
   };

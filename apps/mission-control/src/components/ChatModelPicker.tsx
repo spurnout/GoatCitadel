@@ -1,3 +1,5 @@
+import { GCCombobox, GCSelect } from "./ui";
+
 export interface ChatModelProviderOption {
   providerId: string;
   label: string;
@@ -24,30 +26,34 @@ export function ChatModelPicker({
 
   return (
     <div className="chat-model-picker">
-      <select
+      <GCSelect
         value={activeProvider?.providerId ?? ""}
         disabled={disabled || providers.length === 0}
-        onChange={(event) => onChangeProvider(event.target.value)}
+        onChange={onChangeProvider}
         aria-label="Provider"
-      >
-        {providers.map((provider) => (
-          <option key={provider.providerId} value={provider.providerId}>
-            {provider.label}
-          </option>
-        ))}
-      </select>
-      <select
-        value={model ?? models[0] ?? ""}
-        disabled={disabled || models.length === 0}
-        onChange={(event) => onChangeModel(event.target.value)}
-        aria-label="Model"
-      >
-        {models.map((item) => (
-          <option key={item} value={item}>
-            {item}
-          </option>
-        ))}
-      </select>
+        options={providers.map((provider) => ({
+          value: provider.providerId,
+          label: provider.label,
+        }))}
+      />
+      {models.length > 12 ? (
+        <GCCombobox
+          value={model ?? models[0] ?? ""}
+          disabled={disabled || models.length === 0}
+          onChange={onChangeModel}
+          aria-label="Model"
+          placeholder="Search model..."
+          options={models.map((item) => ({ value: item, label: item }))}
+        />
+      ) : (
+        <GCSelect
+          value={model ?? models[0] ?? ""}
+          disabled={disabled || models.length === 0}
+          onChange={onChangeModel}
+          aria-label="Model"
+          options={models.map((item) => ({ value: item, label: item }))}
+        />
+      )}
     </div>
   );
 }

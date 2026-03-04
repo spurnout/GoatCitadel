@@ -69,6 +69,8 @@ import { ChatTraceCard } from "../components/ChatTraceCard";
 import { CoworkCanvasPanel } from "../components/CoworkCanvasPanel";
 import { HelpHint } from "../components/HelpHint";
 import { InlineApprovalPrompt } from "../components/InlineApprovalPrompt";
+import { GCCombobox, GCSelect, GCSwitch } from "../components/ui";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
 
 const STREAM_PREF_KEY = "goatcitadel.chat.agent.stream.enabled";
@@ -85,7 +87,7 @@ interface CommandCatalogItem {
   description: string;
 }
 
-export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
+export function ChatPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
   const [projects, setProjects] = useState<ChatProjectsResponse | null>(null);
   const [sessions, setSessions] = useState<ChatSessionsResponse | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
@@ -104,6 +106,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,16 +132,17 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const lastLoadedSessionIdRef = useRef<string | null>(null);
   const shouldFollowMessagesRef = useRef(true);
   const previousMessageCountRef = useRef(0);
+  const lastLocalPrefMutationAtRef = useRef(0);
 
   const loadSidebar = useCallback(async () => {
     const [nextProjects, nextSessions] = await Promise.all([
-      fetchChatProjects("all", 500),
-      fetchChatSessions({ scope: "all", view: "all", limit: 500 }),
+      fetchChatProjects("all", 500, workspaceId),
+      fetchChatSessions({ scope: "all", view: "all", limit: 500, workspaceId }),
     ]);
     setProjects(nextProjects);
     setSessions(nextSessions);
     setSelectedSessionId((current) => current ?? nextSessions.items[0]?.sessionId ?? null);
-  }, []);
+  }, [workspaceId]);
 
   const loadRuntimeCatalog = useCallback(async () => {
     const [runtimeSettings, commands] = await Promise.all([fetchSettings(), fetchChatCommandCatalog()]);
@@ -146,18 +150,30 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setCommandCatalog(commands.items);
   }, []);
 
-  const loadSessionState = useCallback(async (sessionId: string) => {
-    setMessagesLoading(true);
+  const loadSessionState = useCallback(async (
+    sessionId: string,
+    options: {
+      background?: boolean;
+      includeMessages?: boolean;
+    } = {},
+  ) => {
+    const background = options.background ?? false;
+    const includeMessages = options.includeMessages ?? true;
+    if (!background) {
+      setMessagesLoading(true);
+    }
     try {
       const [nextMessages, nextBinding, nextPrefs, nextProactiveStatus, nextProactiveRuns, nextMemory] = await Promise.all([
-        fetchChatMessages(sessionId, 500),
+        includeMessages ? fetchChatMessages(sessionId, 500) : Promise.resolve(undefined),
         fetchChatSessionBinding(sessionId),
         fetchChatSessionPrefs(sessionId),
         fetchChatProactiveStatus(sessionId),
         fetchChatProactiveRuns(sessionId, 30),
         fetchChatLearnedMemory(sessionId, 80),
       ]);
-      setMessages(nextMessages.items);
+      if (nextMessages) {
+        setMessages(nextMessages.items);
+      }
       setBinding(nextBinding.item);
       setPrefs(nextPrefs);
       setProactiveStatus(nextProactiveStatus.policy);
@@ -167,9 +183,36 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setLatestTrace(null);
       setPendingApproval(null);
     } finally {
-      setMessagesLoading(false);
+      if (!background) {
+        setMessagesLoading(false);
+      }
     }
   }, []);
+
+  const refreshSidebar = useCallback(async (
+    options: {
+      refreshSession?: "none" | "light" | "full";
+    } = {},
+  ) => {
+    if (!initializedRef.current) {
+      return;
+    }
+    const refreshSession = options.refreshSession ?? "light";
+    setIsRefreshing(true);
+    try {
+      await loadSidebar();
+      if (selectedSessionId && refreshSession !== "none") {
+        await loadSessionState(selectedSessionId, {
+          background: true,
+          includeMessages: refreshSession === "full",
+        });
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadSessionState, loadSidebar, selectedSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -191,10 +234,30 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   useEffect(() => {
     if (!initializedRef.current) return;
     const timer = window.setTimeout(() => {
-      void loadSidebar().catch((err: Error) => setError(err.message));
+      void refreshSidebar({ refreshSession: "none" });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [loadSidebar, refreshKey]);
+  }, [refreshKey, refreshSidebar]);
+
+  useRefreshSubscription(
+    "chat",
+    async (signal) => {
+      const now = Date.now();
+      const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
+      const localPrefEcho = now - lastLocalPrefMutationAtRef.current < 2500
+        && /\b(pref|policy|session|proactive|retrieval|reflection|mode)\b/.test(haystack);
+      const mentionsMessages = /\b(message|turn|assistant|user|tool|trace|approval)\b/.test(haystack);
+      await refreshSidebar({
+        refreshSession: localPrefEcho ? "none" : (mentionsMessages ? "full" : "light"),
+      });
+    },
+    {
+      enabled: !loading,
+      coalesceMs: 800,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+    },
+  );
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -215,7 +278,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
       setPendingApproval(null);
       lastLoadedSessionIdRef.current = selectedSessionId;
     }
-    void loadSessionState(selectedSessionId).catch((err: Error) => setError(err.message));
+    void loadSessionState(selectedSessionId, { background: false, includeMessages: true }).catch((err: Error) => setError(err.message));
   }, [loadSessionState, selectedSessionId]);
 
   useEffect(() => {
@@ -296,12 +359,14 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const ensureSession = useCallback(async (): Promise<ChatSessionRecord> => {
     if (selectedSession) return selectedSession;
     const created = await createChatSession(
-      selectedProjectId !== "all" && selectedProjectId !== "none" ? { projectId: selectedProjectId } : undefined,
+      selectedProjectId !== "all" && selectedProjectId !== "none"
+        ? { workspaceId, projectId: selectedProjectId }
+        : { workspaceId },
     );
     await loadSidebar();
     setSelectedSessionId(created.sessionId);
     return created;
-  }, [loadSidebar, selectedProjectId, selectedSession]);
+  }, [loadSidebar, selectedProjectId, selectedSession, workspaceId]);
 
   const uploadAttachments = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
@@ -373,6 +438,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
     },
   ) => {
     if (!selectedSession) return;
+    lastLocalPrefMutationAtRef.current = Date.now();
     try {
       const updated = await updateChatProactivePolicy(selectedSession.sessionId, patch);
       setProactiveStatus(updated);
@@ -761,6 +827,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   const handlePrefPatch = useCallback(async (patch: ChatSessionPrefsPatch) => {
     if (!selectedSession) return;
+    lastLocalPrefMutationAtRef.current = Date.now();
     try {
       const updated = await updateChatSessionPrefs(selectedSession.sessionId, patch);
       setPrefs(updated);
@@ -791,6 +858,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
         />
       </header>
       {error ? <p className="error">{error}</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing chat context...</p> : null}
 
       <div className="chat-v11-shell">
         <aside className="card chat-v11-left">
@@ -798,7 +866,11 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <ActionButton label="New Chat" pending={sending} onClick={async () => {
               setSending(true);
               try {
-                const created = await createChatSession(selectedProjectId !== "all" && selectedProjectId !== "none" ? { projectId: selectedProjectId } : undefined);
+                const created = await createChatSession(
+                  selectedProjectId !== "all" && selectedProjectId !== "none"
+                    ? { workspaceId, projectId: selectedProjectId }
+                    : { workspaceId },
+                );
                 await loadSidebar();
                 setSelectedSessionId(created.sessionId);
               } catch (err) {
@@ -817,7 +889,11 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
               if (!name) return;
               setSending(true);
               try {
-                const created = await createChatProject({ name, workspacePath: projectPath.trim() || "chat/default" });
+                const created = await createChatProject({
+                  workspaceId,
+                  name,
+                  workspacePath: projectPath.trim() || "chat/default",
+                });
                 setProjectName("");
                 setSelectedProjectId(created.projectId);
                 await loadSidebar();
@@ -875,50 +951,63 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
               onChangeModel={(model) => void handlePrefPatch({ model })}
             />
             <label className="chat-v11-select">Thinking
-              <select value={prefs?.thinkingLevel ?? "standard"} disabled={!selectedSessionId || sending} onChange={(event) => void handlePrefPatch({ thinkingLevel: event.target.value as "minimal" | "standard" | "extended" })}>
-                <option value="minimal">Minimal</option>
-                <option value="standard">Standard</option>
-                <option value="extended">Extended</option>
-              </select>
+              <GCSelect
+                value={prefs?.thinkingLevel ?? "standard"}
+                disabled={!selectedSessionId || sending}
+                onChange={(value) => void handlePrefPatch({ thinkingLevel: value as "minimal" | "standard" | "extended" })}
+                options={[
+                  { value: "minimal", label: "Minimal" },
+                  { value: "standard", label: "Standard" },
+                  { value: "extended", label: "Extended" },
+                ]}
+              />
             </label>
             <label className="chat-v11-select">Web
-              <select value={prefs?.webMode ?? "auto"} disabled={!selectedSessionId || sending} onChange={(event) => void handlePrefPatch({ webMode: event.target.value as "auto" | "off" | "quick" | "deep" })}>
-                <option value="auto">Auto</option>
-                <option value="off">Off</option>
-                <option value="quick">Quick</option>
-                <option value="deep">Deep</option>
-              </select>
+              <GCSelect
+                value={prefs?.webMode ?? "auto"}
+                disabled={!selectedSessionId || sending}
+                onChange={(value) => void handlePrefPatch({ webMode: value as "auto" | "off" | "quick" | "deep" })}
+                options={[
+                  { value: "auto", label: "Auto" },
+                  { value: "off", label: "Off" },
+                  { value: "quick", label: "Quick" },
+                  { value: "deep", label: "Deep" },
+                ]}
+              />
             </label>
             <label className="chat-v11-select">Proactive
-              <select
+              <GCSelect
                 value={proactiveStatus?.mode ?? prefs?.proactiveMode ?? "off"}
                 disabled={!selectedSessionId || sending}
-                onChange={(event) => void handleProactivePolicyPatch({ proactiveMode: event.target.value as "off" | "suggest" | "auto_safe" })}
-              >
-                <option value="off">Off</option>
-                <option value="suggest">Suggest</option>
-                <option value="auto_safe">Auto-safe</option>
-              </select>
+                onChange={(value) => void handleProactivePolicyPatch({ proactiveMode: value as "off" | "suggest" | "auto_safe" })}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "suggest", label: "Suggest" },
+                  { value: "auto_safe", label: "Auto-safe" },
+                ]}
+              />
             </label>
             <label className="chat-v11-select">Retrieval
-              <select
+              <GCSelect
                 value={proactiveStatus?.retrievalMode ?? prefs?.retrievalMode ?? "standard"}
                 disabled={!selectedSessionId || sending}
-                onChange={(event) => void handleProactivePolicyPatch({ retrievalMode: event.target.value as "standard" | "layered" })}
-              >
-                <option value="standard">Standard</option>
-                <option value="layered">Layered</option>
-              </select>
+                onChange={(value) => void handleProactivePolicyPatch({ retrievalMode: value as "standard" | "layered" })}
+                options={[
+                  { value: "standard", label: "Standard" },
+                  { value: "layered", label: "Layered" },
+                ]}
+              />
             </label>
             <label className="chat-v11-select">Reflection
-              <select
+              <GCSelect
                 value={proactiveStatus?.reflectionMode ?? prefs?.reflectionMode ?? "off"}
                 disabled={!selectedSessionId || sending}
-                onChange={(event) => void handleProactivePolicyPatch({ reflectionMode: event.target.value as "off" | "on" })}
-              >
-                <option value="off">Off</option>
-                <option value="on">On</option>
-              </select>
+                onChange={(value) => void handleProactivePolicyPatch({ reflectionMode: value as "off" | "on" })}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "on", label: "On" },
+                ]}
+              />
             </label>
             <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleSuggestDelegation()}>
               Suggest delegation
@@ -926,7 +1015,7 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
             <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleTriggerProactive()}>
               Run proactive
             </button>
-            <label className="chat-v11-toggle"><input type="checkbox" checked={streamEnabled} onChange={(event) => setStreamEnabled(event.target.checked)} />Stream</label>
+            <GCSwitch checked={streamEnabled} onCheckedChange={setStreamEnabled} label="Stream" />
           </div>
 
           {selectedSession ? (
@@ -1023,12 +1112,22 @@ export function ChatPage({ refreshKey = 0 }: { refreshKey?: number }) {
                     setSending(false);
                   }
                 }} />
-                <select value={selectedSessionProjectValue} onChange={(event) => void assignChatSessionProject(selectedSession.sessionId, event.target.value === "none" ? undefined : event.target.value).then(loadSidebar).catch((err) => setError((err as Error).message))}>
-                  <option value="none">Unassigned</option>
-                  {(projects?.items ?? []).filter((item) => item.lifecycleStatus === "active").map((project) => (
-                    <option key={project.projectId} value={project.projectId}>{project.name}</option>
-                  ))}
-                </select>
+                <GCCombobox
+                  value={selectedSessionProjectValue}
+                  onChange={(value) => {
+                    void assignChatSessionProject(
+                      selectedSession.sessionId,
+                      value === "none" ? undefined : value,
+                    ).then(loadSidebar).catch((err) => setError((err as Error).message));
+                  }}
+                  placeholder="Pick project"
+                  options={[
+                    { value: "none", label: "Unassigned" },
+                    ...(projects?.items ?? [])
+                      .filter((item) => item.lifecycleStatus === "active")
+                      .map((project) => ({ value: project.projectId, label: project.name })),
+                  ]}
+                />
               </div>
 
               {selectedSession.scope === "external" && (!binding || !binding.writable) ? <div className="status-banner warning">This external chat is read-only right now. Set a connection and target before sending replies out.</div> : null}

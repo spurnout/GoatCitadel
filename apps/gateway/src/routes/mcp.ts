@@ -73,6 +73,10 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ items: fastify.gateway.listMcpServers() });
   });
 
+  fastify.get("/api/v1/mcp/templates", async (_request, reply) => {
+    return reply.send({ items: fastify.gateway.listMcpTemplates() });
+  });
+
   fastify.post("/api/v1/mcp/servers", async (request, reply) => {
     const parsed = createServerSchema.safeParse(request.body);
     if (!parsed.success) {

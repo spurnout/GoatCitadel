@@ -9,8 +9,12 @@ import type {
 import {
   fetchBankrActionAudit,
   fetchBankrSafetyPolicy,
+  fetchSkillImportHistory,
+  fetchSkillSources,
   fetchSkills,
+  installSkillImport,
   reloadSkills,
+  validateSkillImport,
   updateSkillState,
   patchBankrSafetyPolicy,
   previewBankrAction,
@@ -19,7 +23,10 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { HelpHint } from "../components/HelpHint";
+import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
+import { useUiPreferences } from "../state/ui-preferences";
 
 interface SkillActivationPolicyState {
   guardedAutoThreshold: number;
@@ -34,6 +41,7 @@ interface BankrPolicyState extends BankrSafetyPolicy {
 const STATE_OPTIONS: SkillRuntimeState[] = ["enabled", "sleep", "disabled"];
 
 export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
+  const { mode } = useUiPreferences();
   const [skills, setSkills] = useState<SkillListItem[]>([]);
   const [policy, setPolicy] = useState<SkillActivationPolicyState | null>(null);
   const [bankrPolicy, setBankrPolicy] = useState<BankrPolicyState | null>(null);
@@ -43,7 +51,8 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [bankrPreview, setBankrPreview] = useState<BankrActionPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [savingPolicy, setSavingPolicy] = useState(false);
   const [savingBankrPolicy, setSavingBankrPolicy] = useState(false);
@@ -51,15 +60,53 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [stateDraftBySkill, setStateDraftBySkill] = useState<Record<string, SkillRuntimeState>>({});
   const [noteDraftBySkill, setNoteDraftBySkill] = useState<Record<string, string>>({});
   const [stateFilter, setStateFilter] = useState<"all" | SkillRuntimeState>("all");
+  const [sourceQuery, setSourceQuery] = useState("");
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourceItems, setSourceItems] = useState<Array<{
+    canonicalKey: string;
+    sourceProvider: "agentskill" | "skillsmp" | "github" | "local";
+    sourceUrl: string;
+    repositoryUrl?: string;
+    name: string;
+    description: string;
+    tags: string[];
+    updatedAt?: string;
+    alternateProviders: Array<"agentskill" | "skillsmp" | "github" | "local">;
+    qualityScore: number;
+    freshnessScore: number;
+    trustScore: number;
+    combinedScore: number;
+  }>>([]);
+  const [sourceProviders, setSourceProviders] = useState<Array<{
+    provider: "agentskill" | "skillsmp" | "github" | "local";
+    providerLabel: string;
+    available: boolean;
+    status: "ok" | "degraded" | "unavailable";
+    error?: string;
+    latencyMs?: number;
+  }>>([]);
+  const [importSourceRef, setImportSourceRef] = useState("");
+  const [importSourceType, setImportSourceType] = useState<"local_path" | "local_zip" | "git_url">("local_path");
+  const [importSourceProvider, setImportSourceProvider] = useState<"local" | "github" | "agentskill" | "skillsmp">("local");
+  const [validationResult, setValidationResult] = useState<Awaited<ReturnType<typeof validateSkillImport>> | null>(null);
+  const [importHistory, setImportHistory] = useState<Awaited<ReturnType<typeof fetchSkillImportHistory>>["items"]>([]);
+  const [importBusy, setImportBusy] = useState<null | "validate" | "install">(null);
+  const [confirmHighRiskImport, setConfirmHighRiskImport] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
     try {
-      const [skillsResponse, policyResponse, bankrPolicyResponse, bankrAuditResponse] = await Promise.all([
+      const [skillsResponse, policyResponse, bankrPolicyResponse, bankrAuditResponse, importHistoryResponse] = await Promise.all([
         fetchSkills(),
         fetchSkillActivationPolicies(),
         fetchBankrSafetyPolicy(),
         fetchBankrActionAudit({ limit: 20 }),
+        fetchSkillImportHistory(30),
       ]);
       setSkills(skillsResponse.items);
       setPolicy({
@@ -72,6 +119,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         blockedSymbolsText: (bankrPolicyResponse.blockedSymbols ?? []).join(", "),
       });
       setBankrAudit(bankrAuditResponse.items);
+      setImportHistory(importHistoryResponse.items);
       setStateDraftBySkill(Object.fromEntries(skillsResponse.items.map((skill) => [skill.skillId, skill.state])));
       setNoteDraftBySkill(Object.fromEntries(skillsResponse.items.map((skill) => [skill.skillId, skill.note ?? ""])));
       setBankrPreview(null);
@@ -79,13 +127,30 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    void load();
+    void load({ background: false });
   }, [load, refreshKey]);
+
+  useRefreshSubscription(
+    "skills",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1100,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+    },
+  );
 
   const filteredSkills = useMemo(
     () => skills.filter((skill) => stateFilter === "all" ? true : skill.state === stateFilter),
@@ -95,7 +160,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const onReload = useCallback(async () => {
     try {
       await reloadSkills();
-      await load();
+      await load({ background: true });
       setStatus("Skills reloaded.");
     } catch (err) {
       setError((err as Error).message);
@@ -188,7 +253,7 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         state: draftState,
         note: draftNote.trim() || undefined,
       });
-      await load();
+      await load({ background: true });
       setStatus(`Updated ${skill.name} to ${draftState}.`);
       setError(null);
     } catch (err) {
@@ -198,7 +263,93 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [load, noteDraftBySkill, stateDraftBySkill]);
 
-  if (loading) {
+  const onLoadSources = useCallback(async () => {
+    setSourcesLoading(true);
+    try {
+      const response = await fetchSkillSources({
+        q: sourceQuery.trim() || undefined,
+        limit: 25,
+      });
+      setSourceItems(response.items);
+      setSourceProviders(response.providers);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSourcesLoading(false);
+    }
+  }, [sourceQuery]);
+
+  useEffect(() => {
+    setSourcesLoading(true);
+    void fetchSkillSources({ limit: 25 })
+      .then((response) => {
+        setSourceItems(response.items);
+        setSourceProviders(response.providers);
+      })
+      .catch((err) => {
+        setError((err as Error).message);
+      })
+      .finally(() => setSourcesLoading(false));
+  }, []);
+
+  const onValidateImport = useCallback(async () => {
+    const sourceRef = importSourceRef.trim();
+    if (!sourceRef) {
+      setError("Provide a local path, zip file path, or git URL.");
+      return;
+    }
+    setImportBusy("validate");
+    try {
+      const validation = await validateSkillImport({
+        sourceRef,
+        sourceType: importSourceType,
+        sourceProvider: importSourceProvider,
+      });
+      setValidationResult(validation);
+      setStatus(validation.valid
+        ? `Validation passed (${validation.riskLevel} risk).`
+        : "Validation completed with blocking errors.");
+      setError(null);
+      await load({ background: true });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setImportBusy(null);
+    }
+  }, [importSourceRef, importSourceType, importSourceProvider, load]);
+
+  const onInstallImport = useCallback(async () => {
+    const sourceRef = importSourceRef.trim();
+    if (!sourceRef) {
+      setError("Provide a source before install.");
+      return;
+    }
+    setImportBusy("install");
+    try {
+      const installed = await installSkillImport({
+        sourceRef,
+        sourceType: importSourceType,
+        sourceProvider: importSourceProvider,
+        confirmHighRisk: confirmHighRiskImport,
+        force: false,
+      });
+      setValidationResult(installed.validation);
+      setStatus(
+        installed.installedSkillId
+          ? `Installed ${installed.installedSkillId}. Skill remains disabled until you enable it.`
+          : "Skill installed. Reloaded and kept disabled by default.",
+      );
+      setError(null);
+      await load({ background: true });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setImportBusy(null);
+    }
+  }, [importSourceRef, importSourceType, importSourceProvider, confirmHighRiskImport, load]);
+
+  if (isInitialLoading) {
     return <p>Loading Playbook skills...</p>;
   }
 
@@ -215,6 +366,173 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       {error ? <p className="error">{error}</p> : null}
       {status ? <p className="status-banner">{status}</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing skills and Bankr policy...</p> : null}
+
+      <article className="card">
+        <h3>What are skills?</h3>
+        <p className="table-subtext">
+          Skills are reusable instruction packs that teach GoatCitadel how to do specific jobs.
+          You can keep a skill off, keep it guarded (sleep), or turn it on.
+        </p>
+        <ul>
+          <li><strong>enabled</strong>: skill can be selected automatically.</li>
+          <li><strong>sleep</strong>: skill only auto-runs when confidence is high enough.</li>
+          <li><strong>disabled</strong>: skill is ignored until you enable it.</li>
+        </ul>
+        {mode === "advanced" ? (
+          <p className="table-subtext">
+            Skills are loaded from local <code>SKILL.md</code> folders and evaluated against activation policy and tool governance before use.
+          </p>
+        ) : null}
+      </article>
+
+      <article className="card">
+        <h3>Skill Sources & Import</h3>
+        <p className="table-subtext">
+          Browse marketplace sources (AgentSkill + SkillsMP), then validate before install.
+          Imported skills are always installed in disabled state for safety.
+        </p>
+        <div className="controls-row">
+          <label htmlFor="skillSourceQuery">Search sources</label>
+          <input
+            id="skillSourceQuery"
+            value={sourceQuery}
+            onChange={(event) => setSourceQuery(event.target.value)}
+            placeholder="browser, github, playwright..."
+          />
+          <button type="button" onClick={() => void onLoadSources()} disabled={sourcesLoading}>
+            {sourcesLoading ? "Searching..." : "Search"}
+          </button>
+        </div>
+        {sourceProviders.length > 0 ? (
+          <div className="token-row">
+            {sourceProviders.map((provider) => (
+              <span
+                key={provider.provider}
+                className={`token-chip ${provider.available ? "token-chip-active" : ""}`}
+                title={provider.error || ""}
+              >
+                {provider.providerLabel}: {provider.status}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <details className="advanced-panel">
+          <summary>Marketplace results</summary>
+          {sourceItems.length === 0 ? (
+            <p className="table-subtext">No source results loaded.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Source</th>
+                  <th>Description</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sourceItems.map((item) => (
+                  <tr key={item.canonicalKey}>
+                    <td>{item.name}</td>
+                    <td>{item.sourceProvider}{item.alternateProviders.length > 0 ? ` (+${item.alternateProviders.join(",")})` : ""}</td>
+                    <td>{item.description}</td>
+                    <td>{item.combinedScore.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </details>
+        <div className="controls-row">
+          <label htmlFor="importSourceType">Source type</label>
+          <GCSelect
+            id="importSourceType"
+            value={importSourceType}
+            onChange={(value) => setImportSourceType(value as "local_path" | "local_zip" | "git_url")}
+            options={[
+              { value: "local_path", label: "local_path" },
+              { value: "local_zip", label: "local_zip" },
+              { value: "git_url", label: "git_url" },
+            ]}
+          />
+          <label htmlFor="importSourceProvider">Source provider</label>
+          <GCSelect
+            id="importSourceProvider"
+            value={importSourceProvider}
+            onChange={(value) => setImportSourceProvider(value as "local" | "github" | "agentskill" | "skillsmp")}
+            options={[
+              { value: "local", label: "local" },
+              { value: "github", label: "github" },
+              { value: "agentskill", label: "agentskill" },
+              { value: "skillsmp", label: "skillsmp" },
+            ]}
+          />
+        </div>
+        <div className="controls-row">
+          <label htmlFor="importSourceRef">Source ref</label>
+          <input
+            id="importSourceRef"
+            value={importSourceRef}
+            onChange={(event) => setImportSourceRef(event.target.value)}
+            placeholder={importSourceType === "git_url" ? "https://github.com/owner/repo.git" : importSourceType === "local_zip" ? "F:\\skills\\skill.zip" : "F:\\skills\\my-skill-folder"}
+          />
+          <button type="button" onClick={() => void onValidateImport()} disabled={importBusy !== null}>
+            {importBusy === "validate" ? "Validating..." : "Validate import"}
+          </button>
+          <button type="button" onClick={() => void onInstallImport()} disabled={importBusy !== null}>
+            {importBusy === "install" ? "Installing..." : "Install (disabled by default)"}
+          </button>
+        </div>
+        <GCSwitch
+          checked={confirmHighRiskImport}
+          onCheckedChange={setConfirmHighRiskImport}
+          label="Confirm high-risk import when required"
+        />
+        {validationResult ? (
+          <div className="token-row">
+            <span className={`token-chip ${validationResult.valid ? "token-chip-active" : ""}`}>
+              {validationResult.valid ? "Validation passed" : "Validation failed"}
+            </span>
+            <span className="token-chip">Risk: {validationResult.riskLevel}</span>
+            {validationResult.inferredSkillName ? (
+              <span className="token-chip">Skill: {validationResult.inferredSkillName}</span>
+            ) : null}
+          </div>
+        ) : null}
+        {validationResult ? <pre>{JSON.stringify(validationResult, null, 2)}</pre> : null}
+        <details className="advanced-panel">
+          <summary>Recent import history</summary>
+          {importHistory.length === 0 ? (
+            <p className="table-subtext">No import history yet.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>Outcome</th>
+                  <th>Provider</th>
+                  <th>Source</th>
+                  <th>Risk</th>
+                </tr>
+              </thead>
+              <tbody>
+                {importHistory.map((item) => (
+                  <tr key={item.importId}>
+                    <td>{new Date(item.createdAt).toLocaleString()}</td>
+                    <td>{item.action}</td>
+                    <td>{item.outcome}</td>
+                    <td>{item.sourceProvider}</td>
+                    <td>{item.sourceRef}</td>
+                    <td>{item.riskLevel ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </details>
+      </article>
 
       <article className="card">
         <h3>Activation Policy</h3>
@@ -241,17 +559,14 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 : { guardedAutoThreshold: clamped, requireFirstUseConfirmation: true });
             }}
           />
-          <label className="checkbox-inline">
-            <input
-              type="checkbox"
-              checked={policy?.requireFirstUseConfirmation ?? true}
-              onChange={(event) => setPolicy((current) => ({
-                guardedAutoThreshold: current?.guardedAutoThreshold ?? 0.72,
-                requireFirstUseConfirmation: event.target.checked,
-              }))}
-            />
-            Require first-use confirmation for sleep skills
-          </label>
+          <GCSwitch
+            checked={policy?.requireFirstUseConfirmation ?? true}
+            onCheckedChange={(checked) => setPolicy((current) => ({
+              guardedAutoThreshold: current?.guardedAutoThreshold ?? 0.72,
+              requireFirstUseConfirmation: checked,
+            }))}
+            label="Require first-use confirmation for sleep skills"
+          />
           <button onClick={() => void onSavePolicy()} disabled={savingPolicy}>
             {savingPolicy ? "Saving..." : "Save policy"}
           </button>
@@ -278,17 +593,14 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
               </span>
             </div>
             <div className="controls-row">
-              <label className="checkbox-inline">
-                <input
-                  type="checkbox"
-                  checked={bankrPolicy.enabled}
-                  onChange={(event) => setBankrPolicy((current) => current ? {
-                    ...current,
-                    enabled: event.target.checked,
-                  } : current)}
-                />
-                Enable Bankr policy controls
-              </label>
+              <GCSwitch
+                checked={bankrPolicy.enabled}
+                onCheckedChange={(checked) => setBankrPolicy((current) => current ? {
+                  ...current,
+                  enabled: checked,
+                } : current)}
+                label="Enable Bankr policy controls"
+              />
               <label htmlFor="bankrMode">
                 Mode
                 <HelpHint
@@ -296,26 +608,24 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   text="read_only blocks money-moving actions. read_write still requires explicit approval for writes."
                 />
               </label>
-              <select
+              <GCSelect
                 id="bankrMode"
                 value={bankrPolicy.mode}
-                onChange={(event) => setBankrPolicy((current) => current ? {
+                onChange={(value) => setBankrPolicy((current) => current ? {
                   ...current,
-                  mode: event.target.value as BankrPolicyState["mode"],
+                  mode: value as BankrPolicyState["mode"],
                 } : current)}
-              >
-                <option value="read_only">read_only</option>
-                <option value="read_write">read_write</option>
-              </select>
-              <label className="checkbox-inline">
-                <input
-                  type="checkbox"
-                  checked
-                  disabled
-                  aria-label="Write approvals are mandatory in high-safety mode"
-                />
-                Require approval on every write (locked on)
-              </label>
+                options={[
+                  { value: "read_only", label: "read_only" },
+                  { value: "read_write", label: "read_write" },
+                ]}
+              />
+              <GCSwitch
+                checked
+                disabled
+                onCheckedChange={() => undefined}
+                label="Require approval on every write (locked on)"
+              />
             </div>
 
             <div className="controls-row">
@@ -469,16 +779,17 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           <h3>Skills</h3>
           <button onClick={() => void onReload()}>Reload Playbook</button>
           <label htmlFor="skillsFilter">Filter</label>
-          <select
+          <GCSelect
             id="skillsFilter"
             value={stateFilter}
-            onChange={(event) => setStateFilter(event.target.value as "all" | SkillRuntimeState)}
-          >
-            <option value="all">all</option>
-            <option value="enabled">enabled</option>
-            <option value="sleep">sleep</option>
-            <option value="disabled">disabled</option>
-          </select>
+            onChange={(value) => setStateFilter(value as "all" | SkillRuntimeState)}
+            options={[
+              { value: "all", label: "all" },
+              { value: "enabled", label: "enabled" },
+              { value: "sleep", label: "sleep" },
+              { value: "disabled", label: "disabled" },
+            ]}
+          />
         </div>
 
         <table>
@@ -508,17 +819,14 @@ export function SkillsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   <td>{skill.declaredTools.join(", ") || "-"}</td>
                   <td>{skill.requires.join(", ") || "-"}</td>
                   <td>
-                    <select
+                    <GCSelect
                       value={draftState}
-                      onChange={(event) => setStateDraftBySkill((current) => ({
+                      onChange={(value) => setStateDraftBySkill((current) => ({
                         ...current,
-                        [skill.skillId]: event.target.value as SkillRuntimeState,
+                        [skill.skillId]: value as SkillRuntimeState,
                       }))}
-                    >
-                      {STATE_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
+                      options={STATE_OPTIONS.map((option) => ({ value: option, label: option }))}
+                    />
                   </td>
                   <td>
                     <input

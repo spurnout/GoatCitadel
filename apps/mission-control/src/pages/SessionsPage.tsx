@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import {
   fetchSessionSummary,
   fetchSessionTimeline,
@@ -11,6 +12,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { TableSkeleton } from "../components/TableSkeleton";
+import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 
 export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
@@ -165,15 +167,16 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
           customPlaceholder="Search session key or id"
           customLabel="Search query"
         />
-        <select
+        <GCSelect
           value={healthFilter}
-          onChange={(event) => setHealthFilter(event.target.value as "all" | "healthy" | "degraded" | "blocked")}
-        >
-          <option value="all">all health states</option>
-          <option value="healthy">healthy</option>
-          <option value="degraded">degraded</option>
-          <option value="blocked">blocked</option>
-        </select>
+          onChange={(value) => setHealthFilter(value as "all" | "healthy" | "degraded" | "blocked")}
+          options={[
+            { value: "all", label: "all health states" },
+            { value: "healthy", label: "healthy" },
+            { value: "degraded", label: "degraded" },
+            { value: "blocked", label: "blocked" },
+          ]}
+        />
         <button type="button" onClick={() => setViewMode((current) => (current === "split" ? "table" : "split"))}>
           {viewMode === "split" ? "Switch to table view" : "Switch to split view"}
         </button>
@@ -183,50 +186,54 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
         <article className="card">
           <h3>Sessions Table</h3>
           {detailsLoading ? <TableSkeleton rows={6} cols={5} /> : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Session Key</th>
-                  <th>Health</th>
-                  <th>Updated</th>
-                  <th>Tokens</th>
-                  <th>Cost (USD)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((session) => (
-                  <tr key={session.sessionId}>
+            <div className="virtual-table-shell">
+              <TableVirtuoso
+                data={filtered}
+                fixedHeaderContent={() => (
+                  <tr>
+                    <th>Session Key</th>
+                    <th>Health</th>
+                    <th>Updated</th>
+                    <th>Tokens</th>
+                    <th>Cost (USD)</th>
+                  </tr>
+                )}
+                itemContent={(_index, session) => (
+                  <>
                     <td>{session.sessionKey}</td>
                     <td><span className="token-chip">{session.health}</span></td>
                     <td>{new Date(session.updatedAt).toLocaleString()}</td>
                     <td>{session.tokenTotal}</td>
                     <td>{session.costUsdTotal.toFixed(4)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  </>
+                )}
+              />
+            </div>
           )}
         </article>
       ) : (
         <div className="split-grid">
           <article className="card">
             <h3>Run List</h3>
-            <ul className="compact-list">
-              {filtered.map((session) => (
-                <li key={session.sessionId}>
-                  <button
-                    type="button"
-                    className={session.sessionId === selected?.sessionId ? "active" : ""}
-                    onClick={() => setSelectedSessionId(session.sessionId)}
-                  >
-                    {session.sessionKey}
-                  </button>
-                  <p className="office-subtitle">
-                    {session.health} | {new Date(session.updatedAt).toLocaleString()} | ${session.costUsdTotal.toFixed(4)}
-                  </p>
-                </li>
-              ))}
-            </ul>
+            <div className="virtual-list-shell">
+              <Virtuoso
+                data={filtered}
+                itemContent={(_index, session) => (
+                  <div className="virtual-list-item">
+                    <button
+                      type="button"
+                      className={session.sessionId === selected?.sessionId ? "active" : ""}
+                      onClick={() => setSelectedSessionId(session.sessionId)}
+                    >
+                      {session.sessionKey}
+                    </button>
+                    <p className="office-subtitle">
+                      {session.health} | {new Date(session.updatedAt).toLocaleString()} | ${session.costUsdTotal.toFixed(4)}
+                    </p>
+                  </div>
+                )}
+              />
+            </div>
           </article>
 
           <article className="card">
@@ -246,14 +253,19 @@ export function SessionsPage({ refreshKey = 0 }: { refreshKey?: number }) {
                   Timeline events: {summary?.transcriptEventCount ?? 0}
                 </p>
                 <h4>Recent Timeline</h4>
-                <ul className="compact-list">
-                  {timeline.length === 0 ? <li>No transcript events yet.</li> : timeline.slice(0, 40).map((item) => (
-                    <li key={item.eventId}>
-                      <strong>{item.type}</strong> [{item.actorType}] {new Date(item.timestamp).toLocaleString()}
-                      <p className="office-subtitle">{item.preview}</p>
-                    </li>
-                  ))}
-                </ul>
+                {timeline.length === 0 ? <p className="office-subtitle">No transcript events yet.</p> : (
+                  <div className="virtual-list-shell compact">
+                    <Virtuoso
+                      data={timeline.slice(0, 120)}
+                      itemContent={(_index, item) => (
+                        <div className="virtual-list-item">
+                          <strong>{item.type}</strong> [{item.actorType}] {new Date(item.timestamp).toLocaleString()}
+                          <p className="office-subtitle">{item.preview}</p>
+                        </div>
+                      )}
+                    />
+                  </div>
+                )}
               </>
             ) : null}
           </article>

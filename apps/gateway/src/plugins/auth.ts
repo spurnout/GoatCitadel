@@ -14,6 +14,9 @@ interface SseTokenRecord {
   expiresAt: number;
 }
 
+const MAX_AUTH_TOKEN_LENGTH = 4096;
+const MAX_BASIC_CREDENTIAL_LENGTH = 8192;
+
 export const authPlugin = fp(async (fastify) => {
   const sseTokens = new Map<string, SseTokenRecord>();
 
@@ -116,6 +119,9 @@ function readHeaderToken(value: string | string[] | undefined): string | undefin
     return undefined;
   }
   const trimmed = value.trim();
+  if (trimmed.length > MAX_AUTH_TOKEN_LENGTH) {
+    return undefined;
+  }
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
@@ -128,6 +134,9 @@ function readQueryToken(query: unknown, queryParam: string): string | undefined 
     return undefined;
   }
   const trimmed = value.trim();
+  if (trimmed.length > MAX_AUTH_TOKEN_LENGTH) {
+    return undefined;
+  }
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
@@ -140,7 +149,10 @@ function readBearerToken(header: string | string[] | undefined): string | undefi
     return undefined;
   }
   const token = match[1]?.trim();
-  return token && token.length > 0 ? token : undefined;
+  if (!token || token.length === 0 || token.length > MAX_AUTH_TOKEN_LENGTH) {
+    return undefined;
+  }
+  return token;
 }
 
 function readBasicCredentials(header: string | string[] | undefined): { username: string; password: string } | undefined {
@@ -153,6 +165,9 @@ function readBasicCredentials(header: string | string[] | undefined): { username
   }
   try {
     const decoded = Buffer.from(match[1] ?? "", "base64").toString("utf8");
+    if (decoded.length > MAX_BASIC_CREDENTIAL_LENGTH) {
+      return undefined;
+    }
     const separator = decoded.indexOf(":");
     if (separator <= 0) {
       return undefined;

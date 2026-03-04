@@ -113,6 +113,8 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 - Attachments + traces + citations
 - Approval prompts for risky actions
 - Slash commands + model/mode controls
+- Workspace-aware guidance overlays (`global + workspace` docs)
+- Constraints/workarounds surfaced when tools are blocked
 
 ### 🧪 Prompt Lab
 
@@ -121,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 - Hybrid scoring support (rule + model)
 - Separate execution status from quality scoring (`run failure` vs `score failure`)
 - Pass/fail visibility with remediation hints
+- Benchmark matrix for subset model comparisons
+- Exportable run reports for regression tracking
 
 ### 🛡️ Safety, Policy, and Approvals
 
@@ -128,6 +132,8 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 - Idempotency enforcement for mutating calls
 - Approval queue + replay timeline
 - Tool grants by scope (`task > agent > session > global`)
+- Policy-gated MCP invocation path
+- Non-loopback bind warnings when auth posture is weak
 
 ### 🔌 MCP + Skills Expansion
 
@@ -135,6 +141,9 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 - Server trust tiers and policy posture
 - Skill lifecycle states: `enabled`, `sleep`, `disabled`
 - Guarded-auto activation for sleep state
+- Skill import pipeline: validate before install, provenance retained, high-risk confirmation
+- Dual-source marketplace discovery (AgentSkill + SkillsMP) with equal priority merge
+- Optional Obsidian vault integration (disabled by default, read/append-safe subpaths)
 
 ### 📊 Operator Observability
 
@@ -142,6 +151,8 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 - Session and task diagnostics
 - System and runtime vitals
 - Cost visibility by day/session/agent/task
+- Refresh health visibility (`Live`, `Degraded`, `Reconnecting`)
+- Background refresh model to avoid full-page flicker during live operations
 
 ## Feature Matrix
 
@@ -211,8 +222,28 @@ pnpm smoke
 pnpm -r build
 ```
 
+### 5) Run doctor diagnostics (safe auto-repair defaults)
+
+```bash
+goatcitadel doctor
+```
+
+Useful doctor flags:
+
+- `--audit-only` or `--no-repair`: diagnostics only, no file changes.
+- `--deep`: include runtime/onboarding API checks when gateway is reachable.
+- `--yes`: auto-approve guarded repair prompts.
+- `--json`: machine-readable report output.
+
 > Runtime/start commands are intentionally kept in the install/testing guide so README stays install-focused:
 > [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
+
+## Starter Docs
+
+- Beginner prompt guide: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
+- Optional Obsidian integration: [`docs/OBSIDIAN_OPTIONAL_INTEGRATION.md`](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md)
+- Skill import trust policy: [`docs/SKILL_IMPORT_AND_TRUST_POLICY.md`](docs/SKILL_IMPORT_AND_TRUST_POLICY.md)
+- Agentic feature gap matrix: [`docs/AGENTIC_FEATURE_GAP_MATRIX.md`](docs/AGENTIC_FEATURE_GAP_MATRIX.md)
 
 ## Security Model At A Glance
 
@@ -248,6 +279,20 @@ pnpm -r build
 - `POST /api/v1/skills/bulk-state`
 - `GET /api/v1/skills/activation-policies`
 - `PATCH /api/v1/skills/activation-policies`
+- `GET /api/v1/skills/sources`
+- `POST /api/v1/skills/import/validate`
+- `POST /api/v1/skills/import/install`
+- `GET /api/v1/skills/import/history`
+
+### Optional Obsidian Integration
+
+- `GET /api/v1/integrations/obsidian/status`
+- `PATCH /api/v1/integrations/obsidian/config`
+- `POST /api/v1/integrations/obsidian/test`
+- `POST /api/v1/integrations/obsidian/search`
+- `GET /api/v1/integrations/obsidian/note?path=...`
+- `POST /api/v1/integrations/obsidian/append`
+- `POST /api/v1/integrations/obsidian/inbox/capture`
 
 ### MCP
 
@@ -291,41 +336,14 @@ Benchmark request body:
 }
 ```
 
-## Production Readiness Checklist
-
-- [ ] Provider keys and model defaults configured
-- [ ] Private-beta env profile copied (`.env.private-beta.example` -> `.env`) and secrets filled
-- [ ] Tool policy reviewed (`allow`/`deny` + profiles)
-- [ ] MCP trust tiers and per-server policies configured
-- [ ] Approval flow tested for risky actions
-- [ ] Prompt Lab benchmark pack executed + scored
-- [ ] Backup/restore path validated
-- [ ] `typecheck`, `smoke`, and `build` passing in your environment
-
-## Prompt Lab Rerun Gate (Recommended)
-
-Before full 42-test reruns:
-
-1. Run engineering quality gates:
-   - `pnpm -r typecheck`
-   - `pnpm -r test`
-   - `pnpm smoke`
-   - `pnpm -r build`
-2. Run a high-signal subset first:
-   - `TEST-03`, `TEST-06`, `TEST-10`, `TEST-12`, `TEST-15`, `TEST-28`
-3. Confirm:
-   - zero run failures in subset,
-   - no repeated identical tool-failure loops,
-   - run-vs-score classification visible and sane.
-4. Then execute full pack.
-
 ## Documentation
 
 - Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](docs/ENGINEERING_HANDBOOK.md)
 - Install + setup + testing: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
 - MCP + skills curation notes: [`docs/MCP_SKILLS_CURATION.md`](docs/MCP_SKILLS_CURATION.md)
+- Optional Obsidian integration: [`docs/OBSIDIAN_OPTIONAL_INTEGRATION.md`](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md)
+- Skill import + trust policy: [`docs/SKILL_IMPORT_AND_TRUST_POLICY.md`](docs/SKILL_IMPORT_AND_TRUST_POLICY.md)
 - Claude production review prompt: [`docs/CLAUDE_PROD_REVIEW_PROMPT.md`](docs/CLAUDE_PROD_REVIEW_PROMPT.md)
-- Mobile companion research report: [`docs/mobile_app_research_report.md`](docs/mobile_app_research_report.md)
 - Runtime guidance: [`GOATCITADEL.md`](GOATCITADEL.md)
 - Agent conventions: [`AGENTS.md`](AGENTS.md)
 - Claude workflow guidance: [`CLAUDE.md`](CLAUDE.md)
@@ -342,18 +360,6 @@ Near-term focus:
 - MCP runtime depth and safer server policy defaults
 - Voice/multimodal reliability improvements
 - Continued UI clarity and operator workflow polish
-
-## Mobile Companion (Placeholder)
-
-A mobile companion track is planned and intentionally documented as **pending research integration**.
-
-- Current status: placeholder only (no production mobile runtime yet).
-- Research input file: [`docs/mobile_app_research_report.md`](docs/mobile_app_research_report.md)
-- Expected deliverables in docs:
-  - offline sync model,
-  - auth/session handling on mobile,
-  - notification + approval interaction model,
-  - constrained-tool execution posture for handheld contexts.
 
 ## Local-First Promise
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   approveImprovementAutoTune,
   fetchImprovementReplayRun,
+  fetchImprovementReplayRuns,
   fetchImprovementReports,
   revertImprovementAutoTune,
   runImprovementReplay,
@@ -9,92 +10,159 @@ import {
 import { ActionButton } from "../components/ActionButton";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
-export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [loading, setLoading] = useState(true);
+export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
   const [runningReplay, setRunningReplay] = useState(false);
   const [pendingTuneId, setPendingTuneId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [reports, setReports] = useState<Array<{
-    reportId: string;
-    runId: string;
-    weekStart: string;
-    weekEnd: string;
-    createdAt: string;
-    likelyWrongCount: number;
-    sampledDecisions: number;
-  }>>([]);
+  const [lastRunEvent, setLastRunEvent] = useState<string | null>(null);
+  const [lastRunUpdateAt, setLastRunUpdateAt] = useState<string | null>(null);
+  const [reports, setReports] = useState<Awaited<ReturnType<typeof fetchImprovementReports>>["items"]>([]);
+  const [replayRuns, setReplayRuns] = useState<Awaited<ReturnType<typeof fetchImprovementReplayRuns>>["items"]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [reportDetail, setReportDetail] = useState<Awaited<ReturnType<typeof fetchImprovementReports>>["items"][number] | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<Awaited<ReturnType<typeof fetchImprovementReplayRun>> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
     try {
-      const response = await fetchImprovementReports(60);
-      const mapped = response.items.map((item) => ({
-        reportId: item.reportId,
-        runId: item.runId,
-        weekStart: item.weekStart,
-        weekEnd: item.weekEnd,
-        createdAt: item.createdAt,
-        likelyWrongCount: item.summary.likelyWrongCount,
-        sampledDecisions: item.summary.sampledDecisions,
-      }));
-      setReports(mapped);
-      const nextReportId = selectedReportId && mapped.some((item) => item.reportId === selectedReportId)
+      const [reportResponse, runResponse] = await Promise.all([
+        fetchImprovementReports(60),
+        fetchImprovementReplayRuns(80),
+      ]);
+      setReports(reportResponse.items);
+      setReplayRuns(runResponse.items);
+      const nextReportId = selectedReportId && reportResponse.items.some((item) => item.reportId === selectedReportId)
         ? selectedReportId
-        : mapped[0]?.reportId ?? null;
+        : reportResponse.items[0]?.reportId ?? null;
       setSelectedReportId(nextReportId);
-      if (nextReportId) {
-        const selected = response.items.find((item) => item.reportId === nextReportId) ?? null;
-        setReportDetail(selected);
-        if (selected) {
-          setRunDetail(await fetchImprovementReplayRun(selected.runId));
-        } else {
-          setRunDetail(null);
-        }
+      const preferredRunId = nextReportId
+        ? reportResponse.items.find((item) => item.reportId === nextReportId)?.runId
+        : undefined;
+      const nextRunId = selectedRunId && runResponse.items.some((item) => item.runId === selectedRunId)
+        ? selectedRunId
+        : (preferredRunId ?? runResponse.items[0]?.runId ?? null);
+      setSelectedRunId(nextRunId);
+      if (nextRunId) {
+        setRunDetail(await fetchImprovementReplayRun(nextRunId));
       } else {
-        setReportDetail(null);
         setRunDetail(null);
       }
+      setLastRunUpdateAt(new Date().toISOString());
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
     }
-  }, [selectedReportId]);
+  }, [selectedReportId, selectedRunId]);
 
   useEffect(() => {
-    void load();
+    void load({ background: false });
   }, [load, refreshKey]);
 
+  useRefreshSubscription(
+    "improvement",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1200,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+      onFallbackStateChange: setIsFallbackRefreshing,
+    },
+  );
+
   useEffect(() => {
-    if (!selectedReportId || reports.length === 0) {
+    if (!selectedRunId) {
+      setRunDetail(null);
       return;
     }
-    const report = reports.find((item) => item.reportId === selectedReportId);
-    if (!report) {
-      return;
-    }
-    void (async () => {
-      try {
-        const freshReports = await fetchImprovementReports(60);
-        const selected = freshReports.items.find((item) => item.reportId === selectedReportId) ?? null;
-        setReportDetail(selected);
-        if (selected) {
-          setRunDetail(await fetchImprovementReplayRun(selected.runId));
+    let cancelled = false;
+    void fetchImprovementReplayRun(selectedRunId)
+      .then((detail) => {
+        if (!cancelled) {
+          setRunDetail(detail);
+          if (detail.run.reportId) {
+            setSelectedReportId((current) => current ?? detail.run.reportId ?? null);
+          }
         }
-      } catch {
-        // keep previous state on background refresh errors
-      }
-    })();
-  }, [selectedReportId, reports]);
+      })
+      .catch(() => {
+        // keep previous detail when background fetch fails
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRunId]);
+
+  const reportDetail = useMemo(
+    () => reports.find((item) => item.reportId === selectedReportId) ?? null,
+    [reports, selectedReportId],
+  );
+  const activeRunStatus = useMemo(() => {
+    if (!selectedRunId) {
+      return null;
+    }
+    if (runDetail?.run.runId === selectedRunId) {
+      return runDetail.run.status;
+    }
+    return replayRuns.find((run) => run.runId === selectedRunId)?.status ?? null;
+  }, [replayRuns, runDetail, selectedRunId]);
 
   const latestSummary = reportDetail?.summary;
   const topItems = useMemo(() => (runDetail?.items ?? []).slice(0, 8), [runDetail?.items]);
+
+  useEffect(() => {
+    if (!selectedRunId || (activeRunStatus !== "running" && activeRunStatus !== "queued")) {
+      return;
+    }
+    let cancelled = false;
+    const pollRun = async () => {
+      try {
+        const detail = await fetchImprovementReplayRun(selectedRunId);
+        if (cancelled) {
+          return;
+        }
+        setRunDetail(detail);
+        setReplayRuns((current) => upsertReplayRun(current, detail.run));
+        if (detail.run.reportId) {
+          setSelectedReportId((prev) => prev ?? detail.run.reportId ?? null);
+        }
+        setLastRunEvent(`Run ${detail.run.runId.slice(0, 8)} is ${detail.run.status}.`);
+        setLastRunUpdateAt(new Date().toISOString());
+        if (detail.run.status !== "running" && detail.run.status !== "queued") {
+          void load({ background: true });
+        }
+      } catch {
+        // polling errors are transient; keep last known state
+      }
+    };
+    void pollRun();
+    const timer = window.setInterval(() => {
+      void pollRun();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRunStatus, load, selectedRunId]);
 
   const handleRunNow = useCallback(async () => {
     setRunningReplay(true);
@@ -102,8 +170,30 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
     setSuccess(null);
     try {
       const replay = await runImprovementReplay({ sampleSize: 500 });
-      setSuccess(`Replay run ${replay.run.runId.slice(0, 8)} completed.`);
-      await load();
+      setReplayRuns((current) => upsertReplayRun(current, replay.run));
+      setRunDetail((current) => {
+        if (current?.run.runId === replay.run.runId) {
+          return {
+            ...current,
+            run: replay.run,
+          };
+        }
+        return {
+          run: replay.run,
+          items: [],
+          findings: [],
+          autoTunes: [],
+        };
+      });
+      if (replay.run.status === "running") {
+        setSuccess(`Replay run ${replay.run.runId.slice(0, 8)} started. Results will appear when it finishes.`);
+      } else {
+        setSuccess(`Replay run ${replay.run.runId.slice(0, 8)} completed.`);
+      }
+      setLastRunEvent(`Run ${replay.run.runId.slice(0, 8)} started (${replay.run.status}).`);
+      setLastRunUpdateAt(new Date().toISOString());
+      setSelectedRunId(replay.run.runId);
+      await load({ background: true });
       if (replay.report) {
         setSelectedReportId(replay.report.reportId);
       }
@@ -121,7 +211,7 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await approveImprovementAutoTune(tuneId);
       setSuccess("Auto-tune approved and applied.");
-      await load();
+      await load({ background: true });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -136,7 +226,7 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
     try {
       await revertImprovementAutoTune(tuneId);
       setSuccess("Auto-tune reverted.");
-      await load();
+      await load({ background: true });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -144,7 +234,7 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   }, [load]);
 
-  if (loading) {
+  if (isInitialLoading) {
     return <p>Loading improvement reports...</p>;
   }
 
@@ -173,6 +263,42 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
       {error ? <p className="error">{error}</p> : null}
       {success ? <p>{success}</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing improvement reports...</p> : null}
+      {isFallbackRefreshing ? (
+        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+      ) : null}
+      {lastRunEvent ? (
+        <p className="office-subtitle">
+          {lastRunEvent}
+          {lastRunUpdateAt ? ` Last update: ${new Date(lastRunUpdateAt).toLocaleTimeString()}.` : ""}
+        </p>
+      ) : null}
+
+      <article className="card">
+        <h3>Recent Replay Runs</h3>
+        <ul className="improvement-simple-list">
+          {replayRuns.map((run) => (
+            <li key={run.runId}>
+              <button
+                type="button"
+                className={selectedRunId === run.runId ? "active" : ""}
+                onClick={() => setSelectedRunId(run.runId)}
+              >
+                {new Date(run.startedAt).toLocaleString()}
+              </button>
+              <div className="prompt-lab-test-meta">
+                <span className={`prompt-lab-chip run-${run.status}`}>
+                  {run.status}
+                </span>
+                <span>{run.totalScored}/{run.totalCandidates} scored</span>
+                <span>{run.likelyWrongCount} likely wrong</span>
+              </div>
+              {run.error ? <div className="table-subtext">{run.error}</div> : null}
+            </li>
+          ))}
+        </ul>
+        {replayRuns.length === 0 ? <p>No replay runs yet.</p> : null}
+      </article>
 
       <div className="prompt-lab-grid">
         <article className="card prompt-lab-tests">
@@ -183,12 +309,15 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
                 <button
                   type="button"
                   className={selectedReportId === report.reportId ? "active" : ""}
-                  onClick={() => setSelectedReportId(report.reportId)}
+                  onClick={() => {
+                    setSelectedReportId(report.reportId);
+                    setSelectedRunId(report.runId);
+                  }}
                 >
-                  {new Date(report.weekEnd).toLocaleDateString()} ({report.sampledDecisions} sampled)
+                  {new Date(report.weekEnd).toLocaleDateString()} ({report.summary.sampledDecisions} sampled)
                 </button>
                 <div className="prompt-lab-test-meta">
-                  <span className="prompt-lab-chip run-completed">{report.likelyWrongCount} likely wrong</span>
+                  <span className="prompt-lab-chip run-completed">{report.summary.likelyWrongCount} likely wrong</span>
                   <span>{new Date(report.createdAt).toLocaleString()}</span>
                 </div>
               </li>
@@ -198,7 +327,13 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
         <article className="card prompt-lab-detail">
           <h3>Weekly Scorecard</h3>
-          {!reportDetail ? <p>No report selected.</p> : (
+          {!reportDetail ? (
+            <p>
+              {runDetail?.run.status === "running"
+                ? "Replay is still running. A weekly report appears after scoring and clustering complete."
+                : "No report selected yet."}
+            </p>
+          ) : (
             <>
               <div className="improvement-score-grid">
                 <div><strong>Sampled</strong><p>{latestSummary?.sampledDecisions ?? 0}</p></div>
@@ -293,16 +428,36 @@ export function ImprovementPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <article className="card">
         <h3>Top Wrong Decisions (Current Run)</h3>
         {runDetail ? (
-          <ul className="improvement-simple-list">
-            {topItems.map((item) => (
-              <li key={item.itemId}>
-                <strong>{item.causeClass}</strong> - {Math.round(item.wrongnessProbability * 100)}% wrongness
-                <div className="table-subtext">{item.summary ?? `${item.decisionType} ${item.turnId ?? item.toolRunId ?? ""}`}</div>
-              </li>
-            ))}
-          </ul>
+          <>
+            <p className="office-subtitle">
+              Status: {runDetail.run.status} | Scored {runDetail.run.totalScored}/{runDetail.run.totalCandidates}
+              {runDetail.run.finishedAt ? ` | Finished ${new Date(runDetail.run.finishedAt).toLocaleString()}` : ""}
+            </p>
+            {runDetail.run.error ? <p className="error">{runDetail.run.error}</p> : null}
+            <ul className="improvement-simple-list">
+              {topItems.map((item) => (
+                <li key={item.itemId}>
+                  <strong>{item.causeClass}</strong> - {Math.round(item.wrongnessProbability * 100)}% wrongness
+                  <div className="table-subtext">{item.summary ?? `${item.decisionType} ${item.turnId ?? item.toolRunId ?? ""}`}</div>
+                </li>
+              ))}
+            </ul>
+          </>
         ) : <p>No run data available.</p>}
       </article>
     </section>
   );
+}
+
+function upsertReplayRun<T extends { runId: string; startedAt: string }>(
+  current: T[],
+  next: T,
+): T[] {
+  const index = current.findIndex((item) => item.runId === next.runId);
+  if (index === -1) {
+    return [next, ...current].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+  }
+  const copy = [...current];
+  copy[index] = next;
+  return copy.sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
 }

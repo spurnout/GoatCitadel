@@ -59,6 +59,29 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
     cursor: z.string().optional(),
   });
 
+  const sourceQuerySchema = z.object({
+    q: z.string().trim().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  });
+
+  const importSourceTypeSchema = z.enum(["local_path", "local_zip", "git_url"]);
+  const sourceProviderSchema = z.enum(["agentskill", "skillsmp", "github", "local"]);
+
+  const validateImportSchema = z.object({
+    sourceRef: z.string().min(1),
+    sourceType: importSourceTypeSchema.optional(),
+    sourceProvider: sourceProviderSchema.optional(),
+  });
+
+  const installImportSchema = validateImportSchema.extend({
+    force: z.boolean().optional(),
+    confirmHighRisk: z.boolean().optional(),
+  });
+
+  const importHistoryQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(300).optional(),
+  });
+
   fastify.get("/api/v1/skills", async (_request, reply) => {
     return reply.send({ items: fastify.gateway.listSkills() });
   });
@@ -66,6 +89,48 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/api/v1/skills/reload", async (_request, reply) => {
     const items = await fastify.gateway.reloadSkills();
     return reply.send({ items });
+  });
+
+  fastify.get("/api/v1/skills/sources", async (request, reply) => {
+    const parsed = sourceQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send(await fastify.gateway.listSkillSources(parsed.data.q, parsed.data.limit));
+  });
+
+  fastify.post("/api/v1/skills/import/validate", async (request, reply) => {
+    const parsed = validateImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.validateSkillImport(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/skills/import/install", async (request, reply) => {
+    const parsed = installImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.code(201).send(await fastify.gateway.installSkillImport(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/skills/import/history", async (request, reply) => {
+    const parsed = importHistoryQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send({
+      items: fastify.gateway.listSkillImportHistory(parsed.data.limit),
+    });
   });
 
   fastify.post("/api/v1/skills/resolve-activation", async (request, reply) => {

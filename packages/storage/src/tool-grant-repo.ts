@@ -5,6 +5,7 @@ import type {
   ToolGrantRecord,
   ToolGrantScope,
 } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface ToolGrantRow {
   grant_id: string;
@@ -119,7 +120,9 @@ function mapRow(row: ToolGrantRow): ToolGrantRecord {
     scope: row.scope,
     scopeRef: row.scope_ref,
     grantType: row.grant_type,
-    constraints: row.constraints_json ? JSON.parse(row.constraints_json) as ToolGrantRecord["constraints"] : undefined,
+    constraints: row.constraints_json
+      ? safeJsonParse<ToolGrantRecord["constraints"]>(row.constraints_json, undefined)
+      : undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,
     expiresAt: row.expires_at ?? undefined,

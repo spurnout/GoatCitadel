@@ -4,6 +4,7 @@ import type { ChatAttachmentRecord } from "@goatcitadel/contracts";
 interface ChatAttachmentRow {
   attachment_id: string;
   session_id: string;
+  workspace_id: string;
   project_id: string | null;
   file_name: string;
   mime_type: string;
@@ -23,6 +24,7 @@ interface ChatAttachmentRow {
 export interface ChatAttachmentInsertInput {
   attachmentId: string;
   sessionId: string;
+  workspaceId?: string;
   projectId?: string;
   fileName: string;
   mimeType: string;
@@ -48,11 +50,11 @@ export class ChatAttachmentRepository {
     this.getStmt = db.prepare("SELECT * FROM chat_attachments WHERE attachment_id = ?");
     this.insertStmt = db.prepare(`
       INSERT INTO chat_attachments (
-        attachment_id, session_id, project_id, file_name, mime_type, size_bytes,
+        attachment_id, session_id, workspace_id, project_id, file_name, mime_type, size_bytes,
         sha256, storage_rel_path, extract_status, extract_preview, media_type,
         thumbnail_rel_path, ocr_text, transcript_text, analysis_status, created_at
       ) VALUES (
-        @attachmentId, @sessionId, @projectId, @fileName, @mimeType, @sizeBytes,
+        @attachmentId, @sessionId, @workspaceId, @projectId, @fileName, @mimeType, @sizeBytes,
         @sha256, @storageRelPath, @extractStatus, @extractPreview, @mediaType,
         @thumbnailRelPath, @ocrText, @transcriptText, @analysisStatus, @createdAt
       )
@@ -60,12 +62,14 @@ export class ChatAttachmentRepository {
     this.listBySessionStmt = db.prepare(`
       SELECT * FROM chat_attachments
       WHERE session_id = @sessionId
+      AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
       ORDER BY created_at DESC
       LIMIT @limit
     `);
     this.listByIdsStmt = db.prepare(`
       SELECT * FROM chat_attachments
       WHERE attachment_id IN (SELECT value FROM json_each(@idsJson))
+      AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
     `);
   }
 
@@ -80,6 +84,7 @@ export class ChatAttachmentRepository {
   public create(input: ChatAttachmentInsertInput, now = new Date().toISOString()): ChatAttachmentRecord {
     this.insertStmt.run({
       ...input,
+      workspaceId: sanitizeWorkspaceId(input.workspaceId ?? "default"),
       projectId: input.projectId ?? null,
       extractPreview: input.extractPreview ?? null,
       mediaType: input.mediaType ?? null,
@@ -92,20 +97,22 @@ export class ChatAttachmentRepository {
     return this.get(input.attachmentId);
   }
 
-  public listBySession(sessionId: string, limit = 200): ChatAttachmentRecord[] {
+  public listBySession(sessionId: string, limit = 200, workspaceId?: string): ChatAttachmentRecord[] {
     const rows = this.listBySessionStmt.all({
       sessionId,
+      workspaceId: workspaceId ? sanitizeWorkspaceId(workspaceId) : null,
       limit: Math.max(1, Math.min(2000, Math.floor(limit))),
     }) as unknown as ChatAttachmentRow[];
     return rows.map(mapRow);
   }
 
-  public listByIds(ids: string[]): ChatAttachmentRecord[] {
+  public listByIds(ids: string[], workspaceId?: string): ChatAttachmentRecord[] {
     if (ids.length === 0) {
       return [];
     }
     const rows = this.listByIdsStmt.all({
       idsJson: JSON.stringify(ids),
+      workspaceId: workspaceId ? sanitizeWorkspaceId(workspaceId) : null,
     }) as unknown as ChatAttachmentRow[];
     return rows.map(mapRow);
   }
@@ -115,6 +122,7 @@ function mapRow(row: ChatAttachmentRow): ChatAttachmentRecord {
   return {
     attachmentId: row.attachment_id,
     sessionId: row.session_id,
+    workspaceId: row.workspace_id,
     projectId: row.project_id ?? undefined,
     fileName: row.file_name,
     mimeType: row.mime_type,
@@ -142,4 +150,15 @@ function inferAnalysisStatus(
     return "failed";
   }
   return "unsupported";
+}
+
+function sanitizeWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("workspaceId is required");
+  }
+  if (!/^[a-zA-Z0-9._-]{1,80}$/.test(trimmed)) {
+    throw new Error("workspaceId contains unsupported characters");
+  }
+  return trimmed;
 }

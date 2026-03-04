@@ -2,6 +2,7 @@ import process from "node:process";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
+import { renderDoctorReport, runDoctor as runSharedDoctor } from "../doctor/engine.js";
 import { TuiApiClient } from "./api-client.js";
 import { TuiLiveFeed } from "./live-feed.js";
 import { loadResolvedProfile, saveProfile, type TuiResolvedAuth } from "./profile.js";
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
   await live.start();
 
   if (args.doctor) {
-    await runDoctor(client, resolved.profileName, resolved.filePath, args.readOnly);
+    await runDoctor(client, resolved.profileName, resolved.filePath, auth, args);
     live.stop();
     return;
   }
@@ -107,11 +108,21 @@ function parseArgs(argv: string[]): {
   gateway?: string;
   readOnly: boolean;
   doctor: boolean;
+  deep: boolean;
+  yes: boolean;
+  json: boolean;
+  auditOnly: boolean;
+  noRepair: boolean;
 } {
   let profile: string | undefined;
   let gateway: string | undefined;
   let readOnly = false;
   let doctor = false;
+  let deep = false;
+  let yes = false;
+  let json = false;
+  let auditOnly = false;
+  let noRepair = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -133,9 +144,29 @@ function parseArgs(argv: string[]): {
       doctor = true;
       continue;
     }
+    if (value === "--deep") {
+      deep = true;
+      continue;
+    }
+    if (value === "--yes" || value === "-y") {
+      yes = true;
+      continue;
+    }
+    if (value === "--json") {
+      json = true;
+      continue;
+    }
+    if (value === "--audit-only") {
+      auditOnly = true;
+      continue;
+    }
+    if (value === "--no-repair") {
+      noRepair = true;
+      continue;
+    }
   }
 
-  return { profile, gateway, readOnly, doctor };
+  return { profile, gateway, readOnly, doctor, deep, yes, json, auditOnly, noRepair };
 }
 
 async function resolveAuth(auth: TuiResolvedAuth): Promise<TuiResolvedAuth> {
@@ -165,20 +196,46 @@ async function runDoctor(
   client: TuiApiClient,
   profileName: string,
   profilePath: string,
-  readOnly: boolean,
+  auth: TuiResolvedAuth,
+  args: {
+    readOnly: boolean;
+    deep: boolean;
+    yes: boolean;
+    json: boolean;
+    auditOnly: boolean;
+    noRepair: boolean;
+  },
 ): Promise<void> {
-  console.log(chalk.bold("\nGoatCitadel TUI Doctor\n"));
-  console.log(`Profile: ${profileName}`);
-  console.log(`Profile path: ${profilePath}`);
-  console.log(`Gateway: ${client.baseUrl}`);
-  console.log(`Read-only mode: ${readOnly ? "yes" : "no"}`);
-
-  const spinner = ora("Checking gateway health...").start();
+  const spinner = ora("Running doctor checks...").start();
   try {
-    const health = await client.health();
-    spinner.succeed(`Gateway health: ${health.status}`);
+    const report = await runSharedDoctor({
+      gatewayBaseUrl: client.baseUrl,
+      profileName,
+      profilePath,
+      readOnly: args.readOnly,
+      deep: args.deep,
+      yes: args.yes,
+      auditOnly: args.auditOnly,
+      noRepair: args.noRepair,
+      authToken: auth.token,
+      authMode: auth.mode,
+      promptConfirm: async (message: string) =>
+        confirm({
+          message,
+          default: false,
+        }),
+    });
+    spinner.stop();
+    if (args.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.bold("\nGoatCitadel TUI Doctor\n"));
+      console.log(renderDoctorReport(report));
+    }
+    process.exitCode = report.summary.exitCode;
   } catch (error) {
-    spinner.fail(`Gateway health check failed: ${(error as Error).message}`);
+    spinner.fail(`Doctor failed: ${(error as Error).message}`);
+    process.exitCode = 2;
   }
 }
 

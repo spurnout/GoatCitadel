@@ -8,6 +8,7 @@ import type {
   AgentProfileUpdateInput,
   BuiltinAgentProfileSeed,
 } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface AgentProfileRow {
   agent_id: string;
@@ -307,24 +308,20 @@ function serializeArray(values: string[]): string {
 }
 
 function parseStringArray(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    const out: string[] = [];
-    for (const item of parsed) {
-      if (typeof item !== "string") {
-        continue;
-      }
-      const trimmed = item.trim();
-      if (!trimmed || out.includes(trimmed)) {
-        continue;
-      }
-      out.push(trimmed);
-    }
-    return out;
-  } catch {
+  const parsed = safeJsonParse<unknown>(value, []);
+  if (!Array.isArray(parsed)) {
     return [];
   }
+  const out: string[] = [];
+  for (const item of parsed) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed || out.includes(trimmed)) {
+      continue;
+    }
+    out.push(trimmed);
+  }
+  return out;
 }

@@ -31,3 +31,4 @@ export * from "./prompt-pack.js";
 export * from "./proactive.js";
 export * from "./learned-memory.js";
 export * from "./improvement.js";
+export * from "./workspaces.js";

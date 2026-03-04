@@ -4,6 +4,48 @@ All notable changes to GoatCitadel are documented in this file.
 
 The format is inspired by Keep a Changelog and uses semantic pre-release tags.
 
+## [Unreleased]
+
+Target release: `0.1.0-beta.2`
+
+### Added
+
+- First-class workspace domain foundation:
+  - `workspaces` table and repository with `create/list/update/archive/restore`.
+  - Backward-compatible default workspace (`default`) backfill for existing records.
+  - Workspace scoping columns added to core chat/task entities (`chat_projects`, `chat_session_meta`, `chat_session_bindings`, `chat_attachments`, `tasks`).
+- Workspace and guidance APIs:
+  - `GET/POST/PATCH` workspace lifecycle endpoints.
+  - Global guidance and workspace guidance read/write endpoints.
+- Runtime guidance resolution:
+  - Global + workspace override precedence.
+  - Bounded guidance injection on chat send/stream paths.
+  - Trace metadata for applied guidance sources and truncation state.
+  - Guidance injection kill-switch for debugging (`GOATCITADEL_DISABLE_GUIDANCE_INJECTION`).
+- Mission Control workspace UX:
+  - Workspaces page with switch/create/archive/restore.
+  - Guidance editor for global and workspace scopes.
+  - Active workspace selection persisted in UI preferences.
+  - Core pages wired to active workspace context (chat, tasks, files, memory, plus workspace-aware page props for prompt/improvement flows).
+- Governance documentation set:
+  - `GOATCITADEL.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `VISION.md`.
+  - `GOATCITADEL_LEARNING_LOG.md` for validated self-improvement tracking.
+  - Workspace override templates under `workspaces/default/`.
+- Docs validation script:
+  - `pnpm docs:check` validates required governance docs and headings.
+
+### Changed
+
+- Contracts updated with workspace and guidance types in shared package exports.
+- Chat/task contract records expanded with optional `workspaceId`.
+- Chat turn traces now support persisted `guidance` metadata.
+- README and docs positioning updated to include governance and workspace behavior expectations.
+
+### Notes
+
+- This release remains pre-1.0 and backward-compatible by defaulting omitted workspace references to `default`.
+- Product release history stays in `CHANGELOG.md`; validated runtime learning outcomes are tracked separately in `GOATCITADEL_LEARNING_LOG.md`.
+
 ## [0.1.0-beta.1] - 2026-02-28
 
 Initial beta baseline for private testing.

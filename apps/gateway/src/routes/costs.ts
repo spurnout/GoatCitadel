@@ -19,7 +19,14 @@ export const costsRoutes: FastifyPluginAsync = async (fastify) => {
     const from = parsed.data.from ?? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
     const items = fastify.gateway.costSummary(parsed.data.scope, from, to);
-    return reply.send({ items, scope: parsed.data.scope, from, to });
+    const usageAvailability = fastify.gateway.costUsageAvailability(from, to);
+    return reply.send({
+      items,
+      scope: parsed.data.scope,
+      from,
+      to,
+      usageAvailability,
+    });
   });
 
   fastify.post("/api/v1/costs/run-cheaper", async (_request, reply) => {

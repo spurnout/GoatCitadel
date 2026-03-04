@@ -2,11 +2,13 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 const projectViewSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   view: z.enum(["active", "archived", "all"]).default("active"),
   limit: z.coerce.number().int().positive().max(1000).default(300),
 });
 
 const createProjectSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   workspacePath: z.string().min(1),
@@ -14,6 +16,7 @@ const createProjectSchema = z.object({
 });
 
 const updateProjectSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   description: z.string().optional(),
   workspacePath: z.string().min(1).optional(),
@@ -30,6 +33,7 @@ const deleteProjectQuerySchema = z.object({
 
 const listChatSessionsSchema = z.object({
   scope: z.enum(["mission", "external", "all"]).optional(),
+  workspaceId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
   q: z.string().optional(),
   view: z.enum(["active", "archived", "all"]).optional(),
@@ -42,6 +46,7 @@ const sessionParamsSchema = z.object({
 });
 
 const createSessionSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   title: z.string().optional(),
   projectId: z.string().optional(),
 });
@@ -284,6 +289,18 @@ const promptPackResetBodySchema = z.object({
   clearScores: z.boolean().optional(),
 });
 
+const promptPackBenchmarkRunBodySchema = z.object({
+  testCodes: z.array(z.string().min(1)).min(1).max(200),
+  providers: z.array(z.object({
+    providerId: z.string().min(1),
+    model: z.string().min(1),
+  })).min(1).max(10),
+});
+
+const promptPackBenchmarkParamsSchema = z.object({
+  benchmarkRunId: z.string().min(1),
+});
+
 const chatToolDecisionSchema = z.object({
   sessionId: z.string().min(1),
   approvalId: z.string().min(1),
@@ -312,7 +329,7 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: parsed.error.flatten() });
     }
     return reply.send({
-      items: fastify.gateway.listChatProjects(parsed.data.view, parsed.data.limit),
+      items: fastify.gateway.listChatProjects(parsed.data.view, parsed.data.limit, parsed.data.workspaceId),
       view: parsed.data.view,
     });
   });
@@ -1145,6 +1162,41 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
     try {
       return reply.send(fastify.gateway.getPromptPackReport(params.data.packId));
+    } catch (error) {
+      return reply.code(404).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/prompt-packs/:packId/benchmark/run", async (request, reply) => {
+    const params = promptPackParamsSchema.safeParse(request.params);
+    const body = promptPackBenchmarkRunBodySchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(
+        fastify.gateway.runPromptPackBenchmark(params.data.packId, {
+          testCodes: body.data.testCodes,
+          providers: body.data.providers,
+        }),
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/prompt-packs/benchmark/:benchmarkRunId", async (request, reply) => {
+    const params = promptPackBenchmarkParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.getPromptPackBenchmarkStatus(params.data.benchmarkRunId));
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });
     }

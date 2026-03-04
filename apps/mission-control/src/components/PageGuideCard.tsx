@@ -1,17 +1,25 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { globalCopy } from "../content/copy";
+import { useUiPreferences } from "../state/ui-preferences";
 
 interface PageGuideCardProps {
   what: string;
   when: string;
+  mostCommonAction?: string;
   actions: string[];
   terms?: Array<{ term: string; meaning: string }>;
   compact?: boolean;
 }
 
 export function PageGuideCard(props: PageGuideCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const compact = props.compact ?? true;
+  const { mode } = useUiPreferences();
+  const compact = props.compact ?? (mode !== "simple");
+  const [expanded, setExpanded] = useState(mode === "simple");
+
+  useEffect(() => {
+    setExpanded(mode === "simple");
+  }, [mode]);
+
   return (
     <article className={`card page-guide-card${compact ? " compact" : ""}`}>
       <header className="page-guide-head">
@@ -26,6 +34,9 @@ export function PageGuideCard(props: PageGuideCardProps) {
       {!compact || expanded ? (
         <>
           <p><strong>{globalCopy.guideCard.when}:</strong> {props.when}</p>
+          {props.mostCommonAction ? (
+            <p><strong>{globalCopy.guideCard.mostCommonAction}:</strong> {props.mostCommonAction}</p>
+          ) : null}
           <p><strong>{globalCopy.guideCard.actions}:</strong></p>
           <ol>
             {props.actions.map((action) => (

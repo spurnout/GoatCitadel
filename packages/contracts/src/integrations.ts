@@ -101,3 +101,19 @@ export interface ChannelInboundMessageInput {
   };
   metadata?: Record<string, unknown>;
 }
+
+export type ObsidianIntegrationMode = "read_append" | "read_only";
+
+export interface ObsidianIntegrationConfig {
+  enabled: boolean;
+  vaultPath: string;
+  mode: ObsidianIntegrationMode;
+  allowedSubpaths: string[];
+}
+
+export interface ObsidianIntegrationStatus extends ObsidianIntegrationConfig {
+  vaultReachable: boolean;
+  lastOperationAt?: string;
+  lastError?: string;
+  checkedAt: string;
+}

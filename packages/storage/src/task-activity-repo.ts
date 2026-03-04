@@ -4,6 +4,7 @@ import type {
   TaskActivityCreateInput,
   TaskActivityRecord,
 } from "@goatcitadel/contracts";
+import { safeJsonParse } from "./safe-json.js";
 
 interface TaskActivityRow {
   activity_id: string;
@@ -67,7 +68,7 @@ export class TaskActivityRepository {
       agentId: row.agent_id ?? undefined,
       activityType: row.activity_type,
       message: row.message,
-      metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : undefined,
+      metadata: row.metadata_json ? safeJsonParse<Record<string, unknown>>(row.metadata_json, {}) : undefined,
       createdAt: row.created_at,
     }));
   }

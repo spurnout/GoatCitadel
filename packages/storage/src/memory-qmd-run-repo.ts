@@ -30,6 +30,7 @@ export class MemoryQmdRunRepository {
   private readonly insertStmt;
   private readonly listStmt;
   private readonly statsStmt;
+  private readonly pruneOlderThanStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
@@ -60,6 +61,10 @@ export class MemoryQmdRunRepository {
       FROM memory_qmd_runs
       WHERE created_at >= @from
         AND created_at <= @to
+    `);
+    this.pruneOlderThanStmt = db.prepare(`
+      DELETE FROM memory_qmd_runs
+      WHERE created_at < @cutoff
     `);
   }
 
@@ -112,6 +117,19 @@ export class MemoryQmdRunRepository {
     const totalRuns = Number(row?.total_runs ?? 0);
     const original = Number(row?.original_tokens ?? 0);
     const distilled = Number(row?.distilled_tokens ?? 0);
+    const rawDelta = distilled - original;
+    const netTokenDelta = Number(rawDelta.toFixed(2));
+    const compressionPercent = original > 0 && distilled < original
+      ? Number((((original - distilled) / original) * 100).toFixed(2))
+      : 0;
+    const expansionPercent = original > 0 && distilled > original
+      ? Number((((distilled - original) / original) * 100).toFixed(2))
+      : 0;
+    const efficiencyLabel: MemoryQmdStatsResponse["efficiencyLabel"] = netTokenDelta < 0
+      ? "reduced"
+      : netTokenDelta > 0
+        ? "expanded"
+        : "neutral";
 
     return {
       from,
@@ -124,7 +142,16 @@ export class MemoryQmdRunRepository {
       originalTokenEstimate: original,
       distilledTokenEstimate: distilled,
       savingsPercent: original > 0 ? Number((((original - distilled) / original) * 100).toFixed(2)) : 0,
+      netTokenDelta,
+      compressionPercent,
+      expansionPercent,
+      efficiencyLabel,
     };
+  }
+
+  public pruneOlderThan(cutoffIso: string): number {
+    const result = this.pruneOlderThanStmt.run({ cutoff: cutoffIso }) as { changes?: number };
+    return Number(result.changes ?? 0);
   }
 }
 

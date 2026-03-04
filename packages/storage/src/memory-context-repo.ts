@@ -49,6 +49,8 @@ export class MemoryContextRepository {
   private readonly getByCacheKeyStmt;
   private readonly listRecentStmt;
   private readonly listByRunStmt;
+  private readonly pruneExpiredStmt;
+  private readonly pruneOlderThanStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(`
@@ -93,6 +95,14 @@ export class MemoryContextRepository {
       SELECT * FROM memory_context_packs
       WHERE run_id = @runId
       ORDER BY created_at DESC
+    `);
+    this.pruneExpiredStmt = db.prepare(`
+      DELETE FROM memory_context_packs
+      WHERE expires_at <= @now
+    `);
+    this.pruneOlderThanStmt = db.prepare(`
+      DELETE FROM memory_context_packs
+      WHERE created_at < @cutoff
     `);
   }
 
@@ -153,6 +163,16 @@ export class MemoryContextRepository {
   public listByRun(runId: string): MemoryContextPack[] {
     const rows = this.listByRunStmt.all({ runId }) as unknown as MemoryContextRow[];
     return rows.map(mapRow);
+  }
+
+  public pruneExpired(nowIso = new Date().toISOString()): number {
+    const result = this.pruneExpiredStmt.run({ now: nowIso }) as { changes?: number };
+    return Number(result.changes ?? 0);
+  }
+
+  public pruneOlderThan(cutoffIso: string): number {
+    const result = this.pruneOlderThanStmt.run({ cutoff: cutoffIso }) as { changes?: number };
+    return Number(result.changes ?? 0);
   }
 }
 

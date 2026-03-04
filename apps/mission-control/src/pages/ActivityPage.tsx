@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 import { connectEventStream, fetchRealtimeEvents, type RealtimeEvent } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
@@ -31,14 +32,17 @@ export function ActivityPage() {
         actions={pageCopy.activity.guide?.actions ?? []}
       />
       {error ? <p className="error">{error}</p> : null}
-      <ul className="compact-list">
-        {events.map((event) => (
-          <li key={event.eventId}>
+      <div className="virtual-list-shell tall">
+        <Virtuoso
+          data={events}
+          itemContent={(_index, event) => (
+            <div className="virtual-list-item">
             <strong>{event.eventType}</strong> ({event.source}) {new Date(event.timestamp).toLocaleString()}
             <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-          </li>
-        ))}
-      </ul>
+            </div>
+          )}
+        />
+      </div>
     </section>
   );
 }

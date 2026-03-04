@@ -60,6 +60,7 @@ export interface CronJobRecord {
   enabled: boolean;
   lastRunAt?: string;
   nextRunAt?: string;
+  updatedAt?: string;
 }
 
 export interface OperatorSummary {

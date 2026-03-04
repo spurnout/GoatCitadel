@@ -21,12 +21,19 @@ export interface CostSummary {
   costUsd: number;
 }
 
+export interface CostUsageAvailability {
+  trackedEvents: number;
+  unknownEvents: number;
+  totalAgentEvents: number;
+}
+
 export class CostLedgerRepository {
   private readonly insertStmt;
   private readonly summaryByDayStmt;
   private readonly summaryBySessionStmt;
   private readonly summaryByAgentStmt;
   private readonly summaryByTaskStmt;
+  private readonly summaryUsageAvailabilityStmt;
   private readonly pruneStmt;
   private insertCount = 0;
 
@@ -93,6 +100,17 @@ export class CostLedgerRepository {
       ORDER BY SUM(cost_usd) DESC
     `);
 
+    this.summaryUsageAvailabilityStmt = db.prepare(`
+      SELECT
+        COUNT(*) AS total_agent_events,
+        SUM(CASE WHEN token_input > 0 OR token_output > 0 OR token_cached_input > 0 OR cost_usd > 0 THEN 1 ELSE 0 END) AS tracked_events,
+        SUM(CASE WHEN token_input = 0 AND token_output = 0 AND token_cached_input = 0 AND cost_usd = 0 THEN 1 ELSE 0 END) AS unknown_events
+      FROM cost_ledger
+      WHERE created_at >= @from
+        AND created_at <= @to
+        AND agent_id IS NOT NULL
+    `);
+
     this.pruneStmt = db.prepare(`
       DELETE FROM cost_ledger
       WHERE created_at < @cutoff
@@ -133,6 +151,19 @@ export class CostLedgerRepository {
 
     const rows = this.summaryByTaskStmt.all({ from: fromIso, to: toIso }) as unknown as SummaryRow[];
     return rows.map((row) => mapSummaryRow(scope, row));
+  }
+
+  public usageAvailability(fromIso: string, toIso: string): CostUsageAvailability {
+    const row = this.summaryUsageAvailabilityStmt.get({ from: fromIso, to: toIso }) as {
+      total_agent_events: number | null;
+      tracked_events: number | null;
+      unknown_events: number | null;
+    } | undefined;
+    return {
+      trackedEvents: Number(row?.tracked_events ?? 0),
+      unknownEvents: Number(row?.unknown_events ?? 0),
+      totalAgentEvents: Number(row?.total_agent_events ?? 0),
+    };
   }
 }
 

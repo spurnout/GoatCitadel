@@ -5,6 +5,10 @@ const reportListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(260).default(24),
 });
 
+const runListQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(300).default(40),
+});
+
 const reportParamsSchema = z.object({
   reportId: z.string().min(1),
 });
@@ -54,6 +58,16 @@ export const improvementRoutes: FastifyPluginAsync = async (fastify) => {
     } catch (error) {
       return reply.code(500).send({ error: (error as Error).message });
     }
+  });
+
+  fastify.get("/api/v1/improvement/replay/runs", async (request, reply) => {
+    const parsed = runListQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send({
+      items: fastify.gateway.listDecisionReplayRuns(parsed.data.limit),
+    });
   });
 
   fastify.get("/api/v1/improvement/replay/runs/:runId", async (request, reply) => {

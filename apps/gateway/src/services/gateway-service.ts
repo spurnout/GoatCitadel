@@ -97,6 +97,7 @@ import type {
   McpOAuthStartResponse,
   McpServerCategory,
   McpServerPolicy,
+  McpServerTemplateRecord,
   McpServerCreateInput,
   McpServerRecord,
   McpServerUpdateInput,
@@ -134,6 +135,10 @@ import type {
   PromptPackRecord,
   PromptPackAutoScoreBatchResult,
   PromptPackAutoScoreResult,
+  PromptPackBenchmarkItemRecord,
+  PromptPackBenchmarkProviderInput,
+  PromptPackBenchmarkRunRecord,
+  PromptPackBenchmarkStatusRecord,
   PromptPackExportRecord,
   PromptPackReportRecord,
   PromptPackRunRecord,
@@ -150,10 +155,16 @@ import type {
   SessionSummary,
   SessionTimelineItem,
   SkillActivationPolicy,
+  SkillImportHistoryRecord,
+  SkillImportValidationResult,
   SkillListItem,
+  SkillSourceListResponse,
+  SkillSourceProvider,
   SkillRuntimeState,
   SkillStateRecord,
   SkillResolveInput,
+  ObsidianIntegrationConfig,
+  ObsidianIntegrationStatus,
   LearnedMemoryConflictRecord,
   LearnedMemoryItemRecord,
   LearnedMemoryItemType,
@@ -190,6 +201,12 @@ import type {
   VoiceStatus,
   VoiceTalkSessionRecord,
   VoiceTranscribeResponse,
+  GuidanceBundleRecord,
+  GuidanceDocType,
+  GuidanceDocumentRecord,
+  WorkspaceCreateInput,
+  WorkspaceRecord,
+  WorkspaceUpdateInput,
 } from "@goatcitadel/contracts";
 import { BUILTIN_AGENT_PROFILES } from "@goatcitadel/contracts";
 import type { GatewayRuntimeConfig } from "../config.js";
@@ -202,6 +219,8 @@ import { NpuSidecarService } from "./npu-sidecar-service.js";
 import { SecretStoreService } from "./secret-store-service.js";
 import { ChatAgentOrchestrator, normalizeAgentInputFromSend } from "./chat-agent-orchestrator.js";
 import { ResearchService } from "./research-service.js";
+import { ObsidianVaultService } from "./obsidian-vault-service.js";
+import { SkillImportService } from "./skill-import-service.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -337,6 +356,84 @@ const DEFAULT_MCP_SERVER_POLICY: McpServerPolicy = {
   allowedToolPatterns: [],
   blockedToolPatterns: [],
 };
+const MCP_SERVER_TEMPLATES: McpServerTemplateRecord[] = [
+  {
+    templateId: "filesystem",
+    label: "Filesystem (Local)",
+    description: "Read and write local workspace files through MCP.",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    authType: "none",
+    category: "development",
+    trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "fetch",
+    label: "Fetch (HTTP)",
+    description: "Web fetch/search helper MCP server for research tasks.",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-fetch"],
+    authType: "none",
+    category: "research",
+    trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "playwright",
+    label: "Playwright Browser",
+    description: "Browser automation MCP server for dynamic website workflows.",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-playwright"],
+    authType: "none",
+    category: "automation",
+    trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "github",
+    label: "GitHub",
+    description: "Repository and issue automation MCP server (token required).",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    authType: "token",
+    category: "development",
+    trustTier: "restricted",
+    costTier: "unknown",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "strict",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+];
 const CORE_CHANNEL_KEYS = new Set([
   "discord",
   "slack",
@@ -356,21 +453,46 @@ const CHAT_SESSION_AUTO_ALLOW_TOOLS = [
 ] as const;
 
 const PROMPT_PACK_PASS_THRESHOLD = 7;
+const PROMPT_PACK_BENCHMARK_MAX_TESTS = 200;
+const PROMPT_PACK_BENCHMARK_MAX_PROVIDERS = 10;
+const PROMPT_PACK_BENCHMARK_MAX_FAILURE_SIGNALS = 3;
 const DEFAULT_PROMPT_RUNNER_SOURCE = "goatcitadel_prompt_pack.md";
 const DEFAULT_PROMPT_PACK_EXPORT_DIR = "artifacts/prompt-lab";
 const DEFAULT_DELEGATION_ROLES = ["product", "architect", "coder", "qa", "ops"];
 const IMPROVEMENT_WEEKLY_JOB_ID = "self_improvement_weekly_replay";
 const IMPROVEMENT_WEEKLY_TIME_ZONE = "America/Los_Angeles";
 const IMPROVEMENT_WEEKLY_SCHEDULE_LABEL = "0 2 * * 0 America/Los_Angeles";
+const PRIVATE_BETA_BACKUP_JOB_ID = "private_beta_backup_daily";
+const PRIVATE_BETA_BACKUP_TIME_ZONE = "America/Los_Angeles";
+const PRIVATE_BETA_BACKUP_SCHEDULE_LABEL = "30 2 * * * America/Los_Angeles";
+const MEMORY_FLUSH_DAILY_JOB_ID = "memory-flush-daily";
+const MEMORY_FLUSH_DAILY_TIME_ZONE = "America/Los_Angeles";
+const MEMORY_FLUSH_DAILY_SCHEDULE_LABEL = "0 3 * * * America/Los_Angeles";
+const COST_REPORT_HOURLY_JOB_ID = "cost-report-hourly";
+const COST_REPORT_HOURLY_TIME_ZONE = "America/Los_Angeles";
+const COST_REPORT_HOURLY_SCHEDULE_LABEL = "0 * * * * America/Los_Angeles";
+const SYSTEM_CRON_JOB_IDS = new Set([
+  IMPROVEMENT_WEEKLY_JOB_ID,
+  PRIVATE_BETA_BACKUP_JOB_ID,
+  MEMORY_FLUSH_DAILY_JOB_ID,
+  COST_REPORT_HOURLY_JOB_ID,
+]);
+const PRIVATE_BETA_BACKUP_DEDUP_SETTING_KEY = "private_beta_backup_last_day_key_v1";
+const MEMORY_FLUSH_DAILY_DEDUP_SETTING_KEY = "memory_flush_daily_last_day_key_v1";
+const COST_REPORT_HOURLY_DEDUP_SETTING_KEY = "cost_report_hourly_last_hour_key_v1";
 const IMPROVEMENT_WEEKLY_SAMPLE_SIZE = 500;
 const IMPROVEMENT_JUDGE_SAMPLE_LIMIT = 120;
+const IMPROVEMENT_JUDGE_TIMEOUT_MS = 15_000;
 const IMPROVEMENT_SCHEDULER_INTERVAL_MS = 60_000;
 const IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY = "improvement_weekly_last_week_key_v1";
+const MEMORY_FLUSH_HISTORY_DAYS = 30;
+const COST_REPORT_LOOKBACK_HOURS = 1;
+const COST_REPORT_OUTPUT_DIR = "artifacts/cost-reports";
 const IMPROVEMENT_TUNE_KEY_BLOCKER_TEMPLATE = "improvement_tune_blocker_template_v1";
 const IMPROVEMENT_TUNE_KEY_RETRY_THRESHOLD = "improvement_tune_retry_threshold_v1";
 const IMPROVEMENT_TUNE_KEY_LIVE_INTENT = "improvement_tune_live_intent_threshold_v1";
 const IMPROVEMENT_TUNE_KEY_REFUSAL_STYLE = "improvement_tune_refusal_style_v1";
-const IMPROVEMENT_RUN_STATUS_VALUES = new Set(["running", "completed", "failed"]);
+const IMPROVEMENT_RUN_STATUS_VALUES = new Set(["queued", "running", "completed", "failed"]);
 const IMPROVEMENT_CAUSE_CLASSES = new Set<DecisionReplayCauseClass>([
   "false_refusal_tone",
   "weak_blocker_explanation",
@@ -385,9 +507,23 @@ const PIPELINE_TEMPLATES: Record<string, string[]> = {
   triage: ["qa", "ops", "product"],
   release: ["qa", "ops", "product"],
 };
+const DEFAULT_WORKSPACE_ID = "default";
+const GUIDANCE_DOC_FILE_MAP: Record<GuidanceDocType, string> = {
+  goatcitadel: "GOATCITADEL.md",
+  agents: "AGENTS.md",
+  claude: "CLAUDE.md",
+  contributing: "CONTRIBUTING.md",
+  security: "SECURITY.md",
+  vision: "VISION.md",
+};
+const WORKSPACE_GUIDANCE_DOC_TYPES: GuidanceDocType[] = ["goatcitadel", "agents", "claude", "vision"];
+const RUNTIME_GUIDANCE_DOC_TYPES: GuidanceDocType[] = ["goatcitadel", "agents", "claude"];
+const MAX_RUNTIME_GUIDANCE_CHARS = 6000;
+const GUIDANCE_DEBUG_KILL_SWITCH_ENV = "GOATCITADEL_DISABLE_GUIDANCE_INJECTION";
 
 interface ChatSessionListQuery {
   scope?: "mission" | "external" | "all";
+  workspaceId?: string;
   projectId?: string;
   q?: string;
   view?: "active" | "archived" | "all";
@@ -455,8 +591,45 @@ interface ReplayScoredItemResult {
   judgeUsed: boolean;
 }
 
+interface PromptPackBenchmarkRunRow {
+  benchmark_run_id: string;
+  pack_id: string;
+  status: PromptPackBenchmarkRunRecord["status"];
+  test_codes_json: string;
+  providers_json: string;
+  total_items: number;
+  completed_items: number;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+interface PromptPackBenchmarkItemRow {
+  item_id: string;
+  benchmark_run_id: string;
+  pack_id: string;
+  test_id: string;
+  test_code: string;
+  provider_id: string;
+  model: string;
+  run_id: string | null;
+  score_id: string | null;
+  run_status: PromptPackBenchmarkItemRecord["runStatus"];
+  total_score: number | null;
+  failure_signal: string | null;
+  created_at: string;
+}
+
 interface RealtimeListener {
   (event: RealtimeEvent): void;
+}
+
+interface ResolvedRuntimeGuidance {
+  workspaceId: string;
+  systemInstruction?: string;
+  globalFilesUsed: string[];
+  workspaceFilesUsed: string[];
+  truncated: boolean;
 }
 
 export class GatewayService {
@@ -472,6 +645,8 @@ export class GatewayService {
   private readonly approvalExplainer: ApprovalExplainerService;
   private readonly chatAgentOrchestrator: ChatAgentOrchestrator;
   private readonly researchService: ResearchService;
+  private readonly obsidianVaultService: ObsidianVaultService;
+  private readonly skillImportService: SkillImportService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly onboardingMarkerPath: string;
@@ -545,12 +720,15 @@ export class GatewayService {
       listToolCatalog: () => this.listToolCatalog(),
       createChatCompletion: (request) => this.createChatCompletion(request),
       invokeTool: (request) => this.invokeTool(request),
+      evaluateToolAccess: (request) => this.policyEngine.evaluateAccess(request),
     });
     this.researchService = new ResearchService({
       storage: this.storage,
       invokeTool: (request) => this.invokeTool(request),
       createChatCompletion: (request) => this.createChatCompletion(request),
     });
+    this.obsidianVaultService = new ObsidianVaultService(this.storage.systemSettings);
+    this.skillImportService = new SkillImportService(config.rootDir, this.storage.systemSettings);
   }
 
   public async init(): Promise<void> {
@@ -558,8 +736,12 @@ export class GatewayService {
     this.storage.agentProfiles.seedBuiltins(BUILTIN_AGENT_PROFILES);
     const skills = await this.skillsService.reload();
     this.ensureSkillStates(skills.map((skill) => skill.skillId));
+    this.markInterruptedDecisionReplayRuns();
     await this.loadCronJobsFromConfig();
     this.ensureWeeklyImprovementCronJob();
+    this.ensurePrivateBetaBackupCronJob();
+    this.ensureMemoryFlushCronJob();
+    this.ensureCostReportCronJob();
     this.meshService.init();
     await this.npuSidecar.init();
     // Enforce env-only secret persistence policy on startup.
@@ -612,6 +794,102 @@ export class GatewayService {
     return this.storage.sessions.getBySessionId(sessionId);
   }
 
+  public listWorkspaces(view: "active" | "archived" | "all" = "active", limit = 200): WorkspaceRecord[] {
+    return this.storage.workspaces.list(view, limit);
+  }
+
+  public getWorkspace(workspaceId: string): WorkspaceRecord {
+    return this.storage.workspaces.get(this.normalizeWorkspaceId(workspaceId));
+  }
+
+  public createWorkspace(input: WorkspaceCreateInput): WorkspaceRecord {
+    const created = this.storage.workspaces.create(input);
+    this.publishRealtime("workspace_created", "system", {
+      workspaceId: created.workspaceId,
+      name: created.name,
+      slug: created.slug,
+    });
+    return created;
+  }
+
+  public updateWorkspace(workspaceId: string, input: WorkspaceUpdateInput): WorkspaceRecord {
+    const updated = this.storage.workspaces.update(this.normalizeWorkspaceId(workspaceId), input);
+    this.publishRealtime("workspace_updated", "system", {
+      workspaceId: updated.workspaceId,
+      name: updated.name,
+      slug: updated.slug,
+    });
+    return updated;
+  }
+
+  public archiveWorkspace(workspaceId: string): WorkspaceRecord {
+    const archived = this.storage.workspaces.archive(this.normalizeWorkspaceId(workspaceId));
+    this.publishRealtime("workspace_archived", "system", {
+      workspaceId: archived.workspaceId,
+    });
+    return archived;
+  }
+
+  public restoreWorkspace(workspaceId: string): WorkspaceRecord {
+    const restored = this.storage.workspaces.restore(this.normalizeWorkspaceId(workspaceId));
+    this.publishRealtime("workspace_restored", "system", {
+      workspaceId: restored.workspaceId,
+    });
+    return restored;
+  }
+
+  public async listGlobalGuidance(): Promise<GuidanceDocumentRecord[]> {
+    const docs = await Promise.all(
+      (Object.keys(GUIDANCE_DOC_FILE_MAP) as GuidanceDocType[]).map((docType) => this.readGuidanceDocument(docType, "global")),
+    );
+    return docs;
+  }
+
+  public async listWorkspaceGuidance(workspaceId: string): Promise<GuidanceBundleRecord> {
+    const normalizedWorkspaceId = this.normalizeWorkspaceId(workspaceId);
+    this.storage.workspaces.get(normalizedWorkspaceId);
+    const [globalDocs, workspaceDocs] = await Promise.all([
+      this.listGlobalGuidance(),
+      Promise.all(
+        WORKSPACE_GUIDANCE_DOC_TYPES.map((docType) =>
+          this.readGuidanceDocument(docType, "workspace", normalizedWorkspaceId)),
+      ),
+    ]);
+    return {
+      workspaceId: normalizedWorkspaceId,
+      global: globalDocs,
+      workspace: workspaceDocs,
+    };
+  }
+
+  public async updateGlobalGuidance(docType: GuidanceDocType, content: string): Promise<GuidanceDocumentRecord> {
+    await this.writeGuidanceDocument(docType, "global", undefined, content);
+    this.publishRealtime("guidance_updated", "system", {
+      scope: "global",
+      docType,
+    });
+    return this.readGuidanceDocument(docType, "global");
+  }
+
+  public async updateWorkspaceGuidance(
+    workspaceId: string,
+    docType: GuidanceDocType,
+    content: string,
+  ): Promise<GuidanceDocumentRecord> {
+    const normalizedWorkspaceId = this.normalizeWorkspaceId(workspaceId);
+    this.storage.workspaces.get(normalizedWorkspaceId);
+    if (!WORKSPACE_GUIDANCE_DOC_TYPES.includes(docType)) {
+      throw new Error(`Workspace override is not supported for ${docType}; use global guidance instead.`);
+    }
+    await this.writeGuidanceDocument(docType, "workspace", normalizedWorkspaceId, content);
+    this.publishRealtime("guidance_updated", "system", {
+      scope: "workspace",
+      workspaceId: normalizedWorkspaceId,
+      docType,
+    });
+    return this.readGuidanceDocument(docType, "workspace", normalizedWorkspaceId);
+  }
+
   public async getTranscript(sessionId: string) {
     return this.storage.transcripts.read(sessionId);
   }
@@ -660,36 +938,50 @@ export class GatewayService {
     }));
   }
 
-  public listChatProjects(view: "active" | "archived" | "all" = "active", limit = 300): ChatProjectRecord[] {
-    return this.storage.chatProjects.list(view, limit);
+  public listChatProjects(
+    view: "active" | "archived" | "all" = "active",
+    limit = 300,
+    workspaceId?: string,
+  ): ChatProjectRecord[] {
+    return this.storage.chatProjects.list(view, limit, this.normalizeWorkspaceId(workspaceId));
   }
 
   public createChatProject(input: {
+    workspaceId?: string;
     name: string;
     description?: string;
     workspacePath: string;
     color?: string;
   }): ChatProjectRecord {
-    const created = this.storage.chatProjects.create(input);
+    const created = this.storage.chatProjects.create({
+      ...input,
+      workspaceId: this.normalizeWorkspaceId(input.workspaceId),
+    });
     this.publishRealtime("system", "chat", {
       type: "chat_project_created",
       projectId: created.projectId,
       name: created.name,
+      workspaceId: created.workspaceId,
     });
     return created;
   }
 
   public updateChatProject(projectId: string, input: {
+    workspaceId?: string;
     name?: string;
     description?: string;
     workspacePath?: string;
     color?: string;
   }): ChatProjectRecord {
-    const updated = this.storage.chatProjects.update(projectId, input);
+    const updated = this.storage.chatProjects.update(projectId, {
+      ...input,
+      workspaceId: input.workspaceId ? this.normalizeWorkspaceId(input.workspaceId) : undefined,
+    });
     this.publishRealtime("system", "chat", {
       type: "chat_project_updated",
       projectId: updated.projectId,
       name: updated.name,
+      workspaceId: updated.workspaceId,
     });
     return updated;
   }
@@ -724,22 +1016,25 @@ export class GatewayService {
   }
 
   public listChatSessions(query: ChatSessionListQuery = {}): ChatSessionRecord[] {
+    const workspaceId = this.normalizeWorkspaceId(query.workspaceId);
     const scope = query.scope ?? "all";
     const view = query.view ?? "active";
     const limit = Math.max(1, Math.min(1000, Math.floor(query.limit ?? 200)));
     const allSessions = this.storage.sessions.list(20000);
-    const projects = this.storage.chatProjects.list("all", 2000);
+    const projects = this.storage.chatProjects.list("all", 2000, workspaceId);
     const projectById = new Map(projects.map((project) => [project.projectId, project]));
     const sessionIds = allSessions.map((session) => session.sessionId);
-    const metaBySessionId = this.storage.chatSessionMeta.listBySessionIds(sessionIds);
+    const metaBySessionId = this.storage.chatSessionMeta.listBySessionIds(sessionIds, workspaceId);
     const projectLinkBySessionId = this.storage.chatSessionProjects.listBySessionIds(sessionIds);
 
     let records = allSessions.map((session) => {
-      const meta = metaBySessionId.get(session.sessionId) ?? this.storage.chatSessionMeta.ensure(session.sessionId);
+      const meta = metaBySessionId.get(session.sessionId) ?? this.storage.chatSessionMeta.ensure(session.sessionId, undefined, workspaceId);
       const link = projectLinkBySessionId.get(session.sessionId);
       const project = link ? projectById.get(link.projectId) : undefined;
       return toChatSessionRecord(session, meta, project);
     });
+
+    records = records.filter((record) => this.normalizeWorkspaceId(record.workspaceId) === workspaceId);
 
     if (scope !== "all") {
       records = records.filter((record) => record.scope === scope);
@@ -794,9 +1089,11 @@ export class GatewayService {
   }
 
   public createChatSession(input: {
+    workspaceId?: string;
     title?: string;
     projectId?: string;
   }): ChatSessionRecord {
+    const workspaceId = this.normalizeWorkspaceId(input.workspaceId);
     const peer = `chat_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     const route = {
       channel: "mission",
@@ -818,21 +1115,26 @@ export class GatewayService {
       displayName: input.title?.trim() || undefined,
       timestamp: now,
     });
-    this.storage.chatSessionMeta.ensure(resolution.sessionId, now);
+    this.storage.chatSessionMeta.ensure(resolution.sessionId, now, workspaceId);
     this.storage.chatSessionPrefs.ensure(resolution.sessionId, now);
     this.ensureChatSessionRuntimeGrants(resolution.sessionId);
     if (input.title?.trim()) {
       this.storage.chatSessionMeta.patch(resolution.sessionId, {
+        workspaceId,
         title: input.title.trim(),
       }, now);
     }
     this.storage.chatSessionBindings.upsert({
       sessionId: resolution.sessionId,
+      workspaceId,
       transport: "llm",
       writable: true,
     }, now);
     if (input.projectId) {
-      this.storage.chatProjects.get(input.projectId);
+      const project = this.storage.chatProjects.get(input.projectId);
+      if (this.normalizeWorkspaceId(project.workspaceId) !== workspaceId) {
+        throw new Error("project workspace does not match requested session workspace");
+      }
       this.storage.chatSessionProjects.assign(resolution.sessionId, input.projectId, now);
     }
     const created = this.requireChatSession(resolution.sessionId);
@@ -887,11 +1189,16 @@ export class GatewayService {
 
   public assignChatSessionProject(sessionId: string, projectId?: string): ChatSessionRecord {
     this.getSession(sessionId);
+    const meta = this.storage.chatSessionMeta.ensure(sessionId);
+    const workspaceId = this.normalizeWorkspaceId(meta.workspaceId);
     if (!projectId) {
       this.storage.chatSessionProjects.unassign(sessionId);
       return this.requireChatSession(sessionId);
     }
-    this.storage.chatProjects.get(projectId);
+    const project = this.storage.chatProjects.get(projectId);
+    if (this.normalizeWorkspaceId(project.workspaceId) !== workspaceId) {
+      throw new Error("project workspace does not match session workspace");
+    }
     this.storage.chatSessionProjects.assign(sessionId, projectId);
     return this.requireChatSession(sessionId);
   }
@@ -909,6 +1216,7 @@ export class GatewayService {
     writable?: boolean;
   }): ChatSessionBindingRecord {
     this.getSession(input.sessionId);
+    const sessionMeta = this.storage.chatSessionMeta.ensure(input.sessionId);
     if (input.transport === "integration") {
       if (!input.connectionId?.trim() || !input.target?.trim()) {
         throw new Error("connectionId and target are required for integration transport");
@@ -917,6 +1225,7 @@ export class GatewayService {
     }
     const binding = this.storage.chatSessionBindings.upsert({
       sessionId: input.sessionId,
+      workspaceId: this.normalizeWorkspaceId(sessionMeta.workspaceId),
       transport: input.transport,
       connectionId: input.connectionId?.trim() || undefined,
       target: input.target?.trim() || undefined,
@@ -1195,23 +1504,33 @@ export class GatewayService {
     if (this.closing) {
       return;
     }
+    await this.runWeeklyImprovementSchedulerIfDue();
+    await this.runPrivateBetaBackupSchedulerIfDue();
+    await this.runMemoryFlushSchedulerIfDue();
+    await this.runCostReportSchedulerIfDue();
+  }
+
+  private async runWeeklyImprovementSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
     const job = this.storage.cronJobs.list().find((item) => item.jobId === IMPROVEMENT_WEEKLY_JOB_ID);
     if (!job?.enabled) {
       return;
     }
     const now = new Date();
-    const window = getZonedDateParts(now, IMPROVEMENT_WEEKLY_TIME_ZONE);
-    const isScheduledMinute = window.weekday === 0 && window.hour === 2 && window.minute < 5;
-    if (!isScheduledMinute) {
+    if (!options.force && !isCronJobDueNow(job, now, {
+      defaultHour: 2,
+      defaultMinute: 0,
+      defaultWeekday: 0,
+      defaultTimeZone: IMPROVEMENT_WEEKLY_TIME_ZONE,
+    })) {
       return;
     }
     const weekKey = toWeekKeyForTimezone(now, IMPROVEMENT_WEEKLY_TIME_ZONE);
     const lastWeekKey = this.storage.systemSettings.get<string>(IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY)?.value;
-    if (lastWeekKey === weekKey) {
+    if (!options.force && lastWeekKey === weekKey) {
       return;
     }
     await this.runDecisionReplayAudit({
-      triggerMode: "scheduled",
+      triggerMode: options.force ? "manual" : "scheduled",
       sampleSize: IMPROVEMENT_WEEKLY_SAMPLE_SIZE,
     });
     this.storage.systemSettings.set(IMPROVEMENT_WEEKLY_DEDUP_SETTING_KEY, weekKey);
@@ -1220,6 +1539,188 @@ export class GatewayService {
       ...job,
       lastRunAt: finishedAt,
       nextRunAt: new Date(Date.now() + (7 * 24 * 60 * 60 * 1000)).toISOString(),
+    });
+  }
+
+  private async runPrivateBetaBackupSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
+    const job = this.storage.cronJobs.list().find((item) => item.jobId === PRIVATE_BETA_BACKUP_JOB_ID);
+    if (!job?.enabled) {
+      return;
+    }
+    const now = new Date();
+    if (!options.force && !isCronJobDueNow(job, now, {
+      defaultHour: 2,
+      defaultMinute: 30,
+      defaultWeekday: undefined,
+      defaultTimeZone: PRIVATE_BETA_BACKUP_TIME_ZONE,
+    })) {
+      return;
+    }
+    const dayKey = toDayKeyForTimezone(now, PRIVATE_BETA_BACKUP_TIME_ZONE);
+    const lastDayKey = this.storage.systemSettings.get<string>(PRIVATE_BETA_BACKUP_DEDUP_SETTING_KEY)?.value;
+    if (!options.force && dayKey === lastDayKey) {
+      return;
+    }
+
+    const backupName = `private-beta-${dayKey.replaceAll("-", "")}`;
+    const backup = await this.createBackup({ name: backupName });
+    await this.pruneRetention({ dryRun: false });
+    this.storage.systemSettings.set(PRIVATE_BETA_BACKUP_DEDUP_SETTING_KEY, dayKey);
+
+    const finishedAt = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      ...job,
+      lastRunAt: finishedAt,
+      nextRunAt: new Date(Date.now() + (24 * 60 * 60 * 1000)).toISOString(),
+    });
+    this.publishRealtime("backup_created", "system", {
+      type: "private_beta_daily_backup",
+      backupId: backup.backupId,
+      outputPath: backup.outputPath,
+      bytes: backup.bytes,
+    });
+  }
+
+  private async runMemoryFlushSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
+    const job = this.storage.cronJobs.list().find((item) => item.jobId === MEMORY_FLUSH_DAILY_JOB_ID);
+    if (!job?.enabled) {
+      return;
+    }
+    const now = new Date();
+    if (!options.force && !isCronJobDueNow(job, now, {
+      defaultHour: 3,
+      defaultMinute: 0,
+      defaultWeekday: undefined,
+      defaultTimeZone: MEMORY_FLUSH_DAILY_TIME_ZONE,
+    })) {
+      return;
+    }
+    const dayKey = toDayKeyForTimezone(now, MEMORY_FLUSH_DAILY_TIME_ZONE);
+    const lastDayKey = this.storage.systemSettings.get<string>(MEMORY_FLUSH_DAILY_DEDUP_SETTING_KEY)?.value;
+    if (!options.force && dayKey === lastDayKey) {
+      return;
+    }
+
+    const nowIso = now.toISOString();
+    const cutoffIso = new Date(now.getTime() - (MEMORY_FLUSH_HISTORY_DAYS * 24 * 60 * 60 * 1000)).toISOString();
+    const prunedExpiredContextPacks = this.storage.memoryContexts.pruneExpired(nowIso);
+    const prunedOldContextPacks = this.storage.memoryContexts.pruneOlderThan(cutoffIso);
+    const prunedOldQmdRuns = this.storage.memoryQmdRuns.pruneOlderThan(cutoffIso);
+
+    this.storage.systemSettings.set(MEMORY_FLUSH_DAILY_DEDUP_SETTING_KEY, dayKey);
+    const finishedAt = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      ...job,
+      lastRunAt: finishedAt,
+      nextRunAt: new Date(Date.now() + (24 * 60 * 60 * 1000)).toISOString(),
+    });
+    this.publishRealtime("cron_job_run", "cron", {
+      type: "memory_flush_daily",
+      jobId: MEMORY_FLUSH_DAILY_JOB_ID,
+      cutoffIso,
+      prunedExpiredContextPacks,
+      prunedOldContextPacks,
+      prunedOldQmdRuns,
+    });
+  }
+
+  private async runCostReportSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
+    const job = this.storage.cronJobs.list().find((item) => item.jobId === COST_REPORT_HOURLY_JOB_ID);
+    if (!job?.enabled) {
+      return;
+    }
+    const now = new Date();
+    if (!options.force && !isCronJobDueNow(job, now, {
+      defaultHour: 0,
+      defaultMinute: 0,
+      defaultWeekday: undefined,
+      defaultTimeZone: COST_REPORT_HOURLY_TIME_ZONE,
+    })) {
+      return;
+    }
+    const hourKey = toHourKeyForTimezone(now, COST_REPORT_HOURLY_TIME_ZONE);
+    const lastHourKey = this.storage.systemSettings.get<string>(COST_REPORT_HOURLY_DEDUP_SETTING_KEY)?.value;
+    if (!options.force && hourKey === lastHourKey) {
+      return;
+    }
+
+    const windowEndIso = now.toISOString();
+    const windowStartIso = new Date(now.getTime() - (COST_REPORT_LOOKBACK_HOURS * 60 * 60 * 1000)).toISOString();
+    const byDay = this.storage.costLedger.summary("day", windowStartIso, windowEndIso);
+    const bySession = this.storage.costLedger.summary("session", windowStartIso, windowEndIso);
+    const byAgent = this.storage.costLedger.summary("agent", windowStartIso, windowEndIso);
+    const byTask = this.storage.costLedger.summary("task", windowStartIso, windowEndIso);
+    const usageAvailability = this.storage.costLedger.usageAvailability(windowStartIso, windowEndIso);
+    const totalCostUsd = byDay.reduce((sum, row) => sum + row.costUsd, 0);
+    const totalTokens = byDay.reduce((sum, row) => sum + row.tokenTotal, 0);
+
+    const lines: string[] = [];
+    lines.push(`# Cost Report (${COST_REPORT_LOOKBACK_HOURS}h)`);
+    lines.push("");
+    lines.push(`- Generated: ${windowEndIso}`);
+    lines.push(`- Window: ${windowStartIso} -> ${windowEndIso}`);
+    lines.push(`- Total cost: $${totalCostUsd.toFixed(6)}`);
+    lines.push(`- Total tokens: ${totalTokens}`);
+    lines.push(`- Tracked events: ${usageAvailability.trackedEvents}`);
+    lines.push(`- Usage unavailable events: ${usageAvailability.unknownEvents}`);
+    lines.push(`- Total agent events: ${usageAvailability.totalAgentEvents}`);
+    lines.push("");
+
+    const appendSummaryTable = (
+      title: string,
+      keyLabel: string,
+      rows: Array<{
+        key: string;
+        tokenInput: number;
+        tokenOutput: number;
+        tokenCachedInput: number;
+        tokenTotal: number;
+        costUsd: number;
+      }>,
+    ) => {
+      lines.push(`## ${title}`);
+      lines.push("");
+      if (rows.length === 0) {
+        lines.push("_No data in this window._");
+        lines.push("");
+        return;
+      }
+      lines.push(`| ${keyLabel} | Token In | Token Out | Cached In | Token Total | Cost USD |`);
+      lines.push("| --- | ---: | ---: | ---: | ---: | ---: |");
+      for (const row of rows) {
+        lines.push(`| ${row.key || "-"} | ${row.tokenInput} | ${row.tokenOutput} | ${row.tokenCachedInput} | ${row.tokenTotal} | ${row.costUsd.toFixed(6)} |`);
+      }
+      lines.push("");
+    };
+
+    appendSummaryTable("By Session", "Session", bySession.slice(0, 25));
+    appendSummaryTable("By Agent", "Agent", byAgent.slice(0, 25));
+    appendSummaryTable("By Task", "Task", byTask.slice(0, 25));
+    appendSummaryTable("By Day", "Day", byDay.slice(0, 25));
+
+    const reportDir = path.join(this.config.rootDir, COST_REPORT_OUTPUT_DIR);
+    await fs.mkdir(reportDir, { recursive: true });
+    const reportFileName = `cost-report-${hourKey}.md`;
+    const outputPath = path.join(reportDir, reportFileName);
+    await fs.writeFile(outputPath, `${lines.join("\n")}\n`, "utf8");
+
+    this.storage.systemSettings.set(COST_REPORT_HOURLY_DEDUP_SETTING_KEY, hourKey);
+    const finishedAt = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      ...job,
+      lastRunAt: finishedAt,
+      nextRunAt: new Date(Date.now() + (60 * 60 * 1000)).toISOString(),
+    });
+    this.publishRealtime("cron_job_run", "cron", {
+      type: "cost_report_hourly",
+      jobId: COST_REPORT_HOURLY_JOB_ID,
+      outputPath,
+      totalCostUsd: Number(totalCostUsd.toFixed(6)),
+      totalTokens,
+      trackedEvents: usageAvailability.trackedEvents,
+      unknownEvents: usageAvailability.unknownEvents,
+      windowStartIso,
+      windowEndIso,
     });
   }
 
@@ -2246,8 +2747,10 @@ export class GatewayService {
     const prefs = this.ensureGlmPrimaryDefaults(sessionId, this.storage.chatSessionPrefs.ensure(sessionId));
     const providerId = input.providerId ?? prefs.providerId;
     const model = input.model ?? prefs.model;
+    const sessionWorkspaceId = this.normalizeWorkspaceId(this.storage.chatSessionMeta.ensure(sessionId).workspaceId);
 
     const task = this.createTask({
+      workspaceId: sessionWorkspaceId,
       title: `Delegation: ${objective.slice(0, 120)}`,
       description: objective,
       status: "in_progress",
@@ -3050,11 +3553,29 @@ export class GatewayService {
         memoryMode: "auto",
         thinkingLevel: "standard",
       });
-      const updated = this.storage.promptPackRuns.patch(runId, {
-        status: "completed",
+      const responseText = finalizePromptPackResponseText({
+        prompt: resolvedPrompt.prompt,
         responseText: response.assistantMessage?.content ?? "",
         trace: response.trace,
+      });
+      const traceStatus = response.trace?.status;
+      const missingOutput = responseText.trim().length === 0;
+      const failedByTrace = traceStatus === "failed";
+      const approvalPending = traceStatus === "approval_required";
+      const status: PromptPackRunRecord["status"] = (missingOutput || failedByTrace || approvalPending) ? "failed" : "completed";
+      const error = status === "failed"
+        ? (approvalPending
+          ? "Turn paused for approval; prompt-pack run marked failed for deterministic scoring."
+          : (missingOutput
+            ? "No assistant output generated."
+            : "Assistant turn finished in failed state."))
+        : undefined;
+      const updated = this.storage.promptPackRuns.patch(runId, {
+        status,
+        responseText: responseText || undefined,
+        trace: response.trace,
         citations: response.citations,
+        error,
         finishedAt: new Date().toISOString(),
       });
       this.refreshPromptPackExportFile(pack.packId);
@@ -3286,12 +3807,27 @@ export class GatewayService {
     const averageTotalScore = scores.length > 0 ? totalScore / scores.length : 0;
     const passScores = scores.filter((score) => score.totalScore >= PROMPT_PACK_PASS_THRESHOLD).length;
     const passRate = scores.length > 0 ? passScores / scores.length : 0;
-    const failingCodes = tests
-      .filter((test) => {
-        const latestScore = scores.find((score) => score.testId === test.testId);
-        return latestScore ? latestScore.totalScore < PROMPT_PACK_PASS_THRESHOLD : false;
-      })
-      .map((test) => test.code);
+    let runFailureCount = 0;
+    let scoreFailureCount = 0;
+    let needsScoreCount = 0;
+    const failingCodes: string[] = [];
+    for (const test of tests) {
+      const latestRun = runs.find((item) => item.testId === test.testId);
+      const latestScore = scores.find((item) => item.testId === test.testId);
+      if (latestRun?.status === "failed") {
+        runFailureCount += 1;
+        failingCodes.push(test.code);
+        continue;
+      }
+      if (latestRun?.status === "completed" && !latestScore) {
+        needsScoreCount += 1;
+        continue;
+      }
+      if (latestScore && latestScore.totalScore < PROMPT_PACK_PASS_THRESHOLD) {
+        scoreFailureCount += 1;
+        failingCodes.push(test.code);
+      }
+    }
 
     return {
       pack,
@@ -3302,11 +3838,242 @@ export class GatewayService {
         totalTests: tests.length,
         completedRuns,
         failedRuns,
+        runFailureCount,
+        scoreFailureCount,
+        needsScoreCount,
+        passThreshold: PROMPT_PACK_PASS_THRESHOLD,
         averageTotalScore,
         passRate,
         failingCodes,
       },
     };
+  }
+
+  public runPromptPackBenchmark(
+    packId: string,
+    input: {
+      testCodes: string[];
+      providers: PromptPackBenchmarkProviderInput[];
+    },
+  ): { benchmarkRunId: string } {
+    const pack = this.storage.promptPacks.getPack(packId);
+    const tests = this.storage.promptPacks.listTests(pack.packId, 5000);
+    const codeToTest = new Map(tests.map((test) => [test.code.toUpperCase(), test]));
+    const normalizedCodes = Array.from(
+      new Set(
+        (input.testCodes ?? [])
+          .map((code) => code.trim())
+          .filter((code) => code.length > 0),
+      ),
+    )
+      .map((code: string) => code.toUpperCase())
+      .slice(0, PROMPT_PACK_BENCHMARK_MAX_TESTS);
+    if (normalizedCodes.length < 1) {
+      throw new Error("Benchmark requires at least one test code.");
+    }
+    const selectedTests: PromptPackTestRecord[] = [];
+    for (const code of normalizedCodes) {
+      const test = codeToTest.get(code);
+      if (!test) {
+        throw new Error(`Prompt-pack test code ${code} not found in ${pack.name}.`);
+      }
+      selectedTests.push(test);
+    }
+
+    const providers = dedupeBenchmarkProviders(input.providers)
+      .slice(0, PROMPT_PACK_BENCHMARK_MAX_PROVIDERS);
+    if (providers.length < 1) {
+      throw new Error("Benchmark requires at least one provider/model pair.");
+    }
+
+    const benchmarkRunId = `ppb-${randomUUID()}`;
+    const startedAt = new Date().toISOString();
+    const totalItems = selectedTests.length * providers.length;
+    this.storage.db.prepare(`
+      INSERT INTO prompt_pack_benchmark_runs (
+        benchmark_run_id, pack_id, status, test_codes_json, providers_json,
+        total_items, completed_items, error, started_at, finished_at
+      ) VALUES (
+        @benchmarkRunId, @packId, @status, @testCodesJson, @providersJson,
+        @totalItems, @completedItems, NULL, @startedAt, NULL
+      )
+    `).run({
+      benchmarkRunId,
+      packId: pack.packId,
+      status: "queued",
+      testCodesJson: JSON.stringify(selectedTests.map((item) => item.code)),
+      providersJson: JSON.stringify(providers),
+      totalItems,
+      completedItems: 0,
+      startedAt,
+    });
+
+    const task = this.runPromptPackBenchmarkTask(benchmarkRunId)
+      .catch((error) => {
+        const now = new Date().toISOString();
+        this.storage.db.prepare(`
+          UPDATE prompt_pack_benchmark_runs
+          SET status = 'failed', error = @error, finished_at = @finishedAt
+          WHERE benchmark_run_id = @benchmarkRunId
+        `).run({
+          benchmarkRunId,
+          error: (error as Error).message,
+          finishedAt: now,
+        });
+      })
+      .finally(() => {
+        this.backgroundTasks.delete(task);
+      });
+    this.backgroundTasks.add(task);
+    void task;
+
+    this.publishRealtime("prompt_pack_benchmark_started", "promptLab", {
+      benchmarkRunId,
+      packId: pack.packId,
+      totalItems,
+      providers,
+      testCodes: selectedTests.map((item) => item.code),
+    });
+    return { benchmarkRunId };
+  }
+
+  public getPromptPackBenchmarkStatus(benchmarkRunId: string): PromptPackBenchmarkStatusRecord {
+    const runRow = this.storage.db.prepare(`
+      SELECT *
+      FROM prompt_pack_benchmark_runs
+      WHERE benchmark_run_id = ?
+    `).get(benchmarkRunId) as PromptPackBenchmarkRunRow | undefined;
+    if (!runRow) {
+      throw new Error(`Prompt-pack benchmark run ${benchmarkRunId} not found.`);
+    }
+    const itemRows = this.storage.db.prepare(`
+      SELECT *
+      FROM prompt_pack_benchmark_items
+      WHERE benchmark_run_id = ?
+      ORDER BY created_at ASC
+    `).all(benchmarkRunId) as unknown as PromptPackBenchmarkItemRow[];
+    const items = itemRows.map((row) => mapPromptPackBenchmarkItemRow(row));
+    const run = mapPromptPackBenchmarkRunRow(runRow);
+    const modelSummaries = summarizePromptPackBenchmarkItems(items);
+    return {
+      run,
+      progress: {
+        totalItems: runRow.total_items,
+        completedItems: Math.max(runRow.completed_items, items.length),
+      },
+      modelSummaries,
+    };
+  }
+
+  private async runPromptPackBenchmarkTask(benchmarkRunId: string): Promise<void> {
+    const run = this.getPromptPackBenchmarkStatus(benchmarkRunId).run;
+    if (run.status === "completed" || run.status === "failed") {
+      return;
+    }
+    this.storage.db.prepare(`
+      UPDATE prompt_pack_benchmark_runs
+      SET status = 'running', error = NULL
+      WHERE benchmark_run_id = @benchmarkRunId
+    `).run({ benchmarkRunId });
+
+    const tests = this.storage.promptPacks.listTests(run.packId, 5000);
+    const codeToTest = new Map(tests.map((test) => [test.code.toUpperCase(), test]));
+    const selectedTests = run.testCodes
+      .map((code) => codeToTest.get(code.toUpperCase()))
+      .filter((item): item is PromptPackTestRecord => Boolean(item));
+
+    let completedItems = 0;
+    for (const provider of run.providers) {
+      for (const test of selectedTests) {
+        const createdAt = new Date().toISOString();
+        let runStatus: PromptPackBenchmarkItemRecord["runStatus"] = "missing_run";
+        let runId: string | undefined;
+        let scoreId: string | undefined;
+        let totalScore: number | undefined;
+        let failureSignal: string | undefined;
+
+        try {
+          const promptRun = await this.runPromptPackTest(run.packId, test.testId, {
+            providerId: provider.providerId,
+            model: provider.model,
+          });
+          runId = promptRun.runId;
+          runStatus = promptRun.status;
+          if (promptRun.status === "completed") {
+            try {
+              const scored = await this.autoScorePromptPackTest({
+                packId: run.packId,
+                testId: test.testId,
+                runId: promptRun.runId,
+                providerId: provider.providerId,
+                model: provider.model,
+                force: true,
+              });
+              scoreId = scored.score.scoreId;
+              totalScore = scored.score.totalScore;
+              if (totalScore < PROMPT_PACK_PASS_THRESHOLD) {
+                failureSignal = `score_below_${PROMPT_PACK_PASS_THRESHOLD}`;
+              }
+            } catch (error) {
+              failureSignal = `score_error: ${(error as Error).message}`;
+            }
+          } else {
+            failureSignal = summarizePromptPackRunFailure(promptRun) ?? "run_failed";
+          }
+        } catch (error) {
+          runStatus = "failed";
+          failureSignal = (error as Error).message;
+        }
+
+        this.storage.db.prepare(`
+          INSERT INTO prompt_pack_benchmark_items (
+            item_id, benchmark_run_id, pack_id, test_id, test_code, provider_id, model,
+            run_id, score_id, run_status, total_score, failure_signal, created_at
+          ) VALUES (
+            @itemId, @benchmarkRunId, @packId, @testId, @testCode, @providerId, @model,
+            @runId, @scoreId, @runStatus, @totalScore, @failureSignal, @createdAt
+          )
+        `).run({
+          itemId: `ppbi-${randomUUID()}`,
+          benchmarkRunId,
+          packId: run.packId,
+          testId: test.testId,
+          testCode: test.code,
+          providerId: provider.providerId,
+          model: provider.model,
+          runId: runId ?? null,
+          scoreId: scoreId ?? null,
+          runStatus,
+          totalScore: totalScore ?? null,
+          failureSignal: failureSignal ?? null,
+          createdAt,
+        });
+
+        completedItems += 1;
+        this.storage.db.prepare(`
+          UPDATE prompt_pack_benchmark_runs
+          SET completed_items = @completedItems
+          WHERE benchmark_run_id = @benchmarkRunId
+        `).run({
+          benchmarkRunId,
+          completedItems,
+        });
+      }
+    }
+
+    const finishedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE prompt_pack_benchmark_runs
+      SET status = 'completed', finished_at = @finishedAt
+      WHERE benchmark_run_id = @benchmarkRunId
+    `).run({
+      benchmarkRunId,
+      finishedAt,
+    });
+    this.publishRealtime("prompt_pack_benchmark_completed", "promptLab", {
+      benchmarkRunId,
+      completedItems,
+    });
   }
 
   private refreshPromptPackExportFile(packId: string): PromptPackExportRecord {
@@ -3436,6 +4203,31 @@ export class GatewayService {
     return rows.map((row) => mapImprovementReportRow(row));
   }
 
+  public listDecisionReplayRuns(limit = 24): DecisionReplayRunRecord[] {
+    const rows = this.storage.db.prepare(`
+      SELECT *
+      FROM decision_replay_runs
+      ORDER BY started_at DESC
+      LIMIT ?
+    `).all(Math.max(1, Math.min(limit, 300))) as Array<{
+      run_id: string;
+      trigger_mode: "scheduled" | "manual";
+      sample_size: number;
+      window_start: string;
+      window_end: string;
+      status: string;
+      report_id: string | null;
+      total_candidates: number;
+      total_scored: number;
+      likely_wrong_count: number;
+      model_judged_count: number;
+      started_at: string;
+      finished_at: string | null;
+      error_text: string | null;
+    }>;
+    return rows.map((row) => this.mapDecisionReplayRunRow(row));
+  }
+
   public getImprovementReport(reportId: string): WeeklyImprovementReportRecord {
     const row = this.storage.db.prepare(`
       SELECT *
@@ -3484,6 +4276,30 @@ export class GatewayService {
     return this.runDecisionReplayAudit({
       triggerMode: "manual",
       sampleSize: clampInteger(input.sampleSize, 50, 2000, IMPROVEMENT_WEEKLY_SAMPLE_SIZE),
+    });
+  }
+
+  private markInterruptedDecisionReplayRuns(): void {
+    const running = this.storage.db.prepare(`
+      SELECT run_id
+      FROM decision_replay_runs
+      WHERE status = 'running'
+    `).all() as Array<{ run_id: string }>;
+    if (running.length === 0) {
+      return;
+    }
+    const finishedAt = new Date().toISOString();
+    this.storage.db.prepare(`
+      UPDATE decision_replay_runs
+      SET status = 'failed',
+          error_text = COALESCE(error_text, 'Replay interrupted before completion (service restarted).'),
+          finished_at = @finishedAt
+      WHERE status = 'running'
+    `).run({ finishedAt });
+    this.publishRealtime("system", "improvement", {
+      type: "improvement_replay_interrupted_runs_recovered",
+      recoveredCount: running.length,
+      finishedAt,
     });
   }
 
@@ -3601,24 +4417,42 @@ export class GatewayService {
     ].join("\n");
 
     try {
-      const completion = await this.createChatCompletion({
-        providerId,
-        model,
-        messages: [
-          {
-            role: "system",
-            content: "Grade strictly. Output JSON only. No markdown.",
+      const runJudgeAttempt = async (retryNote?: string): Promise<Record<string, unknown> | undefined> => {
+        const completion = await this.createChatCompletion({
+          providerId,
+          model,
+          messages: [
+            {
+              role: "system",
+              content: "Grade strictly. Output JSON only. No markdown, no prose.",
+            },
+            {
+              role: "user",
+              content: modelJudgePrompt,
+            },
+            ...(retryNote
+              ? [{
+                role: "user" as const,
+                content: retryNote,
+              }]
+              : []),
+          ],
+          temperature: 0,
+          max_tokens: 500,
+          response_format: {
+            type: "json_object",
           },
-          {
-            role: "user",
-            content: modelJudgePrompt,
-          },
-        ],
-        temperature: 0,
-        max_tokens: 500,
-      });
-      const text = extractCompletionText(completion);
-      const payload = parseLooseJsonRecord(text);
+        });
+        const text = extractCompletionText(completion);
+        return parseLooseJsonRecord(text);
+      };
+
+      let payload = await runJudgeAttempt();
+      if (!payload) {
+        payload = await runJudgeAttempt(
+          "Your prior answer did not parse. Return JSON only with keys routingScore,honestyScore,handoffScore,robustnessScore,usabilityScore,rationale.",
+        );
+      }
       if (!payload) {
         return { error: "Model judge returned non-JSON output." };
       }
@@ -3685,7 +4519,36 @@ export class GatewayService {
     try {
       const candidates = await this.selectDecisionReplayCandidates(windowStart, windowEnd, input.sampleSize);
       const sample = sampleDecisionReplayCandidates(candidates, input.sampleSize);
-      const scored = await this.scoreDecisionReplayCandidates(runId, sample);
+      this.storage.db.prepare(`
+        UPDATE decision_replay_runs
+        SET total_candidates = @totalCandidates
+        WHERE run_id = @runId
+      `).run({
+        runId,
+        totalCandidates: candidates.length,
+      });
+      const scored = await this.scoreDecisionReplayCandidates(runId, sample, {
+        onProgress: (progress) => {
+          this.storage.db.prepare(`
+            UPDATE decision_replay_runs
+            SET total_scored = @totalScored,
+                model_judged_count = @modelJudgedCount
+            WHERE run_id = @runId
+          `).run({
+            runId,
+            totalScored: progress.totalScored,
+            modelJudgedCount: progress.modelJudgedCount,
+          });
+          if (progress.totalScored % 20 === 0 || progress.totalScored === sample.length) {
+            this.publishRealtime("improvement_replay_progress", "improvement", {
+              runId,
+              totalScored: progress.totalScored,
+              totalCandidates: candidates.length,
+              modelJudgedCount: progress.modelJudgedCount,
+            });
+          }
+        },
+      });
       const items = scored.map((entry) => entry.item);
       this.insertDecisionReplayItems(items);
 
@@ -3872,6 +4735,9 @@ export class GatewayService {
   private async scoreDecisionReplayCandidates(
     runId: string,
     candidates: DecisionReplayCandidate[],
+    options?: {
+      onProgress?: (progress: { totalScored: number; modelJudgedCount: number }) => void;
+    },
   ): Promise<ReplayScoredItemResult[]> {
     const byTurn = new Map<string, DecisionReplayCandidate[]>();
     for (const candidate of candidates) {
@@ -3943,6 +4809,10 @@ export class GatewayService {
         createdAt,
       };
       results.push({ item, judgeUsed });
+      options?.onProgress?.({
+        totalScored: results.length,
+        modelJudgedCount: modelJudgeCount,
+      });
     }
     return results;
   }
@@ -4018,16 +4888,20 @@ export class GatewayService {
     ].join("\n");
 
     try {
-      const completion = await this.createChatCompletion({
-        providerId: defaults.providerId,
-        model: defaults.model,
-        messages: [
-          { role: "system", content: "Grade strictly. JSON only." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0,
-        max_tokens: 220,
-      });
+      const completion = await withTimeout(
+        this.createChatCompletion({
+          providerId: defaults.providerId,
+          model: defaults.model,
+          messages: [
+            { role: "system", content: "Grade strictly. JSON only." },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0,
+          max_tokens: 220,
+        }),
+        IMPROVEMENT_JUDGE_TIMEOUT_MS,
+        `Decision replay judge timed out after ${IMPROVEMENT_JUDGE_TIMEOUT_MS}ms`,
+      );
       const payload = parseLooseJsonRecord(extractCompletionText(completion));
       if (!payload) {
         return undefined;
@@ -4575,6 +5449,25 @@ export class GatewayService {
     if (!row) {
       throw new Error(`Decision replay run ${runId} not found`);
     }
+    return this.mapDecisionReplayRunRow(row);
+  }
+
+  private mapDecisionReplayRunRow(row: {
+    run_id: string;
+    trigger_mode: "scheduled" | "manual";
+    sample_size: number;
+    window_start: string;
+    window_end: string;
+    status: string;
+    report_id: string | null;
+    total_candidates: number;
+    total_scored: number;
+    likely_wrong_count: number;
+    model_judged_count: number;
+    started_at: string;
+    finished_at: string | null;
+    error_text: string | null;
+  }): DecisionReplayRunRecord {
     return {
       runId: row.run_id,
       triggerMode: row.trigger_mode,
@@ -4780,6 +5673,7 @@ export class GatewayService {
     const session = this.getSession(sessionId);
     this.ensureChatSessionRuntimeGrants(sessionId);
     const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
     if (sessionMeta.lifecycleStatus === "archived") {
       throw new Error(`Session ${sessionId} is archived`);
     }
@@ -4789,7 +5683,7 @@ export class GatewayService {
       throw new Error("content is required");
     }
 
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
     const inputParts = normalizeChatInputParts(content, input.parts, attachments);
     const route = this.routeFromSession(session);
     const userEventId = randomUUID();
@@ -4832,6 +5726,7 @@ export class GatewayService {
     const binding = this.storage.chatSessionBindings.get(sessionId)
       ?? this.storage.chatSessionBindings.upsert({
         sessionId,
+        workspaceId,
         transport: "llm",
         writable: true,
       });
@@ -4862,10 +5757,12 @@ export class GatewayService {
       webMode: normalized.webMode ?? prefs.webMode,
       memoryMode: normalized.memoryMode ?? prefs.memoryMode,
     });
+    const resolvedGuidance = await this.resolveRuntimeGuidance(workspaceId);
 
     const history = await this.buildLlmMessagesFromTranscript(sessionId, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
+      guidanceSystemInstruction: resolvedGuidance.systemInstruction,
     });
 
     let turnId = randomUUID();
@@ -4925,6 +5822,7 @@ export class GatewayService {
       const retryHistory = await this.buildLlmMessagesFromTranscript(sessionId, {
         providerId: input.providerId ?? prefs.providerId,
         model: input.model ?? prefs.model,
+        guidanceSystemInstruction: resolvedGuidance.systemInstruction,
       });
       const retryPrompt = `${content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
       const retryResult = await this.chatAgentOrchestrator.run({
@@ -4961,6 +5859,12 @@ export class GatewayService {
           runId: autonomy.lastProactiveRunId,
           mode: autonomy.proactiveMode,
         },
+        guidance: {
+          workspaceId,
+          globalFilesUsed: resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
+          truncated: resolvedGuidance.truncated,
+        },
       });
       return {
         sessionId,
@@ -4979,6 +5883,10 @@ export class GatewayService {
       };
     }
 
+    const assistantText = turnResult.assistantContent.trim().length > 0
+      ? turnResult.assistantContent
+      : "I could not generate a complete assistant response for this turn.";
+    const assistantUsage = turnResult.usage;
     const assistantEventId = randomUUID();
     await this.ingestEvent(randomUUID(), {
       eventId: assistantEventId,
@@ -4989,8 +5897,9 @@ export class GatewayService {
       },
       message: {
         role: "assistant",
-        content: turnResult.assistantContent,
+        content: assistantText,
       },
+      usage: assistantUsage,
     });
     const assistantMessage: ChatMessageRecord = {
       messageId: assistantEventId,
@@ -4998,18 +5907,25 @@ export class GatewayService {
       role: "assistant",
       actorType: "agent",
       actorId: "assistant",
-      content: turnResult.assistantContent,
+      content: assistantText,
       timestamp: new Date().toISOString(),
     };
+    const finalTraceStatus = turnResult.turnTrace.status === "failed" ? "failed" : "completed";
     const trace = this.storage.chatTurnTraces.patch(turnId, {
       assistantMessageId: assistantEventId,
-      status: "completed",
+      status: finalTraceStatus,
       finishedAt: new Date().toISOString(),
       retrieval: retrievalTrace,
       reflection: reflectionTrace,
       proactive: {
         runId: autonomy.lastProactiveRunId,
         mode: autonomy.proactiveMode,
+      },
+      guidance: {
+        workspaceId,
+        globalFilesUsed: resolvedGuidance.globalFilesUsed,
+        workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
+        truncated: resolvedGuidance.truncated,
       },
     });
     const hydratedTrace: ChatTurnTraceRecord = {
@@ -5022,7 +5938,7 @@ export class GatewayService {
       role: "user",
       sourceRef: userEventId,
     });
-    this.extractAndPersistLearnedMemory(sessionId, turnResult.assistantContent, {
+    this.extractAndPersistLearnedMemory(sessionId, assistantText, {
       role: "assistant",
       sourceRef: assistantEventId,
     });
@@ -5057,7 +5973,9 @@ export class GatewayService {
     if (!content) {
       throw new Error("content is required");
     }
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
     const inputParts = normalizeChatInputParts(content, input.parts, attachments);
     const route = this.routeFromSession(session);
     const userEventId = randomUUID();
@@ -5104,9 +6022,11 @@ export class GatewayService {
       webMode: normalized.webMode ?? prefs.webMode,
       memoryMode: normalized.memoryMode ?? prefs.memoryMode,
     });
+    const resolvedGuidance = await this.resolveRuntimeGuidance(workspaceId);
     const history = await this.buildLlmMessagesFromTranscript(sessionId, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
+      guidanceSystemInstruction: resolvedGuidance.systemInstruction,
     });
     const turnId = randomUUID();
     const assistantMessageId = `assistant-${randomUUID()}`;
@@ -5119,6 +6039,7 @@ export class GatewayService {
     };
 
     let finalText = "";
+    let assistantUsage: ChatStreamChunk["usage"] | undefined;
     for await (const chunk of this.chatAgentOrchestrator.runStream({
       sessionId,
       turnId,
@@ -5137,6 +6058,10 @@ export class GatewayService {
         finalText = chunk.content;
       }
       if (chunk.type === "approval_required") {
+        yield chunk;
+      }
+      if (chunk.type === "usage") {
+        assistantUsage = chunk.usage;
         yield chunk;
       }
       if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "citation" || chunk.type === "error") {
@@ -5169,6 +6094,7 @@ export class GatewayService {
           role: "assistant",
           content: finalText,
         },
+        usage: assistantUsage,
       });
       const updatedTrace = this.storage.chatTurnTraces.patch(turnId, {
         assistantMessageId: assistantEventId,
@@ -5183,6 +6109,12 @@ export class GatewayService {
         proactive: {
           runId: autonomy.lastProactiveRunId,
           mode: autonomy.proactiveMode,
+        },
+        guidance: {
+          workspaceId,
+          globalFilesUsed: resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
+          truncated: resolvedGuidance.truncated,
         },
       });
       yield {
@@ -5226,6 +6158,7 @@ export class GatewayService {
   ): Promise<ChatSendMessageResponse> {
     const session = this.getSession(sessionId);
     const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
     if (sessionMeta.lifecycleStatus === "archived") {
       throw new Error(`Session ${sessionId} is archived`);
     }
@@ -5234,7 +6167,7 @@ export class GatewayService {
       throw new Error("content is required");
     }
 
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? []);
+    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
     const inputParts = normalizeChatInputParts(content, input.parts, attachments);
     const route = this.routeFromSession(session);
     const userEventId = randomUUID();
@@ -5279,6 +6212,7 @@ export class GatewayService {
       ?? (session.channel === "mission"
         ? this.storage.chatSessionBindings.upsert({
           sessionId,
+          workspaceId,
           transport: "llm",
           writable: true,
         })
@@ -5471,6 +6405,8 @@ export class GatewayService {
     bytesBase64: string;
   }): Promise<ChatAttachmentRecord> {
     this.getSession(input.sessionId);
+    const sessionMeta = this.storage.chatSessionMeta.ensure(input.sessionId);
+    const sessionWorkspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
     const fileName = sanitizeAttachmentFileName(input.fileName);
     const mimeType = input.mimeType.trim() || "application/octet-stream";
     const bytes = Buffer.from(input.bytesBase64, "base64");
@@ -5486,6 +6422,9 @@ export class GatewayService {
       projectId = this.storage.chatSessionProjects.get(input.sessionId)?.projectId;
     }
     const project = projectId ? this.storage.chatProjects.get(projectId) : undefined;
+    if (project && this.normalizeWorkspaceId(project.workspaceId) !== sessionWorkspaceId) {
+      throw new Error("project workspace does not match session workspace");
+    }
     const rootPath = project?.workspacePath ?? "chat/default";
     const stamp = new Date();
     const year = String(stamp.getUTCFullYear());
@@ -5510,6 +6449,7 @@ export class GatewayService {
     const created = this.storage.chatAttachments.create({
       attachmentId,
       sessionId: input.sessionId,
+      workspaceId: sessionWorkspaceId,
       projectId,
       fileName,
       mimeType,
@@ -5939,6 +6879,10 @@ export class GatewayService {
     return this.storage.costLedger.summary(scope, from, to);
   }
 
+  public costUsageAvailability(from: string, to: string) {
+    return this.storage.costLedger.usageAvailability(from, to);
+  }
+
   public runCheaper() {
     return {
       mode: "saver",
@@ -6200,8 +7144,10 @@ export class GatewayService {
     status?: TaskStatus,
     cursor?: string,
     view: "active" | "trash" | "all" = "active",
+    workspaceId?: string,
   ): TaskRecord[] {
     return this.storage.tasks.list({
+      workspaceId: this.normalizeWorkspaceId(workspaceId),
       status,
       limit,
       cursor,
@@ -6214,7 +7160,10 @@ export class GatewayService {
   }
 
   public createTask(input: TaskCreateInput): TaskRecord {
-    const created = this.storage.tasks.create(input);
+    const created = this.storage.tasks.create({
+      ...input,
+      workspaceId: this.normalizeWorkspaceId(input.workspaceId),
+    });
     this.publishRealtime("task_created", "tasks", {
       task: created,
     });
@@ -6396,6 +7345,115 @@ export class GatewayService {
 
   public listCronJobs(): CronJobRecord[] {
     return this.storage.cronJobs.list();
+  }
+
+  public getCronJob(jobId: string): CronJobRecord {
+    const normalizedJobId = normalizeCronJobId(jobId);
+    const job = this.storage.cronJobs.get(normalizedJobId);
+    if (!job) {
+      throw new Error(`Cron job not found: ${normalizedJobId}`);
+    }
+    return job;
+  }
+
+  public createCronJob(input: {
+    jobId: string;
+    name: string;
+    schedule: string;
+    enabled?: boolean;
+  }): CronJobRecord {
+    const jobId = normalizeCronJobId(input.jobId);
+    if (this.storage.cronJobs.get(jobId)) {
+      throw new Error(`Cron job already exists: ${jobId}`);
+    }
+    const job: CronJobRecord = {
+      jobId,
+      name: normalizeCronJobName(input.name),
+      schedule: normalizeCronSchedule(input.schedule),
+      enabled: input.enabled ?? true,
+      lastRunAt: undefined,
+      nextRunAt: undefined,
+    };
+    const saved = this.storage.cronJobs.upsert(job);
+    this.persistCronJobsConfig();
+    this.publishRealtime("system", "cron", {
+      type: "cron_job_created",
+      jobId: saved.jobId,
+      name: saved.name,
+      schedule: saved.schedule,
+      enabled: saved.enabled,
+    });
+    return saved;
+  }
+
+  public updateCronJob(jobId: string, input: {
+    name?: string;
+    schedule?: string;
+    enabled?: boolean;
+  }): CronJobRecord {
+    const current = this.getCronJob(jobId);
+    const updated: CronJobRecord = {
+      ...current,
+      name: input.name !== undefined ? normalizeCronJobName(input.name) : current.name,
+      schedule: input.schedule !== undefined ? normalizeCronSchedule(input.schedule) : current.schedule,
+      enabled: input.enabled ?? current.enabled,
+    };
+    const saved = this.storage.cronJobs.upsert(updated);
+    this.persistCronJobsConfig();
+    this.publishRealtime("system", "cron", {
+      type: "cron_job_updated",
+      jobId: saved.jobId,
+      name: saved.name,
+      schedule: saved.schedule,
+      enabled: saved.enabled,
+    });
+    return saved;
+  }
+
+  public setCronJobEnabled(jobId: string, enabled: boolean): CronJobRecord {
+    return this.updateCronJob(jobId, { enabled });
+  }
+
+  public deleteCronJob(jobId: string): { deleted: boolean; jobId: string } {
+    const normalizedJobId = normalizeCronJobId(jobId);
+    if (SYSTEM_CRON_JOB_IDS.has(normalizedJobId)) {
+      throw new Error(`System cron job cannot be deleted: ${normalizedJobId}`);
+    }
+    const deleted = this.storage.cronJobs.delete(normalizedJobId);
+    if (deleted) {
+      this.persistCronJobsConfig();
+      this.publishRealtime("system", "cron", {
+        type: "cron_job_deleted",
+        jobId: normalizedJobId,
+      });
+    }
+    return {
+      deleted,
+      jobId: normalizedJobId,
+    };
+  }
+
+  public async runCronJobNow(jobId: string): Promise<{ jobId: string; status: "ok" }> {
+    const normalizedJobId = normalizeCronJobId(jobId);
+    const job = this.getCronJob(normalizedJobId);
+    if (!job.enabled) {
+      throw new Error(`Cron job is paused: ${normalizedJobId}`);
+    }
+    if (normalizedJobId === IMPROVEMENT_WEEKLY_JOB_ID) {
+      await this.runWeeklyImprovementSchedulerIfDue({ force: true });
+    } else if (normalizedJobId === PRIVATE_BETA_BACKUP_JOB_ID) {
+      await this.runPrivateBetaBackupSchedulerIfDue({ force: true });
+    } else if (normalizedJobId === MEMORY_FLUSH_DAILY_JOB_ID) {
+      await this.runMemoryFlushSchedulerIfDue({ force: true });
+    } else if (normalizedJobId === COST_REPORT_HOURLY_JOB_ID) {
+      await this.runCostReportSchedulerIfDue({ force: true });
+    } else {
+      throw new Error(`Cron job has no runnable handler: ${normalizedJobId}`);
+    }
+    return {
+      jobId: normalizedJobId,
+      status: "ok",
+    };
   }
 
   public async uploadWorkspaceFile(relativePath: string, content: string): Promise<FileUploadResult> {
@@ -7208,8 +8266,137 @@ export class GatewayService {
     return updated;
   }
 
+  public async getObsidianIntegrationStatus(): Promise<ObsidianIntegrationStatus> {
+    return this.obsidianVaultService.getStatus();
+  }
+
+  public updateObsidianIntegrationConfig(input: Partial<ObsidianIntegrationConfig>): ObsidianIntegrationConfig {
+    const updated = this.obsidianVaultService.updateConfig(input);
+    this.publishRealtime("system", "integrations", {
+      type: "obsidian_config_updated",
+      enabled: updated.enabled,
+      mode: updated.mode,
+      vaultPath: updated.vaultPath,
+      allowedSubpaths: updated.allowedSubpaths,
+    });
+    return updated;
+  }
+
+  public async testObsidianIntegration(): Promise<ObsidianIntegrationStatus> {
+    const status = await this.obsidianVaultService.testConnection();
+    this.publishRealtime("system", "integrations", {
+      type: "obsidian_test_completed",
+      enabled: status.enabled,
+      vaultReachable: status.vaultReachable,
+      lastError: status.lastError,
+      checkedAt: status.checkedAt,
+    });
+    return status;
+  }
+
+  public async searchObsidianNotes(query: string, limit?: number) {
+    return this.obsidianVaultService.searchNotes(query, limit);
+  }
+
+  public async readObsidianNote(relativePath: string) {
+    return this.obsidianVaultService.readNote(relativePath);
+  }
+
+  public async appendObsidianNote(relativePath: string, markdownBlock: string) {
+    return this.obsidianVaultService.appendToNote(relativePath, markdownBlock);
+  }
+
+  public async captureObsidianInboxEntry(input: {
+    id: string;
+    request: string;
+    type?: string;
+    priority?: string;
+    neededBy?: string;
+    owner?: string;
+    state?: string;
+    taskLink?: string;
+    decisionLink?: string;
+    notes?: string;
+  }) {
+    return this.obsidianVaultService.captureInboxEntry(input);
+  }
+
+  public async listSkillSources(query?: string, limit = 25): Promise<SkillSourceListResponse> {
+    return this.skillImportService.listSources(query, limit);
+  }
+
+  public listSkillImportHistory(limit = 100): SkillImportHistoryRecord[] {
+    return this.skillImportService.listHistory(limit);
+  }
+
+  public async validateSkillImport(input: {
+    sourceRef: string;
+    sourceType?: SkillImportValidationResult["candidate"]["sourceType"];
+    sourceProvider?: SkillSourceProvider;
+  }): Promise<SkillImportValidationResult> {
+    const validation = await this.skillImportService.validateImport(input);
+    this.recordSkillImportEvent(validation, "import_validated");
+    this.publishRealtime("system", "skills", {
+      type: "skill_import_validated",
+      sourceProvider: validation.candidate.sourceProvider,
+      sourceRef: validation.candidate.sourceRef,
+      valid: validation.valid,
+      riskLevel: validation.riskLevel,
+      skillName: validation.inferredSkillName,
+    });
+    return validation;
+  }
+
+  public async installSkillImport(input: {
+    sourceRef: string;
+    sourceType?: SkillImportValidationResult["candidate"]["sourceType"];
+    sourceProvider?: SkillSourceProvider;
+    force?: boolean;
+    confirmHighRisk?: boolean;
+  }): Promise<{
+    validation: SkillImportValidationResult;
+    installedPath: string;
+    sourceManifestPath: string;
+    installedSkillId?: string;
+  }> {
+    const installed = await this.skillImportService.installImport(input);
+    const skills = await this.reloadSkills();
+    const installedSkill = skills.find((skill) =>
+      skill.source === "extra"
+      && path.resolve(skill.dir) === path.resolve(installed.installedPath));
+    if (installedSkill) {
+      this.setSkillState(
+        installedSkill.skillId,
+        "disabled",
+        "Imported skill starts disabled by default.",
+      );
+    }
+    this.recordSkillImportEvent(installed.validation, "import_installed");
+    this.publishRealtime("system", "skills", {
+      type: "skill_import_installed",
+      sourceProvider: installed.validation.candidate.sourceProvider,
+      sourceRef: installed.validation.candidate.sourceRef,
+      riskLevel: installed.validation.riskLevel,
+      skillName: installed.validation.inferredSkillName,
+      skillId: installedSkill?.skillId,
+      installedPath: path.relative(this.config.rootDir, installed.installedPath).replaceAll("\\", "/"),
+    });
+    return {
+      ...installed,
+      installedSkillId: installedSkill?.skillId,
+    };
+  }
+
   public listMcpServers(): McpServerRecord[] {
     return this.readMcpServers();
+  }
+
+  public listMcpTemplates(): Array<McpServerTemplateRecord & { installed: boolean }> {
+    const byTemplateId = new Map(this.readMcpServers().map((server) => [server.label.toLowerCase(), server]));
+    return MCP_SERVER_TEMPLATES.map((template) => ({
+      ...template,
+      installed: byTemplateId.has(template.label.toLowerCase()),
+    }));
   }
 
   public createMcpServer(input: McpServerCreateInput): McpServerRecord {
@@ -8690,6 +9877,39 @@ export class GatewayService {
     });
   }
 
+  private recordSkillImportEvent(
+    validation: SkillImportValidationResult,
+    eventType: "import_validated" | "import_installed",
+  ): void {
+    const now = new Date().toISOString();
+    const skillId = validation.inferredSkillId
+      ? `import:${validation.inferredSkillId}`
+      : `import:${createHash("sha1").update(validation.candidate.canonicalKey).digest("hex").slice(0, 12)}`;
+    this.storage.db.prepare(`
+      INSERT INTO skill_activation_events (
+        event_id, skill_id, event_type, payload_json, created_at
+      ) VALUES (
+        @eventId, @skillId, @eventType, @payloadJson, @createdAt
+      )
+    `).run({
+      eventId: randomUUID(),
+      skillId,
+      eventType,
+      payloadJson: JSON.stringify({
+        sourceProvider: validation.candidate.sourceProvider,
+        sourceRef: validation.candidate.sourceRef,
+        canonicalKey: validation.candidate.canonicalKey,
+        valid: validation.valid,
+        riskLevel: validation.riskLevel,
+        skillName: validation.inferredSkillName,
+        skillId: validation.inferredSkillId,
+        warnings: validation.warnings,
+        errors: validation.errors,
+      }),
+      createdAt: now,
+    });
+  }
+
   private processMediaJob(jobId: string): void {
     if (this.closing) {
       return;
@@ -9048,6 +10268,169 @@ export class GatewayService {
     }
   }
 
+  private normalizeWorkspaceId(workspaceId?: string): string {
+    if (!workspaceId?.trim()) {
+      return DEFAULT_WORKSPACE_ID;
+    }
+    const normalized = workspaceId.trim();
+    if (!/^[a-zA-Z0-9._-]{1,80}$/.test(normalized)) {
+      throw new Error("workspaceId contains unsupported characters");
+    }
+    return normalized;
+  }
+
+  private resolveGuidancePath(
+    docType: GuidanceDocType,
+    scope: "global" | "workspace",
+    workspaceId?: string,
+  ): { fileName: string; absolutePath: string } {
+    const fileName = GUIDANCE_DOC_FILE_MAP[docType];
+    if (!fileName) {
+      throw new Error(`Unsupported guidance doc type: ${docType}`);
+    }
+    if (scope === "global") {
+      return {
+        fileName,
+        absolutePath: path.resolve(this.config.rootDir, fileName),
+      };
+    }
+    const normalizedWorkspaceId = this.normalizeWorkspaceId(workspaceId);
+    return {
+      fileName,
+      absolutePath: path.resolve(this.config.rootDir, "workspaces", normalizedWorkspaceId, fileName),
+    };
+  }
+
+  private async readGuidanceDocument(
+    docType: GuidanceDocType,
+    scope: "global" | "workspace",
+    workspaceId?: string,
+  ): Promise<GuidanceDocumentRecord> {
+    const normalizedWorkspaceId = scope === "workspace" ? this.normalizeWorkspaceId(workspaceId) : undefined;
+    const resolved = this.resolveGuidancePath(docType, scope, normalizedWorkspaceId);
+    try {
+      const [content, stat] = await Promise.all([
+        fs.readFile(resolved.absolutePath, "utf8"),
+        fs.stat(resolved.absolutePath),
+      ]);
+      return {
+        docType,
+        scope,
+        workspaceId: normalizedWorkspaceId,
+        fileName: resolved.fileName,
+        absolutePath: resolved.absolutePath,
+        exists: true,
+        content,
+        updatedAt: stat.mtime.toISOString(),
+      };
+    } catch {
+      return {
+        docType,
+        scope,
+        workspaceId: normalizedWorkspaceId,
+        fileName: resolved.fileName,
+        absolutePath: resolved.absolutePath,
+        exists: false,
+        content: "",
+      };
+    }
+  }
+
+  private async writeGuidanceDocument(
+    docType: GuidanceDocType,
+    scope: "global" | "workspace",
+    workspaceId: string | undefined,
+    content: string,
+  ): Promise<void> {
+    const resolved = this.resolveGuidancePath(docType, scope, workspaceId);
+    await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+    const normalizedContent = content.replace(/\r\n/g, "\n").trimEnd() + "\n";
+    await fs.writeFile(resolved.absolutePath, normalizedContent, "utf8");
+  }
+
+  private async resolveRuntimeGuidance(workspaceId: string): Promise<ResolvedRuntimeGuidance> {
+    const normalizedWorkspaceId = this.normalizeWorkspaceId(workspaceId);
+    if (isTruthy(process.env[GUIDANCE_DEBUG_KILL_SWITCH_ENV])) {
+      return {
+        workspaceId: normalizedWorkspaceId,
+        globalFilesUsed: [],
+        workspaceFilesUsed: [],
+        truncated: false,
+      };
+    }
+
+    const globalFilesUsed: string[] = [];
+    const workspaceFilesUsed: string[] = [];
+    const selectedBlocks: Array<{ title: string; content: string }> = [];
+
+    for (const docType of RUNTIME_GUIDANCE_DOC_TYPES) {
+      const [workspaceDoc, globalDoc] = await Promise.all([
+        this.readGuidanceDocument(docType, "workspace", normalizedWorkspaceId),
+        this.readGuidanceDocument(docType, "global"),
+      ]);
+      const selected = workspaceDoc.exists ? workspaceDoc : (globalDoc.exists ? globalDoc : undefined);
+      if (!selected || !selected.content.trim()) {
+        continue;
+      }
+      if (selected.scope === "workspace") {
+        workspaceFilesUsed.push(selected.fileName);
+      } else {
+        globalFilesUsed.push(selected.fileName);
+      }
+      selectedBlocks.push({
+        title: `${selected.fileName} (${selected.scope})`,
+        content: selected.content.trim(),
+      });
+    }
+
+    const header = [
+      `Workspace context: ${normalizedWorkspaceId}.`,
+      "Apply these runtime guidance notes with workspace overrides taking precedence over global defaults.",
+    ].join("\n");
+    const immutableSafetyFooter = [
+      "Non-overridable safety invariants:",
+      "- Approval requirements remain authoritative.",
+      "- Deny-wins policy remains authoritative.",
+      "- Tool grants and host/network/path security boundaries remain authoritative.",
+    ].join("\n");
+    const budgetForBlocks = Math.max(
+      1200,
+      MAX_RUNTIME_GUIDANCE_CHARS - header.length - immutableSafetyFooter.length - 12,
+    );
+
+    let consumed = 0;
+    let truncated = false;
+    const blockLines: string[] = [];
+    for (const block of selectedBlocks) {
+      if (consumed >= budgetForBlocks) {
+        truncated = true;
+        break;
+      }
+      const rendered = `## ${block.title}\n${block.content}`;
+      if (consumed + rendered.length <= budgetForBlocks) {
+        blockLines.push(rendered);
+        consumed += rendered.length;
+        continue;
+      }
+      const remaining = budgetForBlocks - consumed;
+      if (remaining > 80) {
+        blockLines.push(`${rendered.slice(0, remaining)}\n...[truncated]`);
+      }
+      truncated = true;
+      consumed = budgetForBlocks;
+      break;
+    }
+
+    const systemInstruction = [header, ...blockLines, immutableSafetyFooter].filter(Boolean).join("\n\n");
+    return {
+      workspaceId: normalizedWorkspaceId,
+      systemInstruction: systemInstruction.trim().length > 0 ? systemInstruction : undefined,
+      globalFilesUsed,
+      workspaceFilesUsed,
+      truncated,
+    };
+  }
+
   private requireChatSession(sessionId: string): ChatSessionRecord {
     const record = this.listChatSessions({ scope: "all", view: "all", limit: 5000 })
       .find((item) => item.sessionId === sessionId);
@@ -9094,6 +10477,7 @@ export class GatewayService {
     options?: {
       providerId?: string;
       model?: string;
+      guidanceSystemInstruction?: string;
     },
   ): Promise<ChatCompletionRequest["messages"]> {
     const runtime = this.llmService.getRuntimeConfig();
@@ -9135,7 +10519,17 @@ export class GatewayService {
           content,
         };
       }));
-    return mapped.slice(-80);
+    const messages = mapped.slice(-80);
+    if (options?.guidanceSystemInstruction?.trim()) {
+      return [
+        {
+          role: "system",
+          content: options.guidanceSystemInstruction.trim(),
+        },
+        ...messages,
+      ];
+    }
+    return messages;
   }
 
   private buildAttachmentPromptContext(input: unknown, supportsVision = false): string | undefined {
@@ -9398,7 +10792,7 @@ export class GatewayService {
   }
 
   private async loadCronJobsFromConfig(): Promise<void> {
-    const filePath = path.join(this.config.rootDir, "config", "cron-jobs.json");
+    const filePath = this.getCronJobsConfigPath();
     let raw: string;
 
     try {
@@ -9414,8 +10808,35 @@ export class GatewayService {
     const jobs = Array.isArray(parsed) ? parsed : parsed.jobs ?? [];
 
     for (const job of jobs) {
-      this.storage.cronJobs.upsert(job);
+      const existing = this.storage.cronJobs.get(job.jobId);
+      this.storage.cronJobs.upsert({
+        ...job,
+        jobId: normalizeCronJobId(job.jobId),
+        name: normalizeCronJobName(job.name),
+        schedule: normalizeCronSchedule(job.schedule),
+        enabled: Boolean(job.enabled),
+        lastRunAt: job.lastRunAt ?? existing?.lastRunAt,
+        nextRunAt: job.nextRunAt ?? existing?.nextRunAt,
+      });
     }
+  }
+
+  private persistCronJobsConfig(): void {
+    const filePath = this.getCronJobsConfigPath();
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    const jobs = this.storage.cronJobs.list().map((job) => ({
+      jobId: job.jobId,
+      name: job.name,
+      schedule: job.schedule,
+      enabled: job.enabled,
+      lastRunAt: job.lastRunAt,
+      nextRunAt: job.nextRunAt,
+    }));
+    fsSync.writeFileSync(filePath, JSON.stringify({ jobs }, null, 2), "utf8");
+  }
+
+  private getCronJobsConfigPath(): string {
+    return path.join(this.config.rootDir, "config", "cron-jobs.json");
   }
 
   private ensureWeeklyImprovementCronJob(): void {
@@ -9425,6 +10846,45 @@ export class GatewayService {
       jobId: IMPROVEMENT_WEEKLY_JOB_ID,
       name: "Self-Improvement Weekly Replay",
       schedule: IMPROVEMENT_WEEKLY_SCHEDULE_LABEL,
+      enabled: existing?.enabled ?? true,
+      lastRunAt: existing?.lastRunAt,
+      nextRunAt: existing?.nextRunAt,
+    }, now);
+  }
+
+  private ensurePrivateBetaBackupCronJob(): void {
+    const existing = this.storage.cronJobs.list().find((job) => job.jobId === PRIVATE_BETA_BACKUP_JOB_ID);
+    const now = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      jobId: PRIVATE_BETA_BACKUP_JOB_ID,
+      name: "Private Beta Daily Backup",
+      schedule: PRIVATE_BETA_BACKUP_SCHEDULE_LABEL,
+      enabled: existing?.enabled ?? true,
+      lastRunAt: existing?.lastRunAt,
+      nextRunAt: existing?.nextRunAt,
+    }, now);
+  }
+
+  private ensureMemoryFlushCronJob(): void {
+    const existing = this.storage.cronJobs.list().find((job) => job.jobId === MEMORY_FLUSH_DAILY_JOB_ID);
+    const now = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      jobId: MEMORY_FLUSH_DAILY_JOB_ID,
+      name: "Memory Flush Daily",
+      schedule: MEMORY_FLUSH_DAILY_SCHEDULE_LABEL,
+      enabled: existing?.enabled ?? true,
+      lastRunAt: existing?.lastRunAt,
+      nextRunAt: existing?.nextRunAt,
+    }, now);
+  }
+
+  private ensureCostReportCronJob(): void {
+    const existing = this.storage.cronJobs.list().find((job) => job.jobId === COST_REPORT_HOURLY_JOB_ID);
+    const now = new Date().toISOString();
+    this.storage.cronJobs.upsert({
+      jobId: COST_REPORT_HOURLY_JOB_ID,
+      name: "Cost Report Hourly",
+      schedule: COST_REPORT_HOURLY_SCHEDULE_LABEL,
       enabled: existing?.enabled ?? true,
       lastRunAt: existing?.lastRunAt,
       nextRunAt: existing?.nextRunAt,
@@ -9768,6 +11228,7 @@ async function walkFiles(
 function toChatSessionRecord(
   session: SessionMeta,
   meta: {
+    workspaceId?: string;
     title?: string;
     pinned: boolean;
     lifecycleStatus: "active" | "archived";
@@ -9778,6 +11239,7 @@ function toChatSessionRecord(
   return {
     sessionId: session.sessionId,
     sessionKey: session.sessionKey,
+    workspaceId: meta.workspaceId ?? project?.workspaceId,
     scope: session.channel === "mission" ? "mission" : "external",
     title: meta.title ?? session.displayName,
     pinned: meta.pinned,
@@ -10361,8 +11823,11 @@ function renderPromptPackMarkdownReport(report: PromptPackReportRecord): string 
   lines.push(`- Total tests: ${report.summary.totalTests}`);
   lines.push(`- Completed runs: ${report.summary.completedRuns}`);
   lines.push(`- Failed runs: ${report.summary.failedRuns}`);
+  lines.push(`- Run failures: ${report.summary.runFailureCount}`);
+  lines.push(`- Score failures: ${report.summary.scoreFailureCount}`);
+  lines.push(`- Needs score: ${report.summary.needsScoreCount}`);
   lines.push(`- Average score: ${report.summary.averageTotalScore.toFixed(2)}/10`);
-  lines.push(`- Pass rate: ${(report.summary.passRate * 100).toFixed(1)}% (threshold ${PROMPT_PACK_PASS_THRESHOLD}/10)`);
+  lines.push(`- Pass rate: ${(report.summary.passRate * 100).toFixed(1)}% (threshold ${report.summary.passThreshold}/10)`);
   lines.push("");
   lines.push("## Snapshot");
   lines.push("");
@@ -10488,9 +11953,160 @@ function renderPromptPackMarkdownReport(report: PromptPackReportRecord): string 
   lines.push("");
   lines.push(`- Not run: ${notRun.length > 0 ? notRun.join(", ") : "none"}`);
   lines.push(`- Completed but unscored: ${unscoredCompleted.length > 0 ? unscoredCompleted.join(", ") : "none"}`);
-  lines.push(`- Failing tests (< ${PROMPT_PACK_PASS_THRESHOLD}/10): ${report.summary.failingCodes.length > 0 ? report.summary.failingCodes.join(", ") : "none"}`);
+  lines.push(`- Failing tests (< ${report.summary.passThreshold}/10): ${report.summary.failingCodes.length > 0 ? report.summary.failingCodes.join(", ") : "none"}`);
 
   return `${lines.join("\n")}\n`;
+}
+
+function dedupeBenchmarkProviders(input: PromptPackBenchmarkProviderInput[]): PromptPackBenchmarkProviderInput[] {
+  const out: PromptPackBenchmarkProviderInput[] = [];
+  const seen = new Set<string>();
+  for (const item of input ?? []) {
+    const providerId = item.providerId?.trim();
+    const model = item.model?.trim();
+    if (!providerId || !model) {
+      continue;
+    }
+    const key = `${providerId}::${model}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({ providerId, model });
+  }
+  return out;
+}
+
+function mapPromptPackBenchmarkRunRow(row: PromptPackBenchmarkRunRow): PromptPackBenchmarkRunRecord {
+  return {
+    benchmarkRunId: row.benchmark_run_id,
+    packId: row.pack_id,
+    status: row.status,
+    testCodes: safeJsonParse<string[]>(row.test_codes_json, []).filter((item) => typeof item === "string"),
+    providers: dedupeBenchmarkProviders(
+      safeJsonParse<Array<{ providerId?: string; model?: string }>>(row.providers_json, [])
+        .map((item) => ({
+          providerId: item.providerId ?? "",
+          model: item.model ?? "",
+        })),
+    ),
+    startedAt: row.started_at,
+    finishedAt: row.finished_at ?? undefined,
+    error: row.error ?? undefined,
+  };
+}
+
+function mapPromptPackBenchmarkItemRow(row: PromptPackBenchmarkItemRow): PromptPackBenchmarkItemRecord {
+  return {
+    itemId: row.item_id,
+    benchmarkRunId: row.benchmark_run_id,
+    packId: row.pack_id,
+    testId: row.test_id,
+    testCode: row.test_code,
+    providerId: row.provider_id,
+    model: row.model,
+    runId: row.run_id ?? undefined,
+    scoreId: row.score_id ?? undefined,
+    runStatus: row.run_status,
+    totalScore: row.total_score ?? undefined,
+    failureSignal: row.failure_signal ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function summarizePromptPackBenchmarkItems(
+  items: PromptPackBenchmarkItemRecord[],
+): PromptPackBenchmarkStatusRecord["modelSummaries"] {
+  const byModel = new Map<string, {
+    providerId: string;
+    model: string;
+    total: number;
+    scored: number;
+    passCount: number;
+    totalScoreSum: number;
+    runFailures: number;
+    noOutputCount: number;
+    signals: Map<string, number>;
+  }>();
+  for (const item of items) {
+    const key = `${item.providerId}::${item.model}`;
+    const model = byModel.get(key) ?? {
+      providerId: item.providerId,
+      model: item.model,
+      total: 0,
+      scored: 0,
+      passCount: 0,
+      totalScoreSum: 0,
+      runFailures: 0,
+      noOutputCount: 0,
+      signals: new Map<string, number>(),
+    };
+    model.total += 1;
+    if (item.runStatus !== "completed") {
+      model.runFailures += 1;
+    }
+    if (typeof item.totalScore === "number") {
+      model.scored += 1;
+      model.totalScoreSum += item.totalScore;
+      if (item.totalScore >= PROMPT_PACK_PASS_THRESHOLD) {
+        model.passCount += 1;
+      }
+    }
+    if (item.failureSignal) {
+      const signal = item.failureSignal.trim();
+      if (signal.length > 0) {
+        model.signals.set(signal, (model.signals.get(signal) ?? 0) + 1);
+      }
+      if (signal.toLowerCase().includes("no assistant output")) {
+        model.noOutputCount += 1;
+      }
+    }
+    byModel.set(key, model);
+  }
+
+  return [...byModel.values()]
+    .sort((left, right) => `${left.providerId}/${left.model}`.localeCompare(`${right.providerId}/${right.model}`))
+    .map((item) => ({
+      providerId: item.providerId,
+      model: item.model,
+      total: item.total,
+      scored: item.scored,
+      averageTotalScore: item.scored > 0 ? item.totalScoreSum / item.scored : 0,
+      passRate: item.scored > 0 ? item.passCount / item.scored : 0,
+      runFailures: item.runFailures,
+      noOutputCount: item.noOutputCount,
+      topFailureSignals: [...item.signals.entries()]
+        .sort((left, right) => {
+          if (right[1] !== left[1]) {
+            return right[1] - left[1];
+          }
+          return left[0].localeCompare(right[0]);
+        })
+        .slice(0, PROMPT_PACK_BENCHMARK_MAX_FAILURE_SIGNALS)
+        .map(([signal, count]) => ({ signal, count })),
+    }));
+}
+
+function summarizePromptPackRunFailure(run: PromptPackRunRecord): string | undefined {
+  if (run.error?.trim()) {
+    return run.error.trim();
+  }
+  const trace = run.trace;
+  if (!trace) {
+    return undefined;
+  }
+  const blocked = [...trace.toolRuns]
+    .reverse()
+    .find((item) => item.status === "failed" || item.status === "blocked");
+  if (blocked?.error?.trim()) {
+    return `${blocked.toolName}: ${blocked.error.trim()}`;
+  }
+  if (run.responseText && run.responseText.trim().length < 1) {
+    return "No assistant output generated.";
+  }
+  return trace.status === "approval_required"
+    ? "Turn paused for approval."
+    : undefined;
 }
 
 function normalizeDelegationRoles(roles: string[]): string[] {
@@ -10804,7 +12420,11 @@ function evaluatePromptPackRuleScores(input: {
   let robustnessScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
   let usabilityScore: 0 | 1 | 2 = input.run.status === "failed" ? 0 : 1;
 
-  const asksMultiRole = /\b(route this through|architect|coder|qa|ops|product goat|multi-agent|agents?)\b/.test(prompt);
+  const requestedRoles = detectPromptRequestedRoles(prompt);
+  const asksMultiRole = requestedRoles.length > 1
+    || /\broute this through\b/.test(prompt)
+    || /\bmulti-agent\b/.test(prompt)
+    || /->/.test(prompt);
   const hasRoleSections = /\bproduct\b.*\barchitect\b.*\bcoder\b/s.test(response)
     || /\barchitect\b.*\bcoder\b.*\bqa\b/s.test(response)
     || /\bprd\b.*\barchitecture\b.*\btask\b/s.test(response);
@@ -11366,6 +12986,163 @@ function toWeekKeyForTimezone(date: Date, timeZone: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function toDayKeyForTimezone(date: Date, timeZone: string): string {
+  const parts = getZonedDateParts(date, timeZone);
+  const yyyy = String(parts.year).padStart(4, "0");
+  const mm = String(parts.month).padStart(2, "0");
+  const dd = String(parts.day).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function toHourKeyForTimezone(date: Date, timeZone: string): string {
+  const parts = getZonedDateParts(date, timeZone);
+  const yyyy = String(parts.year).padStart(4, "0");
+  const mm = String(parts.month).padStart(2, "0");
+  const dd = String(parts.day).padStart(2, "0");
+  const hh = String(parts.hour).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}-${hh}`;
+}
+
+function normalizeCronJobId(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{2,63}$/.test(normalized)) {
+    throw new Error("Cron job id must be 3-64 chars and only include lowercase letters, numbers, '_' or '-'.");
+  }
+  return normalized;
+}
+
+function normalizeCronJobName(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error("Cron job name is required.");
+  }
+  if (normalized.length > 120) {
+    throw new Error("Cron job name must be 120 characters or less.");
+  }
+  return normalized;
+}
+
+function normalizeCronSchedule(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error("Cron schedule is required.");
+  }
+  if (!parseSimpleCronSchedule(normalized)) {
+    throw new Error("Cron schedule must look like 'M H * * * [Timezone]' or 'M H * * DOW [Timezone]'.");
+  }
+  return normalized;
+}
+
+function isCronJobDueNow(
+  job: CronJobRecord,
+  now: Date,
+  defaults: {
+    defaultMinute: number;
+    defaultHour: number;
+    defaultWeekday?: number;
+    defaultTimeZone: string;
+  },
+): boolean {
+  const parsed = parseSimpleCronSchedule(job.schedule);
+  const minute = parsed?.minute ?? defaults.defaultMinute;
+  const hour = parsed?.hour ?? defaults.defaultHour;
+  const wildcardMinute = parsed?.wildcardMinute ?? false;
+  const wildcardHour = parsed?.wildcardHour ?? false;
+  const wildcardWeekday = parsed?.wildcardWeekday ?? false;
+  const weekday = parsed?.weekday ?? defaults.defaultWeekday;
+  const timeZone = parsed?.timeZone ?? defaults.defaultTimeZone;
+  const window = getZonedDateParts(now, timeZone);
+  if (!wildcardHour && window.hour !== hour) {
+    return false;
+  }
+  if (!wildcardMinute && (window.minute < minute || window.minute >= minute + 5)) {
+    return false;
+  }
+  if (!wildcardWeekday && weekday !== undefined && window.weekday !== weekday) {
+    return false;
+  }
+  return true;
+}
+
+function parseSimpleCronSchedule(value: string): {
+  minute?: number;
+  hour?: number;
+  weekday?: number;
+  timeZone?: string;
+  wildcardMinute: boolean;
+  wildcardHour: boolean;
+  wildcardWeekday: boolean;
+} | null {
+  const tokens = value.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 5) {
+    return null;
+  }
+  const minuteRaw = tokens[0];
+  const hourRaw = tokens[1];
+  const dayOfMonthRaw = tokens[2];
+  const monthRaw = tokens[3];
+  const dayOfWeekRaw = tokens[4];
+  const timezoneParts = tokens.slice(5);
+  if (!minuteRaw || !hourRaw || !dayOfMonthRaw || !monthRaw || !dayOfWeekRaw) {
+    return null;
+  }
+  if (dayOfMonthRaw !== "*" || monthRaw !== "*") {
+    return null;
+  }
+  let minute: number | undefined;
+  let hour: number | undefined;
+  const wildcardMinute = minuteRaw === "*";
+  const wildcardHour = hourRaw === "*";
+  if (!wildcardMinute) {
+    if (!/^\d+$/.test(minuteRaw)) {
+      return null;
+    }
+    minute = Number.parseInt(minuteRaw, 10);
+    if (!Number.isFinite(minute) || minute < 0 || minute > 59) {
+      return null;
+    }
+  }
+  if (!wildcardHour) {
+    if (!/^\d+$/.test(hourRaw)) {
+      return null;
+    }
+    hour = Number.parseInt(hourRaw, 10);
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) {
+      return null;
+    }
+  }
+  let weekday: number | undefined;
+  const wildcardWeekday = dayOfWeekRaw === "*";
+  if (!wildcardWeekday) {
+    if (!/^\d+$/.test(dayOfWeekRaw)) {
+      return null;
+    }
+    const parsedWeekday = Number.parseInt(dayOfWeekRaw, 10);
+    if (!Number.isFinite(parsedWeekday) || parsedWeekday < 0 || parsedWeekday > 6) {
+      return null;
+    }
+    weekday = parsedWeekday;
+  }
+  const timeZone = timezoneParts.length > 0 ? timezoneParts.join(" ") : undefined;
+  if (timeZone) {
+    try {
+      // Validate timezone eagerly so invalid values fail closed at write-time.
+      new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    } catch {
+      return null;
+    }
+  }
+  return {
+    minute,
+    hour,
+    weekday,
+    timeZone,
+    wildcardMinute,
+    wildcardHour,
+    wildcardWeekday,
+  };
+}
+
 function clampProbability(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Number(Math.max(0, Math.min(1, value)).toFixed(4));
@@ -11384,27 +13161,47 @@ function parseLooseJsonRecord(raw: string): Record<string, unknown> | undefined 
   if (!trimmed) {
     return undefined;
   }
-  const direct = safeJsonParse<Record<string, unknown> | undefined>(trimmed, undefined);
-  if (direct && typeof direct === "object") {
-    return direct;
-  }
+  const direct = tryParseJsonRecordCandidate(trimmed);
+  if (direct) return direct;
   const codeFenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (codeFenceMatch?.[1]) {
-    const parsed = safeJsonParse<Record<string, unknown> | undefined>(codeFenceMatch[1].trim(), undefined);
-    if (parsed && typeof parsed === "object") {
-      return parsed;
-    }
+    const parsed = tryParseJsonRecordCandidate(codeFenceMatch[1].trim());
+    if (parsed) return parsed;
   }
   const openIndex = trimmed.indexOf("{");
   const closeIndex = trimmed.lastIndexOf("}");
   if (openIndex >= 0 && closeIndex > openIndex) {
     const candidate = trimmed.slice(openIndex, closeIndex + 1);
-    const parsed = safeJsonParse<Record<string, unknown> | undefined>(candidate, undefined);
-    if (parsed && typeof parsed === "object") {
-      return parsed;
-    }
+    const parsed = tryParseJsonRecordCandidate(candidate);
+    if (parsed) return parsed;
   }
   return undefined;
+}
+
+function tryParseJsonRecordCandidate(candidate: string): Record<string, unknown> | undefined {
+  const direct = safeJsonParse<Record<string, unknown> | undefined>(candidate, undefined);
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
+  const repaired = normalizeJsonRecordCandidate(candidate);
+  if (!repaired || repaired === candidate) {
+    return undefined;
+  }
+  const parsed = safeJsonParse<Record<string, unknown> | undefined>(repaired, undefined);
+  if (parsed && typeof parsed === "object") {
+    return parsed;
+  }
+  return undefined;
+}
+
+function normalizeJsonRecordCandidate(value: string): string {
+  return value
+    .replace(/^\uFEFF/, "")
+    .replace(/[“”]/g, "\"")
+    .replace(/[‘’]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/\\n/g, "\n")
+    .trim();
 }
 
 function truncateForModelJudge(value: string, maxChars: number): string {
@@ -11421,6 +13218,124 @@ function inferPromptPackName(sourceLabel?: string): string {
   const base = path.basename(sourceLabel).replace(/\.[^.]+$/, "");
   const cleaned = base.replace(/[_-]+/g, " ").trim();
   return cleaned ? toTitleCase(cleaned) : "GoatCitadel Prompt Pack";
+}
+
+function detectPromptRequestedRoles(prompt: string): string[] {
+  const normalized = prompt.toLowerCase();
+  const roleMatchers: Array<{ role: string; pattern: RegExp }> = [
+    { role: "product", pattern: /\bproduct goat\b|\bproduct\s*[:\-]/ },
+    { role: "architect", pattern: /\barchitect goat\b|\barchitect\s*[:\-]/ },
+    { role: "coder", pattern: /\bcoder goat\b|\bcoder\s*[:\-]/ },
+    { role: "qa", pattern: /\bqa goat\b|\bqa\s*[:\-]/ },
+    { role: "ops", pattern: /\bops goat\b|\bops\s*[:\-]/ },
+    { role: "researcher", pattern: /\bresearcher goat\b|\bresearcher\s*[:\-]/ },
+    { role: "personal assistant", pattern: /\bpersonal assistant\b/ },
+  ];
+  const roles: string[] = [];
+  for (const entry of roleMatchers) {
+    if (entry.pattern.test(normalized)) {
+      roles.push(entry.role);
+    }
+  }
+  if (roles.length === 0 && /\broute this through\b/.test(normalized)) {
+    return ["product", "architect", "coder"];
+  }
+  return roles;
+}
+
+function roleSectionPresent(response: string, role: string): boolean {
+  const normalized = response.toLowerCase();
+  const patterns: Record<string, RegExp> = {
+    product: /(?:^|\n)\s*(?:#+\s*)?product(?: goat)?\b|prd/i,
+    architect: /(?:^|\n)\s*(?:#+\s*)?architect(?: goat)?\b|architecture/i,
+    coder: /(?:^|\n)\s*(?:#+\s*)?coder(?: goat)?\b|implementation|task list/i,
+    qa: /(?:^|\n)\s*(?:#+\s*)?qa(?: goat)?\b|test plan|regression/i,
+    ops: /(?:^|\n)\s*(?:#+\s*)?ops(?: goat)?\b|rollout|deployment/i,
+    researcher: /(?:^|\n)\s*(?:#+\s*)?researcher(?: goat)?\b|sources|confidence/i,
+    "personal assistant": /(?:^|\n)\s*(?:#+\s*)?personal assistant\b/i,
+  };
+  const matcher = patterns[role];
+  return matcher ? matcher.test(normalized) : false;
+}
+
+function roleDeliverableHint(role: string): string {
+  if (role === "product") return "Define requirements and scope.";
+  if (role === "architect") return "Propose system structure and key tradeoffs.";
+  if (role === "coder") return "Provide implementation tasks and sequencing.";
+  if (role === "qa") return "Define validation cases, edge tests, and risks.";
+  if (role === "ops") return "Provide rollout, monitoring, and rollback steps.";
+  if (role === "researcher") return "Summarize evidence with confidence labels.";
+  return "Provide role-specific guidance.";
+}
+
+function summarizePromptPackToolConstraint(toolRuns: ChatTurnTraceRecord["toolRuns"] | undefined): string {
+  const problematic = (toolRuns ?? [])
+    .filter((item) => item.status === "failed" || item.status === "blocked" || item.status === "approval_required")
+    .slice(-1)[0];
+  if (!problematic) {
+    return "No blocking tool failures recorded.";
+  }
+  return `${problematic.toolName}: ${problematic.error ?? problematic.status}`;
+}
+
+function ensurePromptPackRoleSections(input: {
+  prompt: string;
+  responseText: string;
+  toolRuns?: ChatTurnTraceRecord["toolRuns"];
+}): string {
+  const requestedRoles = detectPromptRequestedRoles(input.prompt);
+  if (requestedRoles.length <= 1) {
+    return input.responseText;
+  }
+  const missing = requestedRoles.filter((role) => !roleSectionPresent(input.responseText, role));
+  if (missing.length === 0) {
+    return input.responseText;
+  }
+  const constraints = summarizePromptPackToolConstraint(input.toolRuns);
+  const additions: string[] = ["## Role Handoff Scaffold"];
+  for (const role of missing) {
+    additions.push(`### ${toTitleCase(role)} Goat`);
+    additions.push(`- Deliverable: ${roleDeliverableHint(role)}`);
+    additions.push(`- Constraints: ${constraints}`);
+    additions.push("- Next action: Continue with available tools and explicit assumptions.");
+    additions.push("");
+  }
+  return [input.responseText.trim(), additions.join("\n").trim()].filter(Boolean).join("\n\n").trim();
+}
+
+function buildPromptPackConstraintsBlock(toolRuns: ChatTurnTraceRecord["toolRuns"] | undefined): string | undefined {
+  const problematic = (toolRuns ?? [])
+    .filter((item) => item.status === "failed" || item.status === "blocked" || item.status === "approval_required")
+    .slice(-6);
+  if (problematic.length === 0) {
+    return undefined;
+  }
+  const lines = ["## Constraints", "- Tool issues encountered during this run:"];
+  for (const item of problematic) {
+    lines.push(`- \`${item.toolName}\`: ${item.error ?? item.status}`);
+  }
+  lines.push("- Fallback used: best-effort response without repeating blocked tool calls.");
+  return lines.join("\n");
+}
+
+function finalizePromptPackResponseText(input: {
+  prompt: string;
+  responseText: string;
+  trace?: ChatTurnTraceRecord;
+}): string {
+  const withRoles = ensurePromptPackRoleSections({
+    prompt: input.prompt,
+    responseText: (input.responseText ?? "").trim(),
+    toolRuns: input.trace?.toolRuns,
+  });
+  const constraintsBlock = buildPromptPackConstraintsBlock(input.trace?.toolRuns);
+  if (!constraintsBlock) {
+    return withRoles.trim();
+  }
+  if (/\bconstraints\b/i.test(withRoles)) {
+    return withRoles.trim();
+  }
+  return [withRoles.trim(), constraintsBlock].filter(Boolean).join("\n\n").trim();
 }
 
 function parsePromptPackTests(content: string): Array<{
@@ -11481,6 +13396,12 @@ function parsePromptPackTests(content: string): Array<{
         title,
         lines: [],
       };
+      continue;
+    }
+    const isSectionHeading = /^#{1,6}\s+/.test(line);
+    const isHorizontalRule = rawLine.trim() === "---";
+    if (active && (isHorizontalRule || isSectionHeading)) {
+      flush();
       continue;
     }
     if (!active) {
@@ -11857,6 +13778,20 @@ async function collectBackupFileRecords(payloadDir: string): Promise<BackupManif
   return files;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 function formatBackupTimestamp(now: Date): string {
   const parts = [
     now.getUTCFullYear(),
@@ -11915,5 +13850,13 @@ function ensurePathWithinRoot(targetPath: string, rootDir: string): void {
     return;
   }
   throw new Error(`Path escapes workspace root: ${targetPath}`);
+}
+
+function isTruthy(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 

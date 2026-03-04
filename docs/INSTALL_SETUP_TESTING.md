@@ -79,10 +79,46 @@ BANKR_API_KEY=your_key_here
 # BANKR_LLM_KEY=your_key_here
 ```
 
+### Remote/Tailnet-safe host + auth guidance (recommended)
+
+If you expose Mission Control/Gateway beyond loopback (LAN/Tailnet), set these explicitly:
+
+```env
+# Gateway bind and warning posture
+GATEWAY_HOST=0.0.0.0
+GATEWAY_PORT=8787
+GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=true
+
+# Strongly recommended remote auth
+GOATCITADEL_AUTH_MODE=token
+GOATCITADEL_AUTH_TOKEN=replace-with-long-random-token
+
+# CORS/origin and frontend host controls
+GOATCITADEL_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://bld:5173,https://bld.ts.net
+GOATCITADEL_VITE_ALLOWED_HOSTS=localhost,127.0.0.1,bld,.ts.net
+VITE_GATEWAY_ALLOWED_HOSTS=localhost,127.0.0.1,bld,.ts.net
+```
+
+Notes:
+
+- Current posture is warn-first (non-loopback without auth prints startup warning but does not hard-block).
+- Keep `GOATCITADEL_AUTH_MODE=token` or `basic` for any shared network access.
+
 GoatCitadel now auto-loads `.env` on gateway startup.  
 No manual `Set-Item Env:...` step is required.
 
 You can skip this if using local OpenAI-compatible endpoints only.
+
+### Private-beta quick profile (Tailnet)
+
+If this machine is your private-beta host, start from the hardened profile template:
+
+```powershell
+Copy-Item .env.private-beta.example .env -Force
+```
+
+Then set secrets in `.env` (`GOATCITADEL_AUTH_TOKEN`, model API keys).
+Optional config snapshot reference: `config/private-beta.profile.json`.
 
 ## 4) Start GoatCitadel
 
@@ -133,6 +169,25 @@ Expected health response:
 4. Confirm active provider + model.
 5. Save runtime settings.
 
+## 5.1 Workspace + Guidance setup (new)
+
+GoatCitadel now supports first-class workspaces with guidance-doc overrides.
+
+Quick flow:
+
+1. Open `Workspaces` in Mission Control.
+2. Create/select a workspace.
+3. Edit guidance docs in page editor:
+   - Global defaults: `GOATCITADEL.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `VISION.md`
+   - Workspace overrides: same doc types scoped to selected workspace
+4. Send a new chat turn; guidance applies on the next turn.
+
+Precedence:
+
+- Workspace doc overrides matching global doc.
+- Missing workspace doc falls back to global.
+- Safety rules (deny-wins, approvals, grants, sandbox) remain non-overridable.
+
 ### Quick provider presets (for your blocker)
 
 GLM (Z.AI):
@@ -161,9 +216,38 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm smoke
+pnpm docs:check
 ```
 
 All should pass.
+
+Then run doctor:
+
+```powershell
+goatcitadel doctor --deep
+```
+
+For diagnostics without any repair writes:
+
+```powershell
+goatcitadel doctor --audit-only --deep
+```
+
+### A2. Prompt Lab phased gate before full rerun
+
+1. Import your prompt pack.
+2. Run high-signal subset first: `TEST-03`, `TEST-06`, `TEST-10`, `TEST-12`, `TEST-15`, `TEST-28`.
+   - optional matrix run (API):
+     - `POST /api/v1/prompt-packs/:packId/benchmark/run`
+     - `GET /api/v1/prompt-packs/benchmark/:benchmarkRunId`
+3. Confirm:
+   - zero run failures,
+   - no repeated identical tool-failure loops,
+   - run failures and score failures are clearly separated in Prompt Lab.
+   - aggressive quality target:
+     - pass rate at 7/10 >= 85%
+     - average score >= 7.5/10
+4. Then run full suite.
 
 ### B. Manual checks
 
@@ -189,6 +273,37 @@ All should pass.
    - `api.bankr.bot`
    - `llm.bankr.bot` (optional, only if using Bankr LLM gateway)
 5. Use `Preview a Bankr action` before any write action.
+
+### D. Backup + restore drill (required for private beta)
+
+Create backup:
+
+```powershell
+curl -X POST http://127.0.0.1:8787/api/v1/admin/backups/create `
+  -H "Content-Type: application/json" `
+  -H "Idempotency-Key: backup-001" `
+  -d "{}"
+```
+
+List backups:
+
+```powershell
+curl http://127.0.0.1:8787/api/v1/admin/backups
+```
+
+Restore drill to a clean instance:
+
+```powershell
+curl -X POST http://127.0.0.1:8787/api/v1/admin/backups/restore `
+  -H "Content-Type: application/json" `
+  -H "Idempotency-Key: backup-restore-001" `
+  -d "{\"filePath\":\"<path-to-backup-folder>\",\"confirm\":true}"
+```
+
+Notes:
+
+- Daily automated backup cron is `private_beta_backup_daily` (2:30 AM America/Los_Angeles).
+- Keep at least 7 daily snapshots before expanding private-beta usage.
 
 ## 7) Optional: Terminal Mission Control (TUI)
 
@@ -293,3 +408,12 @@ Look for:
 - `onnxRuntimeAvailable: true`
 - `onnxRuntimeGenAiAvailable: true`
 - `qnnExecutionProviderAvailable: true` (for QNN/NPU path)
+
+## 11) Mobile Companion (Placeholder)
+
+Mobile companion planning is in-progress and currently docs-only.
+
+- No production mobile control app is shipped yet.
+- Primary research artifact: `docs/mobile_app_research_report.md`.
+- Keep additional mobile ideas and deep-research notes in `docs/`.
+- Current install and validation flow remains desktop-web Mission Control first.

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 import {
   createFileFromTemplate,
   downloadFile,
@@ -14,13 +15,41 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { SmartPathInput } from "../components/SmartPathInput";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
-export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
+interface TrailFileDownload {
+  relativePath: string;
+  fullPath: string;
+  size: number;
+  modifiedAt: string;
+  contentType: string;
+  encoding: string;
+  content: string;
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "svg",
+  "ico",
+  "avif",
+  "tif",
+  "tiff",
+]);
+
+export function FilesPage({ refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);
   const [files, setFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
   const [templates, setTemplates] = useState<FileTemplate[]>([]);
   const [search, setSearch] = useState("");
   const [selectedPath, setSelectedPath] = useState<string>("");
-  const [selectedContent, setSelectedContent] = useState<string>("");
+  const [selectedFile, setSelectedFile] = useState<TrailFileDownload | null>(null);
   const [uploadPath, setUploadPath] = useState("notes/example.txt");
   const [uploadContent, setUploadContent] = useState("");
   const [autoPopulatedPath, setAutoPopulatedPath] = useState<string | null>(null);
@@ -35,35 +64,85 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
-  const load = () => {
-    void Promise.all([
-      fetchFilesList(".", 500),
-      fetchFileTemplates(),
-    ])
-      .then(([filesRes, templatesRes]) => {
-        setFiles(filesRes.items);
-        setTemplates(templatesRes.items);
-        setSelectedPath((current) => current || filesRes.items[0]?.relativePath || "");
-      })
-      .catch((err: Error) => setError(err.message));
-  };
+  const workspacePrefix = useMemo(
+    () => (workspaceId && workspaceId !== "default" ? `workspaces/${workspaceId}/` : ""),
+    [workspaceId],
+  );
+
+  const toWorkspacePath = useCallback((value: string) => {
+    const normalized = value.trim().replaceAll("\\", "/").replace(/^\/+/, "");
+    if (!workspacePrefix) {
+      return normalized;
+    }
+    if (!normalized) {
+      return workspacePrefix;
+    }
+    if (normalized.startsWith(workspacePrefix)) {
+      return normalized;
+    }
+    return `${workspacePrefix}${normalized}`;
+  }, [workspacePrefix]);
 
   useEffect(() => {
-    load();
-  }, [refreshKey]);
+    setUploadPath((current) => toWorkspacePath(current || "notes/example.txt"));
+  }, [toWorkspacePath]);
+
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
+    try {
+      const [filesRes, templatesRes] = await Promise.all([
+        fetchFilesList(".", 500),
+        fetchFileTemplates(),
+      ]);
+      const scopedFiles = workspacePrefix
+        ? filesRes.items.filter((item) => item.relativePath.startsWith(workspacePrefix))
+        : filesRes.items;
+      setFiles(scopedFiles);
+      setTemplates(templatesRes.items);
+      setSelectedPath((current) => current || scopedFiles[0]?.relativePath || "");
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      if (background) {
+        setIsRefreshing(false);
+      } else {
+        setIsInitialLoading(false);
+      }
+    }
+  }, [workspacePrefix]);
+
+  useEffect(() => {
+    void load({ background: false });
+  }, [load, refreshKey]);
+
+  useRefreshSubscription(
+    "files",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1000,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+      onFallbackStateChange: setIsFallbackRefreshing,
+    },
+  );
 
   useEffect(() => {
     if (!selectedPath) {
-      setSelectedContent("");
+      setSelectedFile(null);
       return;
     }
     void downloadFile(selectedPath)
       .then((res) => {
-        if (typeof res.content === "string") {
-          setSelectedContent(res.content);
-        } else {
-          setSelectedContent("[binary file]");
-        }
+        setSelectedFile(res);
       })
       .catch((err: Error) => setError(err.message));
   }, [selectedPath]);
@@ -124,9 +203,27 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
     return [...new Set([...defaults, ...dynamic])].map((value) => ({ value, label: value }));
   }, [files]);
 
+  const selectedIsImage = useMemo(
+    () => isImageFile(selectedPath, selectedFile?.contentType),
+    [selectedFile?.contentType, selectedPath],
+  );
+
+  const selectedCanEdit = selectedFile?.encoding === "utf8";
+
+  const selectedImageSrc = useMemo(() => {
+    if (!selectedFile || !selectedIsImage) {
+      return null;
+    }
+    const contentType = selectedFile.contentType || "application/octet-stream";
+    if (selectedFile.encoding === "base64") {
+      return `data:${contentType};base64,${selectedFile.content}`;
+    }
+    return `data:${contentType};charset=utf-8,${encodeURIComponent(selectedFile.content)}`;
+  }, [selectedFile, selectedIsImage]);
+
   const onSaveFile = async () => {
     try {
-      const saved = await uploadFile(uploadPath, uploadContent);
+      const saved = await uploadFile(toWorkspacePath(uploadPath), uploadContent);
       setUploadContent("");
       setInfo(`Saved file: ${saved.relativePath}`);
       load();
@@ -137,7 +234,7 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
 
   const onCreateTemplate = async (templateId: string, targetPath?: string) => {
     try {
-      const created = await createFileFromTemplate(templateId, targetPath);
+      const created = await createFileFromTemplate(templateId, targetPath ? toWorkspacePath(targetPath) : undefined);
       setInfo(`Created template file: ${created.relativePath}`);
       setSelectedPath(created.relativePath);
       setUploadPath(created.relativePath);
@@ -158,12 +255,16 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
   };
 
   const onEditSelectedFile = () => {
-    if (!selectedPath) {
+    if (!selectedPath || !selectedFile) {
+      return;
+    }
+    if (!selectedCanEdit) {
+      setInfo("Selected file is binary/image. Use Use Selected Path, then upload new text content to replace it.");
       return;
     }
     setUploadPath(selectedPath);
     setAutoPopulatedPath(selectedPath);
-    setUploadContent(selectedContent);
+    setUploadContent(selectedFile.content);
     setInfo("Loaded selected file content into editor.");
   };
 
@@ -179,6 +280,24 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
         actions={pageCopy.files.guide?.actions ?? []}
         terms={pageCopy.files.guide?.terms}
       />
+      {isInitialLoading ? <p>Loading workspace trails...</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing trail files...</p> : null}
+      {isFallbackRefreshing ? (
+        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+      ) : null}
+      <article className="card">
+        <h3>How To Use Trail Files</h3>
+        <ol className="files-howto-list">
+          <li>Find the file in <strong>Workspace Trails</strong> or filter by folder/path text.</li>
+          <li>Click a file once to preview it. Image files render as images, not text.</li>
+          <li>Use <strong>Use Selected Path</strong> to safely prefill the save path.</li>
+          <li>Use <strong>Edit Selected File</strong> for text files, then update content and save.</li>
+          <li>Review the path risk badge and change-review panel before writing.</li>
+        </ol>
+        <p className="office-subtitle">
+          Tip: keep reports in <code>artifacts/</code>, notes in <code>notes/</code>, and avoid saving outside approved workspace paths.
+        </p>
+      </article>
 
       {error ? <p className="error">{error}</p> : null}
       {info ? <p className="office-subtitle">{info}</p> : null}
@@ -209,18 +328,24 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
       <div className="split-grid">
         <article className="card">
           <h3>Workspace Trails</h3>
-          <ul className="compact-list files-list">
-            {filteredFiles.map((file) => (
-              <li key={file.relativePath}>
-                <button
-                  className={selectedPath === file.relativePath ? "active" : ""}
-                  onClick={() => setSelectedPath(file.relativePath)}
-                >
-                  {file.relativePath}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="virtual-list-shell">
+            <Virtuoso
+              data={filteredFiles}
+              itemContent={(_index, file) => (
+                <div className="virtual-list-item files-list-item" key={file.relativePath}>
+                  <button
+                    className={selectedPath === file.relativePath ? "active" : ""}
+                    onClick={() => setSelectedPath(file.relativePath)}
+                  >
+                    <span className="files-path">{file.relativePath}</span>
+                    <span className="files-meta">
+                      {formatFileSize(file.size)} | modified {new Date(file.modifiedAt).toLocaleString()}
+                    </span>
+                  </button>
+                </div>
+              )}
+            />
+          </div>
         </article>
         <article className="card">
           <h3>Trail Preview</h3>
@@ -232,9 +357,39 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
           ) : null}
           <div className="actions">
             <button onClick={onUseSelectedPath} disabled={!selectedPath}>Use Selected Path</button>
-            <button onClick={onEditSelectedFile} disabled={!selectedPath}>Edit Selected File</button>
+            <button onClick={onEditSelectedFile} disabled={!selectedPath || !selectedCanEdit}>Edit Selected File</button>
           </div>
-          <pre className="file-preview">{selectedContent}</pre>
+          {selectedFile ? (
+            selectedIsImage ? (
+              selectedImageSrc ? (
+                <figure className="file-image-preview-shell">
+                  <img
+                    className="file-image-preview"
+                    src={selectedImageSrc}
+                    alt={`Preview of ${selectedPath}`}
+                  />
+                  <figcaption className="office-subtitle">
+                    Image preview ({selectedFile.contentType || "image"}).
+                  </figcaption>
+                </figure>
+              ) : (
+                <div className="file-binary-preview">
+                  <p>Image file detected, but preview could not be generated.</p>
+                </div>
+              )
+            ) : selectedFile.encoding === "utf8" ? (
+              <pre className="file-preview">{selectedFile.content}</pre>
+            ) : (
+              <div className="file-binary-preview">
+                <p>Binary file detected.</p>
+                <p className="office-subtitle">
+                  Trail preview shows text and images. For other binary files, use the path tools and metadata.
+                </p>
+              </div>
+            )
+          ) : (
+            <p className="office-subtitle">Select a file to preview.</p>
+          )}
         </article>
       </div>
 
@@ -279,4 +434,29 @@ export function FilesPage({ refreshKey = 0 }: { refreshKey?: number }) {
       </article>
     </section>
   );
+}
+
+function isImageFile(relativePath: string, contentType?: string): boolean {
+  if ((contentType ?? "").toLowerCase().startsWith("image/")) {
+    return true;
+  }
+  const extension = relativePath.split(".").pop()?.trim().toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.has(extension);
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "-";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }

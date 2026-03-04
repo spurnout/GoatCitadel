@@ -41,6 +41,22 @@ export interface McpServerRecord {
   updatedAt: string;
 }
 
+export interface McpServerTemplateRecord {
+  templateId: string;
+  label: string;
+  description: string;
+  transport: McpTransport;
+  command?: string;
+  args?: string[];
+  url?: string;
+  authType: "none" | "token" | "oauth2";
+  category: McpServerCategory;
+  trustTier: McpTrustTier;
+  costTier: McpCostTier;
+  policy: McpServerPolicy;
+  enabledByDefault: boolean;
+}
+
 export interface McpToolRecord {
   serverId: string;
   toolName: string;

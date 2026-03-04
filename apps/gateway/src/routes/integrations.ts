@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 const kindEnum = z.enum(["channel", "model_provider", "productivity", "automation", "platform"]);
+const CHANNEL_INBOUND_MAX_BYTES = 256 * 1024;
+const CHANNEL_INBOUND_MAX_CONTENT_CHARS = 20_000;
 
 const catalogQuerySchema = z.object({
   kind: kindEnum.optional(),
@@ -42,7 +44,7 @@ const channelInboundSchema = z.object({
   actorId: z.string().min(1),
   actorType: z.enum(["user", "agent", "system"]).optional(),
   role: z.enum(["user", "assistant"]).optional(),
-  content: z.string().min(1),
+  content: z.string().min(1).max(CHANNEL_INBOUND_MAX_CONTENT_CHARS),
   displayName: z.string().optional(),
   usage: z.object({
     inputTokens: z.number().int().nonnegative().optional(),
@@ -68,6 +70,40 @@ const pluginInstallSchema = z.object({
 
 const pluginParamsSchema = z.object({
   pluginId: z.string().min(1),
+});
+
+const obsidianPatchSchema = z.object({
+  enabled: z.boolean().optional(),
+  vaultPath: z.string().optional(),
+  mode: z.enum(["read_append", "read_only"]).optional(),
+  allowedSubpaths: z.array(z.string().min(1)).optional(),
+});
+
+const obsidianSearchSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
+const obsidianReadQuerySchema = z.object({
+  path: z.string().min(1),
+});
+
+const obsidianAppendSchema = z.object({
+  path: z.string().min(1),
+  markdownBlock: z.string().min(1),
+});
+
+const obsidianInboxCaptureSchema = z.object({
+  id: z.string().min(1),
+  request: z.string().min(1),
+  type: z.string().optional(),
+  priority: z.string().optional(),
+  neededBy: z.string().optional(),
+  owner: z.string().optional(),
+  state: z.string().optional(),
+  taskLink: z.string().optional(),
+  decisionLink: z.string().optional(),
+  notes: z.string().optional(),
 });
 
 export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
@@ -140,34 +176,119 @@ export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send({ deleted });
   });
 
-  fastify.post("/api/v1/channels/:channel/inbound", async (request, reply) => {
-    const params = channelParamsSchema.safeParse(request.params);
-    const parsed = channelInboundSchema.safeParse(request.body);
-    if (!params.success || !parsed.success) {
-      return reply.code(400).send({
-        error: {
-          params: params.success ? undefined : params.error.flatten(),
-          body: parsed.success ? undefined : parsed.error.flatten(),
-        },
-      });
-    }
+  fastify.post(
+    "/api/v1/channels/:channel/inbound",
+    { bodyLimit: CHANNEL_INBOUND_MAX_BYTES },
+    async (request, reply) => {
+      const contentLength = parseContentLength(request.headers["content-length"]);
+      if (contentLength !== undefined && contentLength > CHANNEL_INBOUND_MAX_BYTES) {
+        return reply.code(413).send({
+          error: `Inbound channel payload too large. Max ${CHANNEL_INBOUND_MAX_BYTES} bytes.`,
+        });
+      }
 
-    try {
-      const result = await fastify.gateway.ingestChannelMessage(
-        params.data.channel,
-        request.idempotencyKey,
-        parsed.data,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return reply.code(400).send({ error: (error as Error).message });
-    }
-  });
+      const params = channelParamsSchema.safeParse(request.params);
+      const parsed = channelInboundSchema.safeParse(request.body);
+      if (!params.success || !parsed.success) {
+        return reply.code(400).send({
+          error: {
+            params: params.success ? undefined : params.error.flatten(),
+            body: parsed.success ? undefined : parsed.error.flatten(),
+          },
+        });
+      }
+
+      try {
+        const result = await fastify.gateway.ingestChannelMessage(
+          params.data.channel,
+          request.idempotencyKey,
+          parsed.data,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return reply.code(400).send({ error: (error as Error).message });
+      }
+    },
+  );
 
   fastify.get("/api/v1/integrations/plugins", async (_request, reply) => {
     return reply.send({
       items: fastify.gateway.listIntegrationPlugins(),
     });
+  });
+
+  fastify.get("/api/v1/integrations/obsidian/status", async (_request, reply) => {
+    return reply.send(await fastify.gateway.getObsidianIntegrationStatus());
+  });
+
+  fastify.patch("/api/v1/integrations/obsidian/config", async (request, reply) => {
+    const parsed = obsidianPatchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(fastify.gateway.updateObsidianIntegrationConfig(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/obsidian/test", async (_request, reply) => {
+    try {
+      return reply.send(await fastify.gateway.testObsidianIntegration());
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/obsidian/search", async (request, reply) => {
+    const parsed = obsidianSearchSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send({
+        items: await fastify.gateway.searchObsidianNotes(parsed.data.query, parsed.data.limit),
+      });
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/integrations/obsidian/note", async (request, reply) => {
+    const parsed = obsidianReadQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.readObsidianNote(parsed.data.path));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/obsidian/append", async (request, reply) => {
+    const parsed = obsidianAppendSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.appendObsidianNote(parsed.data.path, parsed.data.markdownBlock));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/integrations/obsidian/inbox/capture", async (request, reply) => {
+    const parsed = obsidianInboxCaptureSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.captureObsidianInboxEntry(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
   });
 
   fastify.post("/api/v1/integrations/plugins/install", async (request, reply) => {
@@ -206,3 +327,14 @@ export const integrationsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 };
+
+function parseContentLength(value: string | string[] | undefined): number | undefined {
+  if (!value || Array.isArray(value)) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return undefined;
+  }
+  return parsed;
+}

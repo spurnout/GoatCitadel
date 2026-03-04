@@ -71,7 +71,7 @@ async function main() {
     return;
   }
   if (command === "doctor") {
-    doctor();
+    doctor(rest);
     return;
   }
 
@@ -111,13 +111,9 @@ function installOrUpdate() {
   console.log("  goatcitadel up");
 }
 
-function doctor() {
-  console.log("GoatCitadel doctor");
-  console.log(`  home: ${baseDir}`);
-  console.log(`  app: ${appDir}`);
-  maybeShowVersion("node", ["--version"]);
-  maybeShowVersion("pnpm", ["--version"]);
-  maybeShowVersion("git", ["--version"]);
+function doctor(extraArgs = []) {
+  console.log("Running GoatCitadel doctor...");
+  run("pnpm", ["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "doctor", ...extraArgs]);
 }
 
 function maybeShowVersion(cmd, cmdArgs) {
@@ -166,7 +162,7 @@ Commands:
   admin      Backup/retention admin CLI
   smoke      Run smoke tests
   npu        Run local NPU sidecar (Python)
-  doctor     Show environment diagnostics
+  doctor     Run diagnostics + safe repair (flags: --audit-only --no-repair --deep --yes --json --profile)
   help       Show this help
 `);
 }

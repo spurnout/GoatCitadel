@@ -4,6 +4,7 @@ import type { ChatProjectRecord } from "@goatcitadel/contracts";
 
 interface ChatProjectRow {
   project_id: string;
+  workspace_id: string;
   name: string;
   description: string | null;
   workspace_path: string;
@@ -15,6 +16,7 @@ interface ChatProjectRow {
 }
 
 export interface ChatProjectCreateInput {
+  workspaceId?: string;
   name: string;
   description?: string;
   workspacePath: string;
@@ -22,6 +24,7 @@ export interface ChatProjectCreateInput {
 }
 
 export interface ChatProjectUpdateInput {
+  workspaceId?: string;
   name?: string;
   description?: string;
   workspacePath?: string;
@@ -45,22 +48,24 @@ export class ChatProjectRepository {
         OR (@view = 'active' AND lifecycle_status = 'active')
         OR (@view = 'archived' AND lifecycle_status = 'archived')
       )
+      AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
       ORDER BY updated_at DESC, project_id ASC
       LIMIT @limit
     `);
     this.getStmt = db.prepare("SELECT * FROM chat_projects WHERE project_id = ?");
     this.insertStmt = db.prepare(`
       INSERT INTO chat_projects (
-        project_id, name, description, workspace_path, color,
+        project_id, workspace_id, name, description, workspace_path, color,
         lifecycle_status, archived_at, created_at, updated_at
       ) VALUES (
-        @projectId, @name, @description, @workspacePath, @color,
+        @projectId, @workspaceId, @name, @description, @workspacePath, @color,
         'active', NULL, @createdAt, @updatedAt
       )
     `);
     this.updateStmt = db.prepare(`
       UPDATE chat_projects
       SET
+        workspace_id = @workspaceId,
         name = @name,
         description = @description,
         workspace_path = @workspacePath,
@@ -81,9 +86,10 @@ export class ChatProjectRepository {
     this.deleteStmt = db.prepare("DELETE FROM chat_projects WHERE project_id = ?");
   }
 
-  public list(view: "active" | "archived" | "all" = "active", limit = 300): ChatProjectRecord[] {
+  public list(view: "active" | "archived" | "all" = "active", limit = 300, workspaceId?: string): ChatProjectRecord[] {
     const rows = this.listStmt.all({
       view,
+      workspaceId: workspaceId ? sanitizeWorkspaceId(workspaceId) : null,
       limit: Math.max(1, Math.min(2000, Math.floor(limit))),
     }) as unknown as ChatProjectRow[];
     return rows.map(mapRow);
@@ -106,6 +112,7 @@ export class ChatProjectRepository {
     const projectId = randomUUID();
     this.insertStmt.run({
       projectId,
+      workspaceId: sanitizeWorkspaceId(input.workspaceId ?? "default"),
       name: sanitizeRequired(input.name, "name"),
       description: sanitizeOptional(input.description),
       workspacePath: sanitizeWorkspacePath(input.workspacePath),
@@ -120,6 +127,7 @@ export class ChatProjectRepository {
     const current = this.get(projectId);
     this.updateStmt.run({
       projectId,
+      workspaceId: input.workspaceId !== undefined ? sanitizeWorkspaceId(input.workspaceId) : sanitizeWorkspaceId(current.workspaceId ?? "default"),
       name: input.name !== undefined ? sanitizeRequired(input.name, "name") : current.name,
       description: input.description !== undefined ? sanitizeOptional(input.description) : current.description ?? null,
       workspacePath: input.workspacePath !== undefined ? sanitizeWorkspacePath(input.workspacePath) : current.workspacePath,
@@ -167,6 +175,7 @@ export class ChatProjectRepository {
 function mapRow(row: ChatProjectRow): ChatProjectRecord {
   return {
     projectId: row.project_id,
+    workspaceId: row.workspace_id,
     name: row.name,
     description: row.description ?? undefined,
     workspacePath: row.workspace_path,
@@ -206,6 +215,17 @@ function sanitizeWorkspacePath(value: string): string {
     || trimmed.includes("/../")
   ) {
     throw new Error("workspacePath must be relative and jailed");
+  }
+  return trimmed;
+}
+
+function sanitizeWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("workspaceId is required");
+  }
+  if (!/^[a-zA-Z0-9._-]{1,80}$/.test(trimmed)) {
+    throw new Error("workspaceId contains unsupported characters");
   }
   return trimmed;
 }

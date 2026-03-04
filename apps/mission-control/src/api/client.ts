@@ -54,6 +54,7 @@ import type {
   McpInvokeResponse,
   McpOAuthStartResponse,
   McpServerRecord,
+  McpServerTemplateRecord,
   McpToolRecord,
   MediaCreateJobRequest,
   MediaJobRecord,
@@ -84,6 +85,7 @@ import type {
   PromptPackScoreRecord,
   PromptPackAutoScoreResult,
   PromptPackAutoScoreBatchResult,
+  PromptPackBenchmarkStatusRecord,
   PromptPackReportRecord,
   PromptPackExportRecord,
   ProactivePolicy,
@@ -101,12 +103,27 @@ import type {
   DecisionReplayRunRecord,
   SkillActivationPolicy,
   SkillListItem,
+  SkillSourceListResponse,
+  SkillImportValidationResult,
+  SkillImportHistoryRecord,
+  SkillSourceProvider,
+  SkillImportSourceType,
   SkillStateRecord,
   SkillRuntimeState,
+  ObsidianIntegrationConfig,
+  ObsidianIntegrationStatus,
   WeeklyImprovementReportRecord,
+  GuidanceBundleRecord,
+  GuidanceDocType,
+  GuidanceDocumentRecord,
+  WorkspaceCreateInput,
+  WorkspaceRecord,
+  WorkspaceUpdateInput,
 } from "@goatcitadel/contracts";
 
+export type { GuidanceDocumentRecord };
 export type { SessionSummary, SessionTimelineItem };
+export type { ObsidianIntegrationConfig, ObsidianIntegrationStatus };
 
 const DEFAULT_GATEWAY_HOST = "127.0.0.1";
 const DEFAULT_GATEWAY_PORT = 8787;
@@ -300,6 +317,11 @@ export interface CostSummaryResponse {
   scope: string;
   from: string;
   to: string;
+  usageAvailability?: {
+    trackedEvents: number;
+    unknownEvents: number;
+    totalAgentEvents: number;
+  };
   items: Array<{
     key: string;
     tokenInput: number;
@@ -397,7 +419,18 @@ export interface CronJobsResponse {
     enabled: boolean;
     lastRunAt?: string;
     nextRunAt?: string;
+    updatedAt?: string;
   }>;
+}
+
+export interface CronJobRecordResponse {
+  jobId: string;
+  name: string;
+  schedule: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  updatedAt?: string;
 }
 
 export interface OperatorsResponse {
@@ -614,11 +647,98 @@ export interface ChatMessagesResponse {
   items: ChatMessageRecord[];
 }
 
-export async function fetchChatProjects(view: "active" | "archived" | "all" = "active", limit = 300): Promise<ChatProjectsResponse> {
-  return request<ChatProjectsResponse>(`/api/v1/chat/projects?view=${encodeURIComponent(view)}&limit=${limit}`);
+export interface WorkspacesResponse {
+  items: WorkspaceRecord[];
+  view?: "active" | "archived" | "all";
+}
+
+export async function fetchWorkspaces(
+  view: "active" | "archived" | "all" = "active",
+  limit = 200,
+): Promise<WorkspacesResponse> {
+  const query = new URLSearchParams({
+    view,
+    limit: String(Math.max(1, Math.min(limit, 500))),
+  });
+  return request<WorkspacesResponse>(`/api/v1/workspaces?${query.toString()}`);
+}
+
+export async function createWorkspace(input: WorkspaceCreateInput): Promise<WorkspaceRecord> {
+  return request<WorkspaceRecord>("/api/v1/workspaces", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateWorkspace(workspaceId: string, input: WorkspaceUpdateInput): Promise<WorkspaceRecord> {
+  return request<WorkspaceRecord>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function archiveWorkspace(workspaceId: string): Promise<WorkspaceRecord> {
+  return request<WorkspaceRecord>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function restoreWorkspace(workspaceId: string): Promise<WorkspaceRecord> {
+  return request<WorkspaceRecord>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function fetchGlobalGuidance(): Promise<{ items: GuidanceDocumentRecord[] }> {
+  return request<{ items: GuidanceDocumentRecord[] }>("/api/v1/guidance/global");
+}
+
+export async function updateGlobalGuidance(
+  docType: GuidanceDocType,
+  content: string,
+): Promise<GuidanceDocumentRecord> {
+  return request<GuidanceDocumentRecord>(`/api/v1/guidance/global/${encodeURIComponent(docType)}`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function fetchWorkspaceGuidance(workspaceId: string): Promise<GuidanceBundleRecord> {
+  return request<GuidanceBundleRecord>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/guidance`);
+}
+
+export async function updateWorkspaceGuidance(
+  workspaceId: string,
+  docType: GuidanceDocType,
+  content: string,
+): Promise<GuidanceDocumentRecord> {
+  return request<GuidanceDocumentRecord>(
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/guidance/${encodeURIComponent(docType)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+
+export async function fetchChatProjects(
+  view: "active" | "archived" | "all" = "active",
+  limit = 300,
+  workspaceId?: string,
+): Promise<ChatProjectsResponse> {
+  const query = new URLSearchParams();
+  query.set("view", view);
+  query.set("limit", String(limit));
+  if (workspaceId?.trim()) {
+    query.set("workspaceId", workspaceId.trim());
+  }
+  return request<ChatProjectsResponse>(`/api/v1/chat/projects?${query.toString()}`);
 }
 
 export async function createChatProject(input: {
+  workspaceId?: string;
   name: string;
   description?: string;
   workspacePath: string;
@@ -631,6 +751,7 @@ export async function createChatProject(input: {
 }
 
 export async function updateChatProject(projectId: string, input: {
+  workspaceId?: string;
   name?: string;
   description?: string;
   workspacePath?: string;
@@ -668,6 +789,7 @@ export async function hardDeleteChatProject(projectId: string): Promise<{ delete
 
 export async function fetchChatSessions(input?: {
   scope?: "mission" | "external" | "all";
+  workspaceId?: string;
   projectId?: string;
   q?: string;
   view?: "active" | "archived" | "all";
@@ -676,6 +798,7 @@ export async function fetchChatSessions(input?: {
 }): Promise<ChatSessionsResponse> {
   const query = new URLSearchParams();
   if (input?.scope) query.set("scope", input.scope);
+  if (input?.workspaceId) query.set("workspaceId", input.workspaceId);
   if (input?.projectId) query.set("projectId", input.projectId);
   if (input?.q) query.set("q", input.q);
   if (input?.view) query.set("view", input.view);
@@ -684,7 +807,7 @@ export async function fetchChatSessions(input?: {
   return request<ChatSessionsResponse>(`/api/v1/chat/sessions?${query.toString()}`);
 }
 
-export async function createChatSession(input?: { title?: string; projectId?: string }): Promise<ChatSessionRecord> {
+export async function createChatSession(input?: { workspaceId?: string; title?: string; projectId?: string }): Promise<ChatSessionRecord> {
   return request<ChatSessionRecord>("/api/v1/chat/sessions", {
     method: "POST",
     body: JSON.stringify(input ?? {}),
@@ -1193,6 +1316,33 @@ export async function fetchPromptPackReport(packId: string): Promise<PromptPackR
   return request<PromptPackReportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`);
 }
 
+export async function runPromptPackBenchmark(
+  packId: string,
+  input: {
+    testCodes: string[];
+    providers: Array<{
+      providerId: string;
+      model: string;
+    }>;
+  },
+): Promise<{ benchmarkRunId: string }> {
+  return request<{ benchmarkRunId: string }>(
+    `/api/v1/prompt-packs/${encodeURIComponent(packId)}/benchmark/run`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function fetchPromptPackBenchmark(
+  benchmarkRunId: string,
+): Promise<PromptPackBenchmarkStatusRecord> {
+  return request<PromptPackBenchmarkStatusRecord>(
+    `/api/v1/prompt-packs/benchmark/${encodeURIComponent(benchmarkRunId)}`,
+  );
+}
+
 export async function fetchPromptPackExport(packId: string): Promise<PromptPackExportRecord> {
   return request<PromptPackExportRecord>(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/export`);
 }
@@ -1253,6 +1403,12 @@ export async function runImprovementReplay(input?: {
     method: "POST",
     body: JSON.stringify(input ?? {}),
   });
+}
+
+export async function fetchImprovementReplayRuns(limit = 40): Promise<{ items: DecisionReplayRunRecord[] }> {
+  return request<{ items: DecisionReplayRunRecord[] }>(
+    `/api/v1/improvement/replay/runs?limit=${Math.max(1, Math.min(limit, 300))}`,
+  );
 }
 
 export async function fetchImprovementReplayRun(runId: string): Promise<{
@@ -1610,18 +1766,31 @@ export async function knowledgeEmbeddingsQuery(input: EmbeddingQueryInput): Prom
   });
 }
 
-export async function fetchTasks(status?: TaskRecord["status"]): Promise<{ items: TaskRecord[]; nextCursor?: string }> {
-  const query = status ? `?status=${encodeURIComponent(status)}&limit=100&view=active` : "?limit=100&view=active";
-  return request<{ items: TaskRecord[]; nextCursor?: string }>(`/api/v1/tasks${query}`);
+export async function fetchTasks(
+  status?: TaskRecord["status"],
+  workspaceId?: string,
+): Promise<{ items: TaskRecord[]; nextCursor?: string }> {
+  const query = new URLSearchParams({ limit: "100", view: "active" });
+  if (status) {
+    query.set("status", status);
+  }
+  if (workspaceId?.trim()) {
+    query.set("workspaceId", workspaceId.trim());
+  }
+  return request<{ items: TaskRecord[]; nextCursor?: string }>(`/api/v1/tasks?${query.toString()}`);
 }
 
 export async function fetchTasksByView(
   view: "active" | "trash" | "all",
   status?: TaskRecord["status"],
+  workspaceId?: string,
 ): Promise<{ items: TaskRecord[]; nextCursor?: string; view: "active" | "trash" | "all" }> {
   const query = new URLSearchParams({ limit: "100", view });
   if (status) {
     query.set("status", status);
+  }
+  if (workspaceId?.trim()) {
+    query.set("workspaceId", workspaceId.trim());
   }
   return request<{ items: TaskRecord[]; nextCursor?: string; view: "active" | "trash" | "all" }>(
     `/api/v1/tasks?${query.toString()}`,
@@ -1629,6 +1798,7 @@ export async function fetchTasksByView(
 }
 
 export async function createTask(input: {
+  workspaceId?: string;
   title: string;
   description?: string;
   priority?: TaskRecord["priority"];
@@ -1761,6 +1931,63 @@ export async function fetchSystemVitals(): Promise<SystemVitalsResponse> {
 
 export async function fetchCronJobs(): Promise<CronJobsResponse> {
   return request<CronJobsResponse>("/api/v1/cron/jobs");
+}
+
+export async function fetchCronJob(jobId: string): Promise<CronJobRecordResponse> {
+  return request<CronJobRecordResponse>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function createCronJob(input: {
+  jobId: string;
+  name: string;
+  schedule: string;
+  enabled?: boolean;
+}): Promise<CronJobRecordResponse> {
+  return request<CronJobRecordResponse>("/api/v1/cron/jobs", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateCronJob(
+  jobId: string,
+  input: {
+    name?: string;
+    schedule?: string;
+    enabled?: boolean;
+  },
+): Promise<CronJobRecordResponse> {
+  return request<CronJobRecordResponse>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function startCronJob(jobId: string): Promise<CronJobRecordResponse> {
+  return request<CronJobRecordResponse>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/start`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function pauseCronJob(jobId: string): Promise<CronJobRecordResponse> {
+  return request<CronJobRecordResponse>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/pause`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function runCronJobNow(jobId: string): Promise<{ jobId: string; status: "ok" }> {
+  return request<{ jobId: string; status: "ok" }>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/run`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function deleteCronJob(jobId: string): Promise<{ deleted: boolean; jobId: string }> {
+  return request<{ deleted: boolean; jobId: string }>(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function fetchOperators(): Promise<OperatorsResponse> {
@@ -1899,6 +2126,62 @@ export async function reloadSkills(): Promise<{ items: SkillListItem[] }> {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export async function fetchSkillSources(query?: {
+  q?: string;
+  limit?: number;
+}): Promise<SkillSourceListResponse> {
+  const params = new URLSearchParams();
+  if (query?.q?.trim()) {
+    params.set("q", query.q.trim());
+  }
+  if (query?.limit) {
+    params.set("limit", String(Math.max(1, Math.min(query.limit, 100))));
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  return request<SkillSourceListResponse>(`/api/v1/skills/sources${suffix}`);
+}
+
+export async function validateSkillImport(input: {
+  sourceRef: string;
+  sourceType?: SkillImportSourceType;
+  sourceProvider?: SkillSourceProvider;
+}): Promise<SkillImportValidationResult> {
+  return request<SkillImportValidationResult>("/api/v1/skills/import/validate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function installSkillImport(input: {
+  sourceRef: string;
+  sourceType?: SkillImportSourceType;
+  sourceProvider?: SkillSourceProvider;
+  force?: boolean;
+  confirmHighRisk?: boolean;
+}): Promise<{
+  validation: SkillImportValidationResult;
+  installedPath: string;
+  sourceManifestPath: string;
+  installedSkillId?: string;
+}> {
+  return request<{
+    validation: SkillImportValidationResult;
+    installedPath: string;
+    sourceManifestPath: string;
+    installedSkillId?: string;
+  }>("/api/v1/skills/import/install", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchSkillImportHistory(limit = 100): Promise<{ items: SkillImportHistoryRecord[] }> {
+  const boundedLimit = Math.max(1, Math.min(limit, 300));
+  return request<{ items: SkillImportHistoryRecord[] }>(
+    `/api/v1/skills/import/history?limit=${boundedLimit}`,
+  );
 }
 
 export async function updateSkillState(
@@ -2168,6 +2451,75 @@ export async function disableIntegrationPlugin(pluginId: string): Promise<Integr
   });
 }
 
+export async function fetchObsidianIntegrationStatus(): Promise<ObsidianIntegrationStatus> {
+  return request<ObsidianIntegrationStatus>("/api/v1/integrations/obsidian/status");
+}
+
+export async function patchObsidianIntegrationConfig(
+  input: Partial<ObsidianIntegrationConfig>,
+): Promise<ObsidianIntegrationConfig> {
+  return request<ObsidianIntegrationConfig>("/api/v1/integrations/obsidian/config", {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function testObsidianIntegration(): Promise<ObsidianIntegrationStatus> {
+  return request<ObsidianIntegrationStatus>("/api/v1/integrations/obsidian/test", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function searchObsidianNotes(
+  input: { query: string; limit?: number },
+): Promise<{ items: Array<{ relativePath: string; title: string; snippet: string; score: number }> }> {
+  return request<{ items: Array<{ relativePath: string; title: string; snippet: string; score: number }> }>(
+    "/api/v1/integrations/obsidian/search",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function readObsidianNote(pathValue: string): Promise<{ relativePath: string; content: string }> {
+  return request<{ relativePath: string; content: string }>(
+    `/api/v1/integrations/obsidian/note?path=${encodeURIComponent(pathValue)}`,
+  );
+}
+
+export async function appendObsidianNote(input: {
+  path: string;
+  markdownBlock: string;
+}): Promise<{ relativePath: string; appendedAt: string }> {
+  return request<{ relativePath: string; appendedAt: string }>("/api/v1/integrations/obsidian/append", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function captureObsidianInboxEntry(input: {
+  id: string;
+  request: string;
+  type?: string;
+  priority?: string;
+  neededBy?: string;
+  owner?: string;
+  state?: string;
+  taskLink?: string;
+  decisionLink?: string;
+  notes?: string;
+}): Promise<{ relativePath: string; appendedAt: string; row: string }> {
+  return request<{ relativePath: string; appendedAt: string; row: string }>(
+    "/api/v1/integrations/obsidian/inbox/capture",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 export async function fetchLlmConfig(): Promise<RuntimeSettingsResponse["llm"]> {
   return request<RuntimeSettingsResponse["llm"]>("/api/v1/llm/config");
 }
@@ -2274,6 +2626,10 @@ export async function refreshNpuRuntime(): Promise<NpuRuntimeStatus> {
 
 export async function fetchMcpServers(): Promise<{ items: McpServerRecord[] }> {
   return request<{ items: McpServerRecord[] }>("/api/v1/mcp/servers");
+}
+
+export async function fetchMcpTemplates(): Promise<{ items: Array<McpServerTemplateRecord & { installed: boolean }> }> {
+  return request<{ items: Array<McpServerTemplateRecord & { installed: boolean }> }>("/api/v1/mcp/templates");
 }
 
 export async function createMcpServer(input: {

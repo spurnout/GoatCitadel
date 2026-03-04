@@ -18,6 +18,21 @@ import type { Storage } from "@goatcitadel/storage";
 
 const MAX_TOOL_LOOPS = 6;
 const MAX_TOOL_RUNS_PER_TURN = 12;
+const TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD = 2;
+const SAFE_WRITE_FALLBACK_DIR = "./workspace/goatcitadel_out";
+const QUERY_TOOL_NAMES = new Set(["browser.search", "memory.search", "embeddings.query"]);
+const TOOL_REQUIRED_ARGS: Record<string, string[]> = {
+  "browser.search": ["query"],
+  "browser.navigate": ["url"],
+  "browser.extract": ["url"],
+  "browser.interact": ["url", "steps"],
+  "http.get": ["url"],
+  "http.post": ["url"],
+  "memory.search": ["query"],
+  "memory.write": ["namespace", "title", "content"],
+  "memory.upsert": ["namespace", "title", "content"],
+  "embeddings.query": ["query"],
+};
 
 type ChatCompletionMessage = ChatCompletionRequest["messages"][number];
 
@@ -40,6 +55,12 @@ export interface ChatAgentTurnResult {
   turnTrace: ChatTurnTraceRecord;
   assistantContent: string;
   assistantModel?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    costUsd?: number;
+  };
   requiresApproval?: {
     approvalId: string;
     toolName?: string;
@@ -52,6 +73,16 @@ export interface ChatAgentOrchestratorDeps {
   listToolCatalog: () => ToolCatalogEntry[];
   createChatCompletion: (request: ChatCompletionRequest) => Promise<ChatCompletionResponse>;
   invokeTool: (request: ToolInvokeRequest) => Promise<ToolInvokeResult>;
+  evaluateToolAccess?: (request: {
+    toolName: string;
+    sessionId: string;
+    agentId: string;
+    args?: Record<string, unknown>;
+  }) => {
+    allowed: boolean;
+    requiresApproval: boolean;
+    reasonCodes: string[];
+  };
 }
 
 export class ChatAgentOrchestrator {
@@ -70,6 +101,9 @@ export class ChatAgentOrchestrator {
     const doneMessage = events
       .filter((event) => event.type === "message_done")
       .at(-1);
+    const usageChunk = events
+      .filter((event) => event.type === "usage")
+      .at(-1);
     const approval = events.find((event) => event.type === "approval_required")?.approval;
     if (!doneTrace) {
       throw new Error("Agent turn ended without trace.");
@@ -78,6 +112,7 @@ export class ChatAgentOrchestrator {
       turnTrace: doneTrace,
       assistantContent: doneMessage?.content ?? "",
       assistantModel: doneTrace.model,
+      usage: usageChunk?.usage,
       requiresApproval: approval ? {
         approvalId: approval.approvalId,
         toolName: approval.toolName,
@@ -114,7 +149,10 @@ export class ChatAgentOrchestrator {
     const conversationMessages: ChatCompletionRequest["messages"] = [...input.historyMessages];
     const toolSchema = input.toolAutonomy === "manual"
       ? { tools: [], modelToCanonical: new Map<string, string>(), canonicalToModel: new Map<string, string>() }
-      : this.buildToolSchema();
+      : await this.buildToolSchema(input);
+    const canUseTimeTool = toolSchema.canonicalToModel.has("time.now");
+    const canUseSearchTool = toolSchema.canonicalToModel.has("browser.search");
+    const localFileIntent = detectLocalFileIntent(input.content);
     const citations: ChatCitationRecord[] = [];
     const toolRuns: ChatToolRunRecord[] = [];
     let toolRunCount = 0;
@@ -133,9 +171,22 @@ export class ChatAgentOrchestrator {
       toolName?: string;
       reason?: string;
     } | undefined;
+    const usageTotals = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costUsd: 0,
+    };
+    let usageObserved = false;
+    let circuitBreakerReason: string | undefined;
+    const toolFailureSignatureCounts = new Map<string, number>();
+
+    if (detectMissingLogPayloadIntent(input.content)) {
+      assistantContent = buildMissingLogInputTemplate();
+    }
 
     // Deterministic live-time helper for simple queries.
-    if (detectTimeIntent(input.content)) {
+    if (!assistantContent && detectTimeIntent(input.content) && canUseTimeTool) {
       const syntheticRun = await this.executeToolCall({
         input,
         turnId: input.turnId,
@@ -206,11 +257,14 @@ export class ChatAgentOrchestrator {
     }
 
     if (
-      !approvalPayload
+      !assistantContent
+      && !approvalPayload
       && input.toolAutonomy !== "manual"
       && input.webMode !== "off"
       && detectLiveDataIntent(input.content)
+      && !localFileIntent
       && !detectTimeIntent(input.content)
+      && canUseSearchTool
       && toolRunCount < MAX_TOOL_RUNS_PER_TURN
     ) {
       const liveDataQuery = deriveLiveDataQuery(input.content);
@@ -305,6 +359,14 @@ export class ChatAgentOrchestrator {
           tool_choice: toolSchema.tools.length > 0 ? "auto" : undefined,
         });
         assistantModel = typeof completion.model === "string" ? completion.model : assistantModel;
+        const completionUsage = parseUsageFromCompletion(completion);
+        if (completionUsage) {
+          usageObserved = true;
+          usageTotals.inputTokens += completionUsage.inputTokens ?? 0;
+          usageTotals.outputTokens += completionUsage.outputTokens ?? 0;
+          usageTotals.cachedInputTokens += completionUsage.cachedInputTokens ?? 0;
+          usageTotals.costUsd += completionUsage.costUsd ?? 0;
+        }
         const completionRouting = completion.routing as ChatTurnTraceRecord["routing"] | undefined;
         if (completionRouting) {
           routingState = {
@@ -347,6 +409,9 @@ export class ChatAgentOrchestrator {
           if (toolRunCount >= MAX_TOOL_RUNS_PER_TURN) {
             throw new Error("Tool run limit reached for this turn.");
           }
+          if (circuitBreakerReason) {
+            break;
+          }
           toolRunCount += 1;
           const executed = await this.executeToolCall({
             input,
@@ -387,6 +452,16 @@ export class ChatAgentOrchestrator {
             break;
           }
 
+          if (executed.record.status === "failed" || executed.record.status === "blocked") {
+            const signature = `${executed.record.toolName}:${normalizeFailureSignature(executed.record.error)}`;
+            const nextCount = (toolFailureSignatureCounts.get(signature) ?? 0) + 1;
+            toolFailureSignatureCounts.set(signature, nextCount);
+            if (nextCount >= TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD) {
+              circuitBreakerReason = `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
+              break;
+            }
+          }
+
           const toolResultPayload = executed.record.result ?? { error: executed.record.error ?? "Tool failed." };
           conversationMessages.push({
             role: "tool",
@@ -408,6 +483,12 @@ export class ChatAgentOrchestrator {
         if (approvalPayload) {
           break;
         }
+
+        if (circuitBreakerReason) {
+          assistantContent = buildToolFailureFallbackMessage(input.content, toolRuns, circuitBreakerReason);
+          finalStatus = "completed";
+          break;
+        }
       }
     } catch (error) {
       finalStatus = "failed";
@@ -419,6 +500,15 @@ export class ChatAgentOrchestrator {
         error: assistantContent,
       };
     }
+
+    if (!approvalPayload && assistantContent.trim().length === 0) {
+      assistantContent = await this.synthesizeToolOutcomeFallback({
+        input,
+        toolRuns,
+        circuitBreakerReason,
+      });
+    }
+    assistantContent = appendToolFailureConstraints(assistantContent, toolRuns);
 
     const finishedAt = new Date().toISOString();
     const updatedTrace = this.deps.storage.chatTurnTraces.patch(input.turnId, {
@@ -446,6 +536,19 @@ export class ChatAgentOrchestrator {
         approval: approvalPayload,
       };
     } else {
+      if (usageObserved) {
+        yield {
+          type: "usage",
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          usage: {
+            inputTokens: usageTotals.inputTokens,
+            outputTokens: usageTotals.outputTokens,
+            cachedInputTokens: usageTotals.cachedInputTokens,
+            costUsd: usageTotals.costUsd,
+          },
+        };
+      }
       yield {
         type: "message_done",
         sessionId: input.sessionId,
@@ -468,15 +571,36 @@ export class ChatAgentOrchestrator {
     };
   }
 
-  private buildToolSchema(): {
+  private async buildToolSchema(input: Pick<ChatAgentTurnInput, "sessionId">): Promise<{
     tools: Array<Record<string, unknown>>;
     modelToCanonical: Map<string, string>;
     canonicalToModel: Map<string, string>;
-  } {
+  }> {
     const catalog = this.deps.listToolCatalog();
+    const filteredCatalog: ToolCatalogEntry[] = [];
+    for (const tool of catalog) {
+      if (!this.deps.evaluateToolAccess) {
+        filteredCatalog.push(tool);
+        continue;
+      }
+      try {
+        const access = this.deps.evaluateToolAccess({
+          toolName: tool.toolName,
+          sessionId: input.sessionId,
+          agentId: "assistant",
+          args: {},
+        });
+        if (!access.allowed) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      filteredCatalog.push(tool);
+    }
     const modelToCanonical = new Map<string, string>();
     const canonicalToModel = new Map<string, string>();
-    const tools = catalog.map((tool) => {
+    const tools = filteredCatalog.map((tool) => {
       const modelName = toProviderToolFunctionName(tool.toolName, modelToCanonical);
       modelToCanonical.set(modelName, tool.toolName);
       canonicalToModel.set(tool.toolName, modelName);
@@ -511,6 +635,11 @@ export class ChatAgentOrchestrator {
     record: ChatToolRunRecord;
     chunk?: ChatStreamChunk;
   }> {
+    const preflight = this.preflightToolInvocation({
+      toolName: input.toolName,
+      rawArgs: input.rawArgs,
+      userContent: input.input.content,
+    });
     const startedAt = new Date().toISOString();
     const toolRunId = randomUUID();
     const created = this.deps.storage.chatToolRuns.create({
@@ -519,14 +648,48 @@ export class ChatAgentOrchestrator {
       sessionId: input.input.sessionId,
       toolName: input.toolName,
       status: "started",
-      args: input.rawArgs,
+      args: preflight.args,
       startedAt,
     });
+
+    if (preflight.blockedReason) {
+      const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+        status: "blocked",
+        error: preflight.blockedReason,
+        finishedAt: new Date().toISOString(),
+      });
+      return {
+        record: updated,
+        chunk: {
+          type: "tool_result",
+          sessionId: input.input.sessionId,
+          turnId: input.turnId,
+          toolRun: updated,
+        },
+      };
+    }
+
+    if (preflight.failureReason) {
+      const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+        status: "failed",
+        error: preflight.failureReason,
+        finishedAt: new Date().toISOString(),
+      });
+      return {
+        record: updated,
+        chunk: {
+          type: "tool_result",
+          sessionId: input.input.sessionId,
+          turnId: input.turnId,
+          toolRun: updated,
+        },
+      };
+    }
 
     try {
       const result = await this.deps.invokeTool({
         toolName: input.toolName,
-        args: input.rawArgs,
+        args: preflight.args,
         agentId: "assistant",
         sessionId: input.input.sessionId,
         consentContext: {
@@ -554,6 +717,81 @@ export class ChatAgentOrchestrator {
       }
 
       if (result.outcome === "blocked") {
+        const writeFallback = await this.tryWriteJailFallback({
+          input: input.input,
+          toolName: input.toolName,
+          args: preflight.args,
+          policyReason: result.policyReason,
+        });
+        if (writeFallback) {
+          if (writeFallback.result.outcome === "executed") {
+            const fallbackPayload = {
+              ...(writeFallback.result.result ?? {}),
+              fallbackApplied: true,
+              fallbackPath: writeFallback.fallbackPath,
+              originalPath: typeof preflight.args.path === "string" ? preflight.args.path : undefined,
+              note: `Write path blocked by policy; wrote to fallback path ${writeFallback.fallbackPath}`,
+            };
+            const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+              status: "executed",
+              result: fallbackPayload,
+              finishedAt: new Date().toISOString(),
+            });
+            return {
+              record: updated,
+              chunk: {
+                type: "tool_result",
+                sessionId: input.input.sessionId,
+                turnId: input.turnId,
+                toolRun: updated,
+              },
+            };
+          }
+
+          if (writeFallback.result.outcome === "approval_required") {
+            const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+              status: "approval_required",
+              approvalId: writeFallback.result.approvalId,
+              result: {
+                ...(writeFallback.result.result ?? {}),
+                fallbackPath: writeFallback.fallbackPath,
+                note: `Original write path was blocked. Fallback path requires approval: ${writeFallback.fallbackPath}`,
+              },
+              finishedAt: new Date().toISOString(),
+            });
+            return {
+              record: updated,
+              chunk: {
+                type: "tool_result",
+                sessionId: input.input.sessionId,
+                turnId: input.turnId,
+                toolRun: updated,
+              },
+            };
+          }
+
+          const fallbackError = [
+            result.policyReason,
+            `fallback path attempted: ${writeFallback.fallbackPath}`,
+            writeFallback.result.policyReason,
+          ].filter(Boolean).join("; ");
+          const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+            status: "blocked",
+            error: fallbackError,
+            result: writeFallback.result.result,
+            finishedAt: new Date().toISOString(),
+          });
+          return {
+            record: updated,
+            chunk: {
+              type: "tool_result",
+              sessionId: input.input.sessionId,
+              turnId: input.turnId,
+              toolRun: updated,
+            },
+          };
+        }
+
         const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
           status: "blocked",
           error: result.policyReason,
@@ -601,6 +839,158 @@ export class ChatAgentOrchestrator {
         },
       };
     }
+  }
+
+  private preflightToolInvocation(input: {
+    toolName: string;
+    rawArgs: Record<string, unknown>;
+    userContent: string;
+  }): {
+    args: Record<string, unknown>;
+    failureReason?: string;
+    blockedReason?: string;
+  } {
+    const args = { ...input.rawArgs };
+    if ((input.toolName === "memory.write" || input.toolName === "memory.upsert") && !hasExplicitMemoryConsent(input.userContent)) {
+      return {
+        args,
+        blockedReason: "memory persistence requires explicit user consent; ask before saving long-term memory",
+      };
+    }
+
+    const required = TOOL_REQUIRED_ARGS[input.toolName] ?? [];
+    const unresolved: string[] = [];
+    for (const field of required) {
+      if (!isMissingArgValue(args[field])) {
+        continue;
+      }
+      const inferred = inferToolArgValue(input.toolName, field, input.userContent);
+      if (inferred !== undefined) {
+        args[field] = inferred;
+      } else {
+        unresolved.push(field);
+      }
+    }
+
+    if (unresolved.length > 0) {
+      const field = unresolved[0] ?? "arg";
+      if (field === "query" && (input.toolName === "memory.search" || input.toolName === "browser.search")) {
+        return {
+          args,
+          blockedReason: `execution skipped: ${input.toolName} requires query; unable to infer a safe query from the prompt`,
+        };
+      }
+      return {
+        args,
+        failureReason: `execution error: ${field} is required`,
+      };
+    }
+
+    return { args };
+  }
+
+  private async tryWriteJailFallback(input: {
+    input: ChatAgentTurnInput;
+    toolName: string;
+    args: Record<string, unknown>;
+    policyReason?: string;
+  }): Promise<{
+    result: ToolInvokeResult;
+    fallbackPath: string;
+  } | undefined> {
+    if (input.toolName !== "fs.write" && input.toolName !== "artifacts.create") {
+      return undefined;
+    }
+    if (!isWriteJailBlockReason(input.policyReason)) {
+      return undefined;
+    }
+    const fallbackPath = buildSafeWriteFallbackPath(input.input.sessionId, input.toolName, input.args.path);
+    if (!fallbackPath) {
+      return undefined;
+    }
+
+    const currentPath = typeof input.args.path === "string" ? input.args.path : undefined;
+    if (currentPath && normalizePathForComparison(currentPath) === normalizePathForComparison(fallbackPath)) {
+      return undefined;
+    }
+
+    const fallbackArgs: Record<string, unknown> = {
+      ...input.args,
+      path: fallbackPath,
+    };
+
+    const result = await this.deps.invokeTool({
+      toolName: input.toolName,
+      args: fallbackArgs,
+      agentId: "assistant",
+      sessionId: input.input.sessionId,
+      consentContext: {
+        source: "agent",
+        reason: `chat mode ${input.input.mode}; safe write fallback`,
+      },
+    });
+
+    return {
+      result,
+      fallbackPath,
+    };
+  }
+
+  private async synthesizeToolOutcomeFallback(input: {
+    input: ChatAgentTurnInput;
+    toolRuns: ChatToolRunRecord[];
+    circuitBreakerReason?: string;
+  }): Promise<string> {
+    const deterministic = buildDeterministicToolSynthesisFallback(
+      input.input.content,
+      input.toolRuns,
+      input.circuitBreakerReason,
+    );
+    const toolSummary = summarizeToolRunsForSynthesis(input.toolRuns);
+    try {
+      const completion = await this.deps.createChatCompletion({
+        providerId: input.input.providerId,
+        model: input.input.model,
+        stream: false,
+        memory: {
+          enabled: false,
+          mode: "off",
+          sessionId: input.input.sessionId,
+        },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are the final response synthesizer for an agent runtime.",
+              "Tools are unavailable for this final pass. Do not claim new tool execution.",
+              "Produce a concise, structured answer with these sections:",
+              "Summary, Constraints, What I did instead, What I need from you next.",
+              "If partial tool evidence exists, include it.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: [
+              `Original user request: ${input.input.content}`,
+              "",
+              "Tool run summary:",
+              toolSummary.length > 0 ? toolSummary : "- No tool output captured.",
+              "",
+              "Circuit-breaker reason (if any):",
+              input.circuitBreakerReason ?? "none",
+            ].join("\n"),
+          },
+        ],
+      });
+      const message = completion.choices?.[0]?.message as Record<string, unknown> | undefined;
+      const synthesized = extractMessageContent(message ?? {}).trim();
+      if (synthesized.length > 0) {
+        return synthesized;
+      }
+    } catch {
+      // Deterministic fallback below.
+    }
+    return deterministic;
   }
 }
 
@@ -699,6 +1089,49 @@ function extractMessageContent(message: Record<string, unknown>): string {
   return "";
 }
 
+function parseUsageFromCompletion(completion: ChatCompletionResponse): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  costUsd?: number;
+} | null {
+  const usage = completion.usage as Record<string, unknown> | undefined;
+  if (!usage || typeof usage !== "object") {
+    return null;
+  }
+  const inputTokens = readUsageNumber(usage.prompt_tokens) ?? readUsageNumber(usage.input_tokens);
+  const outputTokens = readUsageNumber(usage.completion_tokens) ?? readUsageNumber(usage.output_tokens);
+  const cachedInputTokens = readUsageNumber(usage.cached_prompt_tokens) ?? readUsageNumber(usage.cached_input_tokens);
+  const costUsd = readUsageNumber(usage.cost_usd) ?? readUsageNumber(usage.total_cost_usd);
+  if (
+    inputTokens === undefined
+    && outputTokens === undefined
+    && cachedInputTokens === undefined
+    && costUsd === undefined
+  ) {
+    return null;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    costUsd,
+  };
+}
+
+function readUsageNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
 function detectTimeIntent(content: string): boolean {
   const normalized = content.toLowerCase();
   if (!normalized.includes("time")) {
@@ -737,6 +1170,24 @@ function deriveLiveDataQuery(content: string): string {
   const matching = clauses.filter((clause) => keywordRegex.test(clause));
   const selected = matching.at(-1) ?? clauses.at(-1) ?? normalized;
   return selected.replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "").trim() || normalized;
+}
+
+function detectLocalFileIntent(content: string): boolean {
+  const normalized = content.toLowerCase();
+  if (/\b([a-z]:\\|\\\\)\b/i.test(content)) {
+    return true;
+  }
+  if (/\b(local|workspace|project)\s+(file|files|path|paths|stack)\b/.test(normalized)) {
+    return true;
+  }
+  return (
+    normalized.includes("docker-compose")
+    || normalized.includes("docker compose")
+    || normalized.includes("current project files")
+    || normalized.includes("read it and tell me what services")
+    || normalized.includes("what services i'm running")
+    || /\bread\s+.*\.(yml|yaml|json|md|txt)\b/.test(normalized)
+  );
 }
 
 function inferCitationsFromToolResult(toolRun: ChatToolRunRecord): ChatCitationRecord[] {
@@ -778,6 +1229,322 @@ function inferCitationsFromToolResult(toolRun: ChatToolRunRecord): ChatCitationR
     });
   }
   return items;
+}
+
+function normalizeFailureSignature(value: string | undefined): string {
+  if (!value) {
+    return "unknown";
+  }
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isMissingArgValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length === 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+  return value === undefined || value === null;
+}
+
+function inferToolArgValue(toolName: string, field: string, userContent: string): unknown {
+  if (field === "query" && QUERY_TOOL_NAMES.has(toolName)) {
+    return inferQueryFromPrompt(userContent);
+  }
+  if (field === "url" && (toolName === "browser.navigate" || toolName === "browser.extract" || toolName === "http.get" || toolName === "http.post" || toolName === "browser.interact")) {
+    return extractFirstUrl(userContent);
+  }
+  return undefined;
+}
+
+function inferQueryFromPrompt(userContent: string): string | undefined {
+  const normalizedInput = userContent
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "");
+  if (normalizedInput.length < 3) {
+    return undefined;
+  }
+  const clauses = normalizedInput
+    .split(/[\n\r]+|[.!?]+/)
+    .map((item) => sanitizeQueryClause(item))
+    .filter((item) => item.length >= 3);
+  const candidatePool = clauses.length > 0
+    ? clauses
+    : [sanitizeQueryClause(deriveLiveDataQuery(normalizedInput))];
+  const bestCandidate = [...candidatePool]
+    .sort((left, right) => scoreQueryCandidate(right) - scoreQueryCandidate(left))[0];
+  const derived = sanitizeQueryClause(bestCandidate ?? normalizedInput).slice(0, 240);
+  if (derived.length < 3) {
+    return undefined;
+  }
+  const normalized = derived
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (
+    normalized.length < 3
+    || normalized === "search"
+    || normalized === "search web"
+    || normalized === "search the web"
+    || normalized === "look up"
+    || normalized === "look this up"
+    || normalized === "find"
+    || normalized === "find this"
+  ) {
+    return undefined;
+  }
+  return derived;
+}
+
+function sanitizeQueryClause(value: string): string {
+  return value
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/^(please|can you|could you|would you)\b[:,\s-]*/i, "")
+    .replace(/^(from|on|about)\s+/i, "")
+    .replace(/\b(return|respond|output)\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreQueryCandidate(value: string): number {
+  const text = value.trim();
+  if (!text) {
+    return -1000;
+  }
+  let score = Math.min(text.length, 180);
+  if (/\b(what|which|who|when|where|why|how)\b/i.test(text)) {
+    score += 24;
+  }
+  if (/\b(latest|current|today|news|price|weather|summarize|summary|extract|analyze)\b/i.test(text)) {
+    score += 20;
+  }
+  if (/\b(json|markdown|format|bullet|score|rubric)\b/i.test(text)) {
+    score -= 30;
+  }
+  if (/^test-\d+/i.test(text)) {
+    score -= 15;
+  }
+  return score;
+}
+
+function detectMissingLogPayloadIntent(content: string): boolean {
+  const normalized = content.toLowerCase();
+  if (!/\b(log|logs)\b/.test(normalized)) {
+    return false;
+  }
+  if (!/\b(i paste|i'll paste|i will paste|paste a giant blob|paste logs)\b/.test(normalized)) {
+    return false;
+  }
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const evidenceLines = lines.filter((line) =>
+    /\b(error|warn|exception|traceback|stack|http \d{3}|failed|timeout)\b/i.test(line)
+    || /^\d{4}-\d{2}-\d{2}/.test(line)
+    || line.length > 140
+  );
+  return evidenceLines.length < 2;
+}
+
+function buildMissingLogInputTemplate(): string {
+  return [
+    "Summary",
+    "- I don’t have the actual log lines yet, so this is a pre-analysis scaffold.",
+    "",
+    "Root cause candidates",
+    "- Request timeout or retry storm in one dependency path.",
+    "- Auth/session mismatch causing intermittent downstream failures.",
+    "- Data/schema mismatch after a recent deploy or config change.",
+    "",
+    "Top 3 next actions",
+    "1. Paste the first error block and the final error block from the same run window.",
+    "2. Include 20 lines before and after the first fatal/exception line.",
+    "3. Confirm timestamp/timezone and service name for the failing component.",
+    "",
+    "Next log line I need",
+    "- The first stack trace (or error payload) line that includes error class/code plus request/correlation id.",
+  ].join("\n");
+}
+
+function summarizeToolRunsForSynthesis(toolRuns: ChatToolRunRecord[]): string {
+  if (toolRuns.length === 0) {
+    return "";
+  }
+  const lines: string[] = [];
+  for (const run of toolRuns.slice(-8)) {
+    const summaryParts = [
+      `- ${run.toolName}`,
+      `[${run.status}]`,
+      run.error ? `error: ${run.error}` : undefined,
+      run.result ? `result: ${truncateJson(run.result, 280)}` : undefined,
+    ].filter(Boolean);
+    lines.push(summaryParts.join(" "));
+  }
+  return lines.join("\n");
+}
+
+function buildDeterministicToolSynthesisFallback(
+  userPrompt: string,
+  toolRuns: ChatToolRunRecord[],
+  reason?: string,
+): string {
+  const failures = toolRuns
+    .filter((item) => item.status === "failed" || item.status === "blocked")
+    .slice(-4)
+    .map((item) => `- ${item.toolName}: ${item.error ?? "failed"}`);
+  const evidence = toolRuns
+    .filter((item) => item.status === "executed" && item.result)
+    .slice(-3)
+    .map((item) => `- ${item.toolName}: ${truncateJson(item.result, 260)}`);
+  const lines = [
+    "Summary",
+    "- I reached a tool-execution limit/constraint before a full answer could be completed.",
+    "",
+    "Constraints",
+    `- ${reason ?? "Tool flow did not converge to a complete response."}`,
+    ...(failures.length > 0 ? failures : ["- No explicit tool failure detail was captured."]),
+    "",
+    "What I did instead",
+    ...(evidence.length > 0 ? evidence : ["- Preserved available context and avoided guessing missing data."]),
+    "",
+    "What I need from you next",
+    `- Confirm whether you want me to retry with explicit arguments (query/url/path).`,
+    `- If this is a local-file request, share the file/path content directly.`,
+    `- Query seed: ${inferQueryFromPrompt(userPrompt) ?? deriveLiveDataQuery(userPrompt)}`,
+  ];
+  return lines.join("\n");
+}
+
+function appendToolFailureConstraints(content: string, toolRuns: ChatToolRunRecord[]): string {
+  const failedOrBlocked = toolRuns.filter((run) => run.status === "failed" || run.status === "blocked");
+  if (failedOrBlocked.length === 0) {
+    return content;
+  }
+  const trimmed = content.trim();
+  if (mentionsToolFailureConstraints(trimmed)) {
+    return trimmed;
+  }
+  const details = failedOrBlocked
+    .slice(-4)
+    .map((run) => `- ${run.toolName}: ${run.error ?? run.status}`);
+  const appendix = [
+    "Constraints",
+    ...details,
+    "",
+    "What I did instead",
+    "- Continued with available context and avoided unsupported claims.",
+    "",
+    "What I need from you next",
+    "- Provide explicit tool arguments or additional source data to continue.",
+  ].join("\n");
+  if (!trimmed) {
+    return appendix;
+  }
+  return `${trimmed}\n\n${appendix}`;
+}
+
+function mentionsToolFailureConstraints(content: string): boolean {
+  const normalized = content.toLowerCase();
+  return (
+    normalized.includes("constraints")
+    || normalized.includes("tool failures")
+    || normalized.includes("what i need from you next")
+    || normalized.includes("blocked")
+    || normalized.includes("failed")
+    || normalized.includes("unable to")
+  );
+}
+
+function truncateJson(value: unknown, maxChars: number): string {
+  const serialized = JSON.stringify(value);
+  if (serialized.length <= maxChars) {
+    return serialized;
+  }
+  return `${serialized.slice(0, maxChars)}...`;
+}
+
+function extractFirstUrl(value: string): string | undefined {
+  const matched = value.match(/\bhttps?:\/\/[^\s`"')]+/i);
+  return matched?.[0];
+}
+
+function hasExplicitMemoryConsent(content: string): boolean {
+  const normalized = content.toLowerCase();
+  return (
+    /\bremember this\b/.test(normalized)
+    || /\bsave (this|it)( as)? (memory|note)\b/.test(normalized)
+    || /\bstore this\b/.test(normalized)
+    || /\badd (this|it) to memory\b/.test(normalized)
+    || /\bupdate memory\b/.test(normalized)
+    || /\bfor memory\b/.test(normalized)
+  );
+}
+
+function isWriteJailBlockReason(reason: string | undefined): boolean {
+  if (!reason) {
+    return false;
+  }
+  const normalized = reason.toLowerCase();
+  return normalized.includes("write jail") || normalized.includes("outside write");
+}
+
+function buildSafeWriteFallbackPath(
+  sessionId: string,
+  toolName: string,
+  originalPath: unknown,
+): string | undefined {
+  const safeSessionId = sessionId.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").slice(-32);
+  if (!safeSessionId) {
+    return undefined;
+  }
+  const original = typeof originalPath === "string" ? originalPath.trim() : "";
+  const normalizedOriginal = original.replaceAll("\\", "/");
+  const fileName = normalizedOriginal.split("/").pop() ?? "";
+  const match = fileName.match(/^(.+?)(\.[a-zA-Z0-9_-]{1,12})$/);
+  const baseName = (match?.[1] ?? fileName).trim();
+  const ext = (match?.[2] ?? "").trim();
+  const safeBaseName = sanitizePathSegment(baseName) || (toolName === "artifacts.create" ? "artifact" : "output");
+  const fallbackExt = ext || (toolName === "artifacts.create" ? ".md" : ".txt");
+  return `${SAFE_WRITE_FALLBACK_DIR}/${safeBaseName}-${safeSessionId}${fallbackExt}`;
+}
+
+function sanitizePathSegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
+
+function normalizePathForComparison(value: string): string {
+  return value.replaceAll("\\", "/").toLowerCase();
+}
+
+function buildToolFailureFallbackMessage(
+  userPrompt: string,
+  toolRuns: ChatToolRunRecord[],
+  reason: string,
+): string {
+  const failures = toolRuns
+    .filter((item) => item.status === "failed" || item.status === "blocked")
+    .slice(-4)
+    .map((item) => `- ${item.toolName}: ${item.error ?? "failed"}`);
+  const fallbackQuery = deriveLiveDataQuery(userPrompt);
+  const lines = [
+    "I stopped retrying tool calls because the same failure repeated.",
+    "",
+    "Constraints:",
+    `- ${reason}`,
+    ...(failures.length > 0 ? failures : ["- Tool failure details unavailable."]),
+    "",
+    "Fallback:",
+    "- I can continue with a best-effort answer from current context.",
+    "- If you want another tool attempt, provide explicit arguments (for example: query/url/path).",
+    `- Suggested query seed: ${fallbackQuery}`,
+  ];
+  return lines.join("\n");
 }
 
 export function defaultThinkingTokens(level: ChatThinkingLevel): number | undefined {

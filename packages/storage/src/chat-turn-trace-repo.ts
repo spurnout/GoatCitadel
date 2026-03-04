@@ -16,6 +16,7 @@ interface ChatTurnTraceRow {
   retrieval_json: string | null;
   reflection_json: string | null;
   proactive_json: string | null;
+  guidance_json: string | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -35,6 +36,7 @@ export interface ChatTurnTraceCreateInput {
   retrieval?: ChatTurnTraceRecord["retrieval"];
   reflection?: ChatTurnTraceRecord["reflection"];
   proactive?: ChatTurnTraceRecord["proactive"];
+  guidance?: ChatTurnTraceRecord["guidance"];
   startedAt?: string;
   finishedAt?: string;
 }
@@ -47,6 +49,7 @@ export interface ChatTurnTracePatchInput {
   retrieval?: ChatTurnTraceRecord["retrieval"];
   reflection?: ChatTurnTraceRecord["reflection"];
   proactive?: ChatTurnTraceRecord["proactive"];
+  guidance?: ChatTurnTraceRecord["guidance"];
   finishedAt?: string;
 }
 
@@ -61,10 +64,10 @@ export class ChatTurnTraceRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO chat_turn_traces (
         turn_id, session_id, user_message_id, assistant_message_id, status, mode, model,
-        web_mode, memory_mode, thinking_level, routing_json, retrieval_json, reflection_json, proactive_json, started_at, finished_at
+        web_mode, memory_mode, thinking_level, routing_json, retrieval_json, reflection_json, proactive_json, guidance_json, started_at, finished_at
       ) VALUES (
         @turnId, @sessionId, @userMessageId, @assistantMessageId, @status, @mode, @model,
-        @webMode, @memoryMode, @thinkingLevel, @routingJson, @retrievalJson, @reflectionJson, @proactiveJson, @startedAt, @finishedAt
+        @webMode, @memoryMode, @thinkingLevel, @routingJson, @retrievalJson, @reflectionJson, @proactiveJson, @guidanceJson, @startedAt, @finishedAt
       )
     `);
     this.patchStmt = db.prepare(`
@@ -77,6 +80,7 @@ export class ChatTurnTraceRepository {
         retrieval_json = @retrievalJson,
         reflection_json = @reflectionJson,
         proactive_json = @proactiveJson,
+        guidance_json = @guidanceJson,
         finished_at = @finishedAt
       WHERE turn_id = @turnId
     `);
@@ -112,6 +116,7 @@ export class ChatTurnTraceRepository {
       retrievalJson: input.retrieval ? JSON.stringify(input.retrieval) : null,
       reflectionJson: input.reflection ? JSON.stringify(input.reflection) : null,
       proactiveJson: input.proactive ? JSON.stringify(input.proactive) : null,
+      guidanceJson: input.guidance ? JSON.stringify(input.guidance) : null,
       startedAt: input.startedAt ?? new Date().toISOString(),
       finishedAt: input.finishedAt ?? null,
     });
@@ -131,6 +136,7 @@ export class ChatTurnTraceRepository {
       retrievalJson: JSON.stringify(input.retrieval ?? current.retrieval ?? null),
       reflectionJson: JSON.stringify(input.reflection ?? current.reflection ?? null),
       proactiveJson: JSON.stringify(input.proactive ?? current.proactive ?? null),
+      guidanceJson: JSON.stringify(input.guidance ?? current.guidance ?? null),
       finishedAt: input.finishedAt !== undefined ? input.finishedAt : (current.finishedAt ?? null),
     });
     return this.get(turnId);
@@ -165,6 +171,7 @@ function mapRow(row: ChatTurnTraceRow): ChatTurnTraceRecord {
     retrieval: safeJsonParse<ChatTurnTraceRecord["retrieval"] | undefined>(row.retrieval_json ?? "", undefined),
     reflection: safeJsonParse<ChatTurnTraceRecord["reflection"] | undefined>(row.reflection_json ?? "", undefined),
     proactive: safeJsonParse<ChatTurnTraceRecord["proactive"] | undefined>(row.proactive_json ?? "", undefined),
+    guidance: safeJsonParse<ChatTurnTraceRecord["guidance"] | undefined>(row.guidance_json ?? "", undefined),
   };
 }
 

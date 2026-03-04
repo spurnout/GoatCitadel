@@ -1,0 +1,69 @@
+# Contributing to GoatCitadel
+
+Thanks for contributing.
+
+## Development Setup
+
+```bash
+pnpm install
+pnpm config:sync
+```
+
+Start local runtime:
+
+```bash
+pnpm dev
+```
+
+## Quality Gates
+
+Required before merge:
+
+```bash
+pnpm -r typecheck
+pnpm -r test
+pnpm smoke
+pnpm -r build
+pnpm docs:check
+```
+
+## Pull Request Expectations
+
+- Explain what changed and why.
+- Call out risk areas and migration impact.
+- Include screenshots for Mission Control UI changes.
+- Include test evidence for behavior changes.
+
+## Coding Standards
+
+- Favor backward-compatible API changes.
+- Keep policy precedence and safety boundaries intact.
+- Use shared contract types from `packages/contracts`.
+- Add or update tests for bug fixes and route changes.
+
+## Governance Docs Policy
+
+These files are required in root:
+
+- `README.md`
+- `GOATCITADEL.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+- `VISION.md`
+- `CHANGELOG.md`
+- `GOATCITADEL_LEARNING_LOG.md`
+
+Validate presence with:
+
+```bash
+pnpm docs:check
+```
+
+## Versioning and Changelogs
+
+- Product releases are tracked in `CHANGELOG.md`.
+- AI self-improvement evidence is tracked in `GOATCITADEL_LEARNING_LOG.md`.
+- Log only validated improvements with before/after evidence.
+

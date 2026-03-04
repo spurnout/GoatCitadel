@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 export interface ChatSessionMetaRecord {
   sessionId: string;
+  workspaceId?: string;
   title?: string;
   pinned: boolean;
   lifecycleStatus: "active" | "archived";
@@ -12,6 +13,7 @@ export interface ChatSessionMetaRecord {
 
 interface ChatSessionMetaRow {
   session_id: string;
+  workspace_id: string;
   title: string | null;
   pinned: number;
   lifecycle_status: "active" | "archived";
@@ -21,6 +23,7 @@ interface ChatSessionMetaRow {
 }
 
 export interface ChatSessionMetaPatchInput {
+  workspaceId?: string;
   title?: string;
   pinned?: boolean;
   lifecycleStatus?: "active" | "archived";
@@ -36,11 +39,12 @@ export class ChatSessionMetaRepository {
     this.getStmt = db.prepare("SELECT * FROM chat_session_meta WHERE session_id = ?");
     this.upsertStmt = db.prepare(`
       INSERT INTO chat_session_meta (
-        session_id, title, pinned, lifecycle_status, archived_at, created_at, updated_at
+        session_id, workspace_id, title, pinned, lifecycle_status, archived_at, created_at, updated_at
       ) VALUES (
-        @sessionId, @title, @pinned, @lifecycleStatus, @archivedAt, @createdAt, @updatedAt
+        @sessionId, @workspaceId, @title, @pinned, @lifecycleStatus, @archivedAt, @createdAt, @updatedAt
       )
       ON CONFLICT(session_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
         title = excluded.title,
         pinned = excluded.pinned,
         lifecycle_status = excluded.lifecycle_status,
@@ -50,6 +54,7 @@ export class ChatSessionMetaRepository {
     this.listBySessionIdsStmt = db.prepare(`
       SELECT * FROM chat_session_meta
       WHERE session_id IN (SELECT value FROM json_each(@sessionIdsJson))
+      AND (@workspaceId IS NULL OR workspace_id = @workspaceId)
     `);
   }
 
@@ -58,13 +63,14 @@ export class ChatSessionMetaRepository {
     return row ? mapRow(row) : undefined;
   }
 
-  public ensure(sessionId: string, now = new Date().toISOString()): ChatSessionMetaRecord {
+  public ensure(sessionId: string, now = new Date().toISOString(), workspaceId = "default"): ChatSessionMetaRecord {
     const existing = this.get(sessionId);
     if (existing) {
       return existing;
     }
     this.upsertStmt.run({
       sessionId,
+      workspaceId: sanitizeWorkspaceId(workspaceId),
       title: null,
       pinned: 0,
       lifecycleStatus: "active",
@@ -79,6 +85,7 @@ export class ChatSessionMetaRepository {
     const current = this.ensure(sessionId, now);
     this.upsertStmt.run({
       sessionId,
+      workspaceId: input.workspaceId !== undefined ? sanitizeWorkspaceId(input.workspaceId) : sanitizeWorkspaceId(current.workspaceId ?? "default"),
       title: input.title !== undefined ? sanitizeOptional(input.title) : current.title ?? null,
       pinned: input.pinned !== undefined ? (input.pinned ? 1 : 0) : (current.pinned ? 1 : 0),
       lifecycleStatus: input.lifecycleStatus ?? current.lifecycleStatus,
@@ -89,12 +96,13 @@ export class ChatSessionMetaRepository {
     return mapRow(this.getStmt.get(sessionId) as unknown as ChatSessionMetaRow);
   }
 
-  public listBySessionIds(sessionIds: string[]): Map<string, ChatSessionMetaRecord> {
+  public listBySessionIds(sessionIds: string[], workspaceId?: string): Map<string, ChatSessionMetaRecord> {
     if (sessionIds.length === 0) {
       return new Map();
     }
     const rows = this.listBySessionIdsStmt.all({
       sessionIdsJson: JSON.stringify(sessionIds),
+      workspaceId: workspaceId ? sanitizeWorkspaceId(workspaceId) : null,
     }) as unknown as ChatSessionMetaRow[];
     return new Map(rows.map((row) => [row.session_id, mapRow(row)]));
   }
@@ -103,6 +111,7 @@ export class ChatSessionMetaRepository {
 function mapRow(row: ChatSessionMetaRow): ChatSessionMetaRecord {
   return {
     sessionId: row.session_id,
+    workspaceId: row.workspace_id,
     title: row.title ?? undefined,
     pinned: row.pinned === 1,
     lifecycleStatus: row.lifecycle_status,
@@ -115,4 +124,15 @@ function mapRow(row: ChatSessionMetaRow): ChatSessionMetaRecord {
 function sanitizeOptional(value: string): string | null {
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+function sanitizeWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("workspaceId is required");
+  }
+  if (!/^[a-zA-Z0-9._-]{1,80}$/.test(trimmed)) {
+    throw new Error("workspaceId contains unsupported characters");
+  }
+  return trimmed;
 }

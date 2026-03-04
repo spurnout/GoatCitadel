@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
 
 interface NpuPageProps {
@@ -34,13 +35,20 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     overall: "safe",
     items: [],
   });
-  const [loading, setLoading] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = () => {
-    setLoading(true);
+  const load = (options?: { background?: boolean }): Promise<void> => {
+    const background = options?.background ?? false;
+    if (background) {
+      setIsRefreshing(true);
+    } else {
+      setIsInitialLoading(true);
+    }
     setError(null);
-    void Promise.all([fetchNpuStatus(), fetchNpuModels().catch(() => ({ items: [] })), fetchSettings()])
+    return Promise.all([fetchNpuStatus(), fetchNpuModels().catch(() => ({ items: [] })), fetchSettings()])
       .then(([statusRes, modelRes, settingsRes]) => {
         setStatus(statusRes);
         setModels(modelRes.items);
@@ -54,12 +62,31 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
         });
       })
       .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (background) {
+          setIsRefreshing(false);
+        } else {
+          setIsInitialLoading(false);
+        }
+      });
   };
 
   useEffect(() => {
-    load();
+    load({ background: false });
   }, [refreshKey]);
+
+  useRefreshSubscription(
+    "npu",
+    async () => {
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1200,
+      staleMs: 20000,
+      pollIntervalMs: 15000,
+    },
+  );
 
   useEffect(() => {
     if (!baseline) {
@@ -96,7 +123,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
   }, [baseline, npuEnabled, autoStart, sidecarUrl]);
 
   const onStart = async () => {
-    setLoading(true);
+    setBusy(true);
     setError(null);
     try {
       const next = await startNpuRuntime();
@@ -106,12 +133,12 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   const onStop = async () => {
-    setLoading(true);
+    setBusy(true);
     setError(null);
     try {
       const next = await stopNpuRuntime();
@@ -119,12 +146,12 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   const onRefresh = async () => {
-    setLoading(true);
+    setBusy(true);
     setError(null);
     try {
       const next = await refreshNpuRuntime();
@@ -134,7 +161,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
@@ -143,7 +170,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
       setError("Confirm critical changes before saving NPU configuration.");
       return;
     }
-    setLoading(true);
+    setBusy(true);
     setError(null);
     try {
       const next = await patchSettings({
@@ -166,7 +193,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
@@ -179,10 +206,13 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
       <PageGuideCard
         what={pageCopy.npu.guide?.what ?? ""}
         when={pageCopy.npu.guide?.when ?? ""}
+        mostCommonAction={pageCopy.npu.guide?.mostCommonAction}
         actions={pageCopy.npu.guide?.actions ?? []}
         terms={pageCopy.npu.guide?.terms}
       />
       {error ? <p className="error">{error}</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing NPU status...</p> : null}
+      {busy ? <p className="status-banner">Applying NPU action...</p> : null}
       <ChangeReviewPanel
         title="NPU Configuration Risk"
         overall={changeReview.overall}
@@ -218,15 +248,15 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
             onChange={(event) => setSidecarUrl(event.target.value)}
           />
         </div>
-        <button onClick={onSaveConfig} disabled={loading || blockConfigSave}>Save NPU Config</button>
+        <button onClick={onSaveConfig} disabled={busy || blockConfigSave}>Save NPU Config</button>
       </article>
 
       <article className="card">
         <h3>Runtime Control</h3>
         <div className="controls-row">
-          <button onClick={onStart} disabled={loading}>Start</button>
-          <button onClick={onStop} disabled={loading}>Stop</button>
-          <button onClick={onRefresh} disabled={loading}>Refresh</button>
+          <button onClick={onStart} disabled={busy}>Start</button>
+          <button onClick={onStop} disabled={busy}>Stop</button>
+          <button onClick={onRefresh} disabled={busy}>Refresh</button>
         </div>
         {settings ? (
           <p className="office-subtitle">
@@ -235,7 +265,7 @@ export function NpuPage({ refreshKey = 0, settings }: NpuPageProps) {
         ) : null}
       </article>
 
-      {loading ? <p>Loading NPU state...</p> : null}
+      {isInitialLoading ? <p>Loading NPU state...</p> : null}
 
       {status ? (
         <article className="card">
