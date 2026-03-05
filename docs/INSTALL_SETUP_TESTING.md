@@ -2,6 +2,12 @@
 
 This is the easiest path from zero to running system.
 
+Last updated: 2026-03-05
+
+Related guides:
+- Public share checklist: `docs/PUBLIC_SHARE_CHECKLIST.md`
+- Communication channel setup (Discord-first): `docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`
+
 ## Read This First
 
 This file is documentation, not a script.  
@@ -237,6 +243,8 @@ goatcitadel doctor --audit-only --deep
 ```
 
 ### A2. Prompt Lab phased gate before full rerun
+
+Prompt-pack gates are optional per cycle. Skip this section when prompt quality is already stable.
 
 1. Import your prompt pack.
 2. Run high-signal subset first: `TEST-03`, `TEST-06`, `TEST-10`, `TEST-12`, `TEST-15`, `TEST-28`.

@@ -6,7 +6,7 @@ The format is inspired by Keep a Changelog and uses semantic pre-release tags.
 
 ## [Unreleased]
 
-Target release: `0.1.0-beta.2`
+Target release: `0.6.0-beta.1`
 
 ### Added
 
@@ -36,6 +36,17 @@ Target release: `0.1.0-beta.2`
 - Optional Bankr migration assets:
   - `docs/OPTIONAL_BANKR_SKILL.md`
   - `templates/skills/bankr-optional/SKILL.md`
+- Production-readiness hardening additions:
+  - `chat_messages` projection table and repository-backed chat message listing.
+  - Batch session autonomy preferences repository path for proactive scheduler flows.
+  - Hot-path storage indexes for approvals, tool invocations, and policy blocks.
+  - Expanded route/service tests for auth/chat/orchestrator and storage hot paths.
+- Public-share docs and review assets:
+  - `docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`
+  - `docs/PUBLIC_SHARE_CHECKLIST.md`
+  - `docs/CLAUDE_PERFORMANCE_EFFICIENCY_REVIEW_PROMPT.md`
+  - `docs/CLAUDE_UI_UX_HUMANIZATION_PROMPT.md`
+  - `artifacts/perf/PERF_REVIEW_TRIAGE_TEMPLATE.md`
 
 ### Changed
 
@@ -46,6 +57,10 @@ Target release: `0.1.0-beta.2`
 - Built-in Bankr moved behind feature flag default-off (`bankrBuiltinEnabled: false`).
 - Legacy Bankr built-in endpoints now return migration guidance (`410`) while disabled.
 - Mission Control Skills page now shows a compact Bankr migration card instead of built-in Bankr policy controls.
+- Root/workspace package versions bumped to `0.6.0-beta.1`.
+- README refreshed for public-facing use:
+  - screenshot layout in compact table form,
+  - explicit docs links for channel setup and public share checklist.
 
 ### Notes
 

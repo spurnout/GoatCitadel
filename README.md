@@ -3,6 +3,8 @@
 > [!WARNING]
 > Active development in progress. Expect fast iteration and occasional breaking changes.
 
+Current release line: `0.6.0-beta.1`
+
 GoatCitadel is a local-first AI operations platform for running agentic workflows with real guardrails.
 It is built for people who want model speed and automation, but with approvals, policy controls, traceability, and recovery paths.
 
@@ -110,39 +112,17 @@ Mission Control surfaces runtime health, not just responses:
 
 ## Screenshots
 
-### Summit Dashboard
-
-![Summit Dashboard](docs/screenshots/mission-control/dashboard.png)
-
-### Chat Workspace
-
-![Chat Workspace](docs/screenshots/mission-control/chat.png)
-
-### Prompt Lab
-
-![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png)
-
-### Sessions and Runs
-
-![Runs and Session Views](docs/screenshots/mission-control/sessions.png)
-
-### Tool Access
-
-![Tool Access](docs/screenshots/mission-control/tools.png)
-
-### Skills
-
-![Skills](docs/screenshots/mission-control/skills.png)
-
-### Integrations
-
-![Integrations](docs/screenshots/mission-control/integrations.png)
-
-### MCP and Workspaces
-
-![MCP Servers](docs/screenshots/mission-control/mcp.png)
-
-![Workspaces](docs/screenshots/mission-control/workspaces.png)
+| View | Screenshot |
+|---|---|
+| Summit Dashboard | ![Summit Dashboard](docs/screenshots/mission-control/dashboard.png) |
+| Chat Workspace | ![Chat Workspace](docs/screenshots/mission-control/chat.png) |
+| Prompt Lab | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
+| Sessions and Runs | ![Runs and Session Views](docs/screenshots/mission-control/sessions.png) |
+| Tool Access (focused grants/actions area) | ![Tool Access](docs/screenshots/mission-control/tools.png) |
+| Skills | ![Skills](docs/screenshots/mission-control/skills.png) |
+| Integrations | ![Integrations](docs/screenshots/mission-control/integrations.png) |
+| MCP Servers | ![MCP Servers](docs/screenshots/mission-control/mcp.png) |
+| Workspaces | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
 
 More screenshots: [`docs/screenshots/mission-control`](docs/screenshots/mission-control)
 
@@ -163,7 +143,7 @@ powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screens
 ### Install
 
 ```bash
-git clone https://github.com/<your-org-or-user>/goatcitadel.git
+git clone https://github.com/spurnout/GoatCitadel.git
 cd goatcitadel
 pnpm install
 pnpm config:sync
@@ -208,6 +188,16 @@ Full setup/testing guide: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_T
 Beginner prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
 
 Optional Bankr skill guide: [`docs/OPTIONAL_BANKR_SKILL.md`](docs/OPTIONAL_BANKR_SKILL.md)
+
+Beginner channel walkthroughs (Discord first): [`docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
+
+## Communication Channels (Current)
+
+- `channel.tui` (native): best local-first operator experience.
+- `channel.webchat` (native): browser client workflows.
+- `channel.discord` (beta): recommended first external channel.
+- `channel.slack` (beta): supported via bot token flow.
+- Additional channels are listed in catalog as beta/planned and should be treated as pilot-only.
 
 ## API Highlights
 
@@ -294,6 +284,9 @@ Keep these disabled for any shared/public deployment.
 ## Documentation
 
 - Install/setup/testing: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
+- Public share checklist: [`docs/PUBLIC_SHARE_CHECKLIST.md`](docs/PUBLIC_SHARE_CHECKLIST.md)
+- Communication channel setup guide: [`docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
+- Performance review handshake: [`docs/PERFORMANCE_REVIEW_HANDSHAKE.md`](docs/PERFORMANCE_REVIEW_HANDSHAKE.md)
 - Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](docs/ENGINEERING_HANDBOOK.md)
 - MCP + skills curation: [`docs/MCP_SKILLS_CURATION.md`](docs/MCP_SKILLS_CURATION.md)
 - Prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
@@ -303,6 +296,8 @@ Keep these disabled for any shared/public deployment.
 - Runtime guidance: [`GOATCITADEL.md`](GOATCITADEL.md)
 - Agent conventions: [`AGENTS.md`](AGENTS.md)
 - Security policy: [`SECURITY.md`](SECURITY.md)
+- Claude performance review prompt: [`docs/CLAUDE_PERFORMANCE_EFFICIENCY_REVIEW_PROMPT.md`](docs/CLAUDE_PERFORMANCE_EFFICIENCY_REVIEW_PROMPT.md)
+- Claude UI humanization prompt: [`docs/CLAUDE_UI_UX_HUMANIZATION_PROMPT.md`](docs/CLAUDE_UI_UX_HUMANIZATION_PROMPT.md)
 
 ## Local-First Promise
 

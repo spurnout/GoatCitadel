@@ -1,6 +1,6 @@
 {
   "name": "@goatcitadel/mission-control",
-  "version": "0.1.0",
+  "version": "0.6.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -33,3 +33,4 @@
     "vite": "^5.4.10"
   }
 }
+

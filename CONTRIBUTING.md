@@ -2,6 +2,8 @@
 
 Thanks for contributing.
 
+Last updated: 2026-03-05
+
 ## Development Setup
 
 ```bash
@@ -25,6 +27,8 @@ pnpm -r test
 pnpm smoke
 pnpm -r build
 pnpm docs:check
+pnpm coverage:collect
+pnpm coverage:gate
 ```
 
 ## Pull Request Expectations
@@ -66,4 +70,4 @@ pnpm docs:check
 - Product releases are tracked in `CHANGELOG.md`.
 - AI self-improvement evidence is tracked in `GOATCITADEL_LEARNING_LOG.md`.
 - Log only validated improvements with before/after evidence.
-
+- Keep release notes understandable for first-time external users (public-facing wording).

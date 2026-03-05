@@ -2,7 +2,11 @@
 
 This file tracks every external visual/audio asset used by GoatCitadel.
 
+Last updated: 2026-03-05
+
 License policy: **CC0 only**.
+
+Note: Mission Control screenshots in `docs/screenshots/mission-control` are generated project artifacts, not third-party licensed assets.
 
 ## Tracking Table
 

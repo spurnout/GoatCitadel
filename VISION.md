@@ -1,5 +1,7 @@
 # GoatCitadel Vision
 
+Last updated: 2026-03-05
+
 ## Mission
 
 Build a local-first AI operations platform that is trustworthy, proactive, and useful in real daily work without sacrificing operator control.
@@ -26,6 +28,7 @@ GoatCitadel should evolve from a technical operator console into a human-friendl
 - Harden orchestration around tool failures and constraints.
 - Expand workspace personalization through guidance docs and scoped behavior.
 - Improve non-technical usability across Mission Control pages.
+- Improve channel onboarding for beginners (Discord/Slack-first playbooks).
 
 ## Mid-Term Goals
 
@@ -39,4 +42,3 @@ GoatCitadel should evolve from a technical operator console into a human-friendl
 - Personal AI that can safely support life workflows, projects, and operations.
 - Strong governance and auditability for every autonomous action.
 - Extensible ecosystem of tools, skills, and integrations without safety erosion.
-

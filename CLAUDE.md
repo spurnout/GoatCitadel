@@ -2,6 +2,8 @@
 
 This file documents workflow guidance for Claude-like coding assistants in GoatCitadel.
 
+Last updated: 2026-03-05
+
 ## Scope
 
 Global default guidance. Workspace override may be provided via `workspaces/<workspaceId>/CLAUDE.md`.
@@ -30,6 +32,15 @@ For docs/governance changes also run:
 pnpm docs:check
 ```
 
+Coverage gates are required for share-ready branches:
+
+```bash
+pnpm coverage:collect
+pnpm coverage:gate
+```
+
+Prompt-pack gates are optional per cycle. If they are run, use larger timeout windows.
+
 ## Editing Conventions
 
 - Keep changes minimal and explicit.
@@ -48,4 +59,3 @@ pnpm docs:check
 - Never bypass policy engine checks.
 - Never auto-disable approval requirements.
 - Keep host/origin controls explicit for non-loopback deployments.
-

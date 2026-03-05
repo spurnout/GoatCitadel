@@ -2,6 +2,8 @@
 
 This file defines GoatCitadel agent expectations for this repository.
 
+Last updated: 2026-03-05
+
 ## Scope
 
 Applies to all runtime agents unless a workspace override exists in `workspaces/<workspaceId>/AGENTS.md`.
@@ -42,6 +44,11 @@ Required fallback behavior on partial failure:
 - Do not retry identical failing tool calls repeatedly.
 - If blocked by policy/jail/approval, explain the block and provide next safe action.
 
+## Long-Run Validation
+
+- Prompt-pack gate runs are optional and can be skipped for non-prompt-focused cycles.
+- If prompt-pack gates are run, use generous command timeout windows to avoid partial-run churn.
+
 ## Memory and Personalization
 
 - Ask for explicit consent before writing long-term memory when a write grant is required.
@@ -53,4 +60,3 @@ Required fallback behavior on partial failure:
 - Deny-wins policy remains authoritative.
 - Approval-required tools remain approval-gated.
 - Tool grants and sandbox boundaries are not weakened by guidance docs.
-

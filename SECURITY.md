@@ -1,12 +1,14 @@
 # Security Policy
 
+Last updated: 2026-03-05
+
 ## Supported Versions
 
 GoatCitadel is currently pre-1.0. Only the latest prerelease line is supported for security updates.
 
 | Version line | Supported |
 |---|---|
-| `0.1.0-beta.x` | Yes |
+| `0.6.0-beta.x` | Yes |
 | Earlier prerelease builds | Best effort only |
 
 ## Reporting a Vulnerability
@@ -46,4 +48,3 @@ Do not publish exploit details before coordinated remediation.
 - Deny-wins policy precedence is mandatory.
 - Approval-required actions remain gated.
 - Tool grants and sandbox limits are never weakened by local docs.
-

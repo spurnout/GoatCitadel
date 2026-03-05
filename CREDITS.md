@@ -1,5 +1,7 @@
 # GoatCitadel Credits
 
+Last updated: 2026-03-05
+
 ## Core Product
 
 - GoatCitadel runtime and Mission Control implementation by project maintainers.
@@ -15,3 +17,8 @@ When CC0 assets are added, list creator/source links here and keep `ASSET_LICENS
 - Quaternius (CC0 packs): https://quaternius.com/
 - Poly Pizza (CC0 models): https://poly.pizza/
 - Kenney (CC0 assets): https://kenney.nl/assets
+
+## Documentation and Community
+
+- Setup and operations docs are maintained in-repo under `docs/`.
+- Public contribution process: `CONTRIBUTING.md`.
