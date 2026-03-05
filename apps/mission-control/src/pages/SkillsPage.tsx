@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
-  BankrActionAuditRecord,
-  BankrActionPreviewResponse,
-  BankrSafetyPolicy,
   SkillListItem,
   SkillRuntimeState,
 } from "@goatcitadel/contracts";
 import {
-  fetchBankrActionAudit,
-  fetchBankrSafetyPolicy,
   fetchSkillImportHistory,
   fetchSkillSources,
   fetchSkills,
@@ -16,8 +11,6 @@ import {
   reloadSkills,
   validateSkillImport,
   updateSkillState,
-  patchBankrSafetyPolicy,
-  previewBankrAction,
   fetchSkillActivationPolicies,
   patchSkillActivationPolicies,
 } from "../api/client";
@@ -33,30 +26,21 @@ interface SkillActivationPolicyState {
   requireFirstUseConfirmation: boolean;
 }
 
-interface BankrPolicyState extends BankrSafetyPolicy {
-  allowedChainsText: string;
-  blockedSymbolsText: string;
-}
-
 const STATE_OPTIONS: SkillRuntimeState[] = ["enabled", "sleep", "disabled"];
+export const BANKR_MIGRATION_CARD_TITLE = "Bankr is Optional";
+export const BANKR_MIGRATION_DOC_PATH = "docs/OPTIONAL_BANKR_SKILL.md";
+export const BANKR_MIGRATION_TEMPLATE_PATH = "templates/skills/bankr-optional/SKILL.md";
 
 export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
   const { mode } = useUiPreferences();
   const [skills, setSkills] = useState<SkillListItem[]>([]);
   const [policy, setPolicy] = useState<SkillActivationPolicyState | null>(null);
-  const [bankrPolicy, setBankrPolicy] = useState<BankrPolicyState | null>(null);
-  const [bankrAudit, setBankrAudit] = useState<BankrActionAuditRecord[]>([]);
-  const [bankrPreviewPrompt, setBankrPreviewPrompt] = useState("");
-  const [bankrPreviewUsd, setBankrPreviewUsd] = useState("");
-  const [bankrPreview, setBankrPreview] = useState<BankrActionPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [savingPolicy, setSavingPolicy] = useState(false);
-  const [savingBankrPolicy, setSavingBankrPolicy] = useState(false);
-  const [runningBankrPreview, setRunningBankrPreview] = useState(false);
   const [stateDraftBySkill, setStateDraftBySkill] = useState<Record<string, SkillRuntimeState>>({});
   const [noteDraftBySkill, setNoteDraftBySkill] = useState<Record<string, string>>({});
   const [stateFilter, setStateFilter] = useState<"all" | SkillRuntimeState>("all");
@@ -101,11 +85,9 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
       setIsInitialLoading(true);
     }
     try {
-      const [skillsResponse, policyResponse, bankrPolicyResponse, bankrAuditResponse, importHistoryResponse] = await Promise.all([
+      const [skillsResponse, policyResponse, importHistoryResponse] = await Promise.all([
         fetchSkills(),
         fetchSkillActivationPolicies(),
-        fetchBankrSafetyPolicy(),
-        fetchBankrActionAudit({ limit: 20 }),
         fetchSkillImportHistory(30),
       ]);
       setSkills(skillsResponse.items);
@@ -113,16 +95,9 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
         guardedAutoThreshold: policyResponse.guardedAutoThreshold,
         requireFirstUseConfirmation: policyResponse.requireFirstUseConfirmation,
       });
-      setBankrPolicy({
-        ...bankrPolicyResponse,
-        allowedChainsText: bankrPolicyResponse.allowedChains.join(", "),
-        blockedSymbolsText: (bankrPolicyResponse.blockedSymbols ?? []).join(", "),
-      });
-      setBankrAudit(bankrAuditResponse.items);
       setImportHistory(importHistoryResponse.items);
       setStateDraftBySkill(Object.fromEntries(skillsResponse.items.map((skill) => [skill.skillId, skill.state])));
       setNoteDraftBySkill(Object.fromEntries(skillsResponse.items.map((skill) => [skill.skillId, skill.note ?? ""])));
-      setBankrPreview(null);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -189,60 +164,6 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
       setSavingPolicy(false);
     }
   }, [policy]);
-
-  const onSaveBankrPolicy = useCallback(async () => {
-    if (!bankrPolicy) {
-      return;
-    }
-    setSavingBankrPolicy(true);
-    try {
-      const updated = await patchBankrSafetyPolicy({
-        enabled: bankrPolicy.enabled,
-        mode: bankrPolicy.mode,
-        dailyUsdCap: bankrPolicy.dailyUsdCap,
-        perActionUsdCap: bankrPolicy.perActionUsdCap,
-        requireApprovalEveryWrite: bankrPolicy.requireApprovalEveryWrite,
-        allowedChains: splitList(bankrPolicy.allowedChainsText, true),
-        allowedActionTypes: bankrPolicy.allowedActionTypes,
-        blockedSymbols: splitList(bankrPolicy.blockedSymbolsText, false),
-      });
-      setBankrPolicy({
-        ...updated,
-        allowedChainsText: updated.allowedChains.join(", "),
-        blockedSymbolsText: (updated.blockedSymbols ?? []).join(", "),
-      });
-      setStatus("Bankr safety policy saved.");
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSavingBankrPolicy(false);
-    }
-  }, [bankrPolicy]);
-
-  const onRunBankrPreview = useCallback(async () => {
-    setRunningBankrPreview(true);
-    try {
-      const usdEstimate = bankrPreviewUsd.trim() ? Number(bankrPreviewUsd.trim()) : undefined;
-      const preview = await previewBankrAction({
-        prompt: bankrPreviewPrompt.trim() || undefined,
-        usdEstimate: Number.isFinite(usdEstimate) ? usdEstimate : undefined,
-      });
-      setBankrPreview(preview);
-      const audit = await fetchBankrActionAudit({ limit: 20 });
-      setBankrAudit(audit.items);
-      setStatus(
-        preview.allowed
-          ? "Bankr preview allowed by current policy."
-          : `Bankr preview blocked: ${preview.reason}`,
-      );
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setRunningBankrPreview(false);
-    }
-  }, [bankrPreviewPrompt, bankrPreviewUsd]);
 
   const onSaveSkillState = useCallback(async (skill: SkillListItem) => {
     const draftState = stateDraftBySkill[skill.skillId] ?? skill.state;
@@ -366,7 +287,7 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
 
       {error ? <p className="error">{error}</p> : null}
       {status ? <p className="status-banner">{status}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing skills and Bankr policy...</p> : null}
+      {isRefreshing ? <p className="status-banner">Refreshing skills and activation policy...</p> : null}
 
       <article className="card">
         <h3>What are skills?</h3>
@@ -574,204 +495,16 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
       </article>
 
       <article className="card">
-        <h3>Bankr Safety Panel</h3>
+        <h3>{BANKR_MIGRATION_CARD_TITLE}</h3>
         <p className="table-subtext">
-          High-risk financial skill. Keep this in <code>sleep</code> by default, use preview first, and require
-          explicit approval for every write action.
+          Built-in Bankr support is disabled by default. If you need it, install it as an optional skill pack and keep
+          it in <code>disabled</code> or <code>sleep</code> until policy grants are reviewed.
         </p>
-        {bankrPolicy ? (
-          <>
-            <div className="skills-state-pill-row">
-              <span className="token-chip">
-                {stateDraftBySkill["managed:bankr"] ?? "unknown"} skill state
-              </span>
-              <span className="token-chip">
-                {bankrPolicy.mode === "read_only" ? "Read-only" : "Read-write guarded"}
-              </span>
-              <span className="token-chip">
-                {bankrPolicy.requireApprovalEveryWrite ? "Write approval required" : "Write approval relaxed"}
-              </span>
-            </div>
-            <div className="controls-row">
-              <GCSwitch
-                checked={bankrPolicy.enabled}
-                onCheckedChange={(checked) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  enabled: checked,
-                } : current)}
-                label="Enable Bankr policy controls"
-              />
-              <label htmlFor="bankrMode">
-                Mode
-                <HelpHint
-                  label="Bankr mode help"
-                  text="read_only blocks money-moving actions. read_write still requires explicit approval for writes."
-                />
-              </label>
-              <GCSelect
-                id="bankrMode"
-                value={bankrPolicy.mode}
-                onChange={(value) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  mode: value as BankrPolicyState["mode"],
-                } : current)}
-                options={[
-                  { value: "read_only", label: "read_only" },
-                  { value: "read_write", label: "read_write" },
-                ]}
-              />
-              <GCSwitch
-                checked
-                disabled
-                onCheckedChange={() => undefined}
-                label="Require approval on every write (locked on)"
-              />
-            </div>
-
-            <div className="controls-row">
-              <label htmlFor="bankrDailyCap">Daily USD cap</label>
-              <input
-                id="bankrDailyCap"
-                type="number"
-                min={1}
-                step={1}
-                value={bankrPolicy.dailyUsdCap}
-                onChange={(event) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  dailyUsdCap: Math.max(1, Number(event.target.value) || 1),
-                } : current)}
-              />
-              <label htmlFor="bankrPerActionCap">Per-action USD cap</label>
-              <input
-                id="bankrPerActionCap"
-                type="number"
-                min={1}
-                step={1}
-                value={bankrPolicy.perActionUsdCap}
-                onChange={(event) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  perActionUsdCap: Math.max(1, Number(event.target.value) || 1),
-                } : current)}
-              />
-            </div>
-
-            <div className="controls-row">
-              <label htmlFor="bankrAllowedChains">Allowed chains (comma-separated)</label>
-              <input
-                id="bankrAllowedChains"
-                value={bankrPolicy.allowedChainsText}
-                placeholder="base, ethereum, polygon, solana, unichain"
-                onChange={(event) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  allowedChainsText: event.target.value,
-                } : current)}
-              />
-              <label htmlFor="bankrBlockedSymbols">Blocked symbols (comma-separated)</label>
-              <input
-                id="bankrBlockedSymbols"
-                value={bankrPolicy.blockedSymbolsText}
-                placeholder="TOKEN1, TOKEN2"
-                onChange={(event) => setBankrPolicy((current) => current ? {
-                  ...current,
-                  blockedSymbolsText: event.target.value,
-                } : current)}
-              />
-            </div>
-
-            <div className="controls-row">
-              <label htmlFor="bankrActionTypes">Allowed write action types</label>
-              <div id="bankrActionTypes" className="skills-state-pill-row">
-                {(["read", "trade", "transfer", "sign", "submit", "deploy"] as const).map((action) => {
-                  const selected = bankrPolicy.allowedActionTypes.includes(action);
-                  return (
-                    <button
-                      key={action}
-                      type="button"
-                      className={`token-chip ${selected ? "token-chip-active" : ""}`}
-                      onClick={() => setBankrPolicy((current) => {
-                        if (!current) {
-                          return current;
-                        }
-                        const next = selected
-                          ? current.allowedActionTypes.filter((item) => item !== action)
-                          : [...current.allowedActionTypes, action];
-                        return {
-                          ...current,
-                          allowedActionTypes: next,
-                        };
-                      })}
-                    >
-                      {action}
-                    </button>
-                  );
-                })}
-              </div>
-              <button type="button" onClick={() => void onSaveBankrPolicy()} disabled={savingBankrPolicy}>
-                {savingBankrPolicy ? "Saving..." : "Save Bankr policy"}
-              </button>
-            </div>
-
-            <details className="advanced-panel">
-              <summary>Preview a Bankr action before execution</summary>
-              <div className="controls-row">
-                <label htmlFor="bankrPreviewPrompt">Prompt</label>
-                <input
-                  id="bankrPreviewPrompt"
-                  value={bankrPreviewPrompt}
-                  placeholder="Swap $25 of USDC to ETH on Base"
-                  onChange={(event) => setBankrPreviewPrompt(event.target.value)}
-                />
-                <label htmlFor="bankrPreviewUsd">USD estimate</label>
-                <input
-                  id="bankrPreviewUsd"
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={bankrPreviewUsd}
-                  onChange={(event) => setBankrPreviewUsd(event.target.value)}
-                />
-                <button type="button" onClick={() => void onRunBankrPreview()} disabled={runningBankrPreview}>
-                  {runningBankrPreview ? "Running..." : "Run preview"}
-                </button>
-              </div>
-              {bankrPreview ? (
-                <pre>{JSON.stringify(bankrPreview, null, 2)}</pre>
-              ) : null}
-            </details>
-
-            <details className="advanced-panel">
-              <summary>Recent Bankr audit events</summary>
-              {bankrAudit.length === 0 ? <p className="table-subtext">No Bankr audit events yet.</p> : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Status</th>
-                      <th>Action</th>
-                      <th>Chain</th>
-                      <th>Symbol</th>
-                      <th>USD est</th>
-                      <th>Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bankrAudit.map((event) => (
-                      <tr key={event.actionId}>
-                        <td>{new Date(event.createdAt).toLocaleString()}</td>
-                        <td>{event.status}</td>
-                        <td>{event.actionType}</td>
-                        <td>{event.chain ?? "-"}</td>
-                        <td>{event.symbol ?? "-"}</td>
-                        <td>{event.usdEstimate ?? "-"}</td>
-                        <td>{event.policyReason ?? "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </details>
-          </>
-        ) : <p>Loading Bankr policy...</p>}
+        <ul>
+          <li>Install guide: <code>{BANKR_MIGRATION_DOC_PATH}</code></li>
+          <li>Starter template: <code>{BANKR_MIGRATION_TEMPLATE_PATH}</code></li>
+          <li>Legacy built-in endpoints return migration guidance (`410`) while disabled.</li>
+        </ul>
       </article>
 
       <article className="card">
@@ -854,17 +587,5 @@ export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: numbe
       </article>
     </section>
   );
-}
-
-function splitList(value: string, lowercase = false): string[] {
-  const out = new Set<string>();
-  for (const part of value.split(",")) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      continue;
-    }
-    out.add(lowercase ? trimmed.toLowerCase() : trimmed.toUpperCase());
-  }
-  return [...out];
 }
 

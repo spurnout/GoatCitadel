@@ -83,6 +83,8 @@ Optional integrations stay optional. Example:
 - Obsidian vault integration can be enabled for read/append-safe workflows,
 - disabled by default,
 - path-guarded to allowed subpaths.
+- Bankr is optional and de-cored by default (`bankrBuiltinEnabled: false`),
+- optional Bankr migration path is documented in [`docs/OPTIONAL_BANKR_SKILL.md`](docs/OPTIONAL_BANKR_SKILL.md).
 
 ### 6) Operational Observability
 
@@ -205,6 +207,8 @@ Full setup/testing guide: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_T
 
 Beginner prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
 
+Optional Bankr skill guide: [`docs/OPTIONAL_BANKR_SKILL.md`](docs/OPTIONAL_BANKR_SKILL.md)
+
 ## API Highlights
 
 ### Chat
@@ -230,6 +234,13 @@ Beginner prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel
 - `POST /api/v1/skills/import/validate`
 - `POST /api/v1/skills/import/install`
 - `GET /api/v1/skills/import/history`
+
+Legacy Bankr built-in endpoints remain for migration and return `410` while built-in support is disabled:
+
+- `GET /api/v1/skills/bankr/policy`
+- `PATCH /api/v1/skills/bankr/policy`
+- `POST /api/v1/skills/bankr/preview`
+- `GET /api/v1/skills/bankr/audit`
 
 ### MCP
 
@@ -271,6 +282,14 @@ Local data:
 - idempotency keys for mutating routes,
 - policy-gated tool execution,
 - runtime warnings for weak remote auth posture.
+
+Security override env vars (break-glass only):
+
+- `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`: allows non-loopback bind without configured auth.
+- `GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE=1`: allows remote callers to create approvals.
+- `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false`: suppresses weak auth/bind warning logs.
+
+Keep these disabled for any shared/public deployment.
 
 ## Documentation
 

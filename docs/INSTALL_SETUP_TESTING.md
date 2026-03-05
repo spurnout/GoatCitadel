@@ -74,9 +74,6 @@ Open `.env` and set at least one API key if you plan to use cloud models:
 OPENAI_API_KEY=your_key_here
 GLM_API_KEY=your_key_here
 MOONSHOT_API_KEY=your_key_here
-BANKR_API_KEY=your_key_here
-# Optional only if using Bankr LLM gateway:
-# BANKR_LLM_KEY=your_key_here
 ```
 
 ### Remote/Tailnet-safe host + auth guidance (recommended)
@@ -102,7 +99,11 @@ VITE_GATEWAY_ALLOWED_HOSTS=localhost,127.0.0.1,bld,.ts.net
 Notes:
 
 - Current posture is fail-closed by default: non-loopback bind with weak/no auth is blocked at startup.
-- Break-glass override is available only when explicitly set: `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`.
+- Break-glass overrides are opt-in and insecure:
+  - `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`
+  - `GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE=1`
+  - `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false` (warning suppression only)
+- Never enable break-glass overrides in shared/public deployments.
 - Keep `GOATCITADEL_AUTH_MODE=token` or `basic` for any shared network access.
 
 GoatCitadel now auto-loads `.env` on gateway startup.  
@@ -262,18 +263,17 @@ goatcitadel doctor --audit-only --deep
    - Tool profile includes research (or danger / explicit allow).
    - Network allowlist includes target hosts (for example `*.duckduckgo.com`).
 
-### C. Optional: Bankr skill guardrail setup (high-risk)
+### C. Optional: Bankr as user-managed skill (high-risk)
 
-1. Open `Playbook (Skills)`.
-2. Keep `managed:bankr` in `sleep` until you are ready.
-3. In `Bankr Safety Panel`, start with:
-   - mode: `read_only`
-   - require approval on every write: enabled
-   - low per-action and daily USD caps
+Built-in Bankr support is disabled by default.
+
+1. Open `Playbook (Skills)` and confirm the migration card is visible.
+2. Follow [`docs/OPTIONAL_BANKR_SKILL.md`](./OPTIONAL_BANKR_SKILL.md) to install the optional skill pack.
+3. Keep the installed skill in `disabled` or `sleep` until policy/tool grants are reviewed.
 4. Add Bankr hosts to allowlist in `Forge (Settings)` only if needed:
    - `api.bankr.bot`
-   - `llm.bankr.bot` (optional, only if using Bankr LLM gateway)
-5. Use `Preview a Bankr action` before any write action.
+   - `llm.bankr.bot` (only if using a Bankr LLM gateway)
+5. Use dry-run / preview patterns inside your optional skill before any money-moving action.
 
 ### D. Backup + restore drill (required for private beta)
 

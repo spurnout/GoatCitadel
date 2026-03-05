@@ -10,7 +10,8 @@
       }
     },
     "features": {
-      "computerUseGuardrailsV1Enabled": true
+      "computerUseGuardrailsV1Enabled": true,
+      "bankrBuiltinEnabled": false
     }
   },
   "cronJobs": {

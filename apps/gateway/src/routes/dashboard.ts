@@ -91,6 +91,7 @@ const updateSettingsSchema = z.object({
     memoryLifecycleAdminV1Enabled: z.boolean().optional(),
     connectorDiagnosticsV1Enabled: z.boolean().optional(),
     computerUseGuardrailsV1Enabled: z.boolean().optional(),
+    bankrBuiltinEnabled: z.boolean().optional(),
     cronReviewQueueV1Enabled: z.boolean().optional(),
     replayRegressionV1Enabled: z.boolean().optional(),
   }).optional(),

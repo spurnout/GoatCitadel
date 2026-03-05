@@ -165,4 +165,18 @@ describe("executeTool", () => {
       command: "node --version",
     });
   });
+
+  it("blocks bankr tools when built-in support is disabled", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const request: ToolInvokeRequest = {
+      toolName: "bankr.status",
+      args: {},
+      agentId: "agent",
+      sessionId: "sess-7",
+    };
+
+    await expect(executeTool(request, policyConfig, storageStub, {
+      bankrBuiltinEnabled: false,
+    })).rejects.toThrow("Bankr built-in is disabled.");
+  });
 });

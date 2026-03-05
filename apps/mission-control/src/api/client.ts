@@ -108,10 +108,6 @@ import type {
   LearnedMemoryConflictRecord,
   LearnedMemoryItemRecord,
   LearnedMemoryUpdateInput,
-  BankrActionAuditRecord,
-  BankrActionPreviewRequest,
-  BankrActionPreviewResponse,
-  BankrSafetyPolicy,
   DecisionAutoTuneRecord,
   DecisionReplayFindingRecord,
   DecisionReplayItemRecord,
@@ -145,6 +141,7 @@ const DEFAULT_GATEWAY_PORT = 8787;
 const DEFAULT_GATEWAY_HOST_ALLOWLIST = ["bld"];
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? inferDefaultGatewayBaseUrl();
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
+const AUTH_STORAGE_MODE_KEY = "goatcitadel.gateway.auth.storageMode";
 
 interface GatewayAuthState {
   mode?: "none" | "token" | "basic";
@@ -153,6 +150,8 @@ interface GatewayAuthState {
   password?: string;
   tokenQueryParam?: string;
 }
+
+export type GatewayAuthStorageMode = "session" | "persistent";
 
 function inferDefaultGatewayBaseUrl(): string {
   if (typeof window === "undefined") {
@@ -301,7 +300,12 @@ function readGatewayAuthState(): GatewayAuthState | undefined {
   if (typeof window === "undefined") {
     return undefined;
   }
+  migrateLegacyGatewayAuthStorage();
   try {
+    const sessionRaw = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
+    if (sessionRaw) {
+      return JSON.parse(sessionRaw) as GatewayAuthState;
+    }
     const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
     if (!raw) {
       return undefined;
@@ -311,6 +315,80 @@ function readGatewayAuthState(): GatewayAuthState | undefined {
     // ignore auth parse errors
   }
   return undefined;
+}
+
+export function getGatewayAuthStorageMode(): GatewayAuthStorageMode {
+  if (typeof window === "undefined") {
+    return "session";
+  }
+  const raw = window.localStorage.getItem(AUTH_STORAGE_MODE_KEY)?.trim().toLowerCase();
+  return raw === "persistent" ? "persistent" : "session";
+}
+
+export function setGatewayAuthStorageMode(mode: GatewayAuthStorageMode): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(AUTH_STORAGE_MODE_KEY, mode);
+  if (mode === "persistent") {
+    const sessionRaw = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
+    if (sessionRaw) {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, sessionRaw);
+    }
+    return;
+  }
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export function persistGatewayAuthState(
+  state: GatewayAuthState,
+  mode: GatewayAuthStorageMode = "session",
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const payload: GatewayAuthState = {
+    mode: state.mode,
+    token: state.token?.trim() || undefined,
+    username: state.username?.trim() || undefined,
+    password: state.password || undefined,
+    tokenQueryParam: state.tokenQueryParam ?? "access_token",
+  };
+  const raw = JSON.stringify(payload);
+  window.sessionStorage.setItem(AUTH_STORAGE_KEY, raw);
+  if (mode === "persistent") {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, raw);
+  } else {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+  window.localStorage.setItem(AUTH_STORAGE_MODE_KEY, mode);
+}
+
+export function clearGatewayAuthState(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export function readStoredGatewayAuthState(): GatewayAuthState | undefined {
+  return readGatewayAuthState();
+}
+
+function migrateLegacyGatewayAuthStorage(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const sessionRaw = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
+  const localRaw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  if (sessionRaw || !localRaw) {
+    return;
+  }
+  window.sessionStorage.setItem(AUTH_STORAGE_KEY, localRaw);
+  if (getGatewayAuthStorageMode() !== "persistent") {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
 }
 
 export interface SessionsResponse {
@@ -541,6 +619,7 @@ export interface RuntimeSettingsResponse {
     memoryLifecycleAdminV1Enabled: boolean;
     connectorDiagnosticsV1Enabled: boolean;
     computerUseGuardrailsV1Enabled: boolean;
+    bankrBuiltinEnabled: boolean;
     cronReviewQueueV1Enabled: boolean;
     replayRegressionV1Enabled: boolean;
   };
@@ -2377,43 +2456,6 @@ export async function patchSkillActivationPolicies(
     method: "PATCH",
     body: JSON.stringify(input),
   });
-}
-
-export async function fetchBankrSafetyPolicy(): Promise<BankrSafetyPolicy> {
-  return request<BankrSafetyPolicy>("/api/v1/skills/bankr/policy");
-}
-
-export async function patchBankrSafetyPolicy(
-  input: Partial<BankrSafetyPolicy>,
-): Promise<BankrSafetyPolicy> {
-  return request<BankrSafetyPolicy>("/api/v1/skills/bankr/policy", {
-    method: "PATCH",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function previewBankrAction(
-  input: BankrActionPreviewRequest,
-): Promise<BankrActionPreviewResponse> {
-  return request<BankrActionPreviewResponse>("/api/v1/skills/bankr/preview", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export async function fetchBankrActionAudit(query?: {
-  limit?: number;
-  cursor?: string;
-}): Promise<{ items: BankrActionAuditRecord[] }> {
-  const params = new URLSearchParams();
-  if (query?.limit) {
-    params.set("limit", String(query.limit));
-  }
-  if (query?.cursor) {
-    params.set("cursor", query.cursor);
-  }
-  const suffix = params.size > 0 ? `?${params.toString()}` : "";
-  return request<{ items: BankrActionAuditRecord[] }>(`/api/v1/skills/bankr/audit${suffix}`);
 }
 
 export async function fetchSettings(): Promise<RuntimeSettingsResponse> {

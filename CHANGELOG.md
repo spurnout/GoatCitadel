@@ -33,6 +33,9 @@ Target release: `0.1.0-beta.2`
   - Workspace override templates under `workspaces/default/`.
 - Docs validation script:
   - `pnpm docs:check` validates required governance docs and headings.
+- Optional Bankr migration assets:
+  - `docs/OPTIONAL_BANKR_SKILL.md`
+  - `templates/skills/bankr-optional/SKILL.md`
 
 ### Changed
 
@@ -40,6 +43,9 @@ Target release: `0.1.0-beta.2`
 - Chat/task contract records expanded with optional `workspaceId`.
 - Chat turn traces now support persisted `guidance` metadata.
 - README and docs positioning updated to include governance and workspace behavior expectations.
+- Built-in Bankr moved behind feature flag default-off (`bankrBuiltinEnabled: false`).
+- Legacy Bankr built-in endpoints now return migration guidance (`410`) while disabled.
+- Mission Control Skills page now shows a compact Bankr migration card instead of built-in Bankr policy controls.
 
 ### Notes
 

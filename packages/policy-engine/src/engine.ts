@@ -33,19 +33,38 @@ interface GrantDecision {
   grant: ToolGrantRecord;
 }
 
+export interface ToolPolicyEngineRuntimeOptions {
+  isBankrBuiltinEnabled?: () => boolean;
+}
+
+const BANKR_OPTIONAL_MIGRATION_MESSAGE =
+  "Bankr built-in is disabled. Install the optional skill pack (docs/OPTIONAL_BANKR_SKILL.md; templates/skills/bankr-optional/SKILL.md).";
+
 export class ToolPolicyEngine {
   private readonly approvals: ApprovalGate;
+  private readonly registry: ToolRegistry;
+  private readonly runtimeOptions: Required<ToolPolicyEngineRuntimeOptions>;
 
   public constructor(
     private readonly config: ToolPolicyConfig,
     private readonly storage: Storage,
-    private readonly registry: ToolRegistry = createDefaultToolRegistry(),
+    registry?: ToolRegistry,
+    runtimeOptions: ToolPolicyEngineRuntimeOptions = {},
   ) {
+    this.runtimeOptions = {
+      isBankrBuiltinEnabled: runtimeOptions.isBankrBuiltinEnabled ?? (() => true),
+    };
+    this.registry = registry
+      ?? createDefaultToolRegistry({ bankrBuiltinEnabled: true });
     this.approvals = new ApprovalGate(storage);
   }
 
   public listCatalog() {
-    return this.registry.toCatalog();
+    const catalog = this.registry.toCatalog();
+    if (this.runtimeOptions.isBankrBuiltinEnabled()) {
+      return catalog;
+    }
+    return catalog.filter((tool) => !isBankrToolName(tool.toolName));
   }
 
   public listGrants(
@@ -293,6 +312,9 @@ export class ToolPolicyEngine {
     const toolDef = this.registry.get(request.toolName);
     const riskLevel = toolDef?.riskLevel ?? "caution";
     const shellRisk = this.evaluateShellRisk(request);
+    if (isBankrToolName(request.toolName) && !this.runtimeOptions.isBankrBuiltinEnabled()) {
+      return deny(riskLevel, "bankr_builtin_disabled", BANKR_OPTIONAL_MIGRATION_MESSAGE);
+    }
 
     const policy = resolveEffectivePolicy(this.config, request.agentId);
     if (matchesAnyPattern(policy.denySet, request.toolName)) {
@@ -593,7 +615,9 @@ export class ToolPolicyEngine {
     grantIdToConsume?: string,
   ): Promise<ToolInvokeResult> {
     try {
-      const result = await executeTool(request, this.config, this.storage);
+      const result = await executeTool(request, this.config, this.storage, {
+        bankrBuiltinEnabled: this.runtimeOptions.isBankrBuiltinEnabled(),
+      });
       if (grantIdToConsume) {
         this.storage.toolGrants.consumeOne(grantIdToConsume);
       }
@@ -856,4 +880,8 @@ function asToolInvokeRequest(value: Record<string, unknown>): ToolInvokeRequest 
     consentContext,
     dryRun,
   };
+}
+
+function isBankrToolName(toolName: string): boolean {
+  return toolName.startsWith("bankr.");
 }

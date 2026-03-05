@@ -17,6 +17,7 @@ export interface AssistantConfig {
   memory: MemoryConfig;
   mesh: MeshConfig;
   npu: NpuConfig;
+  sqlite: SqliteTuningConfig;
   durable: DurableConfig;
   features: FeatureFlagsConfig;
   budgets: {
@@ -32,6 +33,7 @@ export interface FeatureFlagsConfig {
   memoryLifecycleAdminV1Enabled: boolean;
   connectorDiagnosticsV1Enabled: boolean;
   computerUseGuardrailsV1Enabled: boolean;
+  bankrBuiltinEnabled: boolean;
   cronReviewQueueV1Enabled: boolean;
   replayRegressionV1Enabled: boolean;
 }
@@ -131,6 +133,12 @@ export interface DurableConfig {
   enabled: boolean;
   diagnosticsEnabled: boolean;
   maxAttemptsDefault: number;
+}
+
+export interface SqliteTuningConfig {
+  cacheSizeKb: number;
+  tempStoreMemory: boolean;
+  walAutoCheckpointPages: number;
 }
 
 export interface BudgetConfig {
@@ -282,6 +290,7 @@ function applyEnvironmentOverrides(assistant: AssistantConfig): void {
     ["memoryLifecycleAdminV1Enabled", process.env.GOATCITADEL_FEATURE_MEMORY_LIFECYCLE_ADMIN_V1_ENABLED],
     ["connectorDiagnosticsV1Enabled", process.env.GOATCITADEL_FEATURE_CONNECTOR_DIAGNOSTICS_V1_ENABLED],
     ["computerUseGuardrailsV1Enabled", process.env.GOATCITADEL_FEATURE_COMPUTER_USE_GUARDRAILS_V1_ENABLED],
+    ["bankrBuiltinEnabled", process.env.GOATCITADEL_FEATURE_BANKR_BUILTIN_ENABLED],
     ["cronReviewQueueV1Enabled", process.env.GOATCITADEL_FEATURE_CRON_REVIEW_QUEUE_V1_ENABLED],
     ["replayRegressionV1Enabled", process.env.GOATCITADEL_FEATURE_REPLAY_REGRESSION_V1_ENABLED],
   ];
@@ -290,6 +299,20 @@ function applyEnvironmentOverrides(assistant: AssistantConfig): void {
       continue;
     }
     assistant.features[flag] = raw === "1" || raw.toLowerCase() === "true";
+  }
+
+  const sqliteCacheSizeKb = parseIntEnv(process.env.GOATCITADEL_SQLITE_CACHE_SIZE_KB);
+  if (sqliteCacheSizeKb !== undefined) {
+    assistant.sqlite.cacheSizeKb = clampInt(sqliteCacheSizeKb, 4_096, 262_144) ?? assistant.sqlite.cacheSizeKb;
+  }
+  const sqliteTempStoreMemory = parseBooleanEnv(process.env.GOATCITADEL_SQLITE_TEMP_STORE_MEMORY);
+  if (sqliteTempStoreMemory !== undefined) {
+    assistant.sqlite.tempStoreMemory = sqliteTempStoreMemory;
+  }
+  const sqliteWalAutoCheckpoint = parseIntEnv(process.env.GOATCITADEL_SQLITE_WAL_AUTOCHECKPOINT_PAGES);
+  if (sqliteWalAutoCheckpoint !== undefined) {
+    assistant.sqlite.walAutoCheckpointPages = clampInt(sqliteWalAutoCheckpoint, 1_000, 20_000)
+      ?? assistant.sqlite.walAutoCheckpointPages;
   }
 }
 
@@ -314,6 +337,7 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
   const npuInput = (input.npu ?? {}) as Partial<NpuConfig>;
   const npuSidecar = (npuInput.sidecar ?? {}) as Partial<NpuConfig["sidecar"]>;
   const npuRestart = (npuSidecar.restartBudget ?? {}) as Partial<NpuConfig["sidecar"]["restartBudget"]>;
+  const sqliteInput = (input.sqlite ?? {}) as Partial<SqliteTuningConfig>;
   const durableInput = (input.durable ?? {}) as Partial<DurableConfig>;
   const featuresInput = (input.features ?? {}) as Partial<FeatureFlagsConfig>;
   const memoryInput = (input.memory ?? {}) as Partial<MemoryConfig>;
@@ -420,6 +444,11 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
         },
       },
     },
+    sqlite: {
+      cacheSizeKb: clampInt(sqliteInput.cacheSizeKb, 4_096, 262_144) ?? 65_536,
+      tempStoreMemory: sqliteInput.tempStoreMemory ?? true,
+      walAutoCheckpointPages: clampInt(sqliteInput.walAutoCheckpointPages, 1_000, 20_000) ?? 5_000,
+    },
     durable: {
       enabled: durableInput.enabled ?? false,
       diagnosticsEnabled: durableInput.diagnosticsEnabled ?? false,
@@ -430,7 +459,8 @@ function withAssistantDefaults(input: Partial<AssistantConfig>): AssistantConfig
       replayOverridesV1Enabled: featuresInput.replayOverridesV1Enabled ?? false,
       memoryLifecycleAdminV1Enabled: featuresInput.memoryLifecycleAdminV1Enabled ?? false,
       connectorDiagnosticsV1Enabled: featuresInput.connectorDiagnosticsV1Enabled ?? false,
-      computerUseGuardrailsV1Enabled: featuresInput.computerUseGuardrailsV1Enabled ?? false,
+      computerUseGuardrailsV1Enabled: featuresInput.computerUseGuardrailsV1Enabled ?? true,
+      bankrBuiltinEnabled: featuresInput.bankrBuiltinEnabled ?? false,
       cronReviewQueueV1Enabled: featuresInput.cronReviewQueueV1Enabled ?? false,
       replayRegressionV1Enabled: featuresInput.replayRegressionV1Enabled ?? false,
     },
@@ -553,4 +583,40 @@ function defaultLlmConfig(): string {
       },
     ],
   });
+}
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function parseIntEnv(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampInt(value: number | undefined, min: number, max: number): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  if (normalized < min) {
+    return min;
+  }
+  if (normalized > max) {
+    return max;
+  }
+  return normalized;
 }

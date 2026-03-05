@@ -478,6 +478,14 @@ export class ToolRegistry {
   }
 }
 
-export function createDefaultToolRegistry(): ToolRegistry {
-  return new ToolRegistry(BUILTIN_TOOLS);
+export interface CreateDefaultToolRegistryOptions {
+  bankrBuiltinEnabled?: boolean;
+}
+
+export function createDefaultToolRegistry(options?: CreateDefaultToolRegistryOptions): ToolRegistry {
+  const bankrBuiltinEnabled = options?.bankrBuiltinEnabled ?? true;
+  const initialTools = bankrBuiltinEnabled
+    ? BUILTIN_TOOLS
+    : BUILTIN_TOOLS.filter((tool) => !tool.name.startsWith("bankr."));
+  return new ToolRegistry(initialTools);
 }

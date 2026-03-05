@@ -241,6 +241,17 @@ import { ChatAgentOrchestrator, normalizeAgentInputFromSend } from "./chat-agent
 import { ResearchService } from "./research-service.js";
 import { ObsidianVaultService } from "./obsidian-vault-service.js";
 import { SkillImportService } from "./skill-import-service.js";
+import { normalizeMemoryForgetCriteria, serializePathWithinRoot } from "./security-utils.js";
+import {
+  COST_REPORT_HOURLY_JOB_ID,
+  CronAutomationService,
+  IMPROVEMENT_WEEKLY_JOB_ID,
+  MEMORY_FLUSH_DAILY_JOB_ID,
+  normalizeCronJobId,
+  normalizeCronJobName,
+  normalizeCronSchedule,
+  PRIVATE_BETA_BACKUP_JOB_ID,
+} from "./gateway/cron-automation-service.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -336,6 +347,7 @@ export interface RuntimeSettings {
     memoryLifecycleAdminV1Enabled: boolean;
     connectorDiagnosticsV1Enabled: boolean;
     computerUseGuardrailsV1Enabled: boolean;
+    bankrBuiltinEnabled: boolean;
     cronReviewQueueV1Enabled: boolean;
     replayRegressionV1Enabled: boolean;
   };
@@ -371,6 +383,8 @@ const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
   guardedAutoThreshold: 0.72,
   requireFirstUseConfirmation: true,
 };
+const BANKR_OPTIONAL_MIGRATION_MESSAGE =
+  "Bankr built-in is disabled. Install the optional skill pack (docs/OPTIONAL_BANKR_SKILL.md; templates/skills/bankr-optional/SKILL.md).";
 const DEFAULT_SESSION_AUTONOMY_PREFS = {
   proactiveMode: "off" as ChatProactiveMode,
   maxActionsPerHour: 6,
@@ -497,24 +511,14 @@ const PROMPT_PACK_BENCHMARK_MAX_FAILURE_SIGNALS = 3;
 const DEFAULT_PROMPT_RUNNER_SOURCE = "goatcitadel_prompt_pack.md";
 const DEFAULT_PROMPT_PACK_EXPORT_DIR = "artifacts/prompt-lab";
 const DEFAULT_DELEGATION_ROLES = ["product", "architect", "coder", "qa", "ops"];
-const IMPROVEMENT_WEEKLY_JOB_ID = "self_improvement_weekly_replay";
 const IMPROVEMENT_WEEKLY_TIME_ZONE = "America/Los_Angeles";
 const IMPROVEMENT_WEEKLY_SCHEDULE_LABEL = "0 2 * * 0 America/Los_Angeles";
-const PRIVATE_BETA_BACKUP_JOB_ID = "private_beta_backup_daily";
 const PRIVATE_BETA_BACKUP_TIME_ZONE = "America/Los_Angeles";
 const PRIVATE_BETA_BACKUP_SCHEDULE_LABEL = "30 2 * * * America/Los_Angeles";
-const MEMORY_FLUSH_DAILY_JOB_ID = "memory-flush-daily";
 const MEMORY_FLUSH_DAILY_TIME_ZONE = "America/Los_Angeles";
 const MEMORY_FLUSH_DAILY_SCHEDULE_LABEL = "0 3 * * * America/Los_Angeles";
-const COST_REPORT_HOURLY_JOB_ID = "cost-report-hourly";
 const COST_REPORT_HOURLY_TIME_ZONE = "America/Los_Angeles";
 const COST_REPORT_HOURLY_SCHEDULE_LABEL = "0 * * * * America/Los_Angeles";
-const SYSTEM_CRON_JOB_IDS = new Set([
-  IMPROVEMENT_WEEKLY_JOB_ID,
-  PRIVATE_BETA_BACKUP_JOB_ID,
-  MEMORY_FLUSH_DAILY_JOB_ID,
-  COST_REPORT_HOURLY_JOB_ID,
-]);
 const PRIVATE_BETA_BACKUP_DEDUP_SETTING_KEY = "private_beta_backup_last_day_key_v1";
 const MEMORY_FLUSH_DAILY_DEDUP_SETTING_KEY = "memory_flush_daily_last_day_key_v1";
 const COST_REPORT_HOURLY_DEDUP_SETTING_KEY = "cost_report_hourly_last_hour_key_v1";
@@ -685,8 +689,10 @@ export class GatewayService {
   private readonly researchService: ResearchService;
   private readonly obsidianVaultService: ObsidianVaultService;
   private readonly skillImportService: SkillImportService;
+  private readonly cronAutomationService: CronAutomationService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
+  private readonly warnedOutsideRootPathFingerprints = new Set<string>();
   private readonly onboardingMarkerPath: string;
   private proactiveScheduler?: NodeJS.Timeout;
   private improvementScheduler?: NodeJS.Timeout;
@@ -698,6 +704,11 @@ export class GatewayService {
       dbPath: config.dbPath,
       transcriptsDir: path.resolve(config.rootDir, config.assistant.transcriptsDir),
       auditDir: path.resolve(config.rootDir, config.assistant.auditDir),
+      tuning: {
+        cacheSizeKb: config.assistant.sqlite.cacheSizeKb,
+        tempStoreMemory: config.assistant.sqlite.tempStoreMemory,
+        walAutoCheckpointPages: config.assistant.sqlite.walAutoCheckpointPages,
+      },
     });
     this.onboardingMarkerPath = path.resolve(
       config.rootDir,
@@ -706,7 +717,9 @@ export class GatewayService {
     );
 
     this.eventIngestService = new EventIngestService(this.storage);
-    this.policyEngine = new ToolPolicyEngine(config.toolPolicy, this.storage);
+    this.policyEngine = new ToolPolicyEngine(config.toolPolicy, this.storage, undefined, {
+      isBankrBuiltinEnabled: () => this.isFeatureEnabled("bankrBuiltinEnabled"),
+    });
     const secretStore = new SecretStoreService();
     this.skillsService = new SkillsService([
       { source: "extra", dir: path.join(config.rootDir, "skills", "extra") },
@@ -758,6 +771,7 @@ export class GatewayService {
       storage: this.storage,
       listToolCatalog: () => this.listToolCatalog(),
       createChatCompletion: (request) => this.createChatCompletion(request),
+      createChatCompletionStream: (request) => this.createChatCompletionStream(request),
       invokeTool: (request) => this.invokeTool(request),
       evaluateToolAccess: (request) => this.policyEngine.evaluateAccess(request),
     });
@@ -768,6 +782,27 @@ export class GatewayService {
     });
     this.obsidianVaultService = new ObsidianVaultService(this.storage.systemSettings);
     this.skillImportService = new SkillImportService(config.rootDir, this.storage.systemSettings);
+    this.cronAutomationService = new CronAutomationService({
+      storage: this.storage,
+      persistCronJobsConfig: () => this.persistCronJobsConfig(),
+      publishRealtime: (eventType, source, payload) => this.publishRealtime(eventType, source, payload ?? {}),
+      requireFeatureEnabled: (flag) => this.requireFeatureEnabled(flag),
+      isFeatureEnabled: (flag) => this.isFeatureEnabled(flag),
+      runHandlers: {
+        improvement: async () => {
+          await this.runWeeklyImprovementSchedulerIfDue({ force: true });
+        },
+        backup: async () => {
+          await this.runPrivateBetaBackupSchedulerIfDue({ force: true });
+        },
+        memoryFlush: async () => {
+          await this.runMemoryFlushSchedulerIfDue({ force: true });
+        },
+        costReport: async () => {
+          await this.runCostReportSchedulerIfDue({ force: true });
+        },
+      },
+    });
   }
 
   public async init(): Promise<void> {
@@ -1555,7 +1590,7 @@ export class GatewayService {
   }
 
   private async runWeeklyImprovementSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
-    const job = this.storage.cronJobs.list().find((item) => item.jobId === IMPROVEMENT_WEEKLY_JOB_ID);
+    const job = this.storage.cronJobs.get(IMPROVEMENT_WEEKLY_JOB_ID);
     if (!job?.enabled) {
       return;
     }
@@ -1587,7 +1622,7 @@ export class GatewayService {
   }
 
   private async runPrivateBetaBackupSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
-    const job = this.storage.cronJobs.list().find((item) => item.jobId === PRIVATE_BETA_BACKUP_JOB_ID);
+    const job = this.storage.cronJobs.get(PRIVATE_BETA_BACKUP_JOB_ID);
     if (!job?.enabled) {
       return;
     }
@@ -1626,7 +1661,7 @@ export class GatewayService {
   }
 
   private async runMemoryFlushSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
-    const job = this.storage.cronJobs.list().find((item) => item.jobId === MEMORY_FLUSH_DAILY_JOB_ID);
+    const job = this.storage.cronJobs.get(MEMORY_FLUSH_DAILY_JOB_ID);
     if (!job?.enabled) {
       return;
     }
@@ -1669,7 +1704,7 @@ export class GatewayService {
   }
 
   private async runCostReportSchedulerIfDue(options: { force?: boolean } = {}): Promise<void> {
-    const job = this.storage.cronJobs.list().find((item) => item.jobId === COST_REPORT_HOURLY_JOB_ID);
+    const job = this.storage.cronJobs.get(COST_REPORT_HOURLY_JOB_ID);
     if (!job?.enabled) {
       return;
     }
@@ -6760,10 +6795,12 @@ export class GatewayService {
 
     let finalText = "";
     let assistantUsage: ChatStreamChunk["usage"] | undefined;
+    let hasStreamedDelta = false;
     for await (const chunk of this.chatAgentOrchestrator.runStream({
       sessionId,
       turnId,
       userMessageId: userEventId,
+      outputMessageId: assistantMessageId,
       content,
       mode: normalized.mode ?? prefs.mode,
       providerId: input.providerId ?? prefs.providerId,
@@ -6787,7 +6824,14 @@ export class GatewayService {
       if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "citation" || chunk.type === "error") {
         yield chunk;
       }
-      if (chunk.type === "message_done" && chunk.content) {
+      if (chunk.type === "delta" && chunk.delta) {
+        hasStreamedDelta = true;
+        yield {
+          ...chunk,
+          messageId: chunk.messageId ?? assistantMessageId,
+        };
+      }
+      if (chunk.type === "message_done" && chunk.content && !hasStreamedDelta) {
         const slices = splitIntoChunks(chunk.content, 120);
         for (const slice of slices) {
           yield {
@@ -7663,10 +7707,12 @@ export class GatewayService {
   }
 
   public getBankrSafetyPolicy(): BankrSafetyPolicy {
+    this.requireBankrBuiltinEnabled();
     return readBankrSafetyPolicy(this.storage);
   }
 
   public updateBankrSafetyPolicy(input: Partial<BankrSafetyPolicy>): BankrSafetyPolicy {
+    this.requireBankrBuiltinEnabled();
     const updated = writeBankrSafetyPolicy(this.storage, input);
     this.publishRealtime("system", "skills", {
       type: "bankr_policy_updated",
@@ -7676,10 +7722,12 @@ export class GatewayService {
   }
 
   public previewBankrAction(input: BankrActionPreviewRequest): BankrActionPreviewResponse {
+    this.requireBankrBuiltinEnabled();
     return evaluateBankrActionPreview(this.storage, input);
   }
 
   public listBankrActionAudit(limit = 100, cursor?: string): BankrActionAuditRecord[] {
+    this.requireBankrBuiltinEnabled();
     const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const parsedCursor = parseBankrAuditCursor(cursor);
     const rows = this.storage.db.prepare(`
@@ -8070,16 +8118,11 @@ export class GatewayService {
   }
 
   public listCronJobs(): CronJobRecord[] {
-    return this.storage.cronJobs.list();
+    return this.cronAutomationService.listCronJobs();
   }
 
   public getCronJob(jobId: string): CronJobRecord {
-    const normalizedJobId = normalizeCronJobId(jobId);
-    const job = this.storage.cronJobs.get(normalizedJobId);
-    if (!job) {
-      throw new Error(`Cron job not found: ${normalizedJobId}`);
-    }
-    return job;
+    return this.cronAutomationService.getCronJob(jobId);
   }
 
   public createCronJob(input: {
@@ -8088,28 +8131,7 @@ export class GatewayService {
     schedule: string;
     enabled?: boolean;
   }): CronJobRecord {
-    const jobId = normalizeCronJobId(input.jobId);
-    if (this.storage.cronJobs.get(jobId)) {
-      throw new Error(`Cron job already exists: ${jobId}`);
-    }
-    const job: CronJobRecord = {
-      jobId,
-      name: normalizeCronJobName(input.name),
-      schedule: normalizeCronSchedule(input.schedule),
-      enabled: input.enabled ?? true,
-      lastRunAt: undefined,
-      nextRunAt: undefined,
-    };
-    const saved = this.storage.cronJobs.upsert(job);
-    this.persistCronJobsConfig();
-    this.publishRealtime("system", "cron", {
-      type: "cron_job_created",
-      jobId: saved.jobId,
-      name: saved.name,
-      schedule: saved.schedule,
-      enabled: saved.enabled,
-    });
-    return saved;
+    return this.cronAutomationService.createCronJob(input);
   }
 
   public updateCronJob(jobId: string, input: {
@@ -8117,207 +8139,31 @@ export class GatewayService {
     schedule?: string;
     enabled?: boolean;
   }): CronJobRecord {
-    const current = this.getCronJob(jobId);
-    const updated: CronJobRecord = {
-      ...current,
-      name: input.name !== undefined ? normalizeCronJobName(input.name) : current.name,
-      schedule: input.schedule !== undefined ? normalizeCronSchedule(input.schedule) : current.schedule,
-      enabled: input.enabled ?? current.enabled,
-    };
-    const saved = this.storage.cronJobs.upsert(updated);
-    this.persistCronJobsConfig();
-    this.publishRealtime("system", "cron", {
-      type: "cron_job_updated",
-      jobId: saved.jobId,
-      name: saved.name,
-      schedule: saved.schedule,
-      enabled: saved.enabled,
-    });
-    return saved;
+    return this.cronAutomationService.updateCronJob(jobId, input);
   }
 
   public setCronJobEnabled(jobId: string, enabled: boolean): CronJobRecord {
-    return this.updateCronJob(jobId, { enabled });
+    return this.cronAutomationService.setCronJobEnabled(jobId, enabled);
   }
 
   public deleteCronJob(jobId: string): { deleted: boolean; jobId: string } {
-    const normalizedJobId = normalizeCronJobId(jobId);
-    if (SYSTEM_CRON_JOB_IDS.has(normalizedJobId)) {
-      throw new Error(`System cron job cannot be deleted: ${normalizedJobId}`);
-    }
-    const deleted = this.storage.cronJobs.delete(normalizedJobId);
-    if (deleted) {
-      this.persistCronJobsConfig();
-      this.publishRealtime("system", "cron", {
-        type: "cron_job_deleted",
-        jobId: normalizedJobId,
-      });
-    }
-    return {
-      deleted,
-      jobId: normalizedJobId,
-    };
+    return this.cronAutomationService.deleteCronJob(jobId);
   }
 
   public async runCronJobNow(jobId: string): Promise<{ jobId: string; status: "ok" }> {
-    const normalizedJobId = normalizeCronJobId(jobId);
-    const job = this.getCronJob(normalizedJobId);
-    if (!job.enabled) {
-      throw new Error(`Cron job is paused: ${normalizedJobId}`);
-    }
-    if (normalizedJobId === IMPROVEMENT_WEEKLY_JOB_ID) {
-      await this.runWeeklyImprovementSchedulerIfDue({ force: true });
-    } else if (normalizedJobId === PRIVATE_BETA_BACKUP_JOB_ID) {
-      await this.runPrivateBetaBackupSchedulerIfDue({ force: true });
-    } else if (normalizedJobId === MEMORY_FLUSH_DAILY_JOB_ID) {
-      await this.runMemoryFlushSchedulerIfDue({ force: true });
-    } else if (normalizedJobId === COST_REPORT_HOURLY_JOB_ID) {
-      await this.runCostReportSchedulerIfDue({ force: true });
-    } else {
-      throw new Error(`Cron job has no runnable handler: ${normalizedJobId}`);
-    }
-    if (this.isFeatureEnabled("cronReviewQueueV1Enabled")) {
-      this.recordCronReviewItem({
-        jobId: normalizedJobId,
-        runId: randomUUID(),
-        severity: "low",
-        status: "resolved",
-        summary: {
-          trigger: "manual_run",
-          result: "ok",
-        },
-        diff: {
-          type: "manual_run",
-          changed: false,
-        },
-      });
-    }
-    return {
-      jobId: normalizedJobId,
-      status: "ok",
-    };
+    return this.cronAutomationService.runCronJobNow(jobId);
   }
 
   public listCronReviewQueue(limit = 200): CronReviewItem[] {
-    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
-    const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
-    const rows = this.storage.db.prepare(`
-      SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
-      FROM cron_review_items
-      ORDER BY updated_at DESC
-      LIMIT ?
-    `).all(safeLimit) as Array<{
-      item_id: string;
-      job_id: string;
-      run_id: string;
-      severity: CronReviewItem["severity"];
-      status: CronReviewItem["status"];
-      summary_json: string;
-      diff_json: string | null;
-      created_at: string;
-      updated_at: string;
-      resolved_at: string | null;
-    }>;
-    return rows.map((row) => ({
-      itemId: row.item_id,
-      jobId: row.job_id,
-      runId: row.run_id,
-      severity: row.severity,
-      status: row.status,
-      summary: this.tryParseJson<Record<string, unknown>>(row.summary_json, {}),
-      diff: row.diff_json ? this.tryParseJson<Record<string, unknown>>(row.diff_json, {}) : undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resolvedAt: row.resolved_at ?? undefined,
-    }));
+    return this.cronAutomationService.listCronReviewQueue(limit);
   }
 
   public retryCronReviewQueueItem(itemId: string): CronReviewItem {
-    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
-    const existing = this.storage.db.prepare(`
-      SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
-      FROM cron_review_items
-      WHERE item_id = ?
-    `).get(itemId) as {
-      item_id: string;
-      job_id: string;
-      run_id: string;
-      severity: CronReviewItem["severity"];
-      status: CronReviewItem["status"];
-      summary_json: string;
-      diff_json: string | null;
-      created_at: string;
-      updated_at: string;
-      resolved_at: string | null;
-    } | undefined;
-    if (!existing) {
-      throw new Error(`Cron review item not found: ${itemId}`);
-    }
-    const retriedRunId = randomUUID();
-    const now = new Date().toISOString();
-    this.storage.db.prepare(`
-      UPDATE cron_review_items
-      SET status = 'retrying',
-          run_id = @runId,
-          updated_at = @updatedAt,
-          resolved_at = NULL
-      WHERE item_id = @itemId
-    `).run({
-      itemId,
-      runId: retriedRunId,
-      updatedAt: now,
-    });
-    this.storage.db.prepare(`
-      INSERT INTO cron_run_diffs (diff_id, run_id, previous_run_id, diff_json, created_at)
-      VALUES (@diffId, @runId, @previousRunId, @diffJson, @createdAt)
-    `).run({
-      diffId: randomUUID(),
-      runId: retriedRunId,
-      previousRunId: existing.run_id,
-      diffJson: JSON.stringify({
-        retried: true,
-        previousRunId: existing.run_id,
-      }),
-      createdAt: now,
-    });
-    const updated = this.listCronReviewQueue(500).find((item) => item.itemId === itemId);
-    if (!updated) {
-      throw new Error("Cron review item retry update failed.");
-    }
-    this.publishRealtime("system", "cron", {
-      type: "cron_review_item_retried",
-      itemId,
-      jobId: updated.jobId,
-      runId: updated.runId,
-    });
-    return updated;
+    return this.cronAutomationService.retryCronReviewQueueItem(itemId);
   }
 
   public getCronRunDiff(runId: string): CronRunDiff {
-    this.requireFeatureEnabled("cronReviewQueueV1Enabled");
-    const row = this.storage.db.prepare(`
-      SELECT diff_id, run_id, previous_run_id, diff_json, created_at
-      FROM cron_run_diffs
-      WHERE run_id = ?
-      ORDER BY created_at DESC
-      LIMIT 1
-    `).get(runId) as {
-      diff_id: string;
-      run_id: string;
-      previous_run_id: string | null;
-      diff_json: string;
-      created_at: string;
-    } | undefined;
-    if (!row) {
-      throw new Error(`Cron run diff not found for run ${runId}`);
-    }
-    return {
-      diffId: row.diff_id,
-      runId: row.run_id,
-      previousRunId: row.previous_run_id ?? undefined,
-      diff: this.tryParseJson<Record<string, unknown>>(row.diff_json, {}),
-      createdAt: row.created_at,
-    };
+    return this.cronAutomationService.getCronRunDiff(runId);
   }
 
   public async uploadWorkspaceFile(relativePath: string, content: string): Promise<FileUploadResult> {
@@ -8640,15 +8486,19 @@ export class GatewayService {
     } = {},
   ): { forgottenCount: number; itemIds: string[] } {
     this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
+    const criteria = normalizeMemoryForgetCriteria(input);
+    if (!criteria.hasCriteria) {
+      throw new Error("Memory forget requires at least one criterion: itemIds, namespace, or query.");
+    }
     const actorId = input.actorId?.trim() || "operator";
     let targets: string[] = [];
-    if (input.itemIds && input.itemIds.length > 0) {
-      targets = [...new Set(input.itemIds.map((itemId) => itemId.trim()).filter(Boolean))];
+    if (criteria.hasItemIds) {
+      targets = criteria.itemIds;
     } else {
       targets = this.listMemoryItems({
-        namespace: input.namespace,
+        namespace: criteria.namespace,
         status: "active",
-        query: input.query,
+        query: criteria.query,
         limit: 2_000,
       }).map((item) => item.itemId);
     }
@@ -10730,6 +10580,162 @@ export class GatewayService {
     return response;
   }
 
+  public async *createChatCompletionStream(request: ChatCompletionRequest): AsyncGenerator<Record<string, unknown>> {
+    let memoryContext: MemoryContextPack | undefined;
+    const memoryInput = request.memory;
+    const useQmd = (
+      this.config.assistant.memory.enabled
+      && this.config.assistant.memory.qmd.enabled
+      && this.config.assistant.memory.qmd.applyToChat
+      && memoryInput?.mode !== "off"
+      && (memoryInput?.enabled ?? true)
+    );
+
+    if (useQmd) {
+      const prompt = extractPromptFromMessages(request.messages);
+      if (prompt.trim()) {
+        memoryContext = await this.memoryContextService.compose({
+          scope: "chat",
+          prompt,
+          sessionId: memoryInput?.sessionId,
+          taskId: memoryInput?.taskId,
+          workspace: memoryInput?.workspace,
+          maxContextTokens: memoryInput?.maxContextTokens,
+          forceRefresh: memoryInput?.forceRefresh,
+        });
+      }
+    }
+
+    const withContext = memoryContext
+      ? {
+        ...request,
+        messages: [
+          {
+            role: "system" as const,
+            content: buildMemoryContextSystemMessage(memoryContext),
+          },
+          ...request.messages,
+        ],
+      }
+      : request;
+
+    const runtime = this.llmService.getRuntimeConfig({
+      includeKeychainForActiveProvider: true,
+      useCache: true,
+    });
+    const primaryProviderId = withContext.providerId ?? runtime.activeProviderId;
+    const primaryProvider = runtime.providers.find((item) => item.providerId === primaryProviderId);
+    const primaryModel = withContext.model
+      ?? primaryProvider?.defaultModel
+      ?? runtime.activeModel;
+    const routing: ChatTurnTraceRecord["routing"] = {
+      primaryProviderId,
+      primaryModel,
+      effectiveProviderId: primaryProviderId,
+      effectiveModel: primaryModel,
+      fallbackUsed: false,
+    };
+
+    const retryAttempts = [
+      withContext,
+      normalizeToolProtocolRetryRequest(withContext, 1),
+      normalizeToolProtocolRetryRequest(withContext, 2),
+    ];
+    let streamed = false;
+    let lastError: Error | undefined;
+
+    for (let index = 0; index < retryAttempts.length; index += 1) {
+      const attemptRequest = retryAttempts[index]!;
+      try {
+        for await (const chunk of this.llmService.chatCompletionsStream({
+          ...attemptRequest,
+          stream: true,
+        })) {
+          streamed = true;
+          yield chunk;
+        }
+        routing.effectiveProviderId = attemptRequest.providerId ?? primaryProviderId;
+        routing.effectiveModel = attemptRequest.model ?? primaryModel;
+        if (index > 0) {
+          routing.fallbackUsed = true;
+          routing.fallbackProviderId = routing.effectiveProviderId;
+          routing.fallbackModel = routing.effectiveModel;
+          routing.fallbackReason = index === 1
+            ? "provider compatibility retry (normalized tool protocol)"
+            : "provider compatibility retry (minimal thinking metadata)";
+        }
+        break;
+      } catch (error) {
+        lastError = error as Error;
+        if (index < retryAttempts.length - 1 && shouldRetryToolProtocolError(lastError)) {
+          continue;
+        }
+      }
+    }
+
+    if (!streamed) {
+      const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
+      for (const fallback of fallbacks) {
+        try {
+          for await (const chunk of this.llmService.chatCompletionsStream({
+            ...normalizeToolProtocolRetryRequest(withContext, 2),
+            providerId: fallback.providerId,
+            model: fallback.model,
+            stream: true,
+          })) {
+            streamed = true;
+            yield chunk;
+          }
+          routing.fallbackUsed = true;
+          routing.fallbackProviderId = fallback.providerId;
+          routing.fallbackModel = fallback.model;
+          routing.fallbackReason = `primary failed (${lastError?.message ?? "unknown error"})`;
+          routing.effectiveProviderId = fallback.providerId;
+          routing.effectiveModel = fallback.model;
+          break;
+        } catch (error) {
+          lastError = error as Error;
+        }
+      }
+    }
+
+    if (!streamed) {
+      throw lastError ?? new Error("chat completion stream failed");
+    }
+
+    this.publishRealtime("system", "llm", {
+      type: "chat_completion_stream",
+      providerId: routing.effectiveProviderId ?? primaryProviderId,
+      model: routing.effectiveModel ?? primaryModel,
+      messageCount: request.messages.length,
+      stream: true,
+      memoryContextId: memoryContext?.contextId,
+      memoryQmdStatus: memoryContext?.quality.status,
+      fallbackUsed: routing.fallbackUsed,
+      fallbackProviderId: routing.fallbackProviderId,
+      fallbackModel: routing.fallbackModel,
+      fallbackReason: routing.fallbackReason,
+    });
+
+    const finalChunk: Record<string, unknown> = {
+      routing,
+    };
+    if (memoryContext) {
+      finalChunk.memoryContext = {
+        contextId: memoryContext.contextId,
+        cacheHit: memoryContext.quality.status === "cache_hit",
+        originalTokenEstimate: memoryContext.originalTokenEstimate,
+        distilledTokenEstimate: memoryContext.distilledTokenEstimate,
+        savingsPercent: calculateSavings(
+          memoryContext.originalTokenEstimate,
+          memoryContext.distilledTokenEstimate,
+        ),
+        citationsCount: memoryContext.citations.length,
+      };
+    }
+    yield finalChunk;
+  }
+
   private resolveFallbackTargets(
     runtime: LlmRuntimeConfig,
     primaryProviderId: string,
@@ -10937,6 +10943,10 @@ export class GatewayService {
     return this.storage.orchestration.listCheckpoints(runId);
   }
 
+  public getBankrOptionalMigrationMessage(): string {
+    return BANKR_OPTIONAL_MIGRATION_MESSAGE;
+  }
+
   public isFeatureEnabled(flag: keyof RuntimeSettings["features"]): boolean {
     return this.readFeatureFlags()[flag];
   }
@@ -10944,6 +10954,12 @@ export class GatewayService {
   public requireFeatureEnabled(flag: keyof RuntimeSettings["features"]): void {
     if (!this.isFeatureEnabled(flag)) {
       throw new Error(`Feature flag ${flag} is disabled.`);
+    }
+  }
+
+  private requireBankrBuiltinEnabled(): void {
+    if (!this.isFeatureEnabled("bankrBuiltinEnabled")) {
+      throw new Error(BANKR_OPTIONAL_MIGRATION_MESSAGE);
     }
   }
 
@@ -10955,6 +10971,7 @@ export class GatewayService {
       memoryLifecycleAdminV1Enabled: patch.memoryLifecycleAdminV1Enabled ?? current.memoryLifecycleAdminV1Enabled,
       connectorDiagnosticsV1Enabled: patch.connectorDiagnosticsV1Enabled ?? current.connectorDiagnosticsV1Enabled,
       computerUseGuardrailsV1Enabled: patch.computerUseGuardrailsV1Enabled ?? current.computerUseGuardrailsV1Enabled,
+      bankrBuiltinEnabled: patch.bankrBuiltinEnabled ?? current.bankrBuiltinEnabled,
       cronReviewQueueV1Enabled: patch.cronReviewQueueV1Enabled ?? current.cronReviewQueueV1Enabled,
       replayRegressionV1Enabled: patch.replayRegressionV1Enabled ?? current.replayRegressionV1Enabled,
     };
@@ -10976,6 +10993,7 @@ export class GatewayService {
       memoryLifecycleAdminV1Enabled: stored?.memoryLifecycleAdminV1Enabled ?? fromConfig.memoryLifecycleAdminV1Enabled,
       connectorDiagnosticsV1Enabled: stored?.connectorDiagnosticsV1Enabled ?? fromConfig.connectorDiagnosticsV1Enabled,
       computerUseGuardrailsV1Enabled: stored?.computerUseGuardrailsV1Enabled ?? fromConfig.computerUseGuardrailsV1Enabled,
+      bankrBuiltinEnabled: stored?.bankrBuiltinEnabled ?? fromConfig.bankrBuiltinEnabled,
       cronReviewQueueV1Enabled: stored?.cronReviewQueueV1Enabled ?? fromConfig.cronReviewQueueV1Enabled,
       replayRegressionV1Enabled: stored?.replayRegressionV1Enabled ?? fromConfig.replayRegressionV1Enabled,
     };
@@ -11194,48 +11212,6 @@ export class GatewayService {
       : undefined;
   }
 
-  private recordCronReviewItem(input: {
-    jobId: string;
-    runId: string;
-    severity: CronReviewItem["severity"];
-    status: CronReviewItem["status"];
-    summary: Record<string, unknown>;
-    diff?: Record<string, unknown>;
-  }): CronReviewItem {
-    const now = new Date().toISOString();
-    const itemId = randomUUID();
-    this.storage.db.prepare(`
-      INSERT INTO cron_review_items (
-        item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
-      ) VALUES (
-        @itemId, @jobId, @runId, @severity, @status, @summaryJson, @diffJson, @createdAt, @updatedAt, @resolvedAt
-      )
-    `).run({
-      itemId,
-      jobId: input.jobId,
-      runId: input.runId,
-      severity: input.severity,
-      status: input.status,
-      summaryJson: JSON.stringify(input.summary ?? {}),
-      diffJson: input.diff ? JSON.stringify(input.diff) : null,
-      createdAt: now,
-      updatedAt: now,
-      resolvedAt: input.status === "resolved" ? now : null,
-    });
-    return {
-      itemId,
-      jobId: input.jobId,
-      runId: input.runId,
-      severity: input.severity,
-      status: input.status,
-      summary: input.summary,
-      diff: input.diff,
-      createdAt: now,
-      updatedAt: now,
-      resolvedAt: input.status === "resolved" ? now : undefined,
-    };
-  }
-
   private tryParseJson<T>(raw: string | null | undefined, fallback: T): T {
     if (!raw) {
       return fallback;
@@ -11359,30 +11335,13 @@ export class GatewayService {
       VALUES (@skillId, @state, @note, @updatedAt, NULL)
     `);
     for (const skillId of unique) {
-      const defaults = skillId === "managed:bankr"
-        ? {
-            state: "sleep",
-            note: "high-risk financial operations; guarded auto + hard limits required",
-          }
-        : {
-            state: "enabled",
-            note: null,
-          };
-      insert.run({ skillId, ...defaults, updatedAt: now });
+      insert.run({
+        skillId,
+        state: "enabled",
+        note: null,
+        updatedAt: now,
+      });
     }
-
-    // Backfill older default rows so newly installed Bankr starts in sleep mode.
-    this.storage.db.prepare(`
-      UPDATE skill_state
-      SET state = 'sleep', note = @note, updated_at = @updatedAt
-      WHERE skill_id = 'managed:bankr'
-        AND state = 'enabled'
-        AND (note IS NULL OR note = '')
-        AND first_auto_approved_at IS NULL
-    `).run({
-      note: "high-risk financial operations; guarded auto + hard limits required",
-      updatedAt: now,
-    });
   }
 
   private recordSkillImportEvent(
@@ -12348,7 +12307,7 @@ export class GatewayService {
   }
 
   private ensureWeeklyImprovementCronJob(): void {
-    const existing = this.storage.cronJobs.list().find((job) => job.jobId === IMPROVEMENT_WEEKLY_JOB_ID);
+    const existing = this.storage.cronJobs.get(IMPROVEMENT_WEEKLY_JOB_ID);
     const now = new Date().toISOString();
     this.storage.cronJobs.upsert({
       jobId: IMPROVEMENT_WEEKLY_JOB_ID,
@@ -12361,7 +12320,7 @@ export class GatewayService {
   }
 
   private ensurePrivateBetaBackupCronJob(): void {
-    const existing = this.storage.cronJobs.list().find((job) => job.jobId === PRIVATE_BETA_BACKUP_JOB_ID);
+    const existing = this.storage.cronJobs.get(PRIVATE_BETA_BACKUP_JOB_ID);
     const now = new Date().toISOString();
     this.storage.cronJobs.upsert({
       jobId: PRIVATE_BETA_BACKUP_JOB_ID,
@@ -12374,7 +12333,7 @@ export class GatewayService {
   }
 
   private ensureMemoryFlushCronJob(): void {
-    const existing = this.storage.cronJobs.list().find((job) => job.jobId === MEMORY_FLUSH_DAILY_JOB_ID);
+    const existing = this.storage.cronJobs.get(MEMORY_FLUSH_DAILY_JOB_ID);
     const now = new Date().toISOString();
     this.storage.cronJobs.upsert({
       jobId: MEMORY_FLUSH_DAILY_JOB_ID,
@@ -12387,7 +12346,7 @@ export class GatewayService {
   }
 
   private ensureCostReportCronJob(): void {
-    const existing = this.storage.cronJobs.list().find((job) => job.jobId === COST_REPORT_HOURLY_JOB_ID);
+    const existing = this.storage.cronJobs.get(COST_REPORT_HOURLY_JOB_ID);
     const now = new Date().toISOString();
     this.storage.cronJobs.upsert({
       jobId: COST_REPORT_HOURLY_JOB_ID,
@@ -12475,17 +12434,11 @@ export class GatewayService {
   }
 
   private serializeRootPath(fullPath: string): string {
-    const relative = path.relative(this.config.rootDir, fullPath).replaceAll("\\", "/");
-    if (
-      relative
-      && relative !== "."
-      && !relative.startsWith("../")
-      && relative !== ".."
-      && !path.isAbsolute(relative)
-    ) {
-      return relative.startsWith("./") ? relative : `./${relative}`;
-    }
-    return fullPath.replaceAll("\\", "/");
+    return serializePathWithinRoot(
+      this.config.rootDir,
+      fullPath,
+      this.warnedOutsideRootPathFingerprints,
+    );
   }
 }
 
@@ -14520,36 +14473,6 @@ function toHourKeyForTimezone(date: Date, timeZone: string): string {
   return `${yyyy}-${mm}-${dd}-${hh}`;
 }
 
-function normalizeCronJobId(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{2,63}$/.test(normalized)) {
-    throw new Error("Cron job id must be 3-64 chars and only include lowercase letters, numbers, '_' or '-'.");
-  }
-  return normalized;
-}
-
-function normalizeCronJobName(value: string): string {
-  const normalized = value.trim();
-  if (!normalized) {
-    throw new Error("Cron job name is required.");
-  }
-  if (normalized.length > 120) {
-    throw new Error("Cron job name must be 120 characters or less.");
-  }
-  return normalized;
-}
-
-function normalizeCronSchedule(value: string): string {
-  const normalized = value.trim();
-  if (!normalized) {
-    throw new Error("Cron schedule is required.");
-  }
-  if (!parseSimpleCronSchedule(normalized)) {
-    throw new Error("Cron schedule must look like 'M H * * * [Timezone]' or 'M H * * DOW [Timezone]'.");
-  }
-  return normalized;
-}
-
 function isCronJobDueNow(
   job: CronJobRecord,
   now: Date,
@@ -15410,7 +15333,7 @@ function ensurePathWithinRoot(targetPath: string, rootDir: string): void {
   ) {
     return;
   }
-  throw new Error(`Path escapes workspace root: ${targetPath}`);
+  throw new Error("Path escapes allowed root");
 }
 
 function isTruthy(value: string | undefined): boolean {

@@ -2,6 +2,13 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
+  const sendBankrMigrationResponse = () => ({
+    error: fastify.gateway.getBankrOptionalMigrationMessage(),
+    code: "bankr_builtin_disabled",
+    docsPath: "docs/OPTIONAL_BANKR_SKILL.md",
+    templatePath: "templates/skills/bankr-optional/SKILL.md",
+  });
+
   const skillParamsSchema = z.object({
     skillId: z.string().min(1),
   });
@@ -201,10 +208,16 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get("/api/v1/skills/bankr/policy", async (_request, reply) => {
+    if (!fastify.gateway.isFeatureEnabled("bankrBuiltinEnabled")) {
+      return reply.code(410).send(sendBankrMigrationResponse());
+    }
     return reply.send(fastify.gateway.getBankrSafetyPolicy());
   });
 
   fastify.patch("/api/v1/skills/bankr/policy", async (request, reply) => {
+    if (!fastify.gateway.isFeatureEnabled("bankrBuiltinEnabled")) {
+      return reply.code(410).send(sendBankrMigrationResponse());
+    }
     const parsed = bankrPolicyPatchSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
@@ -213,6 +226,9 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.post("/api/v1/skills/bankr/preview", async (request, reply) => {
+    if (!fastify.gateway.isFeatureEnabled("bankrBuiltinEnabled")) {
+      return reply.code(410).send(sendBankrMigrationResponse());
+    }
     const parsed = bankrPreviewSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });
@@ -221,6 +237,9 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get("/api/v1/skills/bankr/audit", async (request, reply) => {
+    if (!fastify.gateway.isFeatureEnabled("bankrBuiltinEnabled")) {
+      return reply.code(410).send(sendBankrMigrationResponse());
+    }
     const parsed = bankrAuditQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.flatten() });

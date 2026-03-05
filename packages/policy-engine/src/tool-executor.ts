@@ -17,14 +17,27 @@ import {
 
 const execFileAsync = promisify(execFile);
 const MAX_HTTP_REDIRECTS = 5;
+const BANKR_OPTIONAL_MIGRATION_MESSAGE =
+  "Bankr built-in is disabled. Install the optional skill pack (docs/OPTIONAL_BANKR_SKILL.md; templates/skills/bankr-optional/SKILL.md).";
+
+export interface ExecuteToolOptions {
+  bankrBuiltinEnabled?: boolean;
+}
 
 export async function executeTool(
   request: ToolInvokeRequest,
   config: ToolPolicyConfig,
   storage: Storage,
+  options: ExecuteToolOptions = {},
 ): Promise<Record<string, unknown>> {
   if (isBrowserToolName(request.toolName)) {
     return executeBrowserTool(request.toolName, request.args, config);
+  }
+  if (
+    request.toolName.startsWith("bankr.")
+    && options.bankrBuiltinEnabled === false
+  ) {
+    throw new Error(BANKR_OPTIONAL_MIGRATION_MESSAGE);
   }
 
   switch (request.toolName) {
