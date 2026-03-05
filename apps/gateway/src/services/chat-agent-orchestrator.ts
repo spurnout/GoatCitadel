@@ -511,12 +511,16 @@ export class ChatAgentOrchestrator {
           }
 
           if (executed.record.status === "failed" || executed.record.status === "blocked") {
-            const signature = `${executed.record.toolName}:${normalizeFailureSignature(executed.record.error)}`;
-            const nextCount = (toolFailureSignatureCounts.get(signature) ?? 0) + 1;
-            toolFailureSignatureCounts.set(signature, nextCount);
-            if (nextCount >= TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD) {
-              circuitBreakerReason = `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
-              break;
+            const retryableFailure = executed.record.status === "failed"
+              && isRetryableToolFailure(executed.record.error);
+            if (!retryableFailure) {
+              const signature = `${executed.record.toolName}:${normalizeFailureSignature(executed.record.error)}`;
+              const nextCount = (toolFailureSignatureCounts.get(signature) ?? 0) + 1;
+              toolFailureSignatureCounts.set(signature, nextCount);
+              if (nextCount >= TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD) {
+                circuitBreakerReason = `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
+                break;
+              }
             }
           }
 
@@ -1388,6 +1392,24 @@ function normalizeFailureSignature(value: string | undefined): string {
     return "unknown";
   }
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isRetryableToolFailure(errorText: string | undefined): boolean {
+  if (!errorText) {
+    return false;
+  }
+  const normalized = normalizeFailureSignature(errorText);
+  return (
+    normalized.includes("timeout")
+    || normalized.includes("timed out")
+    || normalized.includes("econnreset")
+    || normalized.includes("etimedout")
+    || normalized.includes("ehostunreach")
+    || normalized.includes("network")
+    || normalized.includes("temporarily unavailable")
+    || normalized.includes("429")
+    || normalized.includes("rate limit")
+  );
 }
 
 function isMissingArgValue(value: unknown): boolean {

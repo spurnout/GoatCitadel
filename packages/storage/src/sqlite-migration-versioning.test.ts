@@ -35,4 +35,32 @@ describe("sqlite schema migrations", () => {
     assert.equal(rows[rows.length - 1]?.version, rows.length);
     db.close();
   });
+
+  it("creates hot-path chat projection and index migrations", () => {
+    const dbPath = path.join(os.tmpdir(), `goatcitadel-migrations-hot-path-${randomUUID()}.db`);
+    createdFiles.push(dbPath);
+    const db = createDatabase({ dbPath });
+
+    const chatMessagesColumns = db
+      .prepare("PRAGMA table_info(chat_messages)")
+      .all() as Array<{ name: string }>;
+    assert.ok(chatMessagesColumns.some((column) => column.name === "message_id"));
+
+    const approvalsIndexes = db
+      .prepare("PRAGMA index_list(approvals)")
+      .all() as Array<{ name: string }>;
+    assert.ok(approvalsIndexes.some((index) => index.name === "idx_approvals_status_created"));
+
+    const toolInvocationIndexes = db
+      .prepare("PRAGMA index_list(tool_invocations)")
+      .all() as Array<{ name: string }>;
+    assert.ok(toolInvocationIndexes.some((index) => index.name === "idx_tool_invocations_session_time"));
+
+    const policyBlockIndexes = db
+      .prepare("PRAGMA index_list(policy_blocks)")
+      .all() as Array<{ name: string }>;
+    assert.ok(policyBlockIndexes.some((index) => index.name === "idx_policy_blocks_session_time"));
+
+    db.close();
+  });
 });

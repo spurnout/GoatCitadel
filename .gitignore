@@ -25,5 +25,6 @@ data/transcripts/*.jsonl
 !data/transcripts/.gitkeep
 data/audit/*.jsonl
 !data/audit/.gitkeep
+data/npu-runtime-state.json
 workspace/chat/
 .assistant/

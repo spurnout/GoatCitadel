@@ -1,9 +1,9 @@
 # Coverage Summary
 
-- Generated: 2026-03-05T07:42:30.293Z
-- File coverage: 60.62%
-- Covered files: 157/259
-- Uncovered files: 102
+- Generated: 2026-03-05T08:39:00.048Z
+- File coverage: 61.3%
+- Covered files: 160/261
+- Uncovered files: 101
 - Gate threshold: 50%
 
 ## Coverage Reports
@@ -51,7 +51,6 @@
 - `apps/gateway/src/routes/tools-invoke.ts`
 - `apps/gateway/src/routes/ui-change-risk.ts`
 - `apps/gateway/src/routes/voice.ts`
-- `apps/gateway/src/services/chat-agent-orchestrator.ts`
 - `apps/gateway/src/services/gateway/cron-automation-service.ts`
 - `apps/gateway/src/services/gateway-service.ts`
 - `apps/gateway/src/services/integration-catalog.ts`

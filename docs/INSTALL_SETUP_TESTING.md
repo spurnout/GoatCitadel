@@ -105,6 +105,7 @@ Notes:
   - `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false` (warning suppression only)
 - Never enable break-glass overrides in shared/public deployments.
 - Keep `GOATCITADEL_AUTH_MODE=token` or `basic` for any shared network access.
+- Runtime state files are local-only operational artifacts. `data/npu-runtime-state.json` is intentionally gitignored.
 
 GoatCitadel now auto-loads `.env` on gateway startup.  
 No manual `Set-Item Env:...` step is required.

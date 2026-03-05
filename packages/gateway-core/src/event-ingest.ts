@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import type {
+  ChatMessageRecord,
   GatewayEventInput,
   GatewayEventResult,
   InboundEventIndexRow,
@@ -111,6 +112,7 @@ export class EventIngestService {
       });
 
       const transcriptOffset = await this.storage.transcripts.append(transcriptEvent);
+      this.storage.chatMessages.upsert(toChatMessageRecord(transcriptEvent));
 
       this.storage.sessions.applyUsage({
         sessionId: route.sessionId,
@@ -158,4 +160,30 @@ export class EventIngestService {
 
 function hashPayload(payload: GatewayEventInput): string {
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function toChatMessageRecord(event: TranscriptEvent): ChatMessageRecord {
+  const payload = event.payload as {
+    message?: {
+      role?: "user" | "assistant";
+      content?: unknown;
+      parts?: unknown;
+      attachments?: unknown;
+    };
+  };
+  const message = payload.message;
+  return {
+    messageId: event.eventId,
+    sessionId: event.sessionId,
+    role: message?.role === "assistant" ? "assistant" : "user",
+    actorType: event.actorType,
+    actorId: event.actorId,
+    content: typeof message?.content === "string" ? message.content : "",
+    timestamp: event.timestamp,
+    tokenInput: event.tokenInput,
+    tokenOutput: event.tokenOutput,
+    costUsd: event.costUsd,
+    parts: Array.isArray(message?.parts) ? message.parts : undefined,
+    attachments: Array.isArray(message?.attachments) ? message.attachments as ChatMessageRecord["attachments"] : undefined,
+  };
 }

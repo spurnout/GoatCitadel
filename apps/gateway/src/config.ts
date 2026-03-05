@@ -183,10 +183,15 @@ export async function loadGatewayConfig(rootDir: string): Promise<GatewayRuntime
     readFileWithDefault(path.join(configDir, "llm-providers.json"), defaultLlmConfig()),
   ]);
 
-  const assistant = withAssistantDefaults(JSON.parse(assistantRaw) as Partial<AssistantConfig>);
-  const toolPolicy = JSON.parse(toolPolicyRaw) as ToolPolicyConfig;
-  const budgets = JSON.parse(budgetsRaw) as BudgetConfig;
-  const llm = JSON.parse(llmRaw) as LlmConfigFile;
+  const assistantPath = path.join(configDir, "assistant.config.json");
+  const toolPolicyPath = path.join(configDir, "tool-policy.json");
+  const budgetsPath = path.join(configDir, "budgets.json");
+  const llmPath = path.join(configDir, "llm-providers.json");
+
+  const assistant = withAssistantDefaults(parseJsonConfig<Partial<AssistantConfig>>(assistantRaw, assistantPath));
+  const toolPolicy = parseJsonConfig<ToolPolicyConfig>(toolPolicyRaw, toolPolicyPath);
+  const budgets = parseJsonConfig<BudgetConfig>(budgetsRaw, budgetsPath);
+  const llm = parseJsonConfig<LlmConfigFile>(llmRaw, llmPath);
 
   applyEnvironmentOverrides(assistant);
 
@@ -205,6 +210,14 @@ export async function loadGatewayConfig(rootDir: string): Promise<GatewayRuntime
     rootDir,
     dbPath: path.join(rootDir, "data", "index.db"),
   };
+}
+
+function parseJsonConfig<T>(raw: string, filePath: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`Failed to parse config JSON at ${filePath}: invalid JSON`);
+  }
 }
 
 function applyEnvironmentOverrides(assistant: AssistantConfig): void {

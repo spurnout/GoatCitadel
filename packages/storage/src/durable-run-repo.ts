@@ -330,7 +330,7 @@ export class DurableRunRepository {
       nextRetryAt: record.nextRetryAt ?? null,
       createdAt: record.createdAt,
     });
-    const rows = this.listRetries(record.runId, record.attemptNo);
+    const rows = this.listRetries(record.runId);
     return rows[rows.length - 1] ?? record;
   }
 

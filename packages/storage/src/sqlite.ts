@@ -208,6 +208,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "gap_closure_extension_schema",
     up: createGapClosureExtensionSchema,
   },
+  {
+    version: 23,
+    name: "operational_hot_path_schema",
+    up: createOperationalHotPathSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -1905,6 +1910,41 @@ function createGapClosureExtensionSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_replay_regression_results_run_capability
       ON replay_regression_results(regression_run_id, capability, created_at DESC);
+  `);
+}
+
+function createOperationalHotPathSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      parts_json TEXT,
+      attachments_json TEXT,
+      timestamp TEXT NOT NULL,
+      token_input INTEGER,
+      token_output INTEGER,
+      cost_usd REAL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_seq
+      ON chat_messages(session_id, seq DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_message
+      ON chat_messages(session_id, message_id);
+
+    CREATE INDEX IF NOT EXISTS idx_approvals_status_created
+      ON approvals(status, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_tool_invocations_session_time
+      ON tool_invocations(session_id, timestamp DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_policy_blocks_session_time
+      ON policy_blocks(session_id, timestamp DESC);
   `);
 }
 

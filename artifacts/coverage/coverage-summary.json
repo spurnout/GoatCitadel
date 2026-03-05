@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-03-05T07:42:30.293Z",
-  "sourceFiles": 259,
-  "coveredFiles": 157,
-  "uncoveredFiles": 102,
-  "fileCoveragePercent": 60.62,
+  "generatedAt": "2026-03-05T08:39:00.048Z",
+  "sourceFiles": 261,
+  "coveredFiles": 160,
+  "uncoveredFiles": 101,
+  "fileCoveragePercent": 61.3,
   "thresholdPercent": 50,
   "coverageFinalFiles": [
     "apps/gateway/coverage/coverage-final.json",
@@ -50,7 +50,6 @@
     "apps/gateway/src/routes/tools-invoke.ts",
     "apps/gateway/src/routes/ui-change-risk.ts",
     "apps/gateway/src/routes/voice.ts",
-    "apps/gateway/src/services/chat-agent-orchestrator.ts",
     "apps/gateway/src/services/gateway/cron-automation-service.ts",
     "apps/gateway/src/services/gateway-service.ts",
     "apps/gateway/src/services/integration-catalog.ts",

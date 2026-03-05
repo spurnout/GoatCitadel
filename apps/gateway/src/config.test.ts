@@ -10,6 +10,55 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+async function createConfigFixture(): Promise<{ rootDir: string; configDir: string }> {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "goatcitadel-config-test-"));
+  TEMP_ROOTS.push(rootDir);
+  const configDir = path.join(rootDir, "config");
+  await mkdir(configDir, { recursive: true });
+
+  await writeJson(path.join(configDir, "assistant.config.json"), {
+    auth: {
+      mode: "none",
+    },
+    features: {
+      durableKernelV1Enabled: false,
+    },
+  });
+
+  await writeJson(path.join(configDir, "tool-policy.json"), {
+    sandbox: {
+      writeJailRoots: [],
+      readOnlyRoots: [],
+    },
+  });
+
+  await writeJson(path.join(configDir, "budgets.json"), {
+    mode: "balanced",
+    daily: {
+      tokensWarning: 1000,
+      tokensHardCap: 2000,
+      usdWarning: 1,
+      usdHardCap: 2,
+    },
+    session: {
+      tokensHardCap: 1000,
+      turnMaxInputTokens: 500,
+      turnMaxOutputTokens: 500,
+    },
+  });
+
+  await writeJson(path.join(configDir, "llm-providers.json"), {
+    activeProviderId: "openai",
+    providers: [],
+  });
+
+  await writeJson(path.join(configDir, "cron-jobs.json"), {
+    jobs: [],
+  });
+
+  return { rootDir, configDir };
+}
+
 afterEach(async () => {
   while (TEMP_ROOTS.length > 0) {
     const next = TEMP_ROOTS.pop();
@@ -21,52 +70,33 @@ afterEach(async () => {
 
 describe("loadGatewayConfig", () => {
   it("defaults computer-use guardrails feature flag to true when omitted", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "goatcitadel-config-test-"));
-    TEMP_ROOTS.push(rootDir);
-    const configDir = path.join(rootDir, "config");
-    await mkdir(configDir, { recursive: true });
-
-    await writeJson(path.join(configDir, "assistant.config.json"), {
-      auth: {
-        mode: "none",
-      },
-      features: {
-        durableKernelV1Enabled: false,
-      },
-    });
-
-    await writeJson(path.join(configDir, "tool-policy.json"), {
-      sandbox: {
-        writeJailRoots: [],
-        readOnlyRoots: [],
-      },
-    });
-
-    await writeJson(path.join(configDir, "budgets.json"), {
-      mode: "balanced",
-      daily: {
-        tokensWarning: 1000,
-        tokensHardCap: 2000,
-        usdWarning: 1,
-        usdHardCap: 2,
-      },
-      session: {
-        tokensHardCap: 1000,
-        turnMaxInputTokens: 500,
-        turnMaxOutputTokens: 500,
-      },
-    });
-
-    await writeJson(path.join(configDir, "llm-providers.json"), {
-      activeProviderId: "openai",
-      providers: [],
-    });
-
-    await writeJson(path.join(configDir, "cron-jobs.json"), {
-      jobs: [],
-    });
+    const { rootDir } = await createConfigFixture();
 
     const config = await loadGatewayConfig(rootDir);
     expect(config.assistant.features.computerUseGuardrailsV1Enabled).toBe(true);
+  });
+
+  it("returns contextual parse error for malformed assistant config", async () => {
+    const { rootDir, configDir } = await createConfigFixture();
+    await writeFile(path.join(configDir, "assistant.config.json"), "{invalid", "utf8");
+    await expect(loadGatewayConfig(rootDir)).rejects.toThrow(/assistant\.config\.json/);
+  });
+
+  it("returns contextual parse error for malformed tool policy config", async () => {
+    const { rootDir, configDir } = await createConfigFixture();
+    await writeFile(path.join(configDir, "tool-policy.json"), "{invalid", "utf8");
+    await expect(loadGatewayConfig(rootDir)).rejects.toThrow(/tool-policy\.json/);
+  });
+
+  it("returns contextual parse error for malformed budgets config", async () => {
+    const { rootDir, configDir } = await createConfigFixture();
+    await writeFile(path.join(configDir, "budgets.json"), "{invalid", "utf8");
+    await expect(loadGatewayConfig(rootDir)).rejects.toThrow(/budgets\.json/);
+  });
+
+  it("returns contextual parse error for malformed llm config", async () => {
+    const { rootDir, configDir } = await createConfigFixture();
+    await writeFile(path.join(configDir, "llm-providers.json"), "{invalid", "utf8");
+    await expect(loadGatewayConfig(rootDir)).rejects.toThrow(/llm-providers\.json/);
   });
 });

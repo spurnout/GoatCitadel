@@ -78,5 +78,34 @@ describe("DurableRunRepository", () => {
     assert.equal(retries[0]?.reason, "temporary timeout (updated reason)");
     assert.equal(retries[0]?.nextRetryAt, "2026-03-03T12:30:00.000Z");
   });
-});
 
+  it("does not truncate retry history when attempt numbers are sparse", () => {
+    const repo = createRepo();
+    const run = repo.createRun({
+      workflowKey: "durable_sparse_attempts",
+      payload: { testCode: "TEST-32" },
+    });
+
+    repo.upsertRetry({
+      runId: run.runId,
+      attemptNo: 1,
+      reason: "first",
+    });
+    repo.upsertRetry({
+      runId: run.runId,
+      attemptNo: 3,
+      reason: "third",
+    });
+    const updated = repo.upsertRetry({
+      runId: run.runId,
+      attemptNo: 7,
+      reason: "seventh",
+    });
+
+    const retries = repo.listRetries(run.runId, 20);
+    assert.equal(retries.length, 3);
+    assert.deepEqual(retries.map((item) => item.attemptNo), [1, 3, 7]);
+    assert.equal(updated.attemptNo, 7);
+    assert.equal(updated.reason, "seventh");
+  });
+});

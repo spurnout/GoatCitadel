@@ -17,7 +17,12 @@ import {
   writeBankrSafetyPolicy,
 } from "@goatcitadel/policy-engine";
 import { SkillsService } from "@goatcitadel/skills";
-import { Storage } from "@goatcitadel/storage";
+import {
+  DEFAULT_SESSION_AUTONOMY_PREFS,
+  Storage,
+  type SessionAutonomyPrefsPatchInput,
+  type SessionAutonomyPrefsRecord,
+} from "@goatcitadel/storage";
 import type {
   BankrActionAuditRecord,
   BankrActionPreviewRequest,
@@ -385,14 +390,6 @@ const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
 };
 const BANKR_OPTIONAL_MIGRATION_MESSAGE =
   "Bankr built-in is disabled. Install the optional skill pack (docs/OPTIONAL_BANKR_SKILL.md; templates/skills/bankr-optional/SKILL.md).";
-const DEFAULT_SESSION_AUTONOMY_PREFS = {
-  proactiveMode: "off" as ChatProactiveMode,
-  maxActionsPerHour: 6,
-  maxActionsPerTurn: 2,
-  cooldownSeconds: 60,
-  retrievalMode: "standard" as ChatRetrievalMode,
-  reflectionMode: "off" as ChatReflectionMode,
-};
 const PROACTIVE_SCHEDULER_INTERVAL_MS = 120_000;
 const PROACTIVE_MIN_IDLE_SECONDS = 90;
 const PROACTIVE_SAFE_TOOL_ALLOWLIST = new Set([
@@ -573,23 +570,12 @@ interface ChatSessionListQuery {
   cursor?: string;
 }
 
-interface SessionAutonomyPrefs {
-  sessionId: string;
-  proactiveMode: ChatProactiveMode;
-  maxActionsPerHour: number;
-  maxActionsPerTurn: number;
-  cooldownSeconds: number;
-  retrievalMode: ChatRetrievalMode;
-  reflectionMode: ChatReflectionMode;
-  lastProactiveAt?: string;
-  lastProactiveRunId?: string;
-  createdAt: string;
-  updatedAt: string;
-}
+type SessionAutonomyPrefs = SessionAutonomyPrefsRecord;
 
 interface ProactiveTriggerInput {
   source?: "scheduler" | "manual" | "chat";
   reason?: string;
+  prefs?: SessionAutonomyPrefs;
 }
 
 interface ProactivePlannedAction {
@@ -693,6 +679,7 @@ export class GatewayService {
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
+  private readonly chatMessageProjectionBackfillAttempted = new Set<string>();
   private readonly onboardingMarkerPath: string;
   private proactiveScheduler?: NodeJS.Timeout;
   private improvementScheduler?: NodeJS.Timeout;
@@ -1320,20 +1307,17 @@ export class GatewayService {
 
   public async listChatMessages(sessionId: string, limit = 200, cursor?: string): Promise<ChatMessageRecord[]> {
     this.getSession(sessionId);
-    const events = await this.readTranscriptOrEmpty(sessionId);
-    let messages = events
-      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
-      .map((event) => toChatMessageRecord(event))
-      .filter((message): message is ChatMessageRecord => Boolean(message));
-
-    if (cursor) {
-      const index = messages.findIndex((message) => message.messageId === cursor);
-      if (index >= 0) {
-        messages = messages.slice(0, index);
-      }
+    const safeLimit = Math.max(1, Math.min(limit, 1000));
+    try {
+      await this.ensureChatMessageProjection(sessionId);
+      return this.storage.chatMessages.list(sessionId, safeLimit, cursor);
+    } catch (error) {
+      console.warn("[goatcitadel] chat message projection unavailable, falling back to transcript scan", {
+        sessionId,
+        error: (error as Error).message,
+      });
+      return this.listChatMessagesFromTranscript(sessionId, safeLimit, cursor);
     }
-
-    return messages.slice(-Math.max(1, Math.min(limit, 1000)));
   }
 
   public getChatSessionPrefs(sessionId: string): ChatSessionPrefsRecord {
@@ -1396,105 +1380,14 @@ export class GatewayService {
   }
 
   private getSessionAutonomyPrefs(sessionId: string): SessionAutonomyPrefs {
-    const row = this.storage.db.prepare(`
-      SELECT *
-      FROM session_autonomy_prefs
-      WHERE session_id = ?
-    `).get(sessionId) as {
-      session_id: string;
-      proactive_mode: ChatProactiveMode;
-      max_actions_per_hour: number;
-      max_actions_per_turn: number;
-      cooldown_seconds: number;
-      retrieval_mode: ChatRetrievalMode;
-      reflection_mode: ChatReflectionMode;
-      last_proactive_at: string | null;
-      last_proactive_run_id: string | null;
-      created_at: string;
-      updated_at: string;
-    } | undefined;
-    if (!row) {
-      const now = new Date().toISOString();
-      this.storage.db.prepare(`
-        INSERT INTO session_autonomy_prefs (
-          session_id, proactive_mode, max_actions_per_hour, max_actions_per_turn, cooldown_seconds,
-          retrieval_mode, reflection_mode, last_proactive_at, last_proactive_run_id, created_at, updated_at
-        ) VALUES (
-          @sessionId, @proactiveMode, @maxActionsPerHour, @maxActionsPerTurn, @cooldownSeconds,
-          @retrievalMode, @reflectionMode, NULL, NULL, @createdAt, @updatedAt
-        )
-      `).run({
-        sessionId,
-        proactiveMode: DEFAULT_SESSION_AUTONOMY_PREFS.proactiveMode,
-        maxActionsPerHour: DEFAULT_SESSION_AUTONOMY_PREFS.maxActionsPerHour,
-        maxActionsPerTurn: DEFAULT_SESSION_AUTONOMY_PREFS.maxActionsPerTurn,
-        cooldownSeconds: DEFAULT_SESSION_AUTONOMY_PREFS.cooldownSeconds,
-        retrievalMode: DEFAULT_SESSION_AUTONOMY_PREFS.retrievalMode,
-        reflectionMode: DEFAULT_SESSION_AUTONOMY_PREFS.reflectionMode,
-        createdAt: now,
-        updatedAt: now,
-      });
-      return this.getSessionAutonomyPrefs(sessionId);
-    }
-    return {
-      sessionId: row.session_id,
-      proactiveMode: row.proactive_mode,
-      maxActionsPerHour: Math.max(1, Math.min(200, row.max_actions_per_hour)),
-      maxActionsPerTurn: Math.max(1, Math.min(25, row.max_actions_per_turn)),
-      cooldownSeconds: Math.max(0, Math.min(3600, row.cooldown_seconds)),
-      retrievalMode: row.retrieval_mode,
-      reflectionMode: row.reflection_mode,
-      lastProactiveAt: row.last_proactive_at ?? undefined,
-      lastProactiveRunId: row.last_proactive_run_id ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    return this.storage.sessionAutonomyPrefs.ensure(sessionId);
   }
 
   private patchSessionAutonomyPrefs(
     sessionId: string,
-    input: Partial<{
-      proactiveMode: ChatProactiveMode;
-      maxActionsPerHour: number;
-      maxActionsPerTurn: number;
-      cooldownSeconds: number;
-      retrievalMode: ChatRetrievalMode;
-      reflectionMode: ChatReflectionMode;
-    }>,
+    input: SessionAutonomyPrefsPatchInput,
   ): SessionAutonomyPrefs {
-    const current = this.getSessionAutonomyPrefs(sessionId);
-    const next: SessionAutonomyPrefs = {
-      ...current,
-      proactiveMode: input.proactiveMode ?? current.proactiveMode,
-      maxActionsPerHour: clampInteger(input.maxActionsPerHour, 1, 200, current.maxActionsPerHour),
-      maxActionsPerTurn: clampInteger(input.maxActionsPerTurn, 1, 25, current.maxActionsPerTurn),
-      cooldownSeconds: clampInteger(input.cooldownSeconds, 0, 3600, current.cooldownSeconds),
-      retrievalMode: input.retrievalMode ?? current.retrievalMode,
-      reflectionMode: input.reflectionMode ?? current.reflectionMode,
-      updatedAt: new Date().toISOString(),
-    };
-    this.storage.db.prepare(`
-      UPDATE session_autonomy_prefs
-      SET
-        proactive_mode = @proactiveMode,
-        max_actions_per_hour = @maxActionsPerHour,
-        max_actions_per_turn = @maxActionsPerTurn,
-        cooldown_seconds = @cooldownSeconds,
-        retrieval_mode = @retrievalMode,
-        reflection_mode = @reflectionMode,
-        updated_at = @updatedAt
-      WHERE session_id = @sessionId
-    `).run({
-      sessionId,
-      proactiveMode: next.proactiveMode,
-      maxActionsPerHour: next.maxActionsPerHour,
-      maxActionsPerTurn: next.maxActionsPerTurn,
-      cooldownSeconds: next.cooldownSeconds,
-      retrievalMode: next.retrievalMode,
-      reflectionMode: next.reflectionMode,
-      updatedAt: next.updatedAt,
-    });
-    return next;
+    return this.storage.sessionAutonomyPrefs.patch(sessionId, input);
   }
 
   private toProactivePolicy(sessionId: string, prefs: SessionAutonomyPrefs): ProactivePolicy {
@@ -1538,8 +1431,16 @@ export class GatewayService {
       view: "active",
       limit: 300,
     });
+    const prefsBySessionId = this.storage.sessionAutonomyPrefs.listBySessionIds(
+      sessions.map((session) => session.sessionId),
+    );
     for (const session of sessions) {
-      const prefs = this.getSessionAutonomyPrefs(session.sessionId);
+      const prefs = prefsBySessionId.get(session.sessionId) ?? {
+        sessionId: session.sessionId,
+        ...DEFAULT_SESSION_AUTONOMY_PREFS,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
       if (prefs.proactiveMode === "off") {
         continue;
       }
@@ -1547,6 +1448,7 @@ export class GatewayService {
         await this.triggerChatSessionProactive(session.sessionId, {
           source: "scheduler",
           reason: "Background proactive scheduler tick.",
+          prefs,
         });
       } catch (error) {
         console.error(
@@ -2121,16 +2023,7 @@ export class GatewayService {
   }
 
   private touchSessionProactiveTick(sessionId: string, runId: string): void {
-    this.storage.db.prepare(`
-      UPDATE session_autonomy_prefs
-      SET last_proactive_at = @lastProactiveAt, last_proactive_run_id = @runId, updated_at = @updatedAt
-      WHERE session_id = @sessionId
-    `).run({
-      sessionId,
-      runId,
-      lastProactiveAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+    this.storage.sessionAutonomyPrefs.touch(sessionId, runId);
   }
 
   private async inferLatestUserObjective(sessionId: string): Promise<string> {
@@ -3128,7 +3021,7 @@ export class GatewayService {
     input: ProactiveTriggerInput = {},
   ): Promise<ProactiveRunRecord> {
     this.getSession(sessionId);
-    const prefs = this.getSessionAutonomyPrefs(sessionId);
+    const prefs = input.prefs ?? this.getSessionAutonomyPrefs(sessionId);
     const source = input.source ?? "manual";
     const now = new Date().toISOString();
     const runId = randomUUID();
@@ -8972,7 +8865,9 @@ export class GatewayService {
 
       this.npuSidecar.updateConfig(this.config.assistant.npu);
       if (!this.config.assistant.npu.enabled) {
-        void this.npuSidecar.stop("disabled");
+        void this.npuSidecar.stop("disabled").catch((error) => {
+          console.warn("[goatcitadel] npu sidecar stop failed after settings update", error);
+        });
       } else if (this.config.assistant.npu.autoStart) {
         void this.npuSidecar.start("config_autostart").catch((error) => {
           console.error("[goatcitadel] npu sidecar autostart failed after settings update", error);
@@ -11733,6 +11628,45 @@ export class GatewayService {
       }
       throw error;
     }
+  }
+
+  private async ensureChatMessageProjection(sessionId: string): Promise<void> {
+    if (this.chatMessageProjectionBackfillAttempted.has(sessionId)) {
+      return;
+    }
+    this.chatMessageProjectionBackfillAttempted.add(sessionId);
+    if (this.storage.chatMessages.countBySession(sessionId) > 0) {
+      return;
+    }
+    const events = await this.readTranscriptOrEmpty(sessionId);
+    const projected = events
+      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
+      .map((event) => toChatMessageRecord(event))
+      .filter((message): message is ChatMessageRecord => Boolean(message));
+    if (projected.length === 0) {
+      return;
+    }
+    this.storage.chatMessages.upsertMany(projected);
+  }
+
+  private async listChatMessagesFromTranscript(
+    sessionId: string,
+    limit: number,
+    cursor?: string,
+  ): Promise<ChatMessageRecord[]> {
+    const events = await this.readTranscriptOrEmpty(sessionId);
+    let messages = events
+      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
+      .map((event) => toChatMessageRecord(event))
+      .filter((message): message is ChatMessageRecord => Boolean(message));
+
+    if (cursor) {
+      const index = messages.findIndex((message) => message.messageId === cursor);
+      if (index >= 0) {
+        messages = messages.slice(0, index);
+      }
+    }
+    return messages.slice(-Math.max(1, Math.min(limit, 1000)));
   }
 
   private normalizeWorkspaceId(workspaceId?: string): string {
