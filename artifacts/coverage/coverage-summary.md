@@ -1,0 +1,123 @@
+# Coverage Summary
+
+- Generated: 2026-03-05T07:42:30.293Z
+- File coverage: 60.62%
+- Covered files: 157/259
+- Uncovered files: 102
+- Gate threshold: 50%
+
+## Coverage Reports
+- `apps/gateway/coverage/coverage-final.json`
+- `apps/mission-control/coverage/coverage-final.json`
+- `packages/contracts/coverage/coverage-final.json`
+- `packages/gateway-core/coverage/coverage-final.json`
+- `packages/memory-core/coverage/coverage-final.json`
+- `packages/mesh-core/coverage/coverage-final.json`
+- `packages/orchestration/coverage/coverage-final.json`
+- `packages/policy-engine/coverage/coverage-final.json`
+- `packages/skills/coverage/coverage-final.json`
+- `packages/storage/coverage/coverage-final.json`
+
+## Uncovered Sample (first 200)
+- `apps/gateway/src/admin-cli.ts`
+- `apps/gateway/src/app.ts`
+- `apps/gateway/src/config-sync.ts`
+- `apps/gateway/src/dev-supervisor.ts`
+- `apps/gateway/src/doctor/cli.ts`
+- `apps/gateway/src/doctor/engine.ts`
+- `apps/gateway/src/doctor/types.ts`
+- `apps/gateway/src/main.ts`
+- `apps/gateway/src/onboarding-tui.ts`
+- `apps/gateway/src/plugins/idempotency.ts`
+- `apps/gateway/src/plugins/sqlite.ts`
+- `apps/gateway/src/routes/admin.ts`
+- `apps/gateway/src/routes/agents.ts`
+- `apps/gateway/src/routes/comms.ts`
+- `apps/gateway/src/routes/costs.ts`
+- `apps/gateway/src/routes/daemon.ts`
+- `apps/gateway/src/routes/docs.ts`
+- `apps/gateway/src/routes/gateway-events.ts`
+- `apps/gateway/src/routes/health.ts`
+- `apps/gateway/src/routes/improvement.ts`
+- `apps/gateway/src/routes/knowledge.ts`
+- `apps/gateway/src/routes/llm.ts`
+- `apps/gateway/src/routes/media.ts`
+- `apps/gateway/src/routes/mesh.ts`
+- `apps/gateway/src/routes/npu.ts`
+- `apps/gateway/src/routes/onboarding.ts`
+- `apps/gateway/src/routes/orchestration.ts`
+- `apps/gateway/src/routes/secrets.ts`
+- `apps/gateway/src/routes/sessions-list.ts`
+- `apps/gateway/src/routes/tools-invoke.ts`
+- `apps/gateway/src/routes/ui-change-risk.ts`
+- `apps/gateway/src/routes/voice.ts`
+- `apps/gateway/src/services/chat-agent-orchestrator.ts`
+- `apps/gateway/src/services/gateway/cron-automation-service.ts`
+- `apps/gateway/src/services/gateway-service.ts`
+- `apps/gateway/src/services/integration-catalog.ts`
+- `apps/gateway/src/services/memory-context-service.ts`
+- `apps/gateway/src/services/npu-sidecar-service.ts`
+- `apps/gateway/src/services/plugin-runtime.ts`
+- `apps/gateway/src/services/research-service.ts`
+- `apps/gateway/src/smoke.ts`
+- `apps/gateway/src/tui/api-client.ts`
+- `apps/gateway/src/tui/live-feed.ts`
+- `apps/gateway/src/tui/main.ts`
+- `apps/gateway/src/tui/profile.ts`
+- `apps/gateway/src/tui/tools-cli.ts`
+- `apps/mission-control/src/App.tsx`
+- `apps/mission-control/src/components/ClockBadge.tsx`
+- `apps/mission-control/src/components/CommandPalette.tsx`
+- `apps/mission-control/src/components/OfficeCanvas.tsx`
+- `apps/mission-control/src/content/copy-types.ts`
+- `apps/mission-control/src/main.tsx`
+- `apps/mission-control/src/pages/ActivityPage.tsx`
+- `apps/mission-control/src/pages/AgentsPage.tsx`
+- `apps/mission-control/src/pages/ApprovalsPage.tsx`
+- `apps/mission-control/src/pages/DashboardPage.tsx`
+- `apps/mission-control/src/pages/LiveFeedPage.tsx`
+- `apps/mission-control/src/pages/MeshPage.tsx`
+- `apps/mission-control/src/pages/NpuPage.tsx`
+- `apps/mission-control/src/pages/OfficePage.tsx`
+- `apps/mission-control/src/pages/OnboardingPage.tsx`
+- `apps/mission-control/src/pages/SessionsPage.tsx`
+- `apps/mission-control/src/pages/SystemPage.tsx`
+- `apps/mission-control/src/pages/ToolsPage.tsx`
+- `packages/contracts/src/admin.ts`
+- `packages/contracts/src/approvals.ts`
+- `packages/contracts/src/auth.ts`
+- `packages/contracts/src/channels.ts`
+- `packages/contracts/src/chat.ts`
+- `packages/contracts/src/comms.ts`
+- `packages/contracts/src/durable.ts`
+- `packages/contracts/src/improvement.ts`
+- `packages/contracts/src/integrations.ts`
+- `packages/contracts/src/knowledge.ts`
+- `packages/contracts/src/learned-memory.ts`
+- `packages/contracts/src/llm.ts`
+- `packages/contracts/src/mcp.ts`
+- `packages/contracts/src/media.ts`
+- `packages/contracts/src/memory.ts`
+- `packages/contracts/src/mesh.ts`
+- `packages/contracts/src/monitoring.ts`
+- `packages/contracts/src/npu.ts`
+- `packages/contracts/src/onboarding.ts`
+- `packages/contracts/src/orchestration.ts`
+- `packages/contracts/src/policy.ts`
+- `packages/contracts/src/proactive.ts`
+- `packages/contracts/src/prompt-pack.ts`
+- `packages/contracts/src/replay.ts`
+- `packages/contracts/src/research.ts`
+- `packages/contracts/src/session.ts`
+- `packages/contracts/src/skills.ts`
+- `packages/contracts/src/tasks.ts`
+- `packages/contracts/src/tool-catalog.ts`
+- `packages/contracts/src/tool-grants.ts`
+- `packages/contracts/src/tools.ts`
+- `packages/contracts/src/ui-change-risk.ts`
+- `packages/contracts/src/ui-forms.ts`
+- `packages/contracts/src/voice.ts`
+- `packages/contracts/src/workspaces.ts`
+- `packages/memory-core/src/types.ts`
+- `packages/orchestration/src/index.ts`
+- `packages/orchestration/src/worktree-manager.ts`

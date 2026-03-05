@@ -4,6 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 
 export interface SqliteOptions {
   dbPath: string;
+  tuning?: {
+    cacheSizeKb?: number;
+    tempStoreMemory?: boolean;
+    walAutoCheckpointPages?: number;
+  };
 }
 
 export function ensureParentDir(filePath: string): void {
@@ -18,8 +23,33 @@ export function createDatabase(options: SqliteOptions): DatabaseSync {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
+  const cacheSizeKb = clampInt(options.tuning?.cacheSizeKb, 4_096, 262_144);
+  if (cacheSizeKb !== undefined) {
+    db.exec(`PRAGMA cache_size = -${cacheSizeKb};`);
+  }
+  if (options.tuning?.tempStoreMemory ?? false) {
+    db.exec("PRAGMA temp_store = MEMORY;");
+  }
+  const walAutoCheckpointPages = clampInt(options.tuning?.walAutoCheckpointPages, 1_000, 20_000);
+  if (walAutoCheckpointPages !== undefined) {
+    db.exec(`PRAGMA wal_autocheckpoint = ${walAutoCheckpointPages};`);
+  }
   migrate(db);
   return db;
+}
+
+function clampInt(value: number | undefined, min: number, max: number): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  if (normalized < min) {
+    return min;
+  }
+  if (normalized > max) {
+    return max;
+  }
+  return normalized;
 }
 
 function migrate(db: DatabaseSync): void {

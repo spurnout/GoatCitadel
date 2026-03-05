@@ -1,4 +1,5 @@
 export type RefreshTopic =
+  | "dashboard"
   | "chat"
   | "promptLab"
   | "approvals"

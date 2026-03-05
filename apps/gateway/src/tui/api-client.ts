@@ -114,6 +114,115 @@ export class TuiApiClient {
     return this.request(`/api/v1/sessions?limit=${limit}`, { method: "GET" });
   }
 
+  public async listChatSessions(input?: {
+    limit?: number;
+    workspaceId?: string;
+    projectId?: string;
+    scope?: "mission" | "external" | "all";
+    view?: "active" | "archived" | "all";
+    q?: string;
+  }): Promise<{ items: Array<Record<string, unknown>>; nextCursor?: string }> {
+    const query = new URLSearchParams();
+    query.set("limit", String(input?.limit ?? 80));
+    if (input?.workspaceId) {
+      query.set("workspaceId", input.workspaceId);
+    }
+    if (input?.projectId) {
+      query.set("projectId", input.projectId);
+    }
+    if (input?.scope) {
+      query.set("scope", input.scope);
+    }
+    if (input?.view) {
+      query.set("view", input.view);
+    }
+    if (input?.q) {
+      query.set("q", input.q);
+    }
+    return this.request(`/api/v1/chat/sessions?${query.toString()}`, { method: "GET" });
+  }
+
+  public async createChatSession(input: {
+    workspaceId?: string;
+    title?: string;
+    projectId?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.request("/api/v1/chat/sessions", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async listChatMessages(
+    sessionId: string,
+    limit = 120,
+    cursor?: string,
+  ): Promise<{ items: Array<Record<string, unknown>>; nextCursor?: string }> {
+    const query = new URLSearchParams();
+    query.set("limit", String(limit));
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`, {
+      method: "GET",
+    });
+  }
+
+  public async sendChatMessage(
+    sessionId: string,
+    input: {
+      content: string;
+      providerId?: string;
+      model?: string;
+      mode?: "chat" | "cowork" | "code";
+      webMode?: "auto" | "off" | "quick" | "deep";
+      memoryMode?: "auto" | "on" | "off";
+      thinkingLevel?: "minimal" | "standard" | "extended";
+    },
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async *streamChatMessage(
+    sessionId: string,
+    input: {
+      content: string;
+      providerId?: string;
+      model?: string;
+      mode?: "chat" | "cowork" | "code";
+      webMode?: "auto" | "off" | "quick" | "deep";
+      memoryMode?: "auto" | "on" | "off";
+      thinkingLevel?: "minimal" | "standard" | "extended";
+      agentMode?: boolean;
+    },
+  ): AsyncGenerator<Record<string, unknown>> {
+    const route = input.agentMode
+      ? `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`
+      : `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
+    const body = { ...input };
+    delete (body as { agentMode?: boolean }).agentMode;
+    for await (const event of this.requestStream(route, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, true)) {
+      yield event;
+    }
+  }
+
+  public async getChatPrefs(sessionId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`, { method: "GET" });
+  }
+
+  public async patchChatPrefs(sessionId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }, true);
+  }
+
   public async listCosts(scope: "day" | "session" | "agent" | "task"): Promise<TuiCostSummaryResponse> {
     return this.request(`/api/v1/costs/summary?scope=${scope}`, { method: "GET" });
   }
@@ -337,6 +446,226 @@ export class TuiApiClient {
     return this.request("/api/v1/memory/qmd/stats?limit=25", { method: "GET" });
   }
 
+  public async listMemoryItems(input?: {
+    namespace?: string;
+    status?: "active" | "forgotten" | "all";
+    query?: string;
+    limit?: number;
+  }): Promise<{ items: Array<Record<string, unknown>> }> {
+    const query = new URLSearchParams();
+    query.set("limit", String(input?.limit ?? 120));
+    if (input?.namespace) {
+      query.set("namespace", input.namespace);
+    }
+    if (input?.status) {
+      query.set("status", input.status);
+    }
+    if (input?.query) {
+      query.set("query", input.query);
+    }
+    return this.request(`/api/v1/memory/items?${query.toString()}`, { method: "GET" });
+  }
+
+  public async patchMemoryItem(itemId: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/memory/items/${encodeURIComponent(itemId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }, true);
+  }
+
+  public async forgetMemoryItem(itemId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/memory/items/${encodeURIComponent(itemId)}/forget`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async listMemoryItemHistory(itemId: string, limit = 40): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/memory/items/${encodeURIComponent(itemId)}/history?limit=${limit}`, {
+      method: "GET",
+    });
+  }
+
+  public async forgetMemory(input: {
+    itemIds?: string[];
+    namespace?: string;
+    query?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.request("/api/v1/memory/forget", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async listFiles(input?: { dir?: string; limit?: number }): Promise<{ items: Array<Record<string, unknown>> }> {
+    const query = new URLSearchParams();
+    query.set("dir", input?.dir ?? ".");
+    query.set("limit", String(input?.limit ?? 250));
+    return this.request(`/api/v1/files/list?${query.toString()}`, { method: "GET" });
+  }
+
+  public async downloadFile(relativePath: string): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams();
+    query.set("relativePath", relativePath);
+    return this.request(`/api/v1/files/download?${query.toString()}`, { method: "GET" });
+  }
+
+  public async uploadFile(relativePath: string, content: string): Promise<Record<string, unknown>> {
+    return this.request("/api/v1/files/upload", {
+      method: "POST",
+      body: JSON.stringify({ relativePath, content }),
+    }, true);
+  }
+
+  public async listCronJobs(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request("/api/v1/cron/jobs", { method: "GET" });
+  }
+
+  public async startCronJob(jobId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async pauseCronJob(jobId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/pause`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async runCronJob(jobId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async deleteCronJob(jobId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/jobs/${encodeURIComponent(jobId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async listCronReviewQueue(limit = 120): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/cron/review-queue?limit=${limit}`, { method: "GET" });
+  }
+
+  public async retryCronReviewItem(itemId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/review-queue/${encodeURIComponent(itemId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, true);
+  }
+
+  public async getCronRunDiff(runId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/cron/runs/${encodeURIComponent(runId)}/diff`, { method: "GET" });
+  }
+
+  public async listPromptPacks(limit = 50): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/prompt-packs?limit=${limit}`, { method: "GET" });
+  }
+
+  public async listPromptPackTests(packId: string, limit = 200): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests?limit=${limit}`, {
+      method: "GET",
+    });
+  }
+
+  public async runPromptPackTest(
+    packId: string,
+    testId: string,
+    input?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests/${encodeURIComponent(testId)}/run`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    }, true);
+  }
+
+  public async runPromptPackBenchmark(
+    packId: string,
+    input?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/benchmark/run`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    }, true);
+  }
+
+  public async getPromptPackBenchmark(benchmarkRunId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/benchmark/${encodeURIComponent(benchmarkRunId)}`, {
+      method: "GET",
+    });
+  }
+
+  public async getPromptPackReport(packId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`, { method: "GET" });
+  }
+
+  public async runPromptPackReplayRegression(
+    packId: string,
+    input?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/replay-regression/run`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    }, true);
+  }
+
+  public async getPromptPackReplayRegression(runId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/replay-regression/${encodeURIComponent(runId)}`, {
+      method: "GET",
+    });
+  }
+
+  public async getPromptPackTrends(packId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/prompt-packs/${encodeURIComponent(packId)}/trends`, { method: "GET" });
+  }
+
+  public async listImprovementReports(limit = 24): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/improvement/reports?limit=${limit}`, { method: "GET" });
+  }
+
+  public async getImprovementReport(reportId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/improvement/reports/${encodeURIComponent(reportId)}`, { method: "GET" });
+  }
+
+  public async runImprovementReplay(input?: { sampleSize?: number }): Promise<Record<string, unknown>> {
+    return this.request("/api/v1/improvement/replay/run", {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    }, true);
+  }
+
+  public async listImprovementReplayRuns(limit = 40): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request(`/api/v1/improvement/replay/runs?limit=${limit}`, { method: "GET" });
+  }
+
+  public async getImprovementReplayRun(runId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/improvement/replay/runs/${encodeURIComponent(runId)}`, { method: "GET" });
+  }
+
+  public async createReplayDraft(runId: string, overrides: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/replay/runs/${encodeURIComponent(runId)}/draft`, {
+      method: "POST",
+      body: JSON.stringify({ overrides }),
+    }, true);
+  }
+
+  public async executeReplayOverride(runId: string, overrides: Array<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/replay/runs/${encodeURIComponent(runId)}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ overrides }),
+    }, true);
+  }
+
+  public async getReplayDiff(replayRunId: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/v1/replay/${encodeURIComponent(replayRunId)}/diff`, { method: "GET" });
+  }
+
   public async toolsCatalog(): Promise<{ items: ToolCatalogEntry[] }> {
     return this.request("/api/v1/tools/catalog", { method: "GET" });
   }
@@ -425,6 +754,57 @@ export class TuiApiClient {
     return {};
   }
 
+  private async *requestStream(
+    routePath: string,
+    init: RequestInit,
+    mutating = false,
+  ): AsyncGenerator<Record<string, unknown>> {
+    if (mutating && this.readOnly) {
+      throw new Error("Read-only mode is enabled for this TUI session");
+    }
+
+    const headers = new Headers(init.headers ?? {});
+    headers.set("Content-Type", "application/json");
+    if (mutating) {
+      headers.set("Idempotency-Key", randomUUID());
+    }
+    if (this.auth.mode === "token" && this.auth.token) {
+      headers.set("Authorization", `Bearer ${this.auth.token}`);
+    } else if (this.auth.mode === "basic" && this.auth.username && this.auth.password) {
+      headers.set("Authorization", `Basic ${Buffer.from(`${this.auth.username}:${this.auth.password}`).toString("base64")}`);
+    }
+
+    const response = await fetch(`${this.baseUrl}${routePath}`, {
+      ...init,
+      headers,
+    });
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`${init.method ?? "GET"} ${routePath} failed (${response.status}): ${text}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let split = buffer.indexOf("\n\n");
+      while (split >= 0) {
+        const block = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        const parsed = parseSseDataRecord(block);
+        if (parsed) {
+          yield parsed;
+        }
+        split = buffer.indexOf("\n\n");
+      }
+    }
+  }
+
   private async request<T>(
     routePath: string,
     init: RequestInit,
@@ -459,5 +839,28 @@ export class TuiApiClient {
       return {} as T;
     }
     return (await response.json()) as T;
+  }
+}
+
+function parseSseDataRecord(block: string): Record<string, unknown> | undefined {
+  const trimmed = block.trim();
+  if (!trimmed || trimmed.startsWith(":")) {
+    return undefined;
+  }
+  const dataLine = trimmed
+    .split("\n")
+    .find((line) => line.startsWith("data:"));
+  if (!dataLine) {
+    return undefined;
+  }
+  const payload = dataLine.slice(5).trim();
+  if (!payload) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    return parsed;
+  } catch {
+    return undefined;
   }
 }

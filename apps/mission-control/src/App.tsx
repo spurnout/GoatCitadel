@@ -34,6 +34,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
 import { NotificationStack, type NotificationItem } from "./components/NotificationStack";
+import { ClockBadge } from "./components/ClockBadge";
 import { appCopy } from "./content/copy";
 import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
 import { useUiPreferences } from "./state/ui-preferences";
@@ -104,6 +105,7 @@ const navSections: Array<{ label: string; items: Tab[] }> = appCopy.navSections;
 const nextStepByTab: Record<Tab, string> = appCopy.nextStepByTab;
 
 const refreshTopicRules: Array<{ topic: RefreshTopic; keywords: string[] }> = [
+  { topic: "dashboard", keywords: ["dashboard", "operator", "summit", "cron", "memory", "settings", "system"] },
   { topic: "promptLab", keywords: ["prompt_pack", "promptlab", "prompt_lab", "prompt-pack"] },
   { topic: "chat", keywords: ["chat", "message", "session", "delegate", "proactive", "learned_memory"] },
   { topic: "approvals", keywords: ["approval", "gatehouse"] },
@@ -175,7 +177,6 @@ export function App() {
   } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
   const refreshKey = 0;
-  const [clock, setClock] = useState(() => new Date().toLocaleTimeString());
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
   const [streamStatus, setStreamStatus] = useState<EventStreamStatus>({
     state: "connecting",
@@ -284,13 +285,6 @@ export function App() {
     url.searchParams.set("tab", tab);
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, [tab]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setClock(new Date().toLocaleTimeString());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -475,7 +469,7 @@ export function App() {
             }
           </p>
           <p>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</p>
-          <p>{clock}</p>
+          <ClockBadge />
         </footer>
       </aside>
       <main className="content">

@@ -12,6 +12,12 @@ artifacts/
 artifacts/*
 !artifacts/manual-qa/
 !artifacts/manual-qa/*.csv
+!artifacts/coverage/
+!artifacts/coverage/*.json
+!artifacts/coverage/*.md
+!artifacts/perf/
+!artifacts/perf/*.json
+!artifacts/perf/*.md
 data/index.db
 data/index.db-shm
 data/index.db-wal

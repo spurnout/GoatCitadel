@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  clearGatewayAuthState,
   createLlmChatCompletion,
   deleteProviderSecret,
   evaluateUiChangeRisk,
   fetchLlmModels,
+  getGatewayAuthStorageMode,
+  persistGatewayAuthState,
+  readStoredGatewayAuthState,
   fetchVoiceStatus,
   fetchProviderSecretStatus,
   fetchSettings,
   patchSettings,
   saveProviderSecret,
+  setGatewayAuthStorageMode,
   startVoiceTalkSession,
   startVoiceWake,
   stopVoiceTalkSession,
   stopVoiceWake,
   transcribeVoice,
+  type GatewayAuthStorageMode,
   type ProviderSecretStatus,
   type RuntimeSettingsResponse,
 } from "../api/client";
@@ -187,8 +193,6 @@ const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> 
   },
 ];
 
-const GATEWAY_AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
-
 export function SettingsPage(_props: { refreshKey?: number }) {
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
   const [profile, setProfile] = useState("");
@@ -209,6 +213,7 @@ export function SettingsPage(_props: { refreshKey?: number }) {
   const [authToken, setAuthToken] = useState("");
   const [basicUsername, setBasicUsername] = useState("");
   const [basicPassword, setBasicPassword] = useState("");
+  const [authStorageMode, setAuthStorageMode] = useState<GatewayAuthStorageMode>("session");
   const [models, setModels] = useState<Array<{ id: string; ownedBy?: string; created?: number }>>([]);
   const [chatPrompt, setChatPrompt] = useState("Say hello from OpenAI-compatible chat completions.");
   const [chatPromptPresetId, setChatPromptPresetId] = useState("hello");
@@ -589,25 +594,15 @@ export function SettingsPage(_props: { refreshKey?: number }) {
   };
 
   const hydrateStoredAuthCredentials = () => {
-    if (typeof window === "undefined") {
+    const stored = readStoredGatewayAuthState();
+    if (!stored) {
+      setAuthStorageMode(getGatewayAuthStorageMode());
       return;
     }
-    try {
-      const raw = window.localStorage.getItem(GATEWAY_AUTH_STORAGE_KEY);
-      if (!raw) {
-        return;
-      }
-      const parsed = JSON.parse(raw) as {
-        token?: string;
-        username?: string;
-        password?: string;
-      };
-      setAuthToken(parsed.token ?? "");
-      setBasicUsername(parsed.username ?? "");
-      setBasicPassword(parsed.password ?? "");
-    } catch {
-      // ignore parse failures
-    }
+    setAuthToken(stored.token ?? "");
+    setBasicUsername(stored.username ?? "");
+    setBasicPassword(stored.password ?? "");
+    setAuthStorageMode(getGatewayAuthStorageMode());
   };
 
   const onSaveAuth = async () => {
@@ -626,12 +621,21 @@ export function SettingsPage(_props: { refreshKey?: number }) {
         },
       });
       setSettings(next);
-      persistGatewayAuthClient({
+      const nextStorageMode = resolveAuthStorageMode(authMode, authStorageMode === "persistent");
+      if (authMode === "none") {
+        clearGatewayAuthState();
+        setGatewayAuthStorageMode(nextStorageMode);
+        setAuthStorageMode(nextStorageMode);
+        return;
+      }
+      setGatewayAuthStorageMode(nextStorageMode);
+      setAuthStorageMode(nextStorageMode);
+      persistGatewayAuthState({
         mode: authMode,
         token: authToken,
         username: basicUsername,
         password: basicPassword,
-      });
+      }, nextStorageMode);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -704,7 +708,7 @@ export function SettingsPage(_props: { refreshKey?: number }) {
 
       <article className="card">
         <h3>Gateway Access Control</h3>
-        <p>Use auth modes for local/online hosting. Mission Control stores your client creds locally in this browser.</p>
+        <p>Use auth modes for local/online hosting. By default, credentials are session-only and clear when you close the browser.</p>
         <div className="controls-row">
           <label htmlFor="authMode">Auth Mode</label>
           <GCSelect
@@ -726,6 +730,16 @@ export function SettingsPage(_props: { refreshKey?: number }) {
             label="Allow loopback bypass"
           />
         </div>
+        {authMode !== "none" ? (
+          <div className="controls-row">
+            <GCSwitch
+              id="authRememberMe"
+              checked={authStorageMode === "persistent"}
+              onCheckedChange={(checked) => setAuthStorageMode(checked ? "persistent" : "session")}
+              label="Remember credentials on this browser (less secure)"
+            />
+          </div>
+        ) : null}
         {authMode === "token" ? (
           <div className="controls-row">
             <label htmlFor="authToken">Gateway token</label>
@@ -1173,23 +1187,14 @@ function matchAllowlistPreset(allowlist: string[]): string {
   return "custom";
 }
 
-function persistGatewayAuthClient(input: {
-  mode: "none" | "token" | "basic";
-  token?: string;
-  username?: string;
-  password?: string;
-}): void {
-  if (typeof window === "undefined") {
-    return;
+export function resolveAuthStorageMode(
+  authMode: "none" | "token" | "basic",
+  rememberCredentials: boolean,
+): GatewayAuthStorageMode {
+  if (authMode === "none") {
+    return "session";
   }
-  const payload = {
-    mode: input.mode,
-    token: input.token?.trim() || undefined,
-    username: input.username?.trim() || undefined,
-    password: input.password || undefined,
-    tokenQueryParam: "access_token",
-  };
-  window.localStorage.setItem(GATEWAY_AUTH_STORAGE_KEY, JSON.stringify(payload));
+  return rememberCredentials ? "persistent" : "session";
 }
 
 function fileToBase64(file: File): Promise<string> {

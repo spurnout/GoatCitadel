@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test src/*.test.ts",
+    "test:coverage": "c8 --report-dir=coverage --reporter=json --reporter=text-summary tsx --test src/*.test.ts",
     "lint": "tsc -p tsconfig.json --noEmit"
   }
 }

@@ -1,4 +1,9 @@
 import { buildApp } from "./app.js";
+import {
+  resolveAllowUnauthNetwork,
+  resolveWarnUnauthNonLoopback,
+  shouldWarnUnauthNonLoopbackBind,
+} from "./startup-guard.js";
 
 const port = Number(process.env.GATEWAY_PORT ?? 8787);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -62,51 +67,4 @@ try {
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;
-}
-
-function resolveWarnUnauthNonLoopback(): boolean {
-  const raw = process.env.GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK?.trim().toLowerCase();
-  if (!raw) {
-    return true;
-  }
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function resolveAllowUnauthNetwork(): boolean {
-  const raw = process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK?.trim().toLowerCase();
-  if (!raw) {
-    return false;
-  }
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function shouldWarnUnauthNonLoopbackBind(
-  bindHost: string,
-  auth: {
-    mode: "none" | "token" | "basic";
-    token: { value?: string };
-    basic: { username?: string; password?: string };
-  },
-): boolean {
-  if (isLoopbackHost(bindHost)) {
-    return false;
-  }
-  if (auth.mode === "none") {
-    return true;
-  }
-  if (auth.mode === "token") {
-    return !auth.token.value?.trim();
-  }
-  return !(auth.basic.username?.trim() && auth.basic.password?.trim());
-}
-
-function isLoopbackHost(value: string): boolean {
-  const hostValue = value.trim().toLowerCase();
-  if (!hostValue) {
-    return false;
-  }
-  return hostValue === "127.0.0.1"
-    || hostValue === "localhost"
-    || hostValue === "::1"
-    || hostValue === "[::1]";
 }

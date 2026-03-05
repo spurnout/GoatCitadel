@@ -49,6 +49,7 @@ export interface ChatAgentTurnInput {
   thinkingLevel: ChatThinkingLevel;
   toolAutonomy: "safe_auto" | "manual";
   historyMessages: ChatCompletionRequest["messages"];
+  outputMessageId?: string;
 }
 
 export interface ChatAgentTurnResult {
@@ -72,6 +73,7 @@ export interface ChatAgentOrchestratorDeps {
   storage: Storage;
   listToolCatalog: () => ToolCatalogEntry[];
   createChatCompletion: (request: ChatCompletionRequest) => Promise<ChatCompletionResponse>;
+  createChatCompletionStream?: (request: ChatCompletionRequest) => AsyncGenerator<Record<string, unknown>>;
   invokeTool: (request: ToolInvokeRequest) => Promise<ToolInvokeResult>;
   evaluateToolAccess?: (request: {
     toolName: string;
@@ -123,6 +125,12 @@ export class ChatAgentOrchestrator {
 
   public async *runStream(input: ChatAgentTurnInput): AsyncGenerator<ChatStreamChunk> {
     const now = new Date().toISOString();
+    const intents = {
+      liveData: detectLiveDataIntent(input.content),
+      time: detectTimeIntent(input.content),
+      localFile: detectLocalFileIntent(input.content),
+      missingLogPayload: detectMissingLogPayloadIntent(input.content),
+    };
     const trace = this.deps.storage.chatTurnTraces.create({
       turnId: input.turnId,
       sessionId: input.sessionId,
@@ -134,7 +142,7 @@ export class ChatAgentOrchestrator {
       memoryMode: input.memoryMode,
       thinkingLevel: input.thinkingLevel,
       routing: {
-        liveDataIntent: detectLiveDataIntent(input.content),
+        liveDataIntent: intents.liveData,
       },
       startedAt: now,
     });
@@ -152,14 +160,14 @@ export class ChatAgentOrchestrator {
       : await this.buildToolSchema(input);
     const canUseTimeTool = toolSchema.canonicalToModel.has("time.now");
     const canUseSearchTool = toolSchema.canonicalToModel.has("browser.search");
-    const localFileIntent = detectLocalFileIntent(input.content);
+    const localFileIntent = intents.localFile;
     const citations: ChatCitationRecord[] = [];
     const toolRuns: ChatToolRunRecord[] = [];
     let toolRunCount = 0;
     let assistantContent = "";
     let assistantModel = input.model;
     let routingState: ChatTurnTraceRecord["routing"] = {
-      liveDataIntent: detectLiveDataIntent(input.content),
+      liveDataIntent: intents.liveData,
       primaryProviderId: input.providerId,
       primaryModel: input.model,
       effectiveProviderId: input.providerId,
@@ -181,7 +189,7 @@ export class ChatAgentOrchestrator {
     let circuitBreakerReason: string | undefined;
     const toolFailureSignatureCounts = new Map<string, number>();
 
-    if (detectMissingLogPayloadIntent(input.content)) {
+    if (intents.missingLogPayload) {
       assistantContent = buildMissingLogInputTemplate();
     }
     if (!assistantContent && localFileIntent && detectLocalFileAccessCheckIntent(input.content)) {
@@ -189,12 +197,13 @@ export class ChatAgentOrchestrator {
     }
 
     // Deterministic live-time helper for simple queries.
-    if (!assistantContent && detectTimeIntent(input.content) && canUseTimeTool) {
+    if (!assistantContent && intents.time && canUseTimeTool) {
       const syntheticRun = await this.executeToolCall({
         input,
         turnId: input.turnId,
         toolName: "time.now",
         rawArgs: {},
+        localFileIntent,
       });
       toolRunCount += 1;
       toolRuns.push(syntheticRun.record);
@@ -264,9 +273,9 @@ export class ChatAgentOrchestrator {
       && !approvalPayload
       && input.toolAutonomy !== "manual"
       && input.webMode !== "off"
-      && detectLiveDataIntent(input.content)
+      && intents.liveData
       && !localFileIntent
-      && !detectTimeIntent(input.content)
+      && !intents.time
       && canUseSearchTool
       && toolRunCount < MAX_TOOL_RUNS_PER_TURN
     ) {
@@ -279,6 +288,7 @@ export class ChatAgentOrchestrator {
           query: liveDataQuery,
           maxResults: input.webMode === "deep" ? 8 : 5,
         },
+        localFileIntent,
       });
       toolRunCount += 1;
       toolRuns.push(syntheticRun.record);
@@ -349,19 +359,62 @@ export class ChatAgentOrchestrator {
     if (!assistantContent) {
       try {
         for (let loop = 0; loop < MAX_TOOL_LOOPS; loop += 1) {
-        const completion = await this.deps.createChatCompletion({
-          providerId: input.providerId,
-          model: input.model,
-          messages: conversationMessages,
-          stream: false,
-          memory: {
-            enabled: input.memoryMode !== "off",
-            mode: input.memoryMode === "off" ? "off" : "qmd",
+          const loopTrace: ChatTurnTraceRecord = {
+            ...trace,
+            routing: {
+              ...routingState,
+              fallbackReason: `loop ${loop + 1}/${MAX_TOOL_LOOPS}, tool_runs=${toolRunCount}`,
+            },
+            toolRuns: this.deps.storage.chatToolRuns.listByTurn(input.turnId),
+            citations: [...citations],
+          };
+          yield {
+            type: "trace_update",
             sessionId: input.sessionId,
-          },
-          tools: toolSchema.tools.length > 0 ? toolSchema.tools : undefined,
-          tool_choice: toolSchema.tools.length > 0 ? "auto" : undefined,
-        });
+            turnId: input.turnId,
+            trace: loopTrace,
+          };
+
+          const completionRequest: ChatCompletionRequest = {
+            providerId: input.providerId,
+            model: input.model,
+            messages: conversationMessages,
+            stream: false,
+            memory: {
+              enabled: input.memoryMode !== "off",
+              mode: input.memoryMode === "off" ? "off" : "qmd",
+              sessionId: input.sessionId,
+            },
+            tools: toolSchema.tools.length > 0 ? toolSchema.tools : undefined,
+            tool_choice: toolSchema.tools.length > 0 ? "auto" : undefined,
+          };
+
+          let completion: ChatCompletionResponse;
+          if (this.deps.createChatCompletionStream) {
+            try {
+              const aggregate = createCompletionStreamAggregate();
+              for await (const rawChunk of this.deps.createChatCompletionStream({
+                ...completionRequest,
+                stream: true,
+              })) {
+                const streamed = absorbCompletionStreamChunk(aggregate, rawChunk);
+                if (streamed.delta && !streamed.sawToolCall) {
+                  yield {
+                    type: "delta",
+                    sessionId: input.sessionId,
+                    turnId: input.turnId,
+                    messageId: input.outputMessageId,
+                    delta: streamed.delta,
+                  };
+                }
+              }
+              completion = buildCompletionFromAggregate(aggregate);
+            } catch {
+              completion = await this.deps.createChatCompletion(completionRequest);
+            }
+          } else {
+            completion = await this.deps.createChatCompletion(completionRequest);
+          }
         assistantModel = typeof completion.model === "string" ? completion.model : assistantModel;
         const completionUsage = parseUsageFromCompletion(completion);
         if (completionUsage) {
@@ -423,6 +476,7 @@ export class ChatAgentOrchestrator {
             toolName: toolCall.toolName,
             rawArgs: toolCall.args,
             toolCallId: toolCall.id,
+            localFileIntent,
           });
           toolRuns.push(executed.record);
           yield {
@@ -493,7 +547,7 @@ export class ChatAgentOrchestrator {
           finalStatus = "completed";
           break;
         }
-        }
+      }
       } catch (error) {
         finalStatus = "failed";
         assistantContent = (error as Error).message;
@@ -521,7 +575,7 @@ export class ChatAgentOrchestrator {
       model: assistantModel,
       routing: {
         ...routingState,
-        liveDataIntent: detectLiveDataIntent(input.content),
+        liveDataIntent: intents.liveData,
         effectiveProviderId: routingState.effectiveProviderId ?? input.providerId,
         effectiveModel: routingState.effectiveModel ?? assistantModel,
       },
@@ -636,6 +690,7 @@ export class ChatAgentOrchestrator {
     toolName: string;
     rawArgs: Record<string, unknown>;
     toolCallId?: string;
+    localFileIntent?: boolean;
   }): Promise<{
     record: ChatToolRunRecord;
     chunk?: ChatStreamChunk;
@@ -644,6 +699,7 @@ export class ChatAgentOrchestrator {
       toolName: input.toolName,
       rawArgs: input.rawArgs,
       userContent: input.input.content,
+      localFileIntent: input.localFileIntent,
     });
     const startedAt = new Date().toISOString();
     const toolRunId = randomUUID();
@@ -850,6 +906,7 @@ export class ChatAgentOrchestrator {
     toolName: string;
     rawArgs: Record<string, unknown>;
     userContent: string;
+    localFileIntent?: boolean;
   }): {
     args: Record<string, unknown>;
     failureReason?: string;
@@ -858,7 +915,7 @@ export class ChatAgentOrchestrator {
     const args = { ...input.rawArgs };
     if (
       input.toolName === "browser.search"
-      && detectLocalFileIntent(input.userContent)
+      && (input.localFileIntent ?? false)
       && !detectExplicitWebLookupIntent(input.userContent)
     ) {
       return {
@@ -1771,5 +1828,158 @@ export function normalizeAgentInputFromSend(
     webMode: request.webMode ?? "auto",
     memoryMode: request.memoryMode ?? (request.useMemory === false ? "off" : "auto"),
     thinkingLevel: request.thinkingLevel ?? "standard",
+  };
+}
+
+interface CompletionStreamToolCallState {
+  id?: string;
+  type?: string;
+  functionName?: string;
+  functionArguments: string;
+}
+
+interface CompletionStreamAggregate {
+  id?: string;
+  object?: string;
+  created?: number;
+  model?: string;
+  content: string;
+  usage?: Record<string, unknown>;
+  toolCalls: Map<number, CompletionStreamToolCallState>;
+}
+
+function createCompletionStreamAggregate(): CompletionStreamAggregate {
+  return {
+    content: "",
+    toolCalls: new Map<number, CompletionStreamToolCallState>(),
+  };
+}
+
+function absorbCompletionStreamChunk(
+  aggregate: CompletionStreamAggregate,
+  rawChunk: Record<string, unknown>,
+): { delta?: string; sawToolCall: boolean } {
+  if (typeof rawChunk.id === "string") {
+    aggregate.id = rawChunk.id;
+  }
+  if (typeof rawChunk.object === "string") {
+    aggregate.object = rawChunk.object;
+  }
+  if (typeof rawChunk.created === "number") {
+    aggregate.created = rawChunk.created;
+  }
+  if (typeof rawChunk.model === "string") {
+    aggregate.model = rawChunk.model;
+  }
+  if (rawChunk.usage && typeof rawChunk.usage === "object") {
+    aggregate.usage = rawChunk.usage as Record<string, unknown>;
+  }
+
+  const choices = Array.isArray(rawChunk.choices) ? rawChunk.choices as Array<Record<string, unknown>> : [];
+  let textDelta = "";
+  let sawToolCall = false;
+  for (const choice of choices) {
+    const message = choice.message as Record<string, unknown> | undefined;
+    if (message && typeof message === "object") {
+      const messageDelta = extractMessageContent(message);
+      if (messageDelta) {
+        aggregate.content += messageDelta;
+        textDelta += messageDelta;
+      }
+      const fullToolCalls = readToolCalls(message, new Map<string, string>());
+      if (fullToolCalls.length > 0) {
+        sawToolCall = true;
+      }
+    }
+
+    const delta = choice.delta as Record<string, unknown> | undefined;
+    if (!delta || typeof delta !== "object") {
+      continue;
+    }
+    const deltaText = extractContentTextFromDelta(delta.content);
+    if (deltaText) {
+      aggregate.content += deltaText;
+      textDelta += deltaText;
+    }
+    const deltaToolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls as Array<Record<string, unknown>> : [];
+    if (deltaToolCalls.length > 0) {
+      sawToolCall = true;
+      for (const toolCall of deltaToolCalls) {
+        const index = typeof toolCall.index === "number" ? toolCall.index : aggregate.toolCalls.size;
+        const current = aggregate.toolCalls.get(index) ?? {
+          functionArguments: "",
+        };
+        if (typeof toolCall.id === "string" && toolCall.id.trim()) {
+          current.id = toolCall.id.trim();
+        }
+        if (typeof toolCall.type === "string" && toolCall.type.trim()) {
+          current.type = toolCall.type.trim();
+        }
+        const fn = toolCall.function as Record<string, unknown> | undefined;
+        if (fn && typeof fn === "object") {
+          if (typeof fn.name === "string" && fn.name.trim()) {
+            current.functionName = fn.name.trim();
+          }
+          if (typeof fn.arguments === "string") {
+            current.functionArguments += fn.arguments;
+          }
+        }
+        aggregate.toolCalls.set(index, current);
+      }
+    }
+  }
+  return {
+    delta: textDelta || undefined,
+    sawToolCall,
+  };
+}
+
+function extractContentTextFromDelta(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") {
+        return "";
+      }
+      const value = part as Record<string, unknown>;
+      return typeof value.text === "string" ? value.text : "";
+    })
+    .join("");
+}
+
+function buildCompletionFromAggregate(aggregate: CompletionStreamAggregate): ChatCompletionResponse {
+  const toolCalls = [...aggregate.toolCalls.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, toolCall], index) => ({
+      id: toolCall.id ?? `call-${index}`,
+      type: toolCall.type ?? "function",
+      function: {
+        name: toolCall.functionName ?? "tool_fn",
+        arguments: toolCall.functionArguments || "{}",
+      },
+    }));
+
+  return {
+    id: aggregate.id,
+    object: aggregate.object,
+    created: aggregate.created,
+    model: aggregate.model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: aggregate.content,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: "stop",
+      },
+    ],
+    usage: aggregate.usage,
   };
 }

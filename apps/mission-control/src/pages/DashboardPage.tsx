@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchCronJobs,
   fetchDashboardState,
@@ -13,6 +13,7 @@ import {
 import { PageGuideCard } from "../components/PageGuideCard";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 type DashboardTab = "approvals" | "tasks" | "sessions" | "settings" | "integrations" | "office";
 
@@ -29,24 +30,44 @@ export function DashboardPage({
   const [operators, setOperators] = useState<OperatorsResponse | null>(null);
   const [memoryFiles, setMemoryFiles] = useState<Array<{ relativePath: string; size: number; modifiedAt: string }>>([]);
   const [error, setError] = useState<string | null>(null);
+  const initialLoadedRef = useRef(false);
+
+  const loadDashboard = useCallback(async () => {
+    try {
+      const [dashboard, vitalsRes, cronRes, operatorsRes, memoryRes] = await Promise.all([
+        fetchDashboardState(),
+        fetchSystemVitals(),
+        fetchCronJobs(),
+        fetchOperators(),
+        fetchMemoryFiles(),
+      ]);
+      setState(dashboard);
+      setVitals(vitalsRes);
+      setCron(cronRes);
+      setOperators(operatorsRes);
+      setMemoryFiles(memoryRes.items);
+      setError(null);
+      initialLoadedRef.current = true;
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!initialLoadedRef.current) {
+        setError(message);
+      } else {
+        setError(`Background refresh failed: ${message}`);
+      }
+    }
+  }, []);
 
   useEffect(() => {
-    void Promise.all([
-      fetchDashboardState(),
-      fetchSystemVitals(),
-      fetchCronJobs(),
-      fetchOperators(),
-      fetchMemoryFiles(),
-    ])
-      .then(([dashboard, vitalsRes, cronRes, operatorsRes, memoryRes]) => {
-        setState(dashboard);
-        setVitals(vitalsRes);
-        setCron(cronRes);
-        setOperators(operatorsRes);
-        setMemoryFiles(memoryRes.items);
-      })
-      .catch((err: Error) => setError(err.message));
-  }, []);
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useRefreshSubscription("dashboard", () => loadDashboard(), {
+    enabled: true,
+    coalesceMs: 900,
+    staleMs: 20000,
+    pollIntervalMs: 15000,
+  });
 
   if (error && (!state || !vitals || !cron || !operators)) {
     return (

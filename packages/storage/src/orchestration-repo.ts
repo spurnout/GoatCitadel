@@ -54,6 +54,7 @@ export class OrchestrationRepository {
   private readonly getLatestRunByPlanStmt;
   private readonly insertCheckpointStmt;
   private readonly listCheckpointsStmt;
+  private readonly listCheckpointsAfterStmt;
   private readonly insertEventStmt;
 
   public constructor(private readonly db: DatabaseSync) {
@@ -103,7 +104,10 @@ export class OrchestrationRepository {
     `);
 
     this.listCheckpointsStmt = db.prepare(
-      "SELECT * FROM orchestration_checkpoints WHERE run_id = ? ORDER BY created_at ASC",
+      "SELECT * FROM orchestration_checkpoints WHERE run_id = @runId ORDER BY created_at ASC LIMIT @limit",
+    );
+    this.listCheckpointsAfterStmt = db.prepare(
+      "SELECT * FROM orchestration_checkpoints WHERE run_id = @runId AND created_at > @cursor ORDER BY created_at ASC LIMIT @limit",
     );
 
     this.insertEventStmt = db.prepare(`
@@ -207,8 +211,17 @@ export class OrchestrationRepository {
     return checkpoint;
   }
 
-  public listCheckpoints(runId: string): OrchestrationCheckpoint[] {
-    const rows = this.listCheckpointsStmt.all(runId) as unknown as OrchestrationCheckpointRow[];
+  public listCheckpoints(
+    runId: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): OrchestrationCheckpoint[] {
+    const safeLimit = Math.max(1, Math.min(1_000, Math.floor(options.limit ?? 1_000)));
+    const cursor = options.cursor?.trim();
+    const rows = (
+      cursor
+        ? this.listCheckpointsAfterStmt.all({ runId, cursor, limit: safeLimit })
+        : this.listCheckpointsStmt.all({ runId, limit: safeLimit })
+    ) as unknown as OrchestrationCheckpointRow[];
     return rows.map((row) => ({
       checkpointId: row.checkpoint_id,
       runId: row.run_id,

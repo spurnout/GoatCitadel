@@ -10,6 +10,7 @@ export class TuiLiveFeed {
   private pollTimer: NodeJS.Timeout | null = null;
   private readonly listeners = new Set<(event: RealtimeEvent) => void>();
   private readonly stateListeners = new Set<(state: TuiLiveState) => void>();
+  private readonly seenEventKeys = new Set<string>();
   private lastEvent: RealtimeEvent | null = null;
 
   public constructor(
@@ -124,6 +125,9 @@ export class TuiLiveFeed {
 
     try {
       const parsed = JSON.parse(payload) as RealtimeEvent;
+      if (this.isDuplicateEvent(parsed)) {
+        return;
+      }
       this.lastEvent = parsed;
       for (const listener of this.listeners) {
         listener(parsed);
@@ -137,6 +141,9 @@ export class TuiLiveFeed {
     try {
       const events = await this.client.listEvents(20);
       for (const event of events.items) {
+        if (this.isDuplicateEvent(event)) {
+          continue;
+        }
         this.lastEvent = event;
         for (const listener of this.listeners) {
           listener(event);
@@ -145,6 +152,23 @@ export class TuiLiveFeed {
     } catch {
       this.setState("offline");
     }
+  }
+
+  private isDuplicateEvent(event: RealtimeEvent): boolean {
+    const key = event.eventId
+      ? `id:${event.eventId}`
+      : `${event.timestamp}:${event.eventType}:${event.source}`;
+    if (this.seenEventKeys.has(key)) {
+      return true;
+    }
+    this.seenEventKeys.add(key);
+    if (this.seenEventKeys.size > 1_500) {
+      const oldest = this.seenEventKeys.values().next().value as string | undefined;
+      if (oldest) {
+        this.seenEventKeys.delete(oldest);
+      }
+    }
+    return false;
   }
 
   private setState(next: TuiLiveState): void {

@@ -95,7 +95,10 @@ export class Storage {
   public readonly durableRuns: DurableRunRepository;
 
   public constructor(options: StorageOptions) {
-    this.db = createDatabase({ dbPath: options.dbPath });
+    this.db = createDatabase({
+      dbPath: options.dbPath,
+      tuning: options.tuning,
+    });
     this.sessions = new SessionRepository(this.db);
     this.idempotency = new IdempotencyRepository(this.db);
     this.transcripts = new TranscriptLog(options.transcriptsDir);

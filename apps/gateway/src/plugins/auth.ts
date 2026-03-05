@@ -213,16 +213,16 @@ function validateSseToken(
   store: Map<string, SseTokenRecord>,
 ): boolean {
   purgeExpiredSseTokens(store);
-  for (const record of store.values()) {
-    if (
-      record.scope === scope
-      && record.expiresAt > Date.now()
-      && timingSafeStringEqual(record.token, provided)
-    ) {
-      // One-time use token.
-      store.delete(record.token);
-      return true;
-    }
+  const record = store.get(provided);
+  if (
+    record
+    && record.scope === scope
+    && record.expiresAt > Date.now()
+    && timingSafeStringEqual(record.token, provided)
+  ) {
+    // One-time use token.
+    store.delete(provided);
+    return true;
   }
   return false;
 }

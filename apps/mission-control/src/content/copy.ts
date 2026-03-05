@@ -368,10 +368,12 @@ export const pageCopy: Record<PageId, PageCopy> = {
       actions: [
         "Set provider and model defaults.",
         "Review auth and allowlist posture.",
+        "Keep credentials session-only unless you explicitly enable remember-me.",
         "Apply and verify configuration safely.",
       ],
       terms: [
         { term: "Tool profile", meaning: "Baseline capability set used by policy resolver." },
+        { term: "Remember credentials", meaning: "Stores gateway credentials in browser local storage for convenience; leave off on shared devices." },
       ],
     },
   },

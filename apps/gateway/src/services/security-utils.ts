@@ -1,0 +1,60 @@
+import path from "node:path";
+import { createHash } from "node:crypto";
+
+export interface MemoryForgetCriteriaInput {
+  itemIds?: string[];
+  namespace?: string;
+  query?: string;
+}
+
+export interface NormalizedMemoryForgetCriteria {
+  hasItemIds: boolean;
+  hasCriteria: boolean;
+  itemIds: string[];
+  namespace?: string;
+  query?: string;
+}
+
+export function normalizeMemoryForgetCriteria(input: MemoryForgetCriteriaInput = {}): NormalizedMemoryForgetCriteria {
+  const itemIds = Array.isArray(input.itemIds)
+    ? [...new Set(input.itemIds.map((itemId) => itemId.trim()).filter(Boolean))]
+    : [];
+  const namespace = input.namespace?.trim() || undefined;
+  const query = input.query?.trim() || undefined;
+  const hasItemIds = itemIds.length > 0;
+  const hasCriteria = hasItemIds || Boolean(namespace) || Boolean(query);
+  return {
+    hasItemIds,
+    hasCriteria,
+    itemIds,
+    namespace,
+    query,
+  };
+}
+
+export function serializePathWithinRoot(
+  rootDir: string,
+  fullPath: string,
+  warnedOutsideRootPathFingerprints?: Set<string>,
+): string {
+  const normalizedPath = path.resolve(fullPath);
+  const relative = path.relative(rootDir, normalizedPath).replaceAll("\\", "/");
+  if (
+    relative
+    && relative !== "."
+    && !relative.startsWith("../")
+    && relative !== ".."
+    && !path.isAbsolute(relative)
+  ) {
+    return relative.startsWith("./") ? relative : `./${relative}`;
+  }
+  const fingerprint = createHash("sha256").update(normalizedPath).digest("hex").slice(0, 12);
+  if (warnedOutsideRootPathFingerprints && !warnedOutsideRootPathFingerprints.has(fingerprint)) {
+    warnedOutsideRootPathFingerprints.add(fingerprint);
+    console.warn(
+      `[goatcitadel:security] refusing to expose non-root filesystem path (fingerprint=${fingerprint}, base=${path.basename(normalizedPath)})`,
+    );
+  }
+  return "[outside-root]";
+}
+

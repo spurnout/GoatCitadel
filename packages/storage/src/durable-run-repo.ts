@@ -64,6 +64,7 @@ export class DurableRunRepository {
   private readonly listRetriesStmt;
   private readonly upsertDeadLetterStmt;
   private readonly listDeadLettersStmt;
+  private readonly getDeadLetterByRunStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.insertRunStmt = db.prepare(`
@@ -145,6 +146,11 @@ export class DurableRunRepository {
       SELECT * FROM durable_dead_letters
       ORDER BY created_at DESC
       LIMIT ?
+    `);
+    this.getDeadLetterByRunStmt = db.prepare(`
+      SELECT * FROM durable_dead_letters
+      WHERE run_id = ?
+      LIMIT 1
     `);
   }
 
@@ -371,7 +377,7 @@ export class DurableRunRepository {
       resolvedAt: record.resolvedAt ?? null,
       resolutionNote: record.resolutionNote ?? null,
     });
-    const updated = this.listDeadLetters(200).find((entry) => entry.runId === record.runId);
+    const updated = this.getDeadLetterByRun(record.runId);
     return updated ?? record;
   }
 
@@ -387,6 +393,22 @@ export class DurableRunRepository {
       resolvedAt: row.resolved_at ?? undefined,
       resolutionNote: row.resolution_note ?? undefined,
     }));
+  }
+
+  public getDeadLetterByRun(runId: string): DurableDeadLetterRecord | undefined {
+    const row = this.getDeadLetterByRunStmt.get(runId) as unknown as DurableDeadLetterRow | undefined;
+    if (!row) {
+      return undefined;
+    }
+    return {
+      deadLetterId: row.dead_letter_id,
+      runId: row.run_id,
+      reason: row.reason,
+      payload: safeJsonParse<Record<string, unknown>>(row.payload_json, {}),
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at ?? undefined,
+      resolutionNote: row.resolution_note ?? undefined,
+    };
   }
 }
 
@@ -420,4 +442,3 @@ function normalizeOptionalObject(value: Record<string, unknown> | undefined): Re
   }
   return value;
 }
-

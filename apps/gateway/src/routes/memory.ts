@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { normalizeMemoryForgetCriteria } from "../services/security-utils.js";
 
 const composeSchema = z.object({
   scope: z.enum(["chat", "orchestration"]),
@@ -36,18 +37,23 @@ const patchItemSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
   pinned: z.boolean().optional(),
   ttlOverrideSeconds: z.number().int().positive().max(31_536_000).nullable().optional(),
-  actorId: z.string().optional(),
 });
 
-const forgetItemSchema = z.object({
-  actorId: z.string().optional(),
-});
+const forgetItemSchema = z.object({});
 
 const forgetManySchema = z.object({
   itemIds: z.array(z.string().min(1)).optional(),
   namespace: z.string().optional(),
   query: z.string().optional(),
-  actorId: z.string().optional(),
+}).superRefine((value, ctx) => {
+  const criteria = normalizeMemoryForgetCriteria(value);
+  if (!criteria.hasCriteria) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide at least one criterion: itemIds, namespace, or query.",
+      path: ["itemIds"],
+    });
+  }
 });
 
 export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
@@ -188,7 +194,11 @@ export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
         actorId: resolveActorId(request),
       }));
     } catch (error) {
-      return reply.code(409).send({ error: (error as Error).message });
+      const message = (error as Error).message;
+      if (message.toLowerCase().includes("at least one criterion")) {
+        return reply.code(400).send({ error: message });
+      }
+      return reply.code(409).send({ error: message });
     }
   });
 };

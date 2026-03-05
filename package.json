@@ -26,13 +26,17 @@
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "prompt:gates": "pnpm tsx scripts/run-prompt-pack-gates.ts",
     "prompt:gates:targeted": "pnpm tsx scripts/run-prompt-pack-gates.ts --target-only",
+    "coverage:collect": "node scripts/coverage-collect.mjs",
+    "coverage:gate": "node scripts/coverage-gate.mjs",
     "docs:check": "node scripts/validate-governance-docs.mjs && node scripts/check-button-types.mjs",
     "check:buttons": "node scripts/check-button-types.mjs",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^2.1.9",
     "@types/node": "^24.3.0",
+    "c8": "^10.1.3",
     "sharp": "^0.34.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
