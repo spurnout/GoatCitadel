@@ -67,4 +67,5 @@ try {
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;
+  process.exit(1);
 }

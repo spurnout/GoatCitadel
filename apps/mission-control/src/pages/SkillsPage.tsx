@@ -31,7 +31,7 @@ export const BANKR_MIGRATION_CARD_TITLE = "Bankr is Optional";
 export const BANKR_MIGRATION_DOC_PATH = "docs/OPTIONAL_BANKR_SKILL.md";
 export const BANKR_MIGRATION_TEMPLATE_PATH = "templates/skills/bankr-optional/SKILL.md";
 
-export function SkillsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function SkillsPage() {
   const { mode } = useUiPreferences();
   const [skills, setSkills] = useState<SkillListItem[]>([]);
   const [policy, setPolicy] = useState<SkillActivationPolicyState | null>(null);

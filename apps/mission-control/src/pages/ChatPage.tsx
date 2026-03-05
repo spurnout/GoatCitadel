@@ -87,7 +87,7 @@ interface CommandCatalogItem {
   description: string;
 }
 
-export function ChatPage({ workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [projects, setProjects] = useState<ChatProjectsResponse | null>(null);
   const [sessions, setSessions] = useState<ChatSessionsResponse | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");

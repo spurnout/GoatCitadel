@@ -26,7 +26,7 @@ interface WorkspaceAreaSummary {
   latestModifiedAt?: string;
 }
 
-export function MemoryPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);

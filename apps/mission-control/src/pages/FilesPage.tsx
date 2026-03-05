@@ -41,7 +41,7 @@ const IMAGE_EXTENSIONS = new Set([
   "tiff",
 ]);
 
-export function FilesPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function FilesPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);

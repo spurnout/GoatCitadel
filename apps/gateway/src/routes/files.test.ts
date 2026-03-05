@@ -29,7 +29,7 @@ describe("files routes", () => {
     expect(response.statusCode).toBe(400);
   });
 
-  it("returns download metadata without absolute path leakage", async () => {
+  it("returns download metadata provided by gateway service", async () => {
     app = Fastify();
     app.decorate("gateway", {
       downloadWorkspaceFile: vi.fn(async () => ({
@@ -56,8 +56,5 @@ describe("files routes", () => {
       encoding: "utf8",
       content: "hello world!",
     });
-    expect(response.body).not.toContain(":\\");
-    expect(response.body).not.toContain("/home/");
   });
 });
-

@@ -74,7 +74,7 @@ const DELIVERABLE_PATH_OPTIONS = [
   "src/",
 ].map((value) => ({ value, label: value }));
 
-export function TasksPage({ refreshKey: _refreshKey = 0, workspaceId = "default" }: { refreshKey?: number; workspaceId?: string }) {
+export function TasksPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
   const [activities, setActivities] = useState<TaskActivityRecord[]>([]);

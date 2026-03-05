@@ -20,10 +20,6 @@ import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { useUiPreferences } from "../state/ui-preferences";
 
-interface ToolsPageProps {
-  refreshKey?: number;
-}
-
 interface IdOption {
   value: string;
   label: string;
@@ -68,7 +64,7 @@ const TOOL_PROFILE_PRESETS: ToolProfilePreset[] = [
   { id: "danger", label: "Power Day", helper: "High-risk profile. Use only when you intentionally need broad power." },
 ];
 
-export function ToolsPage({ refreshKey: _refreshKey }: ToolsPageProps) {
+export function ToolsPage() {
   const {
     mode: uiMode,
     showTechnicalDetails,

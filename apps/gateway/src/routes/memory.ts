@@ -21,7 +21,11 @@ const statsQuerySchema = z.object({
 });
 
 const itemParamsSchema = z.object({
-  itemId: z.string().min(1),
+  itemId: z.string().trim().min(1),
+});
+
+const contextParamsSchema = z.object({
+  contextId: z.string().trim().min(1),
 });
 
 const listItemsQuerySchema = z.object({
@@ -69,9 +73,12 @@ export const memoryRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get("/api/v1/memory/context/:contextId", async (request, reply) => {
-    const contextId = (request.params as { contextId: string }).contextId;
+    const params = contextParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
     try {
-      return reply.send(fastify.gateway.getMemoryContext(contextId));
+      return reply.send(fastify.gateway.getMemoryContext(params.data.contextId));
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });
     }

@@ -50,7 +50,7 @@ function findDurableRunId(payload: unknown): string | undefined {
   return undefined;
 }
 
-export function ApprovalsPage(_props: { refreshKey?: number }) {
+export function ApprovalsPage() {
   const [data, setData] = useState<ApprovalsResponse | null>(null);
   const [replayById, setReplayById] = useState<Record<string, ApprovalReplayResponse>>({});
   const [durableByApprovalId, setDurableByApprovalId] = useState<Record<string, ApprovalDurableStatus | null>>({});

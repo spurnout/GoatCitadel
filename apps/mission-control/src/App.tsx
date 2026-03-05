@@ -176,7 +176,6 @@ export function App() {
     setActiveWorkspaceId,
   } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
-  const refreshKey = 0;
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
   const [streamStatus, setStreamStatus] = useState<EventStreamStatus>({
     state: "connecting",
@@ -318,24 +317,24 @@ export function App() {
       return <OnboardingPage onCompleted={handleOnboardingCompleted} />;
     }
     if (tab === "dashboard") {
-      return <DashboardPage refreshKey={refreshKey} onNavigate={(next) => setTab(next as Tab)} />;
+      return <DashboardPage onNavigate={(next) => setTab(next as Tab)} />;
     }
     if (tab === "system") {
-      return <SystemPage refreshKey={refreshKey} />;
+      return <SystemPage />;
     }
     if (tab === "files") {
-      return <FilesPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <FilesPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "memory") {
-      return <MemoryPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <MemoryPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "agents") {
-      return <AgentsPage refreshKey={refreshKey} />;
+      return <AgentsPage />;
     }
     if (tab === "office") {
       return (
         <Suspense fallback={<p>Loading Herd HQ...</p>}>
-          <OfficePage refreshKey={refreshKey} />
+          <OfficePage />
         </Suspense>
       );
     }
@@ -343,58 +342,57 @@ export function App() {
       return <ActivityPage />;
     }
     if (tab === "cron") {
-      return <CronPage refreshKey={refreshKey} />;
+      return <CronPage />;
     }
     if (tab === "sessions") {
-      return <SessionsPage refreshKey={refreshKey} />;
+      return <SessionsPage />;
     }
     if (tab === "chat") {
-      return <ChatPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <ChatPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "promptLab") {
-      return <PromptLabPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <PromptLabPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "improvement") {
-      return <ImprovementPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <ImprovementPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "skills") {
-      return <SkillsPage refreshKey={refreshKey} />;
+      return <SkillsPage />;
     }
     if (tab === "costs") {
-      return <CostConsolePage refreshKey={refreshKey} />;
+      return <CostConsolePage />;
     }
     if (tab === "settings") {
-      return <SettingsPage refreshKey={refreshKey} />;
+      return <SettingsPage />;
     }
     if (tab === "workspaces") {
       return (
         <WorkspacesPage
-          refreshKey={refreshKey}
           activeWorkspaceId={activeWorkspaceId}
           onWorkspaceChange={setActiveWorkspaceId}
         />
       );
     }
     if (tab === "tools") {
-      return <ToolsPage refreshKey={refreshKey} />;
+      return <ToolsPage />;
     }
     if (tab === "approvals") {
-      return <ApprovalsPage refreshKey={refreshKey} />;
+      return <ApprovalsPage />;
     }
     if (tab === "tasks") {
-      return <TasksPage refreshKey={refreshKey} workspaceId={activeWorkspaceId} />;
+      return <TasksPage workspaceId={activeWorkspaceId} />;
     }
     if (tab === "mesh") {
-      return <MeshPage refreshKey={refreshKey} />;
+      return <MeshPage />;
     }
     if (tab === "mcp") {
-      return <McpPage refreshKey={refreshKey} />;
+      return <McpPage />;
     }
     if (tab === "npu") {
-      return <NpuPage refreshKey={refreshKey} />;
+      return <NpuPage />;
     }
-    return <IntegrationsPage refreshKey={refreshKey} />;
-  }, [activeWorkspaceId, refreshKey, tab, handleOnboardingCompleted, setActiveWorkspaceId]);
+    return <IntegrationsPage />;
+  }, [activeWorkspaceId, tab, handleOnboardingCompleted, setActiveWorkspaceId]);
 
   return (
     <div

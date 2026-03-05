@@ -18,10 +18,8 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 type DashboardTab = "approvals" | "tasks" | "sessions" | "settings" | "integrations" | "office";
 
 export function DashboardPage({
-  refreshKey: _refreshKey = 0,
   onNavigate,
 }: {
-  refreshKey?: number;
   onNavigate?: (tab: DashboardTab) => void;
 }) {
   const [state, setState] = useState<DashboardStateResponse | null>(null);

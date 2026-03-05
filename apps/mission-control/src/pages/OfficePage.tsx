@@ -171,7 +171,7 @@ class OfficeCanvasErrorBoundary extends Component<
   }
 }
 
-export function OfficePage(_props: { refreshKey?: number }) {
+export function OfficePage() {
   const [directory, setDirectory] = useState<AgentDirectoryRecord[]>([]);
   const [operators, setOperators] = useState<OperatorsResponse["items"]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalsResponse["items"]>([]);

@@ -15,7 +15,7 @@ import { TableSkeleton } from "../components/TableSkeleton";
 import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 
-export function SessionsPage(_props: { refreshKey?: number }) {
+export function SessionsPage() {
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [search, setSearch] = useState("");
   const [healthFilter, setHealthFilter] = useState<"all" | "healthy" | "degraded" | "blocked">("all");

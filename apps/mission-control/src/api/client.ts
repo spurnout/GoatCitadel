@@ -153,6 +153,18 @@ interface GatewayAuthState {
 
 export type GatewayAuthStorageMode = "session" | "persistent";
 
+function unwrapApiResponse<T>(payload: unknown): T {
+  if (
+    payload
+    && typeof payload === "object"
+    && "data" in payload
+    && ("success" in payload || "meta" in payload)
+  ) {
+    return (payload as { data: T }).data;
+  }
+  return payload as T;
+}
+
 function inferDefaultGatewayBaseUrl(): string {
   if (typeof window === "undefined") {
     return `http://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}`;
@@ -239,7 +251,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`API error ${res.status}: ${text}`);
   }
 
-  return (await res.json()) as T;
+  return unwrapApiResponse<T>(await res.json());
 }
 
 export interface UiActionResult<T> {
@@ -2816,8 +2828,14 @@ export interface ProviderSecretStatus {
   source: "none" | "keychain" | "env" | "inline";
 }
 
-export async function fetchProviderSecretStatus(providerId: string): Promise<ProviderSecretStatus> {
-  return request<ProviderSecretStatus>(`/api/v1/secrets/providers/${encodeURIComponent(providerId)}/status`);
+export async function fetchProviderSecretStatus(
+  providerId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ProviderSecretStatus> {
+  return request<ProviderSecretStatus>(
+    `/api/v1/secrets/providers/${encodeURIComponent(providerId)}/status`,
+    { signal: options?.signal },
+  );
 }
 
 export async function saveProviderSecret(providerId: string, apiKey: string): Promise<ProviderSecretStatus> {
@@ -3121,10 +3139,11 @@ export async function fetchDaemonLogs(tail = 200): Promise<{
 export async function evaluateUiChangeRisk(input: {
   pageId: string;
   changes: Array<{ field: string; from: unknown; to: unknown }>;
-}): Promise<ChangeRiskEvaluationResponse> {
+}, options?: { signal?: AbortSignal }): Promise<ChangeRiskEvaluationResponse> {
   return request<ChangeRiskEvaluationResponse>("/api/v1/ui/change-risk/evaluate", {
     method: "POST",
     body: JSON.stringify(input),
+    signal: options?.signal,
   });
 }
 

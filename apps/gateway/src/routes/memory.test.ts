@@ -79,4 +79,33 @@ describe("memory routes", () => {
       itemIds: ["mem_1"],
     });
   });
+
+  it("validates memory context route params", async () => {
+    const getMemoryContext = vi.fn(() => ({ contextId: "ctx-1", scope: "chat" }));
+    app = Fastify();
+    app.decorate("gateway", {
+      getMemoryContext,
+    } as never);
+    await app.register(memoryRoutes);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/memory/context/",
+    });
+    expect(response.statusCode).toBe(400);
+
+    const malformed = await app.inject({
+      method: "GET",
+      url: "/api/v1/memory/context/%20",
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(getMemoryContext).not.toHaveBeenCalled();
+
+    const valid = await app.inject({
+      method: "GET",
+      url: "/api/v1/memory/context/ctx-1",
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(getMemoryContext).toHaveBeenCalledWith("ctx-1");
+  });
 });

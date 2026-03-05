@@ -28,7 +28,7 @@ type McpCategory = "development" | "browser" | "automation" | "research" | "data
 type McpTrustTier = "trusted" | "restricted" | "quarantined";
 type McpCostTier = "free" | "mixed" | "paid" | "unknown";
 
-export function McpPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function McpPage() {
   const [servers, setServers] = useState<Array<{
     serverId: string;
     label: string;

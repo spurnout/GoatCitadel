@@ -3,7 +3,8 @@ import path from "node:path";
 
 const repoRoot = process.cwd();
 const summaryPath = path.join(repoRoot, "artifacts", "coverage", "coverage-summary.json");
-const threshold = parseThreshold(process.env.GOATCITADEL_COVERAGE_FILE_THRESHOLD, 50);
+const DEFAULT_LINE_THRESHOLD = 65;
+const DEFAULT_BRANCH_THRESHOLD = 45;
 
 let summaryRaw = "";
 try {
@@ -13,34 +14,80 @@ try {
   process.exit(1);
 }
 
-const summary = JSON.parse(summaryRaw);
-const percent = Number(summary.fileCoveragePercent ?? 0);
-if (!Number.isFinite(percent)) {
-  console.error("[coverage:gate] invalid fileCoveragePercent in summary artifact.");
+let summary;
+try {
+  summary = JSON.parse(summaryRaw);
+} catch {
+  console.error(`[coverage:gate] invalid JSON in ${path.relative(repoRoot, summaryPath)}.`);
   process.exit(1);
 }
 
-if (percent < threshold) {
+const warnings = [];
+const resolved = resolveThresholds(warnings);
+const linePercent = Number(summary.linePercent ?? NaN);
+const branchPercent = Number(summary.branchPercent ?? NaN);
+
+if (!Number.isFinite(linePercent) || !Number.isFinite(branchPercent)) {
+  console.error("[coverage:gate] invalid linePercent/branchPercent in summary artifact.");
+  process.exit(1);
+}
+
+for (const warning of warnings) {
+  console.warn(`[coverage:gate] warning: ${warning}`);
+}
+
+if (linePercent < resolved.line.value || branchPercent < resolved.branch.value) {
   console.error(
-    `[coverage:gate] failed: file coverage ${percent}% is below required ${threshold}%. ` +
-    `Covered ${summary.coveredFiles ?? 0}/${summary.sourceFiles ?? 0} files.`,
+    `[coverage:gate] failed: line ${linePercent}% (required ${resolved.line.value}%), `
+    + `branch ${branchPercent}% (required ${resolved.branch.value}%).`,
   );
   process.exit(1);
 }
 
 console.log(
-  `[coverage:gate] passed: file coverage ${percent}% meets threshold ${threshold}%. ` +
-  `Covered ${summary.coveredFiles ?? 0}/${summary.sourceFiles ?? 0} files.`,
+  `[coverage:gate] passed: line ${linePercent}% (>= ${resolved.line.value}%), `
+  + `branch ${branchPercent}% (>= ${resolved.branch.value}%).`,
 );
 
-function parseThreshold(raw, fallback) {
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
+function resolveThresholds(warningsList) {
+  const allowLower = process.env.GOATCITADEL_ALLOW_LOWER_COVERAGE_GATE === "1";
+  return {
+    line: resolveThreshold(
+      process.env.GOATCITADEL_COVERAGE_LINE_THRESHOLD,
+      DEFAULT_LINE_THRESHOLD,
+      "GOATCITADEL_COVERAGE_LINE_THRESHOLD",
+      allowLower,
+      warningsList,
+    ),
+    branch: resolveThreshold(
+      process.env.GOATCITADEL_COVERAGE_BRANCH_THRESHOLD,
+      DEFAULT_BRANCH_THRESHOLD,
+      "GOATCITADEL_COVERAGE_BRANCH_THRESHOLD",
+      allowLower,
+      warningsList,
+    ),
+  };
 }
 
+function resolveThreshold(raw, fallback, envName, allowLower, warningsList) {
+  if (!raw) {
+    return { value: fallback, source: "default" };
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100) {
+    warningsList.push(`${envName}="${raw}" is invalid. Using default ${fallback}.`);
+    return { value: fallback, source: "default_invalid_override" };
+  }
+
+  if (parsed < fallback && !allowLower) {
+    warningsList.push(`${envName}=${parsed} is below default ${fallback}. Set GOATCITADEL_ALLOW_LOWER_COVERAGE_GATE=1 to allow lower gates.`);
+    return { value: fallback, source: "default_clamped" };
+  }
+
+  if (parsed < fallback && allowLower) {
+    warningsList.push(`${envName}=${parsed} is below default ${fallback} (allowed by GOATCITADEL_ALLOW_LOWER_COVERAGE_GATE=1).`);
+  }
+
+  return { value: parsed, source: "env" };
+}

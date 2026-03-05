@@ -22,7 +22,7 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 const DEFAULT_SCHEDULE = "0 2 * * * America/Los_Angeles";
 
-export function CronPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function CronPage() {
   const [data, setData] = useState<CronJobsResponse | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedJobDetail, setSelectedJobDetail] = useState<{

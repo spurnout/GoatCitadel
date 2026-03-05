@@ -26,9 +26,10 @@
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "prompt:gates": "pnpm tsx scripts/run-prompt-pack-gates.ts",
     "prompt:gates:targeted": "pnpm tsx scripts/run-prompt-pack-gates.ts --target-only",
+    "inventory:inline-sql": "node scripts/inventory-inline-sql.mjs",
     "coverage:collect": "node scripts/coverage-collect.mjs",
     "coverage:gate": "node scripts/coverage-gate.mjs",
-    "docs:check": "node scripts/validate-governance-docs.mjs && node scripts/check-button-types.mjs",
+    "docs:check": "node scripts/validate-governance-docs.mjs && node scripts/check-button-types.mjs && node scripts/check-no-inline-sql.mjs",
     "check:buttons": "node scripts/check-button-types.mjs",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"

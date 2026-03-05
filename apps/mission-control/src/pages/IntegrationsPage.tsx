@@ -65,7 +65,7 @@ const KIND_DESCRIPTIONS: Record<Exclude<IntegrationKind, "all">, string> = {
   platform: "Connects platform-level services and APIs.",
 };
 
-export function IntegrationsPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function IntegrationsPage() {
   const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [plugins, setPlugins] = useState<Awaited<ReturnType<typeof fetchIntegrationPlugins>>["items"]>([]);

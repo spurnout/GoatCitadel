@@ -16,7 +16,7 @@ import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
-export function ImprovementPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number; workspaceId?: string }) {
+export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);

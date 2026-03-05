@@ -33,7 +33,6 @@ const WORKSPACE_GUIDANCE_DOC_TYPES: Array<{ value: GuidanceDocType; label: strin
 ];
 
 export function WorkspacesPage(props: {
-  refreshKey?: number;
   activeWorkspaceId: string;
   onWorkspaceChange: (workspaceId: string) => void;
 }) {

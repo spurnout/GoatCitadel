@@ -391,6 +391,7 @@ const DEFAULT_SKILL_ACTIVATION_POLICY: SkillActivationPolicy = {
 const BANKR_OPTIONAL_MIGRATION_MESSAGE =
   "Bankr built-in is disabled. Install the optional skill pack (docs/OPTIONAL_BANKR_SKILL.md; templates/skills/bankr-optional/SKILL.md).";
 const PROACTIVE_SCHEDULER_INTERVAL_MS = 120_000;
+const PROACTIVE_SCHEDULER_CONCURRENCY = 8;
 const PROACTIVE_MIN_IDLE_SECONDS = 90;
 const PROACTIVE_SAFE_TOOL_ALLOWLIST = new Set([
   "time.now",
@@ -685,6 +686,10 @@ export class GatewayService {
   private improvementScheduler?: NodeJS.Timeout;
   private closing = false;
   private onboardingMarker: { completedAt?: string; completedBy?: string } = {};
+
+  private get gatewayDb() {
+    return this.storage.db;
+  }
 
   public constructor(private readonly config: GatewayRuntimeConfig) {
     this.storage = new Storage({
@@ -1434,34 +1439,52 @@ export class GatewayService {
     const prefsBySessionId = this.storage.sessionAutonomyPrefs.listBySessionIds(
       sessions.map((session) => session.sessionId),
     );
-    for (const session of sessions) {
-      const prefs = prefsBySessionId.get(session.sessionId) ?? {
+    const eligible = sessions
+      .map((session) => ({
         sessionId: session.sessionId,
-        ...DEFAULT_SESSION_AUTONOMY_PREFS,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      if (prefs.proactiveMode === "off") {
-        continue;
-      }
-      try {
-        await this.triggerChatSessionProactive(session.sessionId, {
-          source: "scheduler",
-          reason: "Background proactive scheduler tick.",
-          prefs,
-        });
-      } catch (error) {
-        console.error(
-          "[goatcitadel] proactive scheduler session trigger failed",
-          { sessionId: session.sessionId, error },
-        );
-        this.publishRealtime("system", "chat", {
-          type: "proactive_scheduler_session_error",
+        prefs: prefsBySessionId.get(session.sessionId) ?? {
           sessionId: session.sessionId,
-          message: (error as Error).message,
-        });
-      }
+          ...DEFAULT_SESSION_AUTONOMY_PREFS,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      }))
+      .filter((item) => item.prefs.proactiveMode !== "off");
+
+    if (eligible.length === 0) {
+      return;
     }
+
+    const maxWorkers = Math.min(PROACTIVE_SCHEDULER_CONCURRENCY, eligible.length);
+    let cursor = 0;
+    const workers = Array.from({ length: maxWorkers }, async () => {
+      while (cursor < eligible.length) {
+        const index = cursor;
+        cursor += 1;
+        const current = eligible[index];
+        if (!current) {
+          continue;
+        }
+        try {
+          await this.triggerChatSessionProactive(current.sessionId, {
+            source: "scheduler",
+            reason: "Background proactive scheduler tick.",
+            prefs: current.prefs,
+          });
+        } catch (error) {
+          console.error(
+            "[goatcitadel] proactive scheduler session trigger failed",
+            { sessionId: current.sessionId, error },
+          );
+          this.publishRealtime("system", "chat", {
+            type: "proactive_scheduler_session_error",
+            sessionId: current.sessionId,
+            message: (error as Error).message,
+          });
+        }
+      }
+    });
+    await Promise.all(workers);
   }
 
   private startImprovementScheduler(): void {
@@ -1732,7 +1755,7 @@ export class GatewayService {
 
   private countProactiveActionsLastHour(sessionId: string): number {
     const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT COUNT(*) AS count
       FROM proactive_actions
       WHERE session_id = ? AND status = 'executed' AND created_at >= ?
@@ -1795,7 +1818,7 @@ export class GatewayService {
   }
 
   private insertProactiveRun(run: ProactiveRunRecord): void {
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO proactive_runs (
         run_id, session_id, status, mode, confidence, reasoning_summary, action_count,
         suggested_actions_json, executed_actions_json, error, started_at, finished_at
@@ -1823,7 +1846,7 @@ export class GatewayService {
     runId: string,
     patch: Partial<Pick<ProactiveRunRecord, "status" | "confidence" | "reasoningSummary" | "suggestedActions" | "executedActions" | "error">>,
   ): ProactiveRunRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT *
       FROM proactive_runs
       WHERE run_id = ?
@@ -1856,7 +1879,7 @@ export class GatewayService {
       finishedAt: new Date().toISOString(),
       error: patch.error ?? row.error ?? undefined,
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE proactive_runs
       SET
         status = @status,
@@ -1883,7 +1906,7 @@ export class GatewayService {
   }
 
   private insertProactiveAction(action: ProactiveActionRecord): void {
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO proactive_actions (
         action_id, run_id, session_id, kind, status, tool_name, args_json, result_json, error, created_at, updated_at
       ) VALUES (
@@ -1908,7 +1931,7 @@ export class GatewayService {
     actionId: string,
     patch: Partial<Pick<ProactiveActionRecord, "status" | "result" | "error">>,
   ): ProactiveActionRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT *
       FROM proactive_actions
       WHERE action_id = ?
@@ -1942,7 +1965,7 @@ export class GatewayService {
       createdAt: row.created_at,
       updatedAt,
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE proactive_actions
       SET status = @status, result_json = @resultJson, error = @error, updated_at = @updatedAt
       WHERE action_id = @actionId
@@ -2089,7 +2112,7 @@ export class GatewayService {
   }): LearnedMemoryItemRecord {
     const now = new Date().toISOString();
     const itemId = randomUUID();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO learned_memory_items (
         item_id, session_id, item_type, content, confidence, status, superseded_by_item_id,
         redacted, disabled_reason, created_at, updated_at
@@ -2108,7 +2131,7 @@ export class GatewayService {
       createdAt: now,
       updatedAt: now,
     });
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO learned_memory_sources (source_id, item_id, source_kind, source_ref, snippet, created_at)
       VALUES (@sourceId, @itemId, @sourceKind, @sourceRef, @snippet, @createdAt)
     `).run({
@@ -2145,7 +2168,7 @@ export class GatewayService {
     if (!normalized) {
       return;
     }
-    const existing = this.storage.db.prepare(`
+    const existing = this.gatewayDb.prepare(`
       SELECT *
       FROM learned_memory_items
       WHERE session_id = @sessionId
@@ -2165,7 +2188,7 @@ export class GatewayService {
 
     const duplicate = existing.find((row) => normalizeMemoryText(row.content) === normalized);
     if (duplicate) {
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE learned_memory_items
         SET confidence = @confidence, updated_at = @updatedAt
         WHERE item_id = @itemId
@@ -2174,7 +2197,7 @@ export class GatewayService {
         confidence: Math.max(clamp01(input.confidence), Number(duplicate.confidence || 0)),
         updatedAt: new Date().toISOString(),
       });
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         INSERT INTO learned_memory_sources (source_id, item_id, source_kind, source_ref, snippet, created_at)
         VALUES (@sourceId, @itemId, @sourceKind, @sourceRef, @snippet, @createdAt)
       `).run({
@@ -2207,7 +2230,7 @@ export class GatewayService {
             sourceRef: input.sourceRef,
             snippet: input.snippet,
           });
-          this.storage.db.prepare(`
+          this.gatewayDb.prepare(`
             INSERT INTO learned_memory_conflicts (
               conflict_id, session_id, item_type, existing_item_id, incoming_item_id, incoming_content,
               status, resolution_note, created_at, resolved_at
@@ -2238,7 +2261,7 @@ export class GatewayService {
             sourceRef: input.sourceRef,
             snippet: input.snippet,
           });
-          this.storage.db.prepare(`
+          this.gatewayDb.prepare(`
             UPDATE learned_memory_items
             SET status = 'superseded', superseded_by_item_id = @supersededByItemId, updated_at = @updatedAt
             WHERE item_id = @itemId
@@ -2970,7 +2993,7 @@ export class GatewayService {
     const policy = this.toProactivePolicy(sessionId, this.getSessionAutonomyPrefs(sessionId));
     const idleSeconds = this.getSessionIdleSeconds(sessionId);
     const hasRunningTurn = this.hasRunningTurn(sessionId);
-    const pendingSuggestions = this.storage.db.prepare(
+    const pendingSuggestions = this.gatewayDb.prepare(
       "SELECT COUNT(*) AS count FROM proactive_actions WHERE session_id = ? AND status = 'suggested'",
     ).get(sessionId) as { count?: number } | undefined;
     const actionsLastHour = this.countProactiveActionsLastHour(sessionId);
@@ -3185,7 +3208,7 @@ export class GatewayService {
 
   public listChatSessionProactiveRuns(sessionId: string, limit = 50): ProactiveRunRecord[] {
     this.getSession(sessionId);
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM proactive_runs
       WHERE session_id = ?
@@ -3228,7 +3251,7 @@ export class GatewayService {
   } {
     this.getSession(sessionId);
     const boundedLimit = Math.max(1, Math.min(limit, 1000));
-    const itemRows = this.storage.db.prepare(`
+    const itemRows = this.gatewayDb.prepare(`
       SELECT *
       FROM learned_memory_items
       WHERE session_id = ?
@@ -3246,7 +3269,7 @@ export class GatewayService {
       created_at: string;
       updated_at: string;
     }>;
-    const conflictRows = this.storage.db.prepare(`
+    const conflictRows = this.gatewayDb.prepare(`
       SELECT *
       FROM learned_memory_conflicts
       WHERE session_id = ?
@@ -3298,7 +3321,7 @@ export class GatewayService {
     input: LearnedMemoryUpdateInput,
   ): LearnedMemoryItemRecord {
     this.getSession(sessionId);
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT * FROM learned_memory_items WHERE item_id = ?
     `).get(itemId) as {
       item_id: string;
@@ -3322,7 +3345,7 @@ export class GatewayService {
     const nextContent = input.content?.trim() || row.content;
     const nextConfidence = clamp01(typeof input.confidence === "number" ? input.confidence : row.confidence);
     const now = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE learned_memory_items
       SET status = @status, content = @content, confidence = @confidence, updated_at = @updatedAt
       WHERE item_id = @itemId
@@ -3353,9 +3376,9 @@ export class GatewayService {
     conflicts: LearnedMemoryConflictRecord[];
   }> {
     this.getSession(sessionId);
-    this.storage.db.prepare("DELETE FROM learned_memory_sources WHERE item_id IN (SELECT item_id FROM learned_memory_items WHERE session_id = ?)").run(sessionId);
-    this.storage.db.prepare("DELETE FROM learned_memory_conflicts WHERE session_id = ?").run(sessionId);
-    this.storage.db.prepare("DELETE FROM learned_memory_items WHERE session_id = ?").run(sessionId);
+    this.gatewayDb.prepare("DELETE FROM learned_memory_sources WHERE item_id IN (SELECT item_id FROM learned_memory_items WHERE session_id = ?)").run(sessionId);
+    this.gatewayDb.prepare("DELETE FROM learned_memory_conflicts WHERE session_id = ?").run(sessionId);
+    this.gatewayDb.prepare("DELETE FROM learned_memory_items WHERE session_id = ?").run(sessionId);
 
     const transcript = await this.readTranscriptOrEmpty(sessionId);
     for (const event of transcript) {
@@ -3413,7 +3436,7 @@ export class GatewayService {
   ): Promise<ChatDelegateResponse> {
     this.getSession(sessionId);
     if (input.suggestionId) {
-      const actionRow = this.storage.db.prepare(`
+      const actionRow = this.gatewayDb.prepare(`
         SELECT args_json
         FROM proactive_actions
         WHERE action_id = ? AND session_id = ?
@@ -3861,7 +3884,7 @@ export class GatewayService {
     const benchmarkRunId = `ppb-${randomUUID()}`;
     const startedAt = new Date().toISOString();
     const totalItems = selectedTests.length * providers.length;
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO prompt_pack_benchmark_runs (
         benchmark_run_id, pack_id, status, test_codes_json, providers_json,
         total_items, completed_items, error, started_at, finished_at
@@ -3883,7 +3906,7 @@ export class GatewayService {
     const task = this.runPromptPackBenchmarkTask(benchmarkRunId)
       .catch((error) => {
         const now = new Date().toISOString();
-        this.storage.db.prepare(`
+        this.gatewayDb.prepare(`
           UPDATE prompt_pack_benchmark_runs
           SET status = 'failed', error = @error, finished_at = @finishedAt
           WHERE benchmark_run_id = @benchmarkRunId
@@ -3910,7 +3933,7 @@ export class GatewayService {
   }
 
   public getPromptPackBenchmarkStatus(benchmarkRunId: string): PromptPackBenchmarkStatusRecord {
-    const runRow = this.storage.db.prepare(`
+    const runRow = this.gatewayDb.prepare(`
       SELECT *
       FROM prompt_pack_benchmark_runs
       WHERE benchmark_run_id = ?
@@ -3918,7 +3941,7 @@ export class GatewayService {
     if (!runRow) {
       throw new Error(`Prompt-pack benchmark run ${benchmarkRunId} not found.`);
     }
-    const itemRows = this.storage.db.prepare(`
+    const itemRows = this.gatewayDb.prepare(`
       SELECT *
       FROM prompt_pack_benchmark_items
       WHERE benchmark_run_id = ?
@@ -3959,7 +3982,7 @@ export class GatewayService {
     }
     const regressionRunId = `ppr-${randomUUID()}`;
     const now = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO replay_regression_runs (
         regression_run_id, pack_id, status, test_codes_json, baseline_ref, summary_json, started_at, finished_at
       ) VALUES (
@@ -3981,7 +4004,7 @@ export class GatewayService {
       }
     }
 
-    const insertResult = this.storage.db.prepare(`
+    const insertResult = this.gatewayDb.prepare(`
       INSERT INTO replay_regression_results (
         result_id, regression_run_id, test_code, capability, score_delta, pass_delta, latency_delta_ms, created_at
       ) VALUES (
@@ -4012,7 +4035,7 @@ export class GatewayService {
       }
     }
 
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE replay_regression_runs
       SET status = 'completed',
           summary_json = @summaryJson,
@@ -4039,7 +4062,7 @@ export class GatewayService {
     results: ReplayRegressionResult[];
   } {
     this.requireFeatureEnabled("replayRegressionV1Enabled");
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT regression_run_id, pack_id, status, test_codes_json, baseline_ref, started_at, finished_at, error_text
       FROM replay_regression_runs
       WHERE regression_run_id = ?
@@ -4056,7 +4079,7 @@ export class GatewayService {
     if (!row) {
       throw new Error(`Replay regression run not found: ${runId}`);
     }
-    const resultRows = this.storage.db.prepare(`
+    const resultRows = this.gatewayDb.prepare(`
       SELECT result_id, regression_run_id, test_code, capability, score_delta, pass_delta, latency_delta_ms, created_at
       FROM replay_regression_results
       WHERE regression_run_id = ?
@@ -4135,7 +4158,7 @@ export class GatewayService {
     if (run.status === "completed" || run.status === "failed") {
       return;
     }
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE prompt_pack_benchmark_runs
       SET status = 'running', error = NULL
       WHERE benchmark_run_id = @benchmarkRunId
@@ -4190,7 +4213,7 @@ export class GatewayService {
           failureSignal = (error as Error).message;
         }
 
-        this.storage.db.prepare(`
+        this.gatewayDb.prepare(`
           INSERT INTO prompt_pack_benchmark_items (
             item_id, benchmark_run_id, pack_id, test_id, test_code, provider_id, model,
             run_id, score_id, run_status, total_score, failure_signal, created_at
@@ -4215,7 +4238,7 @@ export class GatewayService {
         });
 
         completedItems += 1;
-        this.storage.db.prepare(`
+        this.gatewayDb.prepare(`
           UPDATE prompt_pack_benchmark_runs
           SET completed_items = @completedItems
           WHERE benchmark_run_id = @benchmarkRunId
@@ -4227,7 +4250,7 @@ export class GatewayService {
     }
 
     const finishedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE prompt_pack_benchmark_runs
       SET status = 'completed', finished_at = @finishedAt
       WHERE benchmark_run_id = @benchmarkRunId
@@ -4313,7 +4336,7 @@ export class GatewayService {
 
     let deletedRuns = 0;
     let deletedScores = 0;
-    this.storage.db.exec("BEGIN IMMEDIATE");
+    this.gatewayDb.exec("BEGIN IMMEDIATE");
     try {
       if (clearScores) {
         deletedScores = this.storage.promptPackScores.deleteByPack(packId);
@@ -4321,9 +4344,9 @@ export class GatewayService {
       if (clearRuns) {
         deletedRuns = this.storage.promptPackRuns.deleteByPack(packId);
       }
-      this.storage.db.exec("COMMIT");
+      this.gatewayDb.exec("COMMIT");
     } catch (error) {
-      this.storage.db.exec("ROLLBACK");
+      this.gatewayDb.exec("ROLLBACK");
       throw error;
     }
 
@@ -4347,7 +4370,7 @@ export class GatewayService {
   }
 
   public listImprovementReports(limit = 24): WeeklyImprovementReportRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM improvement_reports
       ORDER BY week_end DESC, created_at DESC
@@ -4369,7 +4392,7 @@ export class GatewayService {
   }
 
   public listDecisionReplayRuns(limit = 24): DecisionReplayRunRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_replay_runs
       ORDER BY started_at DESC
@@ -4486,7 +4509,7 @@ export class GatewayService {
   public listDurableRunTimeline(runId: string, limit = 300): DurableRunTimelineEvent[] {
     this.requireFeatureEnabled("durableKernelV1Enabled");
     const safeLimit = Math.max(1, Math.min(2_000, Math.floor(limit)));
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT event_id, run_id, event_type, step_key, payload_json, created_at
       FROM durable_run_events
       WHERE run_id = ?
@@ -4701,7 +4724,7 @@ export class GatewayService {
 
   public recoverDurableDeadLetter(entryId: string, actorId = "operator"): DurableRunRecord {
     this.requireFeatureEnabled("durableKernelV1Enabled");
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT dead_letter_id, run_id, reason
       FROM durable_dead_letters
       WHERE dead_letter_id = ?
@@ -4709,7 +4732,7 @@ export class GatewayService {
     if (!row) {
       throw new Error(`Durable dead-letter entry not found: ${entryId}`);
     }
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE durable_dead_letters
       SET resolved_at = @resolvedAt, resolution_note = @note
       WHERE dead_letter_id = @entryId
@@ -4738,7 +4761,7 @@ export class GatewayService {
   }
 
   public getImprovementReport(reportId: string): WeeklyImprovementReportRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT *
       FROM improvement_reports
       WHERE report_id = ?
@@ -4796,7 +4819,7 @@ export class GatewayService {
     const now = new Date().toISOString();
     const replayRunId = randomUUID();
     const normalized = this.normalizeReplayOverrides(overrides);
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO replay_override_runs (
         replay_run_id, source_run_id, status, override_summary_json, diff_summary_json, created_at, updated_at
       ) VALUES (
@@ -4830,7 +4853,7 @@ export class GatewayService {
     this.requireFeatureEnabled("replayOverridesV1Enabled");
     const draft = this.createReplayOverrideDraft(sourceRunId, overrides);
     const runningAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE replay_override_runs
       SET status = 'running', updated_at = @updatedAt
       WHERE replay_run_id = @replayRunId
@@ -4841,7 +4864,7 @@ export class GatewayService {
 
     const summary = this.computeReplayDiffSummary(sourceRunId, draft.replayRunId, draft.overrides);
     const finishedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE replay_override_runs
       SET status = 'completed',
           diff_summary_json = @diffSummaryJson,
@@ -4867,7 +4890,7 @@ export class GatewayService {
 
   public getReplayDiffSummary(replayRunId: string): ReplayDiffSummary {
     this.requireFeatureEnabled("replayOverridesV1Enabled");
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT replay_run_id, source_run_id, status, diff_summary_json, updated_at
       FROM replay_override_runs
       WHERE replay_run_id = ?
@@ -4907,7 +4930,7 @@ export class GatewayService {
   }
 
   private markInterruptedDecisionReplayRuns(): void {
-    const running = this.storage.db.prepare(`
+    const running = this.gatewayDb.prepare(`
       SELECT run_id
       FROM decision_replay_runs
       WHERE status = 'running'
@@ -4916,7 +4939,7 @@ export class GatewayService {
       return;
     }
     const finishedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE decision_replay_runs
       SET status = 'failed',
           error_text = COALESCE(error_text, 'Replay interrupted before completion (service restarted).'),
@@ -4961,7 +4984,7 @@ export class GatewayService {
       this.storage.systemSettings.set(settingKey, previousValue);
     }
     const revertedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE decision_autotunes
       SET status = 'reverted', reverted_at = @revertedAt, result_json = @resultJson
       WHERE tune_id = @tuneId
@@ -5127,7 +5150,7 @@ export class GatewayService {
     const windowEnd = startedAt.toISOString();
     const windowStart = new Date(startedAt.getTime() - (7 * 24 * 60 * 60 * 1000)).toISOString();
     const runId = randomUUID();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO decision_replay_runs (
         run_id, trigger_mode, sample_size, window_start, window_end, status,
         total_candidates, total_scored, likely_wrong_count, model_judged_count, started_at
@@ -5155,7 +5178,7 @@ export class GatewayService {
     try {
       const candidates = await this.selectDecisionReplayCandidates(windowStart, windowEnd, input.sampleSize);
       const sample = sampleDecisionReplayCandidates(candidates, input.sampleSize);
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE decision_replay_runs
         SET total_candidates = @totalCandidates
         WHERE run_id = @runId
@@ -5165,7 +5188,7 @@ export class GatewayService {
       });
       const scored = await this.scoreDecisionReplayCandidates(runId, sample, {
         onProgress: (progress) => {
-          this.storage.db.prepare(`
+          this.gatewayDb.prepare(`
             UPDATE decision_replay_runs
             SET total_scored = @totalScored,
                 model_judged_count = @modelJudgedCount
@@ -5238,7 +5261,7 @@ export class GatewayService {
       };
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE decision_replay_runs
         SET status = 'failed', error_text = @errorText, finished_at = @finishedAt
         WHERE run_id = @runId
@@ -5261,7 +5284,7 @@ export class GatewayService {
     sampleSize: number,
   ): Promise<DecisionReplayCandidate[]> {
     const fetchLimit = Math.max(1000, Math.min(sampleSize * 8, 6000));
-    const turnRows = this.storage.db.prepare(`
+    const turnRows = this.gatewayDb.prepare(`
       SELECT
         turn_id,
         session_id,
@@ -5304,7 +5327,7 @@ export class GatewayService {
       finished_at: string | null;
     }>;
 
-    const toolRows = this.storage.db.prepare(`
+    const toolRows = this.gatewayDb.prepare(`
       SELECT
         tool_run_id,
         turn_id,
@@ -5603,7 +5626,7 @@ export class GatewayService {
   }
 
   private insertDecisionReplayItems(items: DecisionReplayItemRecord[]): void {
-    const insert = this.storage.db.prepare(`
+    const insert = this.gatewayDb.prepare(`
       INSERT INTO decision_replay_items (
         item_id, run_id, decision_type, session_id, turn_id, tool_run_id, occurred_at,
         wrongness_probability, label, cause_class, cluster_key, rule_scores_json, model_scores_json,
@@ -5614,7 +5637,7 @@ export class GatewayService {
         @evidenceJson, @summaryText, @inputExcerpt, @outputExcerpt, @createdAt
       )
     `);
-    this.storage.db.exec("BEGIN IMMEDIATE");
+    this.gatewayDb.exec("BEGIN IMMEDIATE");
     try {
       for (const item of items) {
         insert.run({
@@ -5638,9 +5661,9 @@ export class GatewayService {
           createdAt: item.createdAt,
         });
       }
-      this.storage.db.exec("COMMIT");
+      this.gatewayDb.exec("COMMIT");
     } catch (error) {
-      this.storage.db.exec("ROLLBACK");
+      this.gatewayDb.exec("ROLLBACK");
       throw error;
     }
   }
@@ -5707,7 +5730,7 @@ export class GatewayService {
     if (findings.length === 0) {
       return findings;
     }
-    const stmt = this.storage.db.prepare(`
+    const stmt = this.gatewayDb.prepare(`
       SELECT fingerprint
       FROM decision_replay_dedup
       WHERE fingerprint = ?
@@ -5726,7 +5749,7 @@ export class GatewayService {
   }
 
   private insertDecisionReplayFindings(findings: DecisionReplayFindingRecord[]): void {
-    const insert = this.storage.db.prepare(`
+    const insert = this.gatewayDb.prepare(`
       INSERT INTO decision_replay_findings (
         finding_id, run_id, fingerprint, cause_class, cluster_key, severity, recurrence_count,
         impacted_sessions, impacted_turns, avg_wrongness, title, summary, recommendation,
@@ -5737,7 +5760,7 @@ export class GatewayService {
         @isDuplicate, @duplicateOfFingerprint, @createdAt
       )
     `);
-    this.storage.db.exec("BEGIN IMMEDIATE");
+    this.gatewayDb.exec("BEGIN IMMEDIATE");
     try {
       for (const finding of findings) {
         insert.run({
@@ -5759,9 +5782,9 @@ export class GatewayService {
           createdAt: finding.createdAt,
         });
       }
-      this.storage.db.exec("COMMIT");
+      this.gatewayDb.exec("COMMIT");
     } catch (error) {
-      this.storage.db.exec("ROLLBACK");
+      this.gatewayDb.exec("ROLLBACK");
       throw error;
     }
   }
@@ -5856,7 +5879,7 @@ export class GatewayService {
   }
 
   private insertDecisionAutoTune(tune: DecisionAutoTuneRecord): void {
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO decision_autotunes (
         tune_id, run_id, finding_id, tune_class, risk_level, status, description,
         patch_json, snapshot_json, result_json, created_at, applied_at, reverted_at
@@ -5892,7 +5915,7 @@ export class GatewayService {
     const nextValue = tune.patch.nextValue;
     this.storage.systemSettings.set(settingKey, nextValue);
     const appliedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE decision_autotunes
       SET status = 'applied', applied_at = @appliedAt, result_json = @resultJson
       WHERE tune_id = @tuneId
@@ -5934,7 +5957,7 @@ export class GatewayService {
       .slice(0, 6)
       .map(([causeClass, count]) => ({ causeClass, count }));
 
-    const previous = this.storage.db.prepare(`
+    const previous = this.gatewayDb.prepare(`
       SELECT *
       FROM improvement_reports
       ORDER BY week_end DESC, created_at DESC
@@ -5984,7 +6007,7 @@ export class GatewayService {
       createdAt: new Date().toISOString(),
     };
 
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO improvement_reports (
         report_id, run_id, week_start, week_end, summary_json, top_findings_json,
         applied_tunes_json, queued_tunes_json, week_over_week_json, previous_report_id, created_at
@@ -6016,7 +6039,7 @@ export class GatewayService {
     likelyWrongCount: number;
     modelJudgedCount: number;
   }): void {
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE decision_replay_runs
       SET
         status = 'completed',
@@ -6039,7 +6062,7 @@ export class GatewayService {
   }
 
   private persistDecisionReplayDedup(findings: DecisionReplayFindingRecord[], reportId: string): void {
-    const upsert = this.storage.db.prepare(`
+    const upsert = this.gatewayDb.prepare(`
       INSERT INTO decision_replay_dedup (
         fingerprint, last_seen_report_id, last_seen_at, occurrence_count, last_summary_hash
       ) VALUES (
@@ -6062,7 +6085,7 @@ export class GatewayService {
   }
 
   private readDecisionReplayRun(runId: string): DecisionReplayRunRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_replay_runs
       WHERE run_id = ?
@@ -6123,7 +6146,7 @@ export class GatewayService {
   }
 
   private listDecisionReplayItems(runId: string, limit = 500): DecisionReplayItemRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_replay_items
       WHERE run_id = ?
@@ -6180,7 +6203,7 @@ export class GatewayService {
   }
 
   private listDecisionReplayFindings(runId: string, limit = 100): DecisionReplayFindingRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_replay_findings
       WHERE run_id = ?
@@ -6225,7 +6248,7 @@ export class GatewayService {
   }
 
   private listDecisionAutoTunes(runId: string, limit = 100): DecisionAutoTuneRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_autotunes
       WHERE run_id = ?
@@ -6250,7 +6273,7 @@ export class GatewayService {
   }
 
   private readDecisionAutoTune(tuneId: string): DecisionAutoTuneRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT *
       FROM decision_autotunes
       WHERE tune_id = ?
@@ -6437,7 +6460,7 @@ export class GatewayService {
         reason: retryReason,
         outcome: "still_failed",
       };
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         INSERT INTO chat_reflection_attempts (
           attempt_id, turn_id, session_id, reason, outcome, attempt_count, strategy, error, created_at
         ) VALUES (
@@ -7310,7 +7333,7 @@ export class GatewayService {
     let reclaimedBytes = 0;
 
     const realtimeCutoff = new Date(Date.now() - policy.realtimeEventsDays * 24 * 60 * 60 * 1000).toISOString();
-    const realtimeCountRow = this.storage.db.prepare(
+    const realtimeCountRow = this.gatewayDb.prepare(
       "SELECT COUNT(*) AS count FROM realtime_events WHERE created_at < ?",
     ).get(realtimeCutoff) as { count: number } | undefined;
     removedRealtimeEvents = Number(realtimeCountRow?.count ?? 0);
@@ -7623,7 +7646,7 @@ export class GatewayService {
     this.requireBankrBuiltinEnabled();
     const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const parsedCursor = parseBankrAuditCursor(cursor);
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT
         action_id AS actionId,
         session_id AS sessionId,
@@ -7692,7 +7715,7 @@ export class GatewayService {
       throw new Error(`Unknown skill: ${skillId}`);
     }
     const now = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO skill_state (skill_id, state, note, updated_at, first_auto_approved_at)
       VALUES (@skillId, @state, @note, @updatedAt, NULL)
       ON CONFLICT(skill_id) DO UPDATE SET
@@ -7706,7 +7729,7 @@ export class GatewayService {
       updatedAt: now,
     });
 
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO skill_activation_events (
         event_id, skill_id, event_type, payload_json, created_at
       ) VALUES (
@@ -8248,7 +8271,7 @@ export class GatewayService {
     const query = input.query?.trim().toLowerCase();
     const limit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 200)));
 
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT item_id, namespace, title, content, metadata_json, pinned, ttl_override_seconds, expires_at, status,
              created_at, updated_at, forgotten_at
       FROM memory_items
@@ -8303,7 +8326,7 @@ export class GatewayService {
           ? Math.max(1, Math.min(31_536_000, Math.floor(patch.ttlOverrideSeconds)))
           : current.ttlOverrideSeconds ?? null,
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE memory_items
       SET title = @title,
           content = @content,
@@ -8347,7 +8370,7 @@ export class GatewayService {
       return current;
     }
     const now = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE memory_items
       SET status = 'forgotten',
           forgotten_at = @forgottenAt,
@@ -8407,7 +8430,7 @@ export class GatewayService {
   public listMemoryItemHistory(itemId: string, limit = 200): MemoryChangeEvent[] {
     this.requireFeatureEnabled("memoryLifecycleAdminV1Enabled");
     const safeLimit = Math.max(1, Math.min(2_000, Math.floor(limit)));
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT change_id, item_id, change_type, actor_id, payload_json, created_at
       FROM memory_change_history
       WHERE item_id = ?
@@ -9624,7 +9647,7 @@ export class GatewayService {
   public createMediaJob(input: MediaCreateJobRequest): MediaJobRecord {
     const now = new Date().toISOString();
     const jobId = randomUUID();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO media_jobs (
         job_id, session_id, attachment_id, job_type, status, input_json, output_json, error, created_at, updated_at, completed_at
       ) VALUES (
@@ -9646,7 +9669,7 @@ export class GatewayService {
   }
 
   public getMediaJob(jobId: string): MediaJobRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT * FROM media_jobs
       WHERE job_id = ?
     `).get(jobId) as MediaJobRow | undefined;
@@ -9657,7 +9680,7 @@ export class GatewayService {
   }
 
   public listMediaJobs(sessionId?: string): MediaJobRecord[] {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT * FROM media_jobs
       WHERE (@sessionId IS NULL OR session_id = @sessionId)
       ORDER BY created_at DESC
@@ -9738,7 +9761,7 @@ export class GatewayService {
       startedAt: now,
       sessionId: input?.sessionId,
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO voice_sessions (
         voice_session_id, talk_session_id, mode, state, session_id, payload_json, created_at, updated_at
       ) VALUES (
@@ -9770,7 +9793,7 @@ export class GatewayService {
 
   public stopTalkSession(talkSessionId: string): VoiceTalkSessionRecord {
     const now = new Date().toISOString();
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT payload_json FROM voice_sessions WHERE talk_session_id = ?
     `).get(talkSessionId) as { payload_json: string } | undefined;
     if (!row) {
@@ -9787,7 +9810,7 @@ export class GatewayService {
       state: "stopped",
       stoppedAt: now,
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE voice_sessions
       SET state = 'stopped', payload_json = @payloadJson, updated_at = @updatedAt
       WHERE talk_session_id = @talkSessionId
@@ -10924,7 +10947,7 @@ export class GatewayService {
       payload: payload ?? {},
       createdAt: new Date().toISOString(),
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO durable_run_events (event_id, run_id, event_type, step_key, payload_json, created_at)
       VALUES (@eventId, @runId, @eventType, @stepKey, @payloadJson, @createdAt)
     `).run({
@@ -10955,8 +10978,8 @@ export class GatewayService {
   }
 
   private replaceReplayOverrideSteps(replayRunId: string, overrides: ReplayOverrideStep[]): void {
-    this.storage.db.prepare("DELETE FROM replay_override_steps WHERE replay_run_id = ?").run(replayRunId);
-    const insert = this.storage.db.prepare(`
+    this.gatewayDb.prepare("DELETE FROM replay_override_steps WHERE replay_run_id = ?").run(replayRunId);
+    const insert = this.gatewayDb.prepare(`
       INSERT INTO replay_override_steps (step_id, replay_run_id, step_key, override_type, override_payload_json, created_at)
       VALUES (@stepId, @replayRunId, @stepKey, @overrideType, @overridePayloadJson, @createdAt)
     `);
@@ -10991,7 +11014,7 @@ export class GatewayService {
   }
 
   private requireMemoryItem(itemId: string): MemoryItemRecord {
-    const row = this.storage.db.prepare(`
+    const row = this.gatewayDb.prepare(`
       SELECT item_id, namespace, title, content, metadata_json, pinned, ttl_override_seconds, expires_at, status,
              created_at, updated_at, forgotten_at
       FROM memory_items
@@ -11060,7 +11083,7 @@ export class GatewayService {
       payload,
       createdAt: new Date().toISOString(),
     };
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO memory_change_history (change_id, item_id, change_type, actor_id, payload_json, created_at)
       VALUES (@changeId, @itemId, @changeType, @actorId, @payloadJson, @createdAt)
     `).run({
@@ -11075,7 +11098,7 @@ export class GatewayService {
   }
 
   private recordConnectorHealthRun(report: ConnectorDiagnosticReport): void {
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO connector_health_runs (
         health_run_id, connector_type, connector_id, status, checks_json, recommendation, checked_at
       ) VALUES (
@@ -11214,7 +11237,7 @@ export class GatewayService {
   }
 
   private readSkillStates(): Map<string, SkillStateRecord> {
-    const rows = this.storage.db.prepare(`
+    const rows = this.gatewayDb.prepare(`
       SELECT skill_id AS skillId, state, note, updated_at AS updatedAt, first_auto_approved_at AS firstAutoApprovedAt
       FROM skill_state
     `).all() as unknown as SkillStateRecord[];
@@ -11225,7 +11248,7 @@ export class GatewayService {
   private ensureSkillStates(skillIds: string[]): void {
     const unique = [...new Set(skillIds)];
     const now = new Date().toISOString();
-    const insert = this.storage.db.prepare(`
+    const insert = this.gatewayDb.prepare(`
       INSERT OR IGNORE INTO skill_state (skill_id, state, note, updated_at, first_auto_approved_at)
       VALUES (@skillId, @state, @note, @updatedAt, NULL)
     `);
@@ -11247,7 +11270,7 @@ export class GatewayService {
     const skillId = validation.inferredSkillId
       ? `import:${validation.inferredSkillId}`
       : `import:${createHash("sha1").update(validation.candidate.canonicalKey).digest("hex").slice(0, 12)}`;
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       INSERT INTO skill_activation_events (
         event_id, skill_id, event_type, payload_json, created_at
       ) VALUES (
@@ -11279,7 +11302,7 @@ export class GatewayService {
     const task = this.runMediaJob(jobId)
       .catch((error) => {
         const now = new Date().toISOString();
-        this.storage.db.prepare(`
+        this.gatewayDb.prepare(`
           UPDATE media_jobs
           SET status = 'failed', error = @error, updated_at = @updatedAt, completed_at = @completedAt
           WHERE job_id = @jobId
@@ -11299,7 +11322,7 @@ export class GatewayService {
 
   private async runMediaJob(jobId: string): Promise<void> {
     const now = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE media_jobs
       SET status = 'running', updated_at = @updatedAt
       WHERE job_id = @jobId
@@ -11310,7 +11333,7 @@ export class GatewayService {
     const job = this.getMediaJob(jobId);
     const attachmentId = job.attachmentId;
     if (!attachmentId) {
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE media_jobs
         SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
         WHERE job_id = @jobId
@@ -11328,7 +11351,7 @@ export class GatewayService {
       const content = await this.readChatAttachmentContent(attachmentId);
       const transcript = await this.transcribeAudioBytes(content.bytes, content.record.mimeType);
       const completedAt = new Date().toISOString();
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE media_jobs
         SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
         WHERE job_id = @jobId
@@ -11338,7 +11361,7 @@ export class GatewayService {
         completedAt,
         jobId,
       });
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE chat_attachments
         SET transcript_text = @transcriptText, analysis_status = 'ready'
         WHERE attachment_id = @attachmentId
@@ -11351,7 +11374,7 @@ export class GatewayService {
 
     if (job.type === "ocr" && attachment.mediaType === "image") {
       const completedAt = new Date().toISOString();
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE media_jobs
         SET status = 'unsupported', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
         WHERE job_id = @jobId
@@ -11363,7 +11386,7 @@ export class GatewayService {
         completedAt,
         jobId,
       });
-      this.storage.db.prepare(`
+      this.gatewayDb.prepare(`
         UPDATE chat_attachments
         SET analysis_status = 'unsupported'
         WHERE attachment_id = @attachmentId
@@ -11374,7 +11397,7 @@ export class GatewayService {
     }
 
     const completedAt = new Date().toISOString();
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE media_jobs
       SET status = 'ready', output_json = @outputJson, updated_at = @updatedAt, completed_at = @completedAt
       WHERE job_id = @jobId
@@ -11387,7 +11410,7 @@ export class GatewayService {
       completedAt,
       jobId,
     });
-    this.storage.db.prepare(`
+    this.gatewayDb.prepare(`
       UPDATE chat_attachments
       SET ocr_text = COALESCE(ocr_text, @ocrText), analysis_status = 'ready'
       WHERE attachment_id = @attachmentId
@@ -15277,4 +15300,5 @@ function isTruthy(value: string | undefined): boolean {
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
+
 

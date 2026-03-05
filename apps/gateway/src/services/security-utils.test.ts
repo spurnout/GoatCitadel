@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { normalizeMemoryForgetCriteria, serializePathWithinRoot } from "./security-utils.js";
@@ -21,7 +22,7 @@ describe("security utils", () => {
   });
 
   it("serializes in-root paths and redacts out-of-root paths", () => {
-    const rootDir = path.resolve("F:/code/personal-ai");
+    const rootDir = path.resolve(os.tmpdir(), `goatcitadel-security-utils-${Date.now()}`);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const warned = new Set<string>();
 
@@ -36,4 +37,3 @@ describe("security utils", () => {
     warn.mockRestore();
   });
 });
-

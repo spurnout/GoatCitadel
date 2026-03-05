@@ -680,7 +680,7 @@ export class TuiApiClient {
     return this.request("/api/v1/tools/access/evaluate", {
       method: "POST",
       body: JSON.stringify(input),
-    });
+    }, true);
   }
 
   public async toolsListGrants(input?: {

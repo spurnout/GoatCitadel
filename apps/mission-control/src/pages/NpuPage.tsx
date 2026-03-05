@@ -16,11 +16,10 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
 
 interface NpuPageProps {
-  refreshKey?: number;
   settings?: RuntimeSettingsResponse | null;
 }
 
-export function NpuPage({ refreshKey: _refreshKey = 0, settings }: NpuPageProps) {
+export function NpuPage({ settings }: NpuPageProps) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof fetchNpuStatus>> | null>(null);
   const [models, setModels] = useState<Awaited<ReturnType<typeof fetchNpuModels>>["items"]>([]);
   const [npuEnabled, setNpuEnabled] = useState(settings?.npu.enabled ?? false);

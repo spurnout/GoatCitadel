@@ -43,7 +43,7 @@ const TITLE_OPTIONS = [
   "Runtime Operator",
 ].map((value) => ({ value, label: value }));
 
-export function AgentsPage(_props: { refreshKey?: number }) {
+export function AgentsPage() {
   const [agentsResponse, setAgentsResponse] = useState<AgentsResponse>({ items: [], view: "active" });
   const [view, setView] = useState<AgentView>("active");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);

@@ -1,10 +1,14 @@
 # Coverage Summary
 
-- Generated: 2026-03-05T08:54:17.540Z
-- File coverage: 61.3%
-- Covered files: 160/261
-- Uncovered files: 101
-- Gate threshold: 50%
+- Generated: 2026-03-05T15:24:40.127Z
+- File coverage: 64.75% (169/261)
+- Line coverage: 21.33% (13562/63595)
+- Branch coverage: 58.35% (1115/1911)
+- Effective thresholds: line 65%, branch 45%
+- Threshold source: line=default, branch=default
+
+## Warnings
+- none
 
 ## Coverage Reports
 - `apps/gateway/coverage/coverage-final.json`
@@ -25,7 +29,6 @@
 - `apps/gateway/src/dev-supervisor.ts`
 - `apps/gateway/src/doctor/cli.ts`
 - `apps/gateway/src/doctor/engine.ts`
-- `apps/gateway/src/doctor/types.ts`
 - `apps/gateway/src/main.ts`
 - `apps/gateway/src/onboarding-tui.ts`
 - `apps/gateway/src/plugins/idempotency.ts`
@@ -35,15 +38,12 @@
 - `apps/gateway/src/routes/comms.ts`
 - `apps/gateway/src/routes/costs.ts`
 - `apps/gateway/src/routes/daemon.ts`
-- `apps/gateway/src/routes/docs.ts`
 - `apps/gateway/src/routes/gateway-events.ts`
-- `apps/gateway/src/routes/health.ts`
 - `apps/gateway/src/routes/improvement.ts`
 - `apps/gateway/src/routes/knowledge.ts`
 - `apps/gateway/src/routes/llm.ts`
 - `apps/gateway/src/routes/media.ts`
 - `apps/gateway/src/routes/mesh.ts`
-- `apps/gateway/src/routes/npu.ts`
 - `apps/gateway/src/routes/onboarding.ts`
 - `apps/gateway/src/routes/orchestration.ts`
 - `apps/gateway/src/routes/secrets.ts`
@@ -51,16 +51,12 @@
 - `apps/gateway/src/routes/tools-invoke.ts`
 - `apps/gateway/src/routes/ui-change-risk.ts`
 - `apps/gateway/src/routes/voice.ts`
-- `apps/gateway/src/services/gateway/cron-automation-service.ts`
 - `apps/gateway/src/services/gateway-service.ts`
-- `apps/gateway/src/services/integration-catalog.ts`
 - `apps/gateway/src/services/memory-context-service.ts`
 - `apps/gateway/src/services/npu-sidecar-service.ts`
-- `apps/gateway/src/services/plugin-runtime.ts`
 - `apps/gateway/src/services/research-service.ts`
 - `apps/gateway/src/smoke.ts`
 - `apps/gateway/src/tui/api-client.ts`
-- `apps/gateway/src/tui/live-feed.ts`
 - `apps/gateway/src/tui/main.ts`
 - `apps/gateway/src/tui/profile.ts`
 - `apps/gateway/src/tui/tools-cli.ts`
@@ -68,7 +64,6 @@
 - `apps/mission-control/src/components/ClockBadge.tsx`
 - `apps/mission-control/src/components/CommandPalette.tsx`
 - `apps/mission-control/src/components/OfficeCanvas.tsx`
-- `apps/mission-control/src/content/copy-types.ts`
 - `apps/mission-control/src/main.tsx`
 - `apps/mission-control/src/pages/ActivityPage.tsx`
 - `apps/mission-control/src/pages/AgentsPage.tsx`

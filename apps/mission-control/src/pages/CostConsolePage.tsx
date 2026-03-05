@@ -7,7 +7,7 @@ import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 type CostScope = "day" | "session" | "agent" | "task";
 
-export function CostConsolePage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function CostConsolePage() {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);

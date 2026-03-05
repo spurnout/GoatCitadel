@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   clearGatewayAuthState,
   createLlmChatCompletion,
@@ -193,7 +193,11 @@ const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> 
   },
 ];
 
-export function SettingsPage(_props: { refreshKey?: number }) {
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: string } | null)?.name === "AbortError";
+}
+
+export function SettingsPage() {
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
   const [profile, setProfile] = useState("");
   const [budgetMode, setBudgetMode] = useState<"saver" | "balanced" | "power">("balanced");
@@ -236,6 +240,9 @@ export function SettingsPage(_props: { refreshKey?: number }) {
     items: [],
   });
   const [error, setError] = useState<string | null>(null);
+  const riskDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const riskAbortRef = useRef<AbortController | null>(null);
+  const providerSecretAbortRef = useRef<AbortController | null>(null);
 
   const providerOptions = useMemo(() => settings?.llm.providers ?? [], [settings]);
   const knownProviderIds = useMemo(() => {
@@ -328,6 +335,10 @@ export function SettingsPage(_props: { refreshKey?: number }) {
     if (!settings) {
       return;
     }
+    if (riskDebounceRef.current) {
+      clearTimeout(riskDebounceRef.current);
+      riskDebounceRef.current = null;
+    }
     const changes = [
       { field: "defaultToolProfile", from: settings.defaultToolProfile, to: profile },
       { field: "budgetMode", from: settings.budgetMode, to: budgetMode },
@@ -335,42 +346,71 @@ export function SettingsPage(_props: { refreshKey?: number }) {
       { field: "authMode", from: settings.auth.mode, to: authMode },
       { field: "providerBaseUrl", from: settings.llm.providers.find((p) => p.providerId === providerId)?.baseUrl ?? "", to: providerBaseUrl },
     ];
-    void evaluateUiChangeRisk({
-      pageId: "settings",
-      changes,
-    })
-      .then((res) => {
-        setChangeReview({
-          overall: res.overall,
-          items: res.items.map((item) => ({
-            field: item.field,
-            level: item.level,
-            hint: item.hint,
-          })),
+    riskDebounceRef.current = setTimeout(() => {
+      riskAbortRef.current?.abort();
+      const controller = new AbortController();
+      riskAbortRef.current = controller;
+      void evaluateUiChangeRisk(
+        {
+          pageId: "settings",
+          changes,
+        },
+        { signal: controller.signal },
+      )
+        .then((res) => {
+          setChangeReview({
+            overall: res.overall,
+            items: res.items.map((item) => ({
+              field: item.field,
+              level: item.level,
+              hint: item.hint,
+            })),
+          });
+        })
+        .catch((err: unknown) => {
+          if (isAbortError(err)) {
+            return;
+          }
+          setChangeReview({
+            overall: "warning",
+            items: [{
+              field: "settings",
+              level: "warning",
+              hint: "Unable to load server risk hints.",
+            }],
+          });
         });
-      })
-      .catch(() => {
-        setChangeReview({
-          overall: "warning",
-          items: [{
-            field: "settings",
-            level: "warning",
-            hint: "Unable to load server risk hints.",
-          }],
-        });
-      });
+    }, 400);
+    return () => {
+      if (riskDebounceRef.current) {
+        clearTimeout(riskDebounceRef.current);
+        riskDebounceRef.current = null;
+      }
+      riskAbortRef.current?.abort();
+    };
   }, [settings, profile, budgetMode, networkAllowlistText, authMode, providerId, providerBaseUrl]);
 
   useEffect(() => {
+    providerSecretAbortRef.current?.abort();
     const normalized = providerId.trim();
     const key = normalized.toLowerCase();
     if (!normalized || key === "custom" || !knownProviderIds.has(key)) {
       setProviderSecretStatus(null);
       return;
     }
-    void fetchProviderSecretStatus(normalized)
+    const controller = new AbortController();
+    providerSecretAbortRef.current = controller;
+    void fetchProviderSecretStatus(normalized, { signal: controller.signal })
       .then((status) => setProviderSecretStatus(status))
-      .catch(() => setProviderSecretStatus(null));
+      .catch((err: unknown) => {
+        if (isAbortError(err)) {
+          return;
+        }
+        setProviderSecretStatus(null);
+      });
+    return () => {
+      controller.abort();
+    };
   }, [providerId, knownProviderIds]);
 
   const onSaveRuntime = async () => {

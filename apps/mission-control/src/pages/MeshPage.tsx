@@ -15,7 +15,7 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
-export function MeshPage({ refreshKey: _refreshKey = 0 }: { refreshKey?: number }) {
+export function MeshPage() {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFallbackRefreshing, setIsFallbackRefreshing] = useState(false);

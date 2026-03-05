@@ -12,7 +12,7 @@ import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 
-export function SystemPage(_props: { refreshKey?: number }) {
+export function SystemPage() {
   const [vitals, setVitals] = useState<SystemVitalsResponse | null>(null);
   const [daemonStatus, setDaemonStatus] = useState<Awaited<ReturnType<typeof fetchDaemonStatus>> | null>(null);
   const [daemonLogs, setDaemonLogs] = useState<Array<{ timestamp: string; level: "info" | "warn" | "error"; message: string }>>([]);

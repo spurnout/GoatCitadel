@@ -211,36 +211,7 @@ export class CronAutomationService {
 
     const retriedRunId = randomUUID();
     const now = new Date().toISOString();
-    this.deps.storage.db.prepare(`
-      UPDATE cron_review_items
-      SET status = 'retrying',
-          run_id = @runId,
-          updated_at = @updatedAt,
-          resolved_at = NULL
-      WHERE item_id = @itemId
-    `).run({
-      itemId,
-      runId: retriedRunId,
-      updatedAt: now,
-    });
-    this.deps.storage.db.prepare(`
-      INSERT INTO cron_run_diffs (diff_id, run_id, previous_run_id, diff_json, created_at)
-      VALUES (@diffId, @runId, @previousRunId, @diffJson, @createdAt)
-    `).run({
-      diffId: randomUUID(),
-      runId: retriedRunId,
-      previousRunId: existing.run_id,
-      diffJson: JSON.stringify({
-        retried: true,
-        previousRunId: existing.run_id,
-      }),
-      createdAt: now,
-    });
-    const updated = this.deps.storage.db.prepare(`
-      SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
-      FROM cron_review_items
-      WHERE item_id = ?
-    `).get(itemId) as {
+    let updated: {
       item_id: string;
       job_id: string;
       run_id: string;
@@ -252,6 +223,54 @@ export class CronAutomationService {
       updated_at: string;
       resolved_at: string | null;
     } | undefined;
+    this.deps.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.deps.storage.db.prepare(`
+        UPDATE cron_review_items
+        SET status = 'retrying',
+            run_id = @runId,
+            updated_at = @updatedAt,
+            resolved_at = NULL
+        WHERE item_id = @itemId
+      `).run({
+        itemId,
+        runId: retriedRunId,
+        updatedAt: now,
+      });
+      this.deps.storage.db.prepare(`
+        INSERT INTO cron_run_diffs (diff_id, run_id, previous_run_id, diff_json, created_at)
+        VALUES (@diffId, @runId, @previousRunId, @diffJson, @createdAt)
+      `).run({
+        diffId: randomUUID(),
+        runId: retriedRunId,
+        previousRunId: existing.run_id,
+        diffJson: JSON.stringify({
+          retried: true,
+          previousRunId: existing.run_id,
+        }),
+        createdAt: now,
+      });
+      updated = this.deps.storage.db.prepare(`
+        SELECT item_id, job_id, run_id, severity, status, summary_json, diff_json, created_at, updated_at, resolved_at
+        FROM cron_review_items
+        WHERE item_id = ?
+      `).get(itemId) as {
+        item_id: string;
+        job_id: string;
+        run_id: string;
+        severity: CronReviewItem["severity"];
+        status: CronReviewItem["status"];
+        summary_json: string;
+        diff_json: string | null;
+        created_at: string;
+        updated_at: string;
+        resolved_at: string | null;
+      } | undefined;
+      this.deps.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.deps.storage.db.exec("ROLLBACK");
+      throw error;
+    }
     if (!updated) {
       throw new Error("Cron review item retry update failed.");
     }
