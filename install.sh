@@ -102,62 +102,8 @@ pnpm --dir "${APP_DIR}" install --frozen-lockfile
 cat > "${BIN_DIR}/goatcitadel" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-APP_DIR="${APP_DIR}"
-
-cmd="\${1:-help}"
-if [[ "\$#" -gt 0 ]]; then
-  shift
-fi
-
-case "\${cmd}" in
-  up)
-    exec pnpm --dir "\${APP_DIR}" dev "\$@"
-    ;;
-  gateway)
-    exec pnpm --dir "\${APP_DIR}" dev:gateway "\$@"
-    ;;
-  ui)
-    exec pnpm --dir "\${APP_DIR}" dev:ui "\$@"
-    ;;
-  onboard)
-    exec pnpm --dir "\${APP_DIR}" onboarding:tui "\$@"
-    ;;
-  smoke)
-    exec pnpm --dir "\${APP_DIR}" smoke "\$@"
-    ;;
-  update)
-    exec bash "\${APP_DIR}/install.sh" --install-dir "${BASE_DIR}"
-    ;;
-  doctor)
-    echo "GoatCitadel doctor"
-    echo "  app dir: \${APP_DIR}"
-    echo "  node: \$(node --version)"
-    echo "  pnpm: \$(pnpm --version)"
-    exit 0
-    ;;
-  help|-h|--help)
-    cat <<'USAGE'
-GoatCitadel CLI
-
-Usage:
-  goatcitadel <command>
-
-Commands:
-  up         Start gateway + mission control
-  gateway    Start gateway only
-  ui         Start mission control UI only
-  onboard    Run TUI onboarding wizard
-  smoke      Run smoke tests
-  update     Re-run installer/update
-  doctor     Show environment diagnostics
-USAGE
-    exit 0
-    ;;
-  *)
-    echo "Unknown command: \${cmd}" >&2
-    exec "\$0" help
-    ;;
-esac
+export GOATCITADEL_HOME="${BASE_DIR}"
+exec node "${APP_DIR}/bin/goatcitadel.mjs" "\$@"
 EOF
 
 chmod +x "${BIN_DIR}/goatcitadel"
@@ -193,5 +139,6 @@ echo ""
 echo "Run:"
 echo "  ${BIN_DIR}/goatcitadel onboard"
 echo "  ${BIN_DIR}/goatcitadel up"
+echo "  ${BIN_DIR}/goatcitadel doctor --deep"
 echo "  ${BIN_DIR}/gc onboard"
 echo "  ${BIN_DIR}/gc up"

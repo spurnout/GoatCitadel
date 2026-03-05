@@ -1,304 +1,276 @@
 # GoatCitadel
 
-> [!WARNING]
-> Active development in progress. Expect fast iteration and occasional breaking changes.
+> [!IMPORTANT]
+> GoatCitadel is currently a public beta. The install paths and core validation gates are ready for external testing, but you should still expect fast iteration before 1.0.
 
-Current release line: `0.6.0-beta.1`
+Current release line: `0.6.0-beta.2`
 
-GoatCitadel is a local-first AI operations platform for running agentic workflows with real guardrails.
-It is built for people who want model speed and automation, but with approvals, policy controls, traceability, and recovery paths.
+GoatCitadel is a local-first AI operations platform for people who want more than a chat box: guardrails, approvals, traces, recoverability, prompt testing, runtime visibility, and channel integrations under one roof.
 
 ## What GoatCitadel Is
 
-GoatCitadel is not a single chatbot page. It is an operator system with:
+GoatCitadel is an operator system for serious AI workflows:
 
-- guided chat + tool orchestration,
-- policy-enforced execution,
-- human approvals for risky actions,
-- replayable traces and auditability,
-- MCP and skills expansion,
-- workspace and guidance personalization,
-- benchmark-driven quality testing.
+- agentic chat with tool orchestration
+- explicit tool policy and approval gates
+- Mission Control web UI and a native TUI
+- prompt testing and benchmark workflows
+- MCP, skills, integrations, and workspace guidance
+- local-first runtime with your data on your machine or infrastructure
 
-## Why People Use It
+## Who It Is For
 
-- **Control over convenience**: you decide what tools run, when, and under what policy.
-- **Explainable operations**: approvals, events, traces, and session history are visible.
-- **Local-first posture**: data and runtime are on your machine/infrastructure.
-- **Safety by default**: deny-wins policy, approval gates, bounded risk patterns.
-- **Operator UX**: one Mission Control surface for chat, tests, tasks, memory, costs, and integrations.
+- builders running local or self-hosted AI workflows
+- operators who need auditability and explicit control
+- technical users who want a TUI as well as a browser UI
+- teams experimenting with guarded automation before wider rollout
 
-## Core Capabilities (Deeper View)
+## Public Beta Scope
 
-### 1) Agentic Chat Workspace
+GoatCitadel is share-ready for public beta testing, not general availability.
 
-Chat is split by intent, not just by model:
+Current strengths:
 
-- `Chat`: quick assistance and reasoning.
-- `Cowork`: collaborative planning and structured handoffs.
-- `Code`: implementation-heavy workflows and technical output.
+- installable from GitHub with home-folder launcher setup
+- strict validation gates and coverage gate in place
+- installer-first docs plus manual/developer path
+- web Mission Control plus terminal workflows
+- Discord and Slack are viable first external channels
 
-Includes:
+Still evolving:
 
-- project/session organization,
-- model and mode controls,
-- attachments + citations + traces,
-- constraints/workarounds surfacing when tools are blocked,
-- workspace-aware behavior via guidance docs.
+- durable execution and replay depth
+- richer mobile/companion monitoring
+- deeper team and multi-tenant collaboration features
 
-### 2) Prompt Lab (Quality and Regression)
+## Quick Install
 
-Prompt Lab turns prompting into an engineering loop:
+Default installer location is your home directory under `~/.GoatCitadel` with launchers in `~/.GoatCitadel/bin`.
 
-- import markdown test packs (`[TEST-##]`),
-- run single/next/all,
-- auto-score with model + rule checks,
-- separate **run failures** (runtime/tooling) from **score failures** (quality),
-- benchmark matrix across provider/model combinations,
-- export reports for historical comparison.
+### Windows (recommended)
 
-### 3) Safety, Policy, and Approvals
+Safer download-and-run flow:
 
-Execution model:
+```powershell
+iwr https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
 
-- deny-wins policy resolution,
-- explicit tool grants by scope (`task > agent > session > global`),
-- idempotency requirement on mutating operations,
-- approval queue + replay timeline for risky actions,
-- policy-aware fallback behavior when action is blocked.
+Power-user one-liner:
 
-### 4) MCP + Skills Runtime Expansion
+```powershell
+iwr -useb https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.ps1 | iex
+```
 
-GoatCitadel supports expanding capabilities without giving up control:
+Optional custom install root:
 
-- MCP server registration (`stdio`, `http`, `sse`),
-- trust tiers and per-server policy posture,
-- skills state controls (`enabled`, `sleep`, `disabled`),
-- guarded activation policies,
-- import validation + provenance tracking,
-- dual-source skill discovery with explicit install review.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$HOME\\.GoatCitadel"
+```
 
-### 5) Optional Knowledge Integrations
+### macOS / Linux
 
-Optional integrations stay optional. Example:
+Safer download-and-run flow:
 
-- Obsidian vault integration can be enabled for read/append-safe workflows,
-- disabled by default,
-- path-guarded to allowed subpaths.
-- Bankr is optional and de-cored by default (`bankrBuiltinEnabled: false`),
-- optional Bankr migration path is documented in [`docs/OPTIONAL_BANKR_SKILL.md`](docs/OPTIONAL_BANKR_SKILL.md).
+```bash
+curl -fsSL https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.sh -o install.sh
+bash install.sh
+```
 
-### 6) Operational Observability
+Power-user one-liner:
 
-Mission Control surfaces runtime health, not just responses:
+```bash
+curl -fsSL https://raw.githubusercontent.com/spurnout/GoatCitadel/main/install.sh | bash
+```
 
-- realtime event stream,
-- session/task/system visibility,
-- cost tracking with tracked-vs-unknown usage context,
-- refresh/freshness status,
-- prompt test and benchmark outcomes.
+Optional custom install root:
 
-## Who It’s For
+```bash
+bash install.sh --install-dir "$HOME/.GoatCitadel"
+```
 
-- builders and operators running serious local/self-hosted AI workflows,
-- teams that need auditability and controllable automation,
-- users who want AI assistance without black-box behavior.
+### Verify The Installed Launcher
 
-## Who It’s Not For (Yet)
+```bash
+goatcitadel doctor --deep
+goatcitadel onboard
+goatcitadel up
+```
 
-- zero-setup SaaS expectations,
-- enterprise-grade multi-tenant RBAC/OIDC-heavy compliance stacks,
-- mobile-first-only operations.
+Short alias also works:
+
+```bash
+gc doctor --deep
+gc up
+```
+
+### Update An Existing Install
+
+```bash
+goatcitadel update
+```
+
+## Manual Install / Dev Install
+
+Use this path if you want the raw repo, contributor workflow, or a clean install-from-source validation.
+
+```bash
+git clone https://github.com/spurnout/GoatCitadel.git
+cd GoatCitadel
+corepack enable
+corepack prepare pnpm@10.29.3 --activate
+pnpm install --frozen-lockfile
+pnpm config:sync
+```
+
+### Verify The Repo Build
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm smoke
+pnpm build
+pnpm docs:check
+pnpm coverage:collect
+pnpm coverage:gate
+```
+
+### First Run From A Clone
+
+```bash
+pnpm doctor -- --deep
+pnpm onboarding:tui
+pnpm dev
+```
+
+## First Run
+
+1. Run `goatcitadel doctor --deep` or `pnpm doctor -- --deep`.
+2. Complete onboarding in the TUI or Mission Control.
+3. Set at least one provider/model in Settings.
+4. Open Dashboard and Chat first.
+5. Keep approvals on for anything risky or externally connected.
+
+Mission Control default local URLs:
+
+- UI: `http://localhost:5173`
+- Gateway: `http://127.0.0.1:8787`
+
+## Key Capabilities
+
+### Chat + Operator Control
+
+- chat, cowork, and code modes
+- tool-aware traces and approval handling
+- workspace-aware guidance injection
+- session/project organization
+
+### Prompt Lab
+
+- import markdown prompt packs
+- run single, next, or full test passes
+- benchmark providers/models
+- export reports for regression tracking
+
+### Safety + Policy
+
+- deny-wins policy resolution
+- scoped tool grants
+- risky action approvals
+- path and network guardrails
+- break-glass env vars documented explicitly
+
+### Runtime Expansion
+
+- MCP server registration and policy
+- skill discovery/import with review
+- integrations and channel connections
+- TUI operator workflows for local-first users
+
+## Communication Channels
+
+Current recommended order:
+
+1. `channel.tui` for advanced local operators
+2. `channel.webchat` for browser-first local workflows
+3. `channel.discord` for first external beta rollout
+4. `channel.slack` after Discord sandbox validation
+
+Beginner walkthroughs live here:
+
+- [Communication Channel Setup Guide](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
 
 ## Screenshots
 
 | View | Screenshot |
 |---|---|
-| Summit Dashboard | ![Summit Dashboard](docs/screenshots/mission-control/dashboard.png) |
+| Dashboard | ![Dashboard](docs/screenshots/mission-control/dashboard.png) |
 | Chat Workspace | ![Chat Workspace](docs/screenshots/mission-control/chat.png) |
 | Prompt Lab | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
-| Sessions and Runs | ![Runs and Session Views](docs/screenshots/mission-control/sessions.png) |
-| Tool Access (focused grants/actions area) | ![Tool Access](docs/screenshots/mission-control/tools.png) |
+| Sessions | ![Sessions](docs/screenshots/mission-control/sessions.png) |
+| Tool Access | ![Tool Access](docs/screenshots/mission-control/tools.png) |
 | Skills | ![Skills](docs/screenshots/mission-control/skills.png) |
 | Integrations | ![Integrations](docs/screenshots/mission-control/integrations.png) |
 | MCP Servers | ![MCP Servers](docs/screenshots/mission-control/mcp.png) |
 | Workspaces | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
 
-More screenshots: [`docs/screenshots/mission-control`](docs/screenshots/mission-control)
+Full gallery: [docs/screenshots/mission-control](docs/screenshots/mission-control)
 
 Refresh screenshots locally:
+
+```bash
+pnpm screenshots:capture
+```
+
+Windows wrapper:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screenshots.ps1
 ```
 
-## Quick Start
-
-### Prerequisites
-
-- Node.js `22+`
-- `pnpm`
-- Git
-
-### Install
-
-```bash
-git clone https://github.com/spurnout/GoatCitadel.git
-cd goatcitadel
-pnpm install
-pnpm config:sync
-```
-
-### Verify
-
-```bash
-pnpm -r typecheck
-pnpm -r test
-pnpm smoke
-pnpm -r build
-```
-
-### Doctor (diagnose + safe repair)
-
-```bash
-goatcitadel doctor
-```
-
-Useful flags:
-
-- `--audit-only` / `--no-repair`: diagnostics only, no file writes.
-- `--deep`: include runtime/onboarding API checks.
-- `--yes`: auto-approve guarded repair prompts.
-- `--json`: machine-readable output.
-
-Full setup/testing guide: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
-
-## First 10 Minutes for New Users
-
-1. Open Mission Control and complete onboarding.
-2. Start in `Chat Workspace` with one concrete task.
-3. Use this prompt shape:
-   - Goal
-   - Context
-   - Constraints
-   - Output format
-4. If you want reliability testing, import a prompt pack in Prompt Lab and run a subset first.
-5. Use approvals and policy controls for anything risky.
-
-Beginner prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
-
-Optional Bankr skill guide: [`docs/OPTIONAL_BANKR_SKILL.md`](docs/OPTIONAL_BANKR_SKILL.md)
-
-Beginner channel walkthroughs (Discord first): [`docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
-
-## Communication Channels (Current)
-
-- `channel.tui` (native): best local-first operator experience.
-- `channel.webchat` (native): browser client workflows.
-- `channel.discord` (beta): recommended first external channel.
-- `channel.slack` (beta): supported via bot token flow.
-- Additional channels are listed in catalog as beta/planned and should be treated as pilot-only.
-
-## API Highlights
-
-### Chat
-
-- `POST /api/v1/chat/sessions/:sessionId/agent-send`
-- `POST /api/v1/chat/sessions/:sessionId/agent-send/stream`
-
-### Prompt Lab
-
-- `POST /api/v1/prompt-packs/import`
-- `POST /api/v1/prompt-packs/:packId/tests/:testId/run`
-- `POST /api/v1/prompt-packs/:packId/tests/:testId/score`
-- `GET /api/v1/prompt-packs/:packId/report`
-- `POST /api/v1/prompt-packs/:packId/benchmark/run`
-- `GET /api/v1/prompt-packs/benchmark/:benchmarkRunId`
-
-### Skills
-
-- `GET /api/v1/skills`
-- `PATCH /api/v1/skills/:skillId/state`
-- `POST /api/v1/skills/bulk-state`
-- `GET /api/v1/skills/sources`
-- `POST /api/v1/skills/import/validate`
-- `POST /api/v1/skills/import/install`
-- `GET /api/v1/skills/import/history`
-
-Legacy Bankr built-in endpoints remain for migration and return `410` while built-in support is disabled:
-
-- `GET /api/v1/skills/bankr/policy`
-- `PATCH /api/v1/skills/bankr/policy`
-- `POST /api/v1/skills/bankr/preview`
-- `GET /api/v1/skills/bankr/audit`
-
-### MCP
-
-- `GET /api/v1/mcp/servers`
-- `POST /api/v1/mcp/servers`
-- `PATCH /api/v1/mcp/servers/:serverId`
-- `PATCH /api/v1/mcp/servers/:serverId/policy`
-- `POST /api/v1/mcp/invoke`
-
-### Workspaces + Guidance
-
-- `GET /api/v1/workspaces`
-- `POST /api/v1/workspaces`
-- `PATCH /api/v1/workspaces/:workspaceId`
-- `GET /api/v1/guidance/global`
-- `PUT /api/v1/guidance/global/:docType`
-- `GET /api/v1/workspaces/:workspaceId/guidance`
-- `PUT /api/v1/workspaces/:workspaceId/guidance/:docType`
-
-## Architecture (High Level)
-
-- `apps/gateway`: Fastify API + orchestration runtime
-- `apps/mission-control`: React + Vite UI
-- `packages/contracts`: shared API/domain contracts
-- `packages/storage`: SQLite repositories + transcript/audit persistence
-- `packages/policy-engine`: policy and guard logic
-- `packages/skills`: skill loader and activation behavior
-
-Local data:
-
-- `data/index.db`
-- `data/transcripts/<sessionId>.jsonl`
-- `data/audit/*.jsonl`
-
 ## Security Snapshot
 
-- deny-wins policy semantics,
-- approval-first for risky operations,
-- idempotency keys for mutating routes,
-- policy-gated tool execution,
-- runtime warnings for weak remote auth posture.
+- deny-wins policy semantics
+- approval-first posture for risky actions
+- fail-closed remote bind/auth guard
+- loopback-only approval creation by default
+- path-jail enforcement for workspace and backup paths
+- session-default auth storage in Mission Control
 
-Security override env vars (break-glass only):
+Break-glass env vars are supported but should stay off in shared/public environments:
 
-- `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`: allows non-loopback bind without configured auth.
-- `GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE=1`: allows remote callers to create approvals.
-- `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false`: suppresses weak auth/bind warning logs.
+- `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`
+- `GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE=1`
+- `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false`
 
-Keep these disabled for any shared/public deployment.
+## Optional Integrations
+
+- Bankr is not built in by default. See [docs/OPTIONAL_BANKR_SKILL.md](docs/OPTIONAL_BANKR_SKILL.md).
+- Obsidian remains optional and path-guarded. See [docs/OBSIDIAN_OPTIONAL_INTEGRATION.md](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md).
 
 ## Documentation
 
-- Install/setup/testing: [`docs/INSTALL_SETUP_TESTING.md`](docs/INSTALL_SETUP_TESTING.md)
-- Public share checklist: [`docs/PUBLIC_SHARE_CHECKLIST.md`](docs/PUBLIC_SHARE_CHECKLIST.md)
-- Communication channel setup guide: [`docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md`](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
-- Performance review handshake: [`docs/PERFORMANCE_REVIEW_HANDSHAKE.md`](docs/PERFORMANCE_REVIEW_HANDSHAKE.md)
-- Engineering handbook: [`docs/ENGINEERING_HANDBOOK.md`](docs/ENGINEERING_HANDBOOK.md)
-- MCP + skills curation: [`docs/MCP_SKILLS_CURATION.md`](docs/MCP_SKILLS_CURATION.md)
-- Prompt library: [`docs/GoatCitadel_Prompt_Library.md`](docs/GoatCitadel_Prompt_Library.md)
-- Optional Obsidian integration: [`docs/OBSIDIAN_OPTIONAL_INTEGRATION.md`](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md)
-- Skill import trust policy: [`docs/SKILL_IMPORT_AND_TRUST_POLICY.md`](docs/SKILL_IMPORT_AND_TRUST_POLICY.md)
-- Feature-gap roadmap: [`docs/AGENTIC_FEATURE_GAP_MATRIX.md`](docs/AGENTIC_FEATURE_GAP_MATRIX.md)
-- Runtime guidance: [`GOATCITADEL.md`](GOATCITADEL.md)
-- Agent conventions: [`AGENTS.md`](AGENTS.md)
-- Security policy: [`SECURITY.md`](SECURITY.md)
-- Claude performance review prompt: [`docs/CLAUDE_PERFORMANCE_EFFICIENCY_REVIEW_PROMPT.md`](docs/CLAUDE_PERFORMANCE_EFFICIENCY_REVIEW_PROMPT.md)
-- Claude UI humanization prompt: [`docs/CLAUDE_UI_UX_HUMANIZATION_PROMPT.md`](docs/CLAUDE_UI_UX_HUMANIZATION_PROMPT.md)
+- [Install / Setup / Testing](docs/INSTALL_SETUP_TESTING.md)
+- [Public Share Checklist](docs/PUBLIC_SHARE_CHECKLIST.md)
+- [Communication Channel Setup Guide](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
+- [Security Policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Engineering Handbook](docs/ENGINEERING_HANDBOOK.md)
+- [Runtime Guidance](GOATCITADEL.md)
+- [Vision](VISION.md)
+
+## Beta Caveats
+
+GoatCitadel is ready for public beta testing when the validation gates are green, but you should still treat this as fast-moving software.
+
+The safe operating stance is:
+
+- test from a clean install path
+- use token auth for anything beyond loopback
+- keep break-glass env vars off
+- use sandbox channels first before wider rollout
+- record install or onboarding friction as product bugs, not user error
 
 ## Local-First Promise
 
-GoatCitadel is built so you can run high-leverage AI workflows on infrastructure you control, with transparent execution and explicit safety boundaries.
+GoatCitadel is built so you can run high-leverage AI workflows on infrastructure you control, with transparent execution, explicit safety boundaries, and a real operator surface instead of a black box.

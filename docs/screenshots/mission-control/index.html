@@ -15,71 +15,76 @@
         color: #f3d8c2;
       }
       .wrap {
-        max-width: 1200px;
+        max-width: 1320px;
         margin: 0 auto;
-        padding: 16px;
+        padding: 20px;
       }
       h1 {
-        margin: 0 0 16px;
-        color: #ff8c2a;
+        margin: 0 0 12px;
+        color: #ff9d4d;
+      }
+      p {
+        color: #f0d4ba;
       }
       .grid {
         display: grid;
-        gap: 14px;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       }
       .card {
         border: 1px solid #5f3218;
-        border-radius: 12px;
+        border-radius: 14px;
         background: #2a170d;
-        padding: 10px;
+        padding: 12px;
       }
       .card h2 {
-        margin: 0 0 8px;
-        font-size: 16px;
+        margin: 0 0 10px;
+        font-size: 17px;
         color: #ffb67a;
       }
       img {
         width: 100%;
         height: auto;
-        border-radius: 8px;
+        display: block;
+        border-radius: 10px;
         border: 1px solid #5f3218;
       }
-      a {
-        color: #ff8c2a;
+      code {
+        background: rgba(255, 255, 255, 0.06);
+        padding: 2px 6px;
+        border-radius: 6px;
       }
     </style>
   </head>
   <body>
     <main class="wrap">
       <h1>GoatCitadel Mission Control Screenshots</h1>
-      <p>
-        Folder: <code>&lt;repo-root&gt;\docs\screenshots\mission-control</code>
-      </p>
+      <p>Regenerated from a sanitized public beta demo runtime. Folder: <code>docs/screenshots/mission-control</code></p>
       <div class="grid">
-        <section class="card"><h2>Launch Wizard</h2><img src="./onboarding.png" alt="Launch Wizard screenshot" /></section>
-        <section class="card"><h2>Summit</h2><img src="./dashboard.png" alt="Summit dashboard screenshot" /></section>
-        <section class="card"><h2>Chat Workspace</h2><img src="./chat.png" alt="Chat workspace screenshot" /></section>
+        <section class="card"><h2>Onboarding</h2><img src="./onboarding.png" alt="Onboarding screenshot" /></section>
+        <section class="card"><h2>Dashboard</h2><img src="./dashboard.png" alt="Dashboard screenshot" /></section>
+        <section class="card"><h2>Chat Workspace</h2><img src="./chat.png" alt="Chat Workspace screenshot" /></section>
         <section class="card"><h2>Prompt Lab</h2><img src="./prompt-lab.png" alt="Prompt Lab screenshot" /></section>
         <section class="card"><h2>Improvement</h2><img src="./improvement.png" alt="Improvement screenshot" /></section>
-        <section class="card"><h2>Engine</h2><img src="./system.png" alt="Engine screenshot" /></section>
-        <section class="card"><h2>Trail Files</h2><img src="./files.png" alt="Trail files screenshot" /></section>
-        <section class="card"><h2>Memory Pasture</h2><img src="./memory.png" alt="Memory pasture screenshot" /></section>
-        <section class="card"><h2>Goat Crew</h2><img src="./agents.png" alt="Goat crew screenshot" /></section>
-        <section class="card"><h2>Herd HQ (WebGL)</h2><img src="./office.png" alt="Herd HQ office screenshot" /></section>
-        <section class="card"><h2>Pulse</h2><img src="./activity.png" alt="Pulse activity screenshot" /></section>
-        <section class="card"><h2>Bell Tower</h2><img src="./cron.png" alt="Bell tower screenshot" /></section>
-        <section class="card"><h2>Runs</h2><img src="./sessions.png" alt="Runs screenshot" /></section>
-        <section class="card"><h2>Playbook Skills</h2><img src="./skills.png" alt="Playbook skills screenshot" /></section>
-        <section class="card"><h2>Feed Ledger</h2><img src="./costs.png" alt="Feed ledger screenshot" /></section>
-        <section class="card"><h2>Forge</h2><img src="./settings.png" alt="Forge settings screenshot" /></section>
-        <section class="card"><h2>Tool Access</h2><img src="./tools.png" alt="Tool Access screenshot" /></section>
-        <section class="card"><h2>Gatehouse Queue</h2><img src="./approvals.png" alt="Gatehouse approvals screenshot" /></section>
-        <section class="card"><h2>Trailboard</h2><img src="./tasks.png" alt="Trailboard screenshot" /></section>
-        <section class="card"><h2>Connections</h2><img src="./integrations.png" alt="Connections screenshot" /></section>
-        <section class="card"><h2>MCP Servers</h2><img src="./mcp.png" alt="MCP servers screenshot" /></section>
         <section class="card"><h2>Workspaces</h2><img src="./workspaces.png" alt="Workspaces screenshot" /></section>
+        <section class="card"><h2>System</h2><img src="./system.png" alt="System screenshot" /></section>
+        <section class="card"><h2>Files</h2><img src="./files.png" alt="Files screenshot" /></section>
+        <section class="card"><h2>Memory</h2><img src="./memory.png" alt="Memory screenshot" /></section>
+        <section class="card"><h2>Agents</h2><img src="./agents.png" alt="Agents screenshot" /></section>
+        <section class="card"><h2>Office</h2><img src="./office.png" alt="Office screenshot" /></section>
+        <section class="card"><h2>Activity</h2><img src="./activity.png" alt="Activity screenshot" /></section>
+        <section class="card"><h2>Scheduler</h2><img src="./cron.png" alt="Scheduler screenshot" /></section>
+        <section class="card"><h2>Sessions</h2><img src="./sessions.png" alt="Sessions screenshot" /></section>
+        <section class="card"><h2>Skills</h2><img src="./skills.png" alt="Skills screenshot" /></section>
+        <section class="card"><h2>Costs</h2><img src="./costs.png" alt="Costs screenshot" /></section>
+        <section class="card"><h2>Settings</h2><img src="./settings.png" alt="Settings screenshot" /></section>
+        <section class="card"><h2>Tool Access</h2><img src="./tools.png" alt="Tool Access screenshot" /></section>
+        <section class="card"><h2>Approvals</h2><img src="./approvals.png" alt="Approvals screenshot" /></section>
+        <section class="card"><h2>Tasks</h2><img src="./tasks.png" alt="Tasks screenshot" /></section>
+        <section class="card"><h2>Integrations</h2><img src="./integrations.png" alt="Integrations screenshot" /></section>
+        <section class="card"><h2>MCP Servers</h2><img src="./mcp.png" alt="MCP Servers screenshot" /></section>
         <section class="card"><h2>Mesh</h2><img src="./mesh.png" alt="Mesh screenshot" /></section>
-        <section class="card"><h2>NPU Runtime</h2><img src="./npu.png" alt="NPU runtime screenshot" /></section>
+        <section class="card"><h2>NPU Runtime</h2><img src="./npu.png" alt="NPU Runtime screenshot" /></section>
       </div>
     </main>
   </body>

@@ -1,6 +1,6 @@
 {
   "name": "@goatcitadel/storage",
-  "version": "0.6.0-beta.1",
+  "version": "0.6.0-beta.2",
   "type": "module",
   "main": "./dist/storage/src/index.js",
   "types": "./dist/storage/src/index.d.ts",
@@ -21,4 +21,5 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   }
 }
+
 

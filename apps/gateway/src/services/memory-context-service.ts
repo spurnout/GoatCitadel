@@ -300,7 +300,7 @@ export class MemoryContextService {
   private async collectSources(input: MemoryContextComposeRequest): Promise<MemorySourceInput[]> {
     const sources: MemorySourceInput[] = [];
     if (input.sessionId) {
-      const transcript = await this.storage.transcripts.read(input.sessionId);
+      const transcript = await readTranscriptOrEmpty(this.storage, input.sessionId);
       sources.push({
         type: "transcript",
         events: transcript,
@@ -325,6 +325,17 @@ export class MemoryContextService {
     }
 
     return sources;
+  }
+}
+
+async function readTranscriptOrEmpty(storage: Storage, sessionId: string) {
+  try {
+    return await storage.transcripts.read(sessionId);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
   }
 }
 

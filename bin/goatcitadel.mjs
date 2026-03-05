@@ -4,19 +4,21 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 
-const repoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/spurnout/GoatCitadel.git";
+const defaultRepoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/spurnout/GoatCitadel.git";
 const preferredBaseDir = path.join(os.homedir(), ".GoatCitadel");
 const legacyBaseDir = path.join(os.homedir(), ".goatcitadel");
-const baseDir = process.env.GOATCITADEL_HOME
-  || (fs.existsSync(path.join(preferredBaseDir, "app")) ? preferredBaseDir
-    : fs.existsSync(path.join(legacyBaseDir, "app")) ? legacyBaseDir
-      : preferredBaseDir);
-const appDir = path.join(baseDir, "app");
 const pnpmVersion = "10.29.3";
 
 const args = process.argv.slice(2);
 const command = args[0] || "help";
-const rest = args.slice(1);
+const rawRest = args.slice(1);
+const installArgs = command === "install" || command === "update"
+  ? parseInstallArgs(rawRest)
+  : { passthrough: rawRest };
+const repoUrl = installArgs.repoUrl || defaultRepoUrl;
+const baseDir = resolveBaseDir(installArgs.installDir);
+const appDir = path.join(baseDir, "app");
+const rest = installArgs.passthrough;
 
 async function main() {
   if (command === "help" || command === "-h" || command === "--help") {
@@ -111,6 +113,51 @@ function installOrUpdate() {
   console.log("  goatcitadel up");
 }
 
+function parseInstallArgs(argv) {
+  let installDir;
+  let repoUrlOverride;
+  const passthrough = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === "--install-dir") {
+      installDir = argv[index + 1];
+      if (!installDir) {
+        throw new Error("Missing value for --install-dir");
+      }
+      index += 1;
+      continue;
+    }
+    if (value === "--repo") {
+      repoUrlOverride = argv[index + 1];
+      if (!repoUrlOverride) {
+        throw new Error("Missing value for --repo");
+      }
+      index += 1;
+      continue;
+    }
+    passthrough.push(value);
+  }
+  return {
+    installDir,
+    repoUrl: repoUrlOverride,
+    passthrough,
+  };
+}
+
+function resolveBaseDir(installDirOverride) {
+  if (installDirOverride?.trim()) {
+    return path.resolve(installDirOverride.trim());
+  }
+  if (process.env.GOATCITADEL_HOME?.trim()) {
+    return path.resolve(process.env.GOATCITADEL_HOME.trim());
+  }
+  return fs.existsSync(path.join(preferredBaseDir, "app"))
+    ? preferredBaseDir
+    : fs.existsSync(path.join(legacyBaseDir, "app"))
+      ? legacyBaseDir
+      : preferredBaseDir;
+}
+
 function doctor(extraArgs = []) {
   console.log("Running GoatCitadel doctor...");
   run("pnpm", ["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "doctor", ...extraArgs]);
@@ -151,8 +198,8 @@ Usage:
   gc <command>
 
 Commands:
-  install    Install GoatCitadel from GitHub
-  update     Update existing install from GitHub
+  install    Install GoatCitadel from GitHub [--install-dir <path>] [--repo <url>]
+  update     Update existing install from GitHub [--install-dir <path>] [--repo <url>]
   up         Start gateway + mission control
   gateway    Start gateway only
   ui         Start mission control UI only
@@ -164,6 +211,10 @@ Commands:
   npu        Run local NPU sidecar (Python)
   doctor     Run diagnostics + safe repair (flags: --audit-only --no-repair --deep --yes --json --profile)
   help       Show this help
+
+Install defaults:
+  repo       ${defaultRepoUrl}
+  base dir   ${baseDir}
 `);
 }
 

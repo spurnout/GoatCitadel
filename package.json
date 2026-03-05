@@ -1,7 +1,7 @@
 {
   "name": "goatcitadel",
   "private": true,
-  "version": "0.6.0-beta.1",
+  "version": "0.6.0-beta.2",
   "packageManager": "pnpm@10.29.3",
   "bin": {
     "goatcitadel": "./bin/goatcitadel.mjs",
@@ -26,6 +26,7 @@
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
     "prompt:gates": "pnpm tsx scripts/run-prompt-pack-gates.ts",
     "prompt:gates:targeted": "pnpm tsx scripts/run-prompt-pack-gates.ts --target-only",
+    "screenshots:capture": "pnpm --filter @goatcitadel/policy-engine exec node scripts/capture-mission-control-screenshots.mjs",
     "inventory:inline-sql": "node scripts/inventory-inline-sql.mjs",
     "coverage:collect": "node scripts/coverage-collect.mjs",
     "coverage:gate": "node scripts/coverage-gate.mjs",
@@ -44,4 +45,5 @@
     "vitest": "^2.1.9"
   }
 }
+
 

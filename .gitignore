@@ -18,6 +18,12 @@ artifacts/*
 !artifacts/perf/
 !artifacts/perf/*.json
 !artifacts/perf/*.md
+!artifacts/reviews/
+artifacts/reviews/*
+!artifacts/reviews/public-share-readiness-2026-03-05.md
+!artifacts/release/
+artifacts/release/*
+!artifacts/release/public-share-readiness.md
 data/index.db
 data/index.db-shm
 data/index.db-wal

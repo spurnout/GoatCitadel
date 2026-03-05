@@ -60,64 +60,9 @@ Write-Host "Installing workspace dependencies..."
 $launcherCmd = @"
 @echo off
 setlocal
-set "APP_DIR=$($AppDir)"
-set "CMD=%~1"
-if "%CMD%"=="" set "CMD=help"
-if not "%~1"=="" shift
-
-if /I "%CMD%"=="up" (
-  pnpm --dir "%APP_DIR%" dev %*
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="gateway" (
-  pnpm --dir "%APP_DIR%" dev:gateway %*
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="ui" (
-  pnpm --dir "%APP_DIR%" dev:ui %*
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="onboard" (
-  pnpm --dir "%APP_DIR%" onboarding:tui %*
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="smoke" (
-  pnpm --dir "%APP_DIR%" smoke %*
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="update" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "$($AppDir)\install.ps1" -InstallDir "$($BaseDir)"
-  exit /b %ERRORLEVEL%
-)
-if /I "%CMD%"=="doctor" (
-  echo GoatCitadel doctor
-  echo   app dir: %APP_DIR%
-  node --version
-  pnpm --version
-  exit /b 0
-)
-if /I "%CMD%"=="help" goto :help
-if /I "%CMD%"=="-h" goto :help
-if /I "%CMD%"=="--help" goto :help
-
-echo Unknown command: %CMD%
-echo.
-
-:help
-echo GoatCitadel CLI
-echo.
-echo Usage:
-echo   goatcitadel ^<command^>
-echo.
-echo Commands:
-echo   up         Start gateway + mission control
-echo   gateway    Start gateway only
-echo   ui         Start mission control UI only
-echo   onboard    Run TUI onboarding wizard
-echo   smoke      Run smoke tests
-echo   update     Re-run installer/update
-echo   doctor     Show environment diagnostics
-exit /b 0
+set "GOATCITADEL_HOME=$($BaseDir)"
+node "$($AppDir)\bin\goatcitadel.mjs" %*
+exit /b %ERRORLEVEL%
 "@
 
 $launcherPs1 = @"
@@ -170,5 +115,6 @@ Write-Host ""
 Write-Host "Run:"
 Write-Host "  goatcitadel onboard"
 Write-Host "  goatcitadel up"
+Write-Host "  goatcitadel doctor --deep"
 Write-Host "  gc onboard"
 Write-Host "  gc up"

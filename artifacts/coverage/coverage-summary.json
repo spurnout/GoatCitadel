@@ -1,18 +1,18 @@
 {
-  "generatedAt": "2026-03-05T19:34:35.403Z",
+  "generatedAt": "2026-03-05T23:09:31.477Z",
   "sourceFiles": 265,
   "coveredFiles": 229,
   "uncoveredFiles": 36,
   "fileCoveragePercent": 86.42,
-  "linePercent": 65.43,
-  "branchPercent": 61.89,
+  "linePercent": 65.19,
+  "branchPercent": 61.54,
   "lineTotals": {
-    "covered": 46044,
-    "total": 70369
+    "covered": 45881,
+    "total": 70383
   },
   "branchTotals": {
-    "covered": 5427,
-    "total": 8769
+    "covered": 5379,
+    "total": 8740
   },
   "effectiveThresholds": {
     "line": 65,

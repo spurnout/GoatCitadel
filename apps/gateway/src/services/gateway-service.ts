@@ -11867,12 +11867,12 @@ export class GatewayService {
   }
 
   private requireChatSession(sessionId: string): ChatSessionRecord {
-    const record = this.listChatSessions({ scope: "all", view: "all", limit: 5000 })
-      .find((item) => item.sessionId === sessionId);
-    if (!record) {
-      throw new Error(`Chat session ${sessionId} not found`);
-    }
-    return record;
+    const session = this.getSession(sessionId);
+    const projectLink = this.storage.chatSessionProjects.get(sessionId);
+    const project = projectLink ? this.storage.chatProjects.find(projectLink.projectId) : undefined;
+    const meta = this.storage.chatSessionMeta.get(sessionId)
+      ?? this.storage.chatSessionMeta.ensure(sessionId, undefined, project?.workspaceId ?? DEFAULT_WORKSPACE_ID);
+    return toChatSessionRecord(session, meta, project);
   }
 
   private routeFromSession(session: SessionMeta): {

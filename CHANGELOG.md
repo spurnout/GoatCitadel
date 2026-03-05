@@ -6,7 +6,7 @@ The format is inspired by Keep a Changelog and uses semantic pre-release tags.
 
 ## [Unreleased]
 
-Target release: `0.6.0-beta.1`
+Target release: `0.6.0-beta.2`
 
 ### Added
 
@@ -57,10 +57,20 @@ Target release: `0.6.0-beta.1`
 - Built-in Bankr moved behind feature flag default-off (`bankrBuiltinEnabled: false`).
 - Legacy Bankr built-in endpoints now return migration guidance (`410`) while disabled.
 - Mission Control Skills page now shows a compact Bankr migration card instead of built-in Bankr policy controls.
-- Root/workspace package versions bumped to `0.6.0-beta.1`.
-- README refreshed for public-facing use:
-  - screenshot layout in compact table form,
-  - explicit docs links for channel setup and public share checklist.
+- Root/workspace package versions bumped to `0.6.0-beta.2`.
+- Public-share install surface refreshed:
+  - installer-generated launchers now delegate directly to the real repo CLI,
+  - installer-first docs lead the public install path,
+  - manual clone path remains documented separately for contributors and validation.
+- Screenshot pipeline rebuilt for public use:
+  - viewport-based captures instead of full-page dumps,
+  - sanitized demo runtime instead of local machine state,
+  - refreshed Mission Control gallery and README screenshot set.
+- README refreshed for public beta sharing:
+  - installer-first quick start,
+  - clearer manual/dev install path,
+  - updated communication channel guidance,
+  - public beta scope and caveat section.
 
 ### Notes
 

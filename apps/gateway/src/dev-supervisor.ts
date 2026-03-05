@@ -19,6 +19,8 @@ const restartBaseBackoffMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_BASE
 const restartMaxBackoffMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_MAX_BACKOFF_MS ?? 30_000);
 const restartCircuitOpenMs = Number(process.env.GOATCITADEL_GATEWAY_RESTART_CIRCUIT_MS ?? 60_000);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const configuredRoot = process.env.GOATCITADEL_ROOT_DIR?.trim();
+const runtimeRoot = configuredRoot ? path.resolve(configuredRoot) : repoRoot;
 const gatewayDir = path.join(repoRoot, "apps", "gateway");
 
 const watchRoots = [
@@ -43,6 +45,7 @@ const failureTimestamps: number[] = [];
 
 async function main(): Promise<void> {
   console.log(`[gateway-supervisor] root: ${repoRoot}`);
+  console.log(`[gateway-supervisor] runtime root: ${runtimeRoot}`);
   console.log(`[gateway-supervisor] watching for changes (${pollMs}ms poll)`);
   console.log(`[gateway-supervisor] target health: http://${gatewayHealthHost}:${gatewayPort}/health`);
   console.log(
@@ -117,7 +120,7 @@ async function startChild(): Promise<void> {
     cwd: gatewayDir,
     env: {
       ...process.env,
-      GOATCITADEL_ROOT_DIR: repoRoot,
+      GOATCITADEL_ROOT_DIR: runtimeRoot,
       GATEWAY_HOST: gatewayHost,
       GATEWAY_PORT: String(gatewayPort),
       GOATCITADEL_GATEWAY_SUPERVISED: "1",

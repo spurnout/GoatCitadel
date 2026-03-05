@@ -1,9 +1,9 @@
 # Coverage Summary
 
-- Generated: 2026-03-05T19:34:35.403Z
+- Generated: 2026-03-05T23:09:31.477Z
 - File coverage: 86.42% (229/265)
-- Line coverage: 65.43% (46044/70369)
-- Branch coverage: 61.89% (5427/8769)
+- Line coverage: 65.19% (45881/70383)
+- Branch coverage: 61.54% (5379/8740)
 - Effective thresholds: line 65%, branch 45%
 - Threshold source: line=default, branch=default
 
