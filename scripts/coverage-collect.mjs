@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import ts from "typescript";
 
 const repoRoot = process.cwd();
 const artifactsDir = path.join(repoRoot, "artifacts", "coverage");
@@ -15,6 +16,14 @@ await removeCoverageDirectories(path.join(repoRoot, "apps"));
 await removeCoverageDirectories(path.join(repoRoot, "packages"));
 
 execSync("pnpm -r --if-present test:coverage", {
+  cwd: repoRoot,
+  stdio: "inherit",
+});
+execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:smoke", {
+  cwd: repoRoot,
+  stdio: "inherit",
+});
+execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:exercise", {
   cwd: repoRoot,
   stdio: "inherit",
 });
@@ -113,8 +122,17 @@ async function removeCoverageDirectories(root) {
     if (!entry.isDirectory()) {
       continue;
     }
-    const coverageDir = path.join(root, entry.name, "coverage");
-    await fs.rm(coverageDir, { recursive: true, force: true });
+    const packageDir = path.join(root, entry.name);
+    const packageEntries = await safeReadDir(packageDir);
+    for (const packageEntry of packageEntries) {
+      if (!packageEntry.isDirectory()) {
+        continue;
+      }
+      if (!packageEntry.name.startsWith("coverage")) {
+        continue;
+      }
+      await fs.rm(path.join(packageDir, packageEntry.name), { recursive: true, force: true });
+    }
   }
 }
 
@@ -127,12 +145,22 @@ async function findCoverageFinalFiles(root) {
       if (!entry.isDirectory()) {
         continue;
       }
-      const coverageFile = path.join(dir, entry.name, "coverage", "coverage-final.json");
-      try {
-        await fs.access(coverageFile);
-        candidates.push(coverageFile);
-      } catch {
-        // package may not produce coverage output
+      const packageDir = path.join(dir, entry.name);
+      const packageEntries = await safeReadDir(packageDir);
+      for (const packageEntry of packageEntries) {
+        if (!packageEntry.isDirectory()) {
+          continue;
+        }
+        if (!packageEntry.name.startsWith("coverage")) {
+          continue;
+        }
+        const coverageFile = path.join(packageDir, packageEntry.name, "coverage-final.json");
+        try {
+          await fs.access(coverageFile);
+          candidates.push(coverageFile);
+        } catch {
+          // report folder may not contain coverage-final
+        }
       }
     }
   }
@@ -160,10 +188,63 @@ async function loadCoverageMap(files, warningsList) {
 
     for (const [coveredPath, data] of Object.entries(parsed)) {
       const normalized = normalizePathForLookup(String(coveredPath));
-      map.set(normalized, data);
+      const existing = map.get(normalized);
+      map.set(normalized, existing ? mergeCoverageEntries(existing, data) : data);
     }
   }
   return map;
+}
+
+function mergeCoverageEntries(left, right) {
+  const merged = {
+    ...left,
+    ...right,
+    s: mergeHitMap(left.s, right.s),
+    l: mergeHitMap(left.l, right.l),
+    b: mergeBranchMap(left.b, right.b),
+    statementMap: {
+      ...(left.statementMap ?? {}),
+      ...(right.statementMap ?? {}),
+    },
+    fnMap: {
+      ...(left.fnMap ?? {}),
+      ...(right.fnMap ?? {}),
+    },
+    branchMap: {
+      ...(left.branchMap ?? {}),
+      ...(right.branchMap ?? {}),
+    },
+  };
+  return merged;
+}
+
+function mergeHitMap(left = {}, right = {}) {
+  const merged = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    const previous = Number(merged[key] ?? 0);
+    const next = Number(value ?? 0);
+    merged[key] = Number.isFinite(previous) && Number.isFinite(next)
+      ? Math.max(previous, next)
+      : next;
+  }
+  return merged;
+}
+
+function mergeBranchMap(left = {}, right = {}) {
+  const merged = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    const existing = Array.isArray(merged[key]) ? merged[key] : [];
+    const incoming = Array.isArray(value) ? value : [];
+    const length = Math.max(existing.length, incoming.length);
+    const next = [];
+    for (let index = 0; index < length; index += 1) {
+      const previous = Number(existing[index] ?? 0);
+      const current = Number(incoming[index] ?? 0);
+      next.push(Number.isFinite(previous) && Number.isFinite(current) ? Math.max(previous, current) : current);
+    }
+    merged[key] = next;
+  }
+  return merged;
 }
 
 async function collectSourceFiles(root) {
@@ -216,29 +297,32 @@ function computeCoverageMetrics(entry) {
 
   const lineCoverage = entry && typeof entry === "object" && "l" in entry
     ? entry.l ?? {}
-    : null;
+    : {};
 
-  let lineTotal = 0;
-  let lineCovered = 0;
-
+  const lineHits = new Map();
   if (lineCoverage && typeof lineCoverage === "object") {
-    const values = Object.values(lineCoverage);
-    lineTotal = values.length;
-    lineCovered = values.filter((count) => Number(count) > 0).length;
-  } else {
-    const lineHits = new Map();
-    for (const [statementId, count] of statements) {
-      const location = statementMap[statementId];
-      const line = Number(location?.start?.line);
+    for (const [lineNumber, count] of Object.entries(lineCoverage)) {
+      const line = Number(lineNumber);
       if (!Number.isFinite(line) || line <= 0) {
         continue;
       }
       const current = lineHits.get(line) ?? false;
       lineHits.set(line, current || Number(count) > 0);
     }
-    lineTotal = lineHits.size;
-    lineCovered = [...lineHits.values()].filter(Boolean).length;
   }
+
+  for (const [statementId, count] of statements) {
+    const location = statementMap[statementId];
+    const line = Number(location?.start?.line);
+    if (!Number.isFinite(line) || line <= 0) {
+      continue;
+    }
+    const current = lineHits.get(line) ?? false;
+    lineHits.set(line, current || Number(count) > 0);
+  }
+
+  const lineTotal = lineHits.size;
+  const lineCovered = [...lineHits.values()].filter(Boolean).length;
 
   const branchMap = entry && typeof entry === "object" && "b" in entry
     ? entry.b ?? {}
@@ -268,11 +352,75 @@ async function countRelevantLines(filePath) {
   } catch {
     return 0;
   }
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("//"))
-    .length;
+
+  const candidates = collectCandidateLines(raw);
+  if (candidates.size === 0) {
+    return 0;
+  }
+
+  const scriptKind = filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const source = ts.createSourceFile(filePath, raw, ts.ScriptTarget.Latest, true, scriptKind);
+  const typeOnlyRanges = [];
+  collectTypeOnlyRanges(source, typeOnlyRanges);
+  for (const range of typeOnlyRanges) {
+    for (let line = range.start; line <= range.end; line += 1) {
+      candidates.delete(line);
+    }
+  }
+
+  return candidates.size;
+}
+
+function collectCandidateLines(raw) {
+  const candidates = new Set();
+  const lines = raw.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = (lines[index] ?? "").trim();
+    if (!trimmed || trimmed.startsWith("//")) {
+      continue;
+    }
+    candidates.add(index + 1);
+  }
+  return candidates;
+}
+
+function collectTypeOnlyRanges(node, out) {
+  if (isTypeOnlyNode(node)) {
+    out.push(getNodeLineRange(node));
+    return;
+  }
+  ts.forEachChild(node, (child) => collectTypeOnlyRanges(child, out));
+}
+
+function isTypeOnlyNode(node) {
+  if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
+    return true;
+  }
+  if (ts.isImportDeclaration(node)) {
+    return Boolean(node.importClause?.isTypeOnly);
+  }
+  if (ts.isExportDeclaration(node)) {
+    return Boolean(node.isTypeOnly);
+  }
+  if (ts.isImportEqualsDeclaration(node)) {
+    return Boolean(node.isTypeOnly);
+  }
+  if (hasDeclareModifier(node)) {
+    return true;
+  }
+  return false;
+}
+
+function hasDeclareModifier(node) {
+  const modifiers = node.modifiers ?? [];
+  return modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword);
+}
+
+function getNodeLineRange(node) {
+  const source = node.getSourceFile();
+  const start = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+  const end = source.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+  return { start, end };
 }
 
 function normalizePathForLookup(inputPath) {

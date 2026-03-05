@@ -1,9 +1,9 @@
 # Coverage Summary
 
-- Generated: 2026-03-05T15:24:40.127Z
-- File coverage: 64.75% (169/261)
-- Line coverage: 21.33% (13562/63595)
-- Branch coverage: 58.35% (1115/1911)
+- Generated: 2026-03-05T19:34:35.403Z
+- File coverage: 86.42% (229/265)
+- Line coverage: 65.43% (46044/70369)
+- Branch coverage: 61.89% (5427/8769)
 - Effective thresholds: line 65%, branch 45%
 - Threshold source: line=default, branch=default
 
@@ -12,6 +12,8 @@
 
 ## Coverage Reports
 - `apps/gateway/coverage/coverage-final.json`
+- `apps/gateway/coverage-exercise/coverage-final.json`
+- `apps/gateway/coverage-smoke/coverage-final.json`
 - `apps/mission-control/coverage/coverage-final.json`
 - `packages/contracts/coverage/coverage-final.json`
 - `packages/gateway-core/coverage/coverage-final.json`
@@ -23,60 +25,6 @@
 - `packages/storage/coverage/coverage-final.json`
 
 ## Uncovered Sample (first 200)
-- `apps/gateway/src/admin-cli.ts`
-- `apps/gateway/src/app.ts`
-- `apps/gateway/src/config-sync.ts`
-- `apps/gateway/src/dev-supervisor.ts`
-- `apps/gateway/src/doctor/cli.ts`
-- `apps/gateway/src/doctor/engine.ts`
-- `apps/gateway/src/main.ts`
-- `apps/gateway/src/onboarding-tui.ts`
-- `apps/gateway/src/plugins/idempotency.ts`
-- `apps/gateway/src/plugins/sqlite.ts`
-- `apps/gateway/src/routes/admin.ts`
-- `apps/gateway/src/routes/agents.ts`
-- `apps/gateway/src/routes/comms.ts`
-- `apps/gateway/src/routes/costs.ts`
-- `apps/gateway/src/routes/daemon.ts`
-- `apps/gateway/src/routes/gateway-events.ts`
-- `apps/gateway/src/routes/improvement.ts`
-- `apps/gateway/src/routes/knowledge.ts`
-- `apps/gateway/src/routes/llm.ts`
-- `apps/gateway/src/routes/media.ts`
-- `apps/gateway/src/routes/mesh.ts`
-- `apps/gateway/src/routes/onboarding.ts`
-- `apps/gateway/src/routes/orchestration.ts`
-- `apps/gateway/src/routes/secrets.ts`
-- `apps/gateway/src/routes/sessions-list.ts`
-- `apps/gateway/src/routes/tools-invoke.ts`
-- `apps/gateway/src/routes/ui-change-risk.ts`
-- `apps/gateway/src/routes/voice.ts`
-- `apps/gateway/src/services/gateway-service.ts`
-- `apps/gateway/src/services/memory-context-service.ts`
-- `apps/gateway/src/services/npu-sidecar-service.ts`
-- `apps/gateway/src/services/research-service.ts`
-- `apps/gateway/src/smoke.ts`
-- `apps/gateway/src/tui/api-client.ts`
-- `apps/gateway/src/tui/main.ts`
-- `apps/gateway/src/tui/profile.ts`
-- `apps/gateway/src/tui/tools-cli.ts`
-- `apps/mission-control/src/App.tsx`
-- `apps/mission-control/src/components/ClockBadge.tsx`
-- `apps/mission-control/src/components/CommandPalette.tsx`
-- `apps/mission-control/src/components/OfficeCanvas.tsx`
-- `apps/mission-control/src/main.tsx`
-- `apps/mission-control/src/pages/ActivityPage.tsx`
-- `apps/mission-control/src/pages/AgentsPage.tsx`
-- `apps/mission-control/src/pages/ApprovalsPage.tsx`
-- `apps/mission-control/src/pages/DashboardPage.tsx`
-- `apps/mission-control/src/pages/LiveFeedPage.tsx`
-- `apps/mission-control/src/pages/MeshPage.tsx`
-- `apps/mission-control/src/pages/NpuPage.tsx`
-- `apps/mission-control/src/pages/OfficePage.tsx`
-- `apps/mission-control/src/pages/OnboardingPage.tsx`
-- `apps/mission-control/src/pages/SessionsPage.tsx`
-- `apps/mission-control/src/pages/SystemPage.tsx`
-- `apps/mission-control/src/pages/ToolsPage.tsx`
 - `packages/contracts/src/admin.ts`
 - `packages/contracts/src/approvals.ts`
 - `packages/contracts/src/auth.ts`
@@ -113,5 +61,3 @@
 - `packages/contracts/src/voice.ts`
 - `packages/contracts/src/workspaces.ts`
 - `packages/memory-core/src/types.ts`
-- `packages/orchestration/src/index.ts`
-- `packages/orchestration/src/worktree-manager.ts`

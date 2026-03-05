@@ -11,7 +11,7 @@ interface JsonResponse<T = unknown> {
   body: T;
 }
 
-async function run(): Promise<void> {
+export async function runSmoke(): Promise<void> {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "goatcitadel-smoke-"));
   const priorRoot = process.env.GOATCITADEL_ROOT_DIR;
@@ -702,8 +702,12 @@ async function postJson<T>(
   };
 }
 
-run().catch((error) => {
-  console.error("Smoke tests failed.");
-  console.error(error);
-  process.exitCode = 1;
-});
+const smokeScriptPath = path.resolve(fileURLToPath(import.meta.url));
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+if (invokedPath === smokeScriptPath) {
+  runSmoke().catch((error) => {
+    console.error("Smoke tests failed.");
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
