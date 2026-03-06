@@ -183,7 +183,7 @@ foreach ($workspacePackage in $WorkspaceBootstrapBuildPackages) {
   Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "--filter", $workspacePackage, "build") -FailureMessage "Failed to build required GoatCitadel workspace package $workspacePackage"
 }
 Write-Host "Installing Playwright Chromium runtime..."
-Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "exec", "playwright", "install", "chromium") -FailureMessage "Failed to install required Playwright Chromium runtime"
+Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "--filter", "@goatcitadel/policy-engine", "exec", "playwright", "install", "chromium") -FailureMessage "Failed to install required Playwright Chromium runtime"
 if ($null -ne $preservedManagedConfig) {
   Write-Host "Re-syncing preserved GoatCitadel config after update..."
   Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "config:sync") -FailureMessage "Failed to sync preserved GoatCitadel config after update"

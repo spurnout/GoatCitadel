@@ -127,7 +127,7 @@ function installOrUpdate() {
   runPnpm(["--dir", appDir, "install", "--frozen-lockfile"]);
   buildWorkspaceBootstrapPackages();
   console.log("Installing Playwright Chromium runtime...");
-  runPnpm(["--dir", appDir, "exec", "playwright", "install", "chromium"]);
+  runPnpm(["--dir", appDir, "--filter", "@goatcitadel/policy-engine", "exec", "playwright", "install", "chromium"]);
   if (preservedManagedConfig) {
     console.log("Re-syncing preserved GoatCitadel config after update...");
     runPnpm(["--dir", appDir, "config:sync"]);

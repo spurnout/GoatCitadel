@@ -275,7 +275,7 @@ Installer-based installs provision Playwright Chromium automatically.
 If you are running from a raw source clone, install Chromium once with:
 
 ```bash
-pnpm exec playwright install chromium
+pnpm --filter @goatcitadel/policy-engine exec playwright install chromium
 ```
 
 ## Optional: NPU Sidecar

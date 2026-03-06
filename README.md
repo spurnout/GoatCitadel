@@ -149,7 +149,7 @@ pnpm config:sync
 If you want browser research/automation from a raw source clone, install Playwright Chromium once:
 
 ```bash
-pnpm exec playwright install chromium
+pnpm --filter @goatcitadel/policy-engine exec playwright install chromium
 ```
 
 ### Verify The Repo Build

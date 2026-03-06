@@ -373,7 +373,7 @@ async function loadPlaywright(): Promise<PlaywrightModule> {
   } catch (error) {
     const reason = (error as Error).message;
     throw new Error(
-      `Playwright runtime is unavailable: ${reason}. Install dependencies and run "pnpm exec playwright install chromium".`,
+      `Playwright runtime is unavailable: ${reason}. Install dependencies and run "pnpm --filter @goatcitadel/policy-engine exec playwright install chromium".`,
     );
   }
 }
@@ -405,7 +405,7 @@ async function ensurePlaywrightChromiumInstalled(): Promise<void> {
       const pnpmCommand = resolvePnpmCommand();
       const result = spawnSync(
         pnpmCommand,
-        ["exec", "playwright", "install", "chromium"],
+        ["--filter", "@goatcitadel/policy-engine", "exec", "playwright", "install", "chromium"],
         {
           cwd: appDir,
           stdio: "inherit",

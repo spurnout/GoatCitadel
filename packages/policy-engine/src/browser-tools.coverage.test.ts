@@ -252,6 +252,17 @@ describe("browser tools coverage sweep", () => {
 
   it("auto-installs Playwright Chromium when the executable is missing and retries launch", async () => {
     const config = createConfig(tempRoot);
+    mocked.launch.mockReset();
+    mocked.spawnSync.mockReset();
+    mocked.spawnSync.mockImplementation((command: string, args?: string[]) => {
+      if (Array.isArray(args) && args[0] === "--version") {
+        return { status: 0, stdout: "10.29.3", stderr: "" };
+      }
+      if (Array.isArray(args) && args.join(" ") === "--filter @goatcitadel/policy-engine exec playwright install chromium") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected spawnSync call in test: ${command} ${(args ?? []).join(" ")}`);
+    });
     mocked.launch
       .mockRejectedValueOnce(new Error("browserType.launch: Executable doesn't exist at C:\\\\missing\\\\chrome.exe"))
       .mockResolvedValueOnce(createPlaywrightStub() as never);
@@ -266,7 +277,7 @@ describe("browser tools coverage sweep", () => {
     expect(mocked.launch).toHaveBeenCalledTimes(2);
     expect(mocked.spawnSync).toHaveBeenCalledWith(
       expect.stringMatching(/pnpm(\.cmd|\.exe)?$/i),
-      ["exec", "playwright", "install", "chromium"],
+      ["--filter", "@goatcitadel/policy-engine", "exec", "playwright", "install", "chromium"],
       expect.objectContaining({
         cwd: process.cwd(),
         stdio: "inherit",
