@@ -93,6 +93,38 @@ interface CommandCatalogItem {
   description: string;
 }
 
+interface FinalizedStreamMessageState {
+  sessionId: string;
+  placeholderId: string;
+  content: string;
+}
+
+function normalizeComparableAssistantContent(value: string | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim();
+}
+
+export function shouldApplyFetchedMessagesAfterStream(
+  currentMessages: ChatMessagesResponse["items"],
+  fetchedMessages: ChatMessagesResponse["items"],
+  finalizedStreamMessage: FinalizedStreamMessageState | null,
+): boolean {
+  if (!finalizedStreamMessage) {
+    return true;
+  }
+  const currentPlaceholder = currentMessages.find((item) => item.messageId === finalizedStreamMessage.placeholderId);
+  if (!currentPlaceholder) {
+    return true;
+  }
+  const finalizedContent = normalizeComparableAssistantContent(finalizedStreamMessage.content);
+  if (!finalizedContent) {
+    return true;
+  }
+  const fetchedHasEquivalentAssistant = fetchedMessages.some((item) => (
+    item.role === "assistant" && normalizeComparableAssistantContent(item.content) === finalizedContent
+  ));
+  return fetchedHasEquivalentAssistant;
+}
+
 export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [projects, setProjects] = useState<ChatProjectsResponse | null>(null);
   const [sessions, setSessions] = useState<ChatSessionsResponse | null>(null);
@@ -142,6 +174,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const previousMessageCountRef = useRef(0);
   const messageMutationVersionRef = useRef(0);
   const lastLocalPrefMutationAtRef = useRef(0);
+  const latestMessagesRef = useRef<ChatMessagesResponse["items"]>([]);
+  const selectedSessionIdRef = useRef<string | null>(null);
+  const finalizedStreamMessageRef = useRef<FinalizedStreamMessageState | null>(null);
+  const streamReconcileTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const {
     config: runtimeLlmConfig,
     providers: runtimeProviderCatalog,
@@ -189,6 +225,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     if (requestVersion !== null && requestVersion !== messageMutationVersionRef.current) {
       return false;
     }
+    if (!shouldApplyFetchedMessagesAfterStream(latestMessagesRef.current, items, finalizedStreamMessageRef.current)) {
+      return false;
+    }
+    if (finalizedStreamMessageRef.current) {
+      finalizedStreamMessageRef.current = null;
+    }
     commitMessageUpdate(items);
     return true;
   }, [commitMessageUpdate]);
@@ -223,6 +265,22 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
     }
   }, [applyFetchedMessages]);
+
+  const scheduleStreamMessageReconciliation = useCallback((sessionId: string) => {
+    if (streamReconcileTimeoutRef.current) {
+      clearTimeout(streamReconcileTimeoutRef.current);
+    }
+    streamReconcileTimeoutRef.current = setTimeout(() => {
+      streamReconcileTimeoutRef.current = null;
+      if (selectedSessionIdRef.current !== sessionId) {
+        return;
+      }
+      void loadSessionCoreState(sessionId, {
+        background: true,
+        includeMessages: true,
+      }).catch((err: Error) => setError(err.message));
+    }, 300);
+  }, [loadSessionCoreState]);
 
   const loadSessionSecondaryState = useCallback(async (
     sessionId: string,
@@ -368,6 +426,11 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setSecondaryLoading(false);
       setDelegationSuggestion(null);
       setPendingAttachments([]);
+      finalizedStreamMessageRef.current = null;
+      if (streamReconcileTimeoutRef.current) {
+        clearTimeout(streamReconcileTimeoutRef.current);
+        streamReconcileTimeoutRef.current = null;
+      }
       lastLoadedSessionIdRef.current = null;
       return;
     }
@@ -375,6 +438,11 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setPendingAttachments([]);
       setLatestTrace(null);
       setPendingApproval(null);
+      finalizedStreamMessageRef.current = null;
+      if (streamReconcileTimeoutRef.current) {
+        clearTimeout(streamReconcileTimeoutRef.current);
+        streamReconcileTimeoutRef.current = null;
+      }
       lastLoadedSessionIdRef.current = selectedSessionId;
     }
     setDelegationSuggestion(null);
@@ -392,6 +460,21 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     shouldFollowMessagesRef.current = true;
     previousMessageCountRef.current = 0;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    latestMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
+
+  useEffect(() => () => {
+    if (streamReconcileTimeoutRef.current) {
+      clearTimeout(streamReconcileTimeoutRef.current);
+      streamReconcileTimeoutRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -961,9 +1044,21 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             return;
           }
           if (chunk.type === "message_done") {
+            let finalizedContent = chunk.content;
             commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
-              ? { ...item, content: chunk.content || item.content }
+              ? (() => {
+                const content = chunk.content || item.content;
+                finalizedContent = content;
+                return { ...item, content };
+              })()
               : item));
+            if (placeholderId && finalizedContent?.trim()) {
+              finalizedStreamMessageRef.current = {
+                sessionId: session.sessionId,
+                placeholderId,
+                content: finalizedContent,
+              };
+            }
             return;
           }
           if (chunk.type === "trace_update" && chunk.trace) {
@@ -981,10 +1076,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           }
           if (chunk.type === "error") setError(chunk.error || "Streaming request failed.");
         });
-        await loadSessionCoreState(session.sessionId, {
-          background: true,
-          includeMessages: true,
-        });
+        scheduleStreamMessageReconciliation(session.sessionId);
         committed = true;
       } else {
         const sent = await sendAgentChatMessage(session.sessionId, payload);
@@ -1000,6 +1092,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       await loadSidebar();
     } catch (err) {
       if (placeholderId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== placeholderId));
+      if (placeholderId && finalizedStreamMessageRef.current?.placeholderId === placeholderId) {
+        finalizedStreamMessageRef.current = null;
+      }
       if (!committed) {
         if (localUserId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== localUserId));
         setDraft((current) => (current.trim().length > 0 ? current : content));
@@ -1009,7 +1104,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setSending(false);
     }
-  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSessionCoreState, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, sending, streamEnabled]);
+  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, scheduleStreamMessageReconciliation, sending, streamEnabled]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (commandSuggestions.length > 0) {

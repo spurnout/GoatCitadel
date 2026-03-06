@@ -6830,6 +6830,23 @@ export class GatewayService {
         assistantUsage = chunk.usage;
         yield chunk;
       }
+      if (chunk.type === "message_done") {
+        if (chunk.content?.trim()) {
+          finalText = chunk.content;
+          if (!hasStreamedDelta) {
+            const slices = splitIntoChunks(chunk.content, 120);
+            for (const slice of slices) {
+              yield {
+                type: "delta",
+                sessionId,
+                turnId,
+                messageId: assistantMessageId,
+                delta: slice,
+              };
+            }
+          }
+        }
+      }
       if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "citation" || chunk.type === "error") {
         yield chunk;
       }
@@ -6839,18 +6856,6 @@ export class GatewayService {
           ...chunk,
           messageId: chunk.messageId ?? assistantMessageId,
         };
-      }
-      if (chunk.type === "message_done" && chunk.content && !hasStreamedDelta) {
-        const slices = splitIntoChunks(chunk.content, 120);
-        for (const slice of slices) {
-          yield {
-            type: "delta",
-            sessionId,
-            turnId,
-            messageId: assistantMessageId,
-            delta: slice,
-          };
-        }
       }
     }
 
@@ -6868,12 +6873,6 @@ export class GatewayService {
           };
         }
       }
-      yield {
-        type: "message_done",
-        sessionId,
-        turnId,
-        content: finalText,
-      };
     }
 
     if (finalText.trim()) {
@@ -6916,6 +6915,13 @@ export class GatewayService {
         ...updatedTrace,
         citations: updatedTrace.citations,
         toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+      };
+      yield {
+        type: "message_done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+        content: finalText,
       };
       const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
         sessionId,

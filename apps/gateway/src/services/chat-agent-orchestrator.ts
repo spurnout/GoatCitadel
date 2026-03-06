@@ -968,7 +968,7 @@ export class ChatAgentOrchestrator {
         continue;
       }
       const inferred = inferToolArgValue(input.toolName, field, input.userContent)
-        ?? inferToolArgValueFromRecentToolRuns(input.toolName, field, input.priorToolRuns);
+        ?? inferToolArgValueFromRecentToolRuns(input.toolName, field, input.userContent, input.priorToolRuns);
       if (inferred !== undefined) {
         args[field] = inferred;
       } else {
@@ -1261,7 +1261,7 @@ function detectTimeIntent(content: string): boolean {
 function detectLiveDataIntent(content: string): boolean {
   const normalized = content.toLowerCase();
   return (
-    /\b(latest|today|current|right now|news|price|weather|time|recent|recently|lately)\b/.test(normalized)
+    /\b(latest|today|current|right now|news|price|weather|recent|recently|lately)\b/.test(normalized)
     || normalized.includes("what's going on with")
     || normalized.includes("whats going on with")
     || normalized.includes("look online")
@@ -1293,7 +1293,7 @@ function deriveLiveDataQuery(content: string): string {
   if (clauses.length === 0) {
     return normalized;
   }
-  const keywordRegex = /\b(latest|today|current|right now|news|price|weather|time|recent|recently|lately)\b/i;
+  const keywordRegex = /\b(latest|today|current|right now|news|price|weather|recent|recently|lately)\b/i;
   const matching = clauses.filter((clause) => keywordRegex.test(clause));
   const selected = matching.at(-1) ?? clauses.at(-1) ?? normalized;
   return selected.replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "").trim() || normalized;
@@ -1474,6 +1474,7 @@ function inferToolArgValue(toolName: string, field: string, userContent: string)
 function inferToolArgValueFromRecentToolRuns(
   toolName: string,
   field: string,
+  userContent: string,
   toolRuns: ChatToolRunRecord[] | undefined,
 ): unknown {
   if (field !== "url" || !toolRuns || toolRuns.length === 0) {
@@ -1482,7 +1483,8 @@ function inferToolArgValueFromRecentToolRuns(
   if (toolName !== "browser.navigate" && toolName !== "browser.extract") {
     return undefined;
   }
-  return inferRecentBrowserResultUrl(toolRuns);
+  return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3)
+    ?? inferRecentBrowserVisitedUrl(toolRuns);
 }
 
 function inferBrowserNavigateUrlFromRepeatedSearches(
@@ -1503,24 +1505,129 @@ function inferBrowserNavigateUrlFromRepeatedSearches(
   if (alreadyOpenedContent) {
     return undefined;
   }
-  return inferRecentBrowserResultUrl(toolRuns);
+  return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3);
 }
 
-function inferRecentBrowserResultUrl(toolRuns: ChatToolRunRecord[]): string | undefined {
+interface BrowserResultCandidate {
+  url: string;
+  title?: string;
+  snippet?: string;
+  hostname: string;
+  path: string;
+  sourceRunIndex: number;
+}
+
+const SEARCH_RESULT_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "for",
+  "from",
+  "how",
+  "in",
+  "is",
+  "it",
+  "lately",
+  "latest",
+  "me",
+  "near",
+  "news",
+  "now",
+  "of",
+  "on",
+  "recent",
+  "recently",
+  "right",
+  "tell",
+  "the",
+  "today",
+  "what",
+  "whats",
+  "what's",
+  "with",
+]);
+
+const SEARCH_PORTAL_HOST_PATTERNS = [
+  /^google\./i,
+  /^www\.google\./i,
+  /^bing\.com$/i,
+  /^www\.bing\.com$/i,
+  /^duckduckgo\.com$/i,
+  /^www\.duckduckgo\.com$/i,
+  /^search\.yahoo\.com$/i,
+  /^www\.search\.yahoo\.com$/i,
+];
+
+function selectBestRecentBrowserResultUrl(
+  userContent: string,
+  toolRuns: ChatToolRunRecord[],
+  minimumScore: number,
+): string | undefined {
+  const candidates = collectRecentBrowserSearchCandidates(toolRuns);
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  const derivedQuery = deriveLiveDataQuery(userContent);
+  const queryTokens = tokenizeBrowserSearchText(derivedQuery);
+  const newsLike = isLikelyNewsOrCurrentEventsQuery(userContent);
+  let best: { candidate: BrowserResultCandidate; score: number } | undefined;
+  for (const candidate of candidates) {
+    const score = scoreBrowserResultCandidate(candidate, derivedQuery, queryTokens, newsLike);
+    if (!best || score > best.score) {
+      best = { candidate, score };
+    }
+  }
+  if (!best || best.score < minimumScore) {
+    return undefined;
+  }
+  return best.candidate.url;
+}
+
+function collectRecentBrowserSearchCandidates(toolRuns: ChatToolRunRecord[]): BrowserResultCandidate[] {
+  for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
+    const run = toolRuns[index];
+    if (!run || run.toolName !== "browser.search" || run.status !== "executed" || !run.result || typeof run.result !== "object") {
+      continue;
+    }
+    const result = run.result as Record<string, unknown>;
+    if (!Array.isArray(result.results)) {
+      continue;
+    }
+    const candidates: BrowserResultCandidate[] = [];
+    for (const raw of result.results) {
+      const value = raw as Record<string, unknown>;
+      if (typeof value.url !== "string" || !/^https?:\/\//i.test(value.url)) {
+        continue;
+      }
+      try {
+        const parsed = new URL(value.url);
+        candidates.push({
+          url: value.url,
+          title: typeof value.title === "string" ? value.title : undefined,
+          snippet: typeof value.snippet === "string" ? value.snippet : undefined,
+          hostname: parsed.hostname.toLowerCase(),
+          path: parsed.pathname.toLowerCase(),
+          sourceRunIndex: index,
+        });
+      } catch {
+        continue;
+      }
+    }
+    if (candidates.length > 0) {
+      return candidates;
+    }
+  }
+  return [];
+}
+
+function inferRecentBrowserVisitedUrl(toolRuns: ChatToolRunRecord[]): string | undefined {
   for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
     const run = toolRuns[index];
     if (!run || run.status !== "executed" || !run.result || typeof run.result !== "object") {
       continue;
     }
     const result = run.result as Record<string, unknown>;
-    if (Array.isArray(result.results)) {
-      for (const raw of result.results) {
-        const value = raw as Record<string, unknown>;
-        if (typeof value.url === "string" && /^https?:\/\//i.test(value.url)) {
-          return value.url;
-        }
-      }
-    }
     if (typeof result.finalUrl === "string" && /^https?:\/\//i.test(result.finalUrl)) {
       return result.finalUrl;
     }
@@ -1529,6 +1636,104 @@ function inferRecentBrowserResultUrl(toolRuns: ChatToolRunRecord[]): string | un
     }
   }
   return undefined;
+}
+
+function tokenizeBrowserSearchText(value: string): string[] {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return [];
+  }
+  const tokens = normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !SEARCH_RESULT_STOPWORDS.has(token));
+  return [...new Set(tokens)];
+}
+
+function normalizeBrowserSearchText(value: string | undefined): string {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s/:-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countMatchingQueryTokens(haystack: string, queryTokens: string[]): number {
+  if (!haystack || queryTokens.length === 0) {
+    return 0;
+  }
+  return queryTokens.reduce((count, token) => (haystack.includes(token) ? count + 1 : count), 0);
+}
+
+function isSearchPortalHost(hostname: string): boolean {
+  return SEARCH_PORTAL_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+}
+
+function isLikelyLandingOrResultsPath(pathname: string): boolean {
+  return /\/(search|results|topics|topic|tag|tags)(\/|$)/i.test(pathname);
+}
+
+function isLikelyNewsOrCurrentEventsQuery(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return /\b(latest|today|current|right now|news|recent|recently|lately)\b/.test(normalized)
+    || normalized.includes("what's going on with")
+    || normalized.includes("whats going on with");
+}
+
+function scoreBrowserResultCandidate(
+  candidate: BrowserResultCandidate,
+  query: string,
+  queryTokens: string[],
+  newsLike: boolean,
+): number {
+  const normalizedTitle = normalizeBrowserSearchText(candidate.title);
+  const normalizedSnippet = normalizeBrowserSearchText(candidate.snippet);
+  const normalizedPath = normalizeBrowserSearchText(candidate.path);
+  const normalizedQuery = normalizeBrowserSearchText(query);
+  const titleMatches = countMatchingQueryTokens(normalizedTitle, queryTokens);
+  const snippetMatches = countMatchingQueryTokens(normalizedSnippet, queryTokens);
+  const pathMatches = countMatchingQueryTokens(normalizedPath, queryTokens);
+  let score = 0;
+  if (normalizedQuery.length >= 8 && normalizedTitle.includes(normalizedQuery)) {
+    score += 5;
+  }
+  if (titleMatches >= 2) {
+    score += 5;
+  } else if (titleMatches === 1) {
+    score += 2;
+  }
+  if (snippetMatches >= 2) {
+    score += 3;
+  } else if (snippetMatches === 1) {
+    score += 1;
+  }
+  if (pathMatches >= 2) {
+    score += 2;
+  } else if (pathMatches === 1) {
+    score += 1;
+  }
+  if (!candidate.title && !candidate.snippet) {
+    score -= 3;
+  }
+  if (isSearchPortalHost(candidate.hostname)) {
+    score -= 5;
+  }
+  if (isLikelyLandingOrResultsPath(candidate.path)) {
+    score -= 2;
+  }
+  if (newsLike) {
+    if (/\/(news|politics|article|story)(\/|$)/i.test(candidate.path) || /\b(news|times|post|reuters|apnews|axios|politico|npr|cnn|abc|nbc|cbs|fox)\b/i.test(candidate.hostname)) {
+      score += 2;
+    }
+  } else if (!isSearchPortalHost(candidate.hostname)) {
+    score += 1;
+  }
+  score -= candidate.sourceRunIndex * 0.001;
+  return score;
 }
 
 function inferQueryFromPrompt(userContent: string): string | undefined {

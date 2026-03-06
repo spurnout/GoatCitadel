@@ -23,6 +23,22 @@ function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalo
         pack: "core",
       };
     }
+    if (toolName === "time.now") {
+      return {
+        toolName: "time.now",
+        category: "research",
+        riskLevel: "safe",
+        requiresApproval: false,
+        description: "Current time",
+        argSchema: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+        examples: [],
+        pack: "core",
+      };
+    }
     return {
       toolName: "browser.search",
       category: "research",
@@ -368,7 +384,10 @@ describe("ChatAgentOrchestrator", () => {
           status: "executed",
           args: { query: "latest news on Kristi Noem" },
           result: {
-            results: [{ title: "Result 1", url: "https://example.com/news/kristi-noem-1", snippet: "snippet 1" }],
+            results: [
+              { title: "Generic search results", url: "https://www.google.com/search?q=kristi+noem", snippet: "portal" },
+              { title: "Kristi Noem latest news", url: "https://example.com/news/kristi-noem-1", snippet: "snippet 1" },
+            ],
           },
           startedAt: "2026-03-06T22:30:00.000Z",
           finishedAt: "2026-03-06T22:30:01.000Z",
@@ -380,6 +399,149 @@ describe("ChatAgentOrchestrator", () => {
     expect(preflight.args).toMatchObject({
       url: "https://example.com/news/kristi-noem-1",
       maxChars: 6000,
+    });
+  });
+
+  it("does not inject browser.search for generic duration prompts containing time", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Cold brew usually takes 12 to 24 hours.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "time.now"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-time-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-time-1",
+      content: "how much time does it take to learn Go?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "how much time does it take to learn Go?" }],
+    });
+
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
+    expect(result.assistantContent).toContain("12 to 24 hours");
+  });
+
+  it("treats explicit clock-time questions as time intent without using browser.search", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "It is currently 9:00 AM in Tokyo.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-time",
+        result: {
+          iso: "2026-03-06T17:00:00.000Z",
+          timezone: "Asia/Tokyo",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "time.now"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-time-2",
+      turnId: randomUUID(),
+      userMessageId: "msg-time-2",
+      content: "what time is it in Tokyo right now?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "what time is it in Tokyo right now?" }],
+    });
+
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "time.now",
+    }));
+  });
+
+  it("does not promote repeated search when recent results have no sufficiently relevant URL", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+      };
+    }).preflightToolInvocation({
+      toolName: "browser.search",
+      rawArgs: {
+        query: "latest weather in Paris",
+      },
+      userContent: "what's the latest weather in Paris?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-2",
+          turnId: "turn-2",
+          sessionId: "sess-7",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "latest weather in Paris" },
+          result: {
+            results: [{ title: "Search results", url: "https://www.google.com/search?q=weather+paris" }],
+          },
+          startedAt: "2026-03-06T22:31:00.000Z",
+          finishedAt: "2026-03-06T22:31:01.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.toolName).toBe("browser.search");
+    expect(preflight.args).toMatchObject({
+      query: "latest weather in Paris",
     });
   });
 
