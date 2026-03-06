@@ -6637,19 +6637,7 @@ export class GatewayService {
 
     const assistantText = turnResult.assistantContent.trim().length > 0
       ? turnResult.assistantContent
-      : [
-        "Summary",
-        "- I completed the turn, but the final assistant text was empty after tool/model synthesis.",
-        "",
-        "Constraints",
-        "- This usually means tool/model outputs were incomplete or could not be stitched into a final response.",
-        "",
-        "What I did instead",
-        "- Preserved trace/tool evidence for this turn.",
-        "",
-        "What I need from you next",
-        "- Retry once, or provide tighter constraints (explicit query/url/path) for deterministic tool execution.",
-      ].join("\n");
+      : buildEmptyAssistantTurnFallbackText();
     const assistantUsage = turnResult.usage;
     const assistantEventId = randomUUID();
     await this.ingestEvent(randomUUID(), {
@@ -6864,6 +6852,28 @@ export class GatewayService {
           };
         }
       }
+    }
+
+    if (!finalText.trim()) {
+      finalText = buildEmptyAssistantTurnFallbackText();
+      if (!hasStreamedDelta) {
+        const slices = splitIntoChunks(finalText, 120);
+        for (const slice of slices) {
+          yield {
+            type: "delta",
+            sessionId,
+            turnId,
+            messageId: assistantMessageId,
+            delta: slice,
+          };
+        }
+      }
+      yield {
+        type: "message_done",
+        sessionId,
+        turnId,
+        content: finalText,
+      };
     }
 
     if (finalText.trim()) {
@@ -13043,6 +13053,22 @@ function splitIntoChunks(input: string, maxChunkLength: number): string[] {
   }
   chunks.push(remaining);
   return chunks;
+}
+
+function buildEmptyAssistantTurnFallbackText(): string {
+  return [
+    "Summary",
+    "- I completed the turn, but the final assistant text was empty after tool/model synthesis.",
+    "",
+    "Constraints",
+    "- This usually means tool/model outputs were incomplete or could not be stitched into a final response.",
+    "",
+    "What I did instead",
+    "- Preserved trace/tool evidence for this turn.",
+    "",
+    "What I need from you next",
+    "- Retry once, or provide tighter constraints (explicit query/url/path) for deterministic tool execution.",
+  ].join("\n");
 }
 
 function sanitizeAttachmentFileName(input: string): string {

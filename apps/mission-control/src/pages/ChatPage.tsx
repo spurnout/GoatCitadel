@@ -981,6 +981,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           }
           if (chunk.type === "error") setError(chunk.error || "Streaming request failed.");
         });
+        await loadSessionCoreState(session.sessionId, {
+          background: true,
+          includeMessages: true,
+        });
         committed = true;
       } else {
         const sent = await sendAgentChatMessage(session.sessionId, payload);
@@ -1005,7 +1009,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setSending(false);
     }
-  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, sending, streamEnabled]);
+  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSessionCoreState, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, sending, streamEnabled]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (commandSuggestions.length > 0) {
