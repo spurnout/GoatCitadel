@@ -140,6 +140,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const lastLoadedSessionIdRef = useRef<string | null>(null);
   const shouldFollowMessagesRef = useRef(true);
   const previousMessageCountRef = useRef(0);
+  const messageMutationVersionRef = useRef(0);
   const lastLocalPrefMutationAtRef = useRef(0);
   const {
     config: runtimeLlmConfig,
@@ -170,6 +171,28 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setSettings((current) => current ? { ...current, llm: runtimeLlmConfig } : current);
   }, [runtimeLlmConfig]);
 
+  const commitMessageUpdate = useCallback((
+    updater: ChatMessagesResponse["items"] | ((current: ChatMessagesResponse["items"]) => ChatMessagesResponse["items"]),
+  ) => {
+    messageMutationVersionRef.current += 1;
+    if (typeof updater === "function") {
+      setMessages((current) => updater(current));
+      return;
+    }
+    setMessages(updater);
+  }, []);
+
+  const applyFetchedMessages = useCallback((
+    items: ChatMessagesResponse["items"],
+    requestVersion: number | null,
+  ) => {
+    if (requestVersion !== null && requestVersion !== messageMutationVersionRef.current) {
+      return false;
+    }
+    commitMessageUpdate(items);
+    return true;
+  }, [commitMessageUpdate]);
+
   const loadSessionCoreState = useCallback(async (
     sessionId: string,
     options: {
@@ -179,6 +202,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   ) => {
     const background = options.background ?? false;
     const includeMessages = options.includeMessages ?? true;
+    const messageVersionAtStart = includeMessages ? messageMutationVersionRef.current : null;
     if (!background) {
       setMessagesLoading(true);
     }
@@ -189,7 +213,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         fetchChatSessionPrefs(sessionId),
       ]);
       if (nextMessages) {
-        setMessages(nextMessages.items);
+        applyFetchedMessages(nextMessages.items, messageVersionAtStart);
       }
       setBinding(nextBinding.item);
       setPrefs(nextPrefs);
@@ -198,7 +222,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         setMessagesLoading(false);
       }
     }
-  }, []);
+  }, [applyFetchedMessages]);
 
   const loadSessionSecondaryState = useCallback(async (
     sessionId: string,
@@ -335,7 +359,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
   useEffect(() => {
     if (!selectedSessionId) {
-      setMessages([]);
+      commitMessageUpdate([]);
       setPrefs(null);
       setBinding(null);
       setProactiveStatus(null);
@@ -362,7 +386,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       includeMessages: true,
       deferSecondary: true,
     }).catch((err: Error) => setError(err.message));
-  }, [loadSessionState, selectedSessionId]);
+  }, [commitMessageUpdate, loadSessionState, selectedSessionId]);
 
   useEffect(() => {
     shouldFollowMessagesRef.current = true;
@@ -517,14 +541,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         content: `Research summary:\n${summary.summary}\n\nSources: ${summary.sources.length}`,
         timestamp: new Date().toISOString(),
       };
-      setMessages((current) => [...current, synthetic]);
+      commitMessageUpdate((current) => [...current, synthetic]);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSending(false);
     }
-  }, [draft, ensureSession, messages, prefs?.model, prefs?.providerId, prefs?.webMode, sending]);
+  }, [commitMessageUpdate, draft, ensureSession, messages, prefs?.model, prefs?.providerId, prefs?.webMode, sending]);
 
   const handleProactivePolicyPatch = useCallback(async (
     patch: {
@@ -564,7 +588,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         reason: "Operator triggered from chat workspace.",
       });
       setProactiveRuns((current) => [run, ...current].slice(0, 30));
-      setMessages((current) => [...current, {
+      commitMessageUpdate((current) => [...current, {
         messageId: `proactive-${run.runId}`,
         sessionId: selectedSession.sessionId,
         role: "system",
@@ -610,7 +634,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         providerId: prefs?.providerId,
         model: prefs?.model,
       });
-      setMessages((current) => [...current, {
+      commitMessageUpdate((current) => [...current, {
         messageId: `delegation-${accepted.runId}`,
         sessionId: selectedSession.sessionId,
         role: "assistant",
@@ -626,7 +650,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setSending(false);
     }
-  }, [delegationSuggestion, loadSidebar, prefs?.model, prefs?.providerId, selectedSession, sending]);
+  }, [commitMessageUpdate, delegationSuggestion, loadSidebar, prefs?.model, prefs?.providerId, selectedSession, sending]);
 
   const handleMemoryStatusUpdate = useCallback(async (
     itemId: string,
@@ -735,7 +759,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     if (!selectedSessionId) {
       return;
     }
-    setMessages((current) => [...current, {
+    commitMessageUpdate((current) => [...current, {
       messageId: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       sessionId: selectedSessionId,
       role: "system",
@@ -744,7 +768,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       content,
       timestamp: new Date().toISOString(),
     }]);
-  }, [selectedSessionId]);
+  }, [commitMessageUpdate, selectedSessionId]);
 
   const dismissCapabilitySuggestion = useCallback((suggestion: ChatCapabilityUpgradeSuggestion) => {
     setCapabilitySuggestions((current) => current.filter((item) => (
@@ -861,9 +885,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       content: formatCommandResult(result),
       timestamp: new Date().toISOString(),
     };
-    setMessages((current) => [...current, echo]);
+    commitMessageUpdate((current) => [...current, echo]);
     if (result.command === "/project") await loadSidebar();
-  }, [loadSidebar]);
+  }, [commitMessageUpdate, loadSidebar]);
 
   const handleSend = useCallback(async () => {
     const content = draft.trim();
@@ -895,7 +919,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
 
       localUserId = `local-user-${Date.now()}`;
-      setMessages((current) => [...current, {
+      commitMessageUpdate((current) => [...current, {
         messageId: localUserId!,
         sessionId: session.sessionId,
         role: "user",
@@ -920,7 +944,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
       if (streamEnabled) {
         placeholderId = `stream-${Date.now()}`;
-        setMessages((current) => [...current, {
+        commitMessageUpdate((current) => [...current, {
           messageId: placeholderId!,
           sessionId: session.sessionId,
           role: "assistant",
@@ -931,13 +955,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         }]);
         await streamAgentChatMessage(session.sessionId, payload, (chunk) => {
           if (chunk.type === "delta" && chunk.delta) {
-            setMessages((current) => current.map((item) => item.messageId === placeholderId
+            commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
               ? { ...item, content: `${item.content}${chunk.delta}` }
               : item));
             return;
           }
           if (chunk.type === "message_done") {
-            setMessages((current) => current.map((item) => item.messageId === placeholderId
+            commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
               ? { ...item, content: chunk.content || item.content }
               : item));
             return;
@@ -961,8 +985,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       } else {
         const sent = await sendAgentChatMessage(session.sessionId, payload);
         committed = true;
-        setMessages((current) => current.map((item) => item.messageId === localUserId ? sent.userMessage : item));
-        if (sent.assistantMessage) setMessages((current) => [...current, sent.assistantMessage as ChatMessageRecord]);
+        commitMessageUpdate((current) => current.map((item) => item.messageId === localUserId ? sent.userMessage : item));
+        if (sent.assistantMessage) commitMessageUpdate((current) => [...current, sent.assistantMessage as ChatMessageRecord]);
         if (sent.trace) {
           setLatestTrace(sent.trace);
           setCapabilitySuggestions(sent.trace.capabilityUpgradeSuggestions ?? []);
@@ -971,9 +995,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
       await loadSidebar();
     } catch (err) {
-      if (placeholderId) setMessages((current) => current.filter((item) => item.messageId !== placeholderId));
+      if (placeholderId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== placeholderId));
       if (!committed) {
-        if (localUserId) setMessages((current) => current.filter((item) => item.messageId !== localUserId));
+        if (localUserId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== localUserId));
         setDraft((current) => (current.trim().length > 0 ? current : content));
         setPendingAttachments((current) => (current.length > 0 ? current : attachmentsSnapshot));
       }
@@ -981,7 +1005,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setSending(false);
     }
-  }, [draft, ensureSession, handleCommandExecution, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, sending, streamEnabled]);
+  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSessionState, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, sending, streamEnabled]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (commandSuggestions.length > 0) {
@@ -1013,7 +1037,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setApprovalPending(true);
     try {
       await approveChatTool(selectedSession.sessionId, pendingApproval.approvalId);
-      setMessages((current) => [...current, {
+      commitMessageUpdate((current) => [...current, {
         messageId: `approval-ok-${Date.now()}`,
         sessionId: selectedSession.sessionId,
         role: "system",
@@ -1028,14 +1052,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setApprovalPending(false);
     }
-  }, [pendingApproval, selectedSession]);
+  }, [commitMessageUpdate, pendingApproval, selectedSession]);
 
   const handleDenyPending = useCallback(async () => {
     if (!selectedSession || !pendingApproval) return;
     setApprovalPending(true);
     try {
       await denyChatTool(selectedSession.sessionId, pendingApproval.approvalId);
-      setMessages((current) => [...current, {
+      commitMessageUpdate((current) => [...current, {
         messageId: `approval-deny-${Date.now()}`,
         sessionId: selectedSession.sessionId,
         role: "system",
@@ -1050,7 +1074,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setApprovalPending(false);
     }
-  }, [pendingApproval, selectedSession]);
+  }, [commitMessageUpdate, pendingApproval, selectedSession]);
 
   const handlePrefPatch = useCallback(async (patch: ChatSessionPrefsPatch) => {
     if (!selectedSession) return;
