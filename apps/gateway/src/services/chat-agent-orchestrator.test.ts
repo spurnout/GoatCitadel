@@ -3,9 +3,27 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
 import { ChatAgentOrchestrator } from "./chat-agent-orchestrator.js";
 
-function createToolCatalog(): ToolCatalogEntry[] {
-  return [
-    {
+function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalogEntry[] {
+  return toolNames.map((toolName) => {
+    if (toolName === "browser.navigate") {
+      return {
+        toolName: "browser.navigate",
+        category: "research",
+        riskLevel: "safe",
+        requiresApproval: false,
+        description: "Navigate",
+        argSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string" },
+          },
+          required: ["url"],
+        },
+        examples: [],
+        pack: "core",
+      };
+    }
+    return {
       toolName: "browser.search",
       category: "research",
       riskLevel: "safe",
@@ -20,8 +38,8 @@ function createToolCatalog(): ToolCatalogEntry[] {
       },
       examples: [],
       pack: "core",
-    },
-  ];
+    };
+  });
 }
 
 function toolCallCompletion(query: string): ChatCompletionResponse {
@@ -40,6 +58,31 @@ function toolCallCompletion(query: string): ChatCompletionResponse {
               function: {
                 name: "browser_search",
                 arguments: JSON.stringify({ query }),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function navigateToolCallCompletion(args: Record<string, unknown>): ChatCompletionResponse {
+  return {
+    model: "glm-5",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-nav-1",
+              type: "function",
+              function: {
+                name: "browser_navigate",
+                arguments: JSON.stringify(args),
               },
             },
           ],
@@ -221,5 +264,107 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(invokeTool.mock.calls.length).toBeGreaterThan(2);
     expect(result.assistantContent).not.toContain("I stopped retrying tool calls because the same failure repeated.");
+  });
+
+  it("grounds browser.navigate from the most recent browser.search results", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({}))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Grounded answer",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-search",
+        result: {
+          results: [{ title: "News", url: "https://example.com/news/kristi-noem", snippet: "snippet" }],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav",
+        result: {
+          finalUrl: "https://example.com/news/kristi-noem",
+          title: "News",
+          textSnippet: "Latest coverage",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-4",
+      turnId: randomUUID(),
+      userMessageId: "msg-user-4",
+      content: "What's the latest news on Kristi Noem?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What's the latest news on Kristi Noem?" }],
+    });
+
+    expect(invokeTool).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      toolName: "browser.navigate",
+      args: expect.objectContaining({
+        url: "https://example.com/news/kristi-noem",
+      }),
+    }));
+    expect(invokeTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      toolName: "browser.search",
+    }));
+    expect(result.assistantContent).toContain("Grounded answer");
+  });
+
+  it("stops immediately on non-recoverable missing-argument failures", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValue(navigateToolCallCompletion({}));
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-5",
+      turnId: randomUUID(),
+      userMessageId: "msg-user-5",
+      content: "What's the latest news on Kristi Noem?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What's the latest news on Kristi Noem?" }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("I stopped tool execution because the next step could not be safely recovered.");
+    expect(result.assistantContent).toContain("execution error: url is required");
   });
 });

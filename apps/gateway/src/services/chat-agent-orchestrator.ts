@@ -469,15 +469,16 @@ export class ChatAgentOrchestrator {
           if (circuitBreakerReason) {
             break;
           }
-          toolRunCount += 1;
-          const executed = await this.executeToolCall({
-            input,
-            turnId: input.turnId,
-            toolName: toolCall.toolName,
-            rawArgs: toolCall.args,
-            toolCallId: toolCall.id,
-            localFileIntent,
-          });
+        toolRunCount += 1;
+        const executed = await this.executeToolCall({
+          input,
+          turnId: input.turnId,
+          toolName: toolCall.toolName,
+          rawArgs: toolCall.args,
+          toolCallId: toolCall.id,
+          localFileIntent,
+          priorToolRuns: toolRuns,
+        });
           toolRuns.push(executed.record);
           yield {
             type: "tool_start",
@@ -517,8 +518,13 @@ export class ChatAgentOrchestrator {
               const signature = `${executed.record.toolName}:${normalizeFailureSignature(executed.record.error)}`;
               const nextCount = (toolFailureSignatureCounts.get(signature) ?? 0) + 1;
               toolFailureSignatureCounts.set(signature, nextCount);
-              if (nextCount >= TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD) {
-                circuitBreakerReason = `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
+              const threshold = shouldTripToolCircuitBreakerImmediately(executed.record.error)
+                ? 1
+                : TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD;
+              if (nextCount >= threshold) {
+                circuitBreakerReason = threshold === 1
+                  ? `Non-recoverable tool failure for ${executed.record.toolName}: ${executed.record.error ?? "unknown error"}`
+                  : `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
                 break;
               }
             }
@@ -695,6 +701,7 @@ export class ChatAgentOrchestrator {
     rawArgs: Record<string, unknown>;
     toolCallId?: string;
     localFileIntent?: boolean;
+    priorToolRuns?: ChatToolRunRecord[];
   }): Promise<{
     record: ChatToolRunRecord;
     chunk?: ChatStreamChunk;
@@ -704,6 +711,7 @@ export class ChatAgentOrchestrator {
       rawArgs: input.rawArgs,
       userContent: input.input.content,
       localFileIntent: input.localFileIntent,
+      priorToolRuns: input.priorToolRuns,
     });
     const startedAt = new Date().toISOString();
     const toolRunId = randomUUID();
@@ -911,6 +919,7 @@ export class ChatAgentOrchestrator {
     rawArgs: Record<string, unknown>;
     userContent: string;
     localFileIntent?: boolean;
+    priorToolRuns?: ChatToolRunRecord[];
   }): {
     args: Record<string, unknown>;
     failureReason?: string;
@@ -941,7 +950,8 @@ export class ChatAgentOrchestrator {
       if (!isMissingArgValue(args[field])) {
         continue;
       }
-      const inferred = inferToolArgValue(input.toolName, field, input.userContent);
+      const inferred = inferToolArgValue(input.toolName, field, input.userContent)
+        ?? inferToolArgValueFromRecentToolRuns(input.toolName, field, input.priorToolRuns);
       if (inferred !== undefined) {
         args[field] = inferred;
       } else {
@@ -1412,6 +1422,14 @@ function isRetryableToolFailure(errorText: string | undefined): boolean {
   );
 }
 
+function shouldTripToolCircuitBreakerImmediately(errorText: string | undefined): boolean {
+  if (!errorText) {
+    return false;
+  }
+  const normalized = normalizeFailureSignature(errorText);
+  return normalized.startsWith("execution error:") && normalized.endsWith(" is required");
+}
+
 function isMissingArgValue(value: unknown): boolean {
   if (typeof value === "string") {
     return value.trim().length === 0;
@@ -1428,6 +1446,45 @@ function inferToolArgValue(toolName: string, field: string, userContent: string)
   }
   if (field === "url" && (toolName === "browser.navigate" || toolName === "browser.extract" || toolName === "http.get" || toolName === "http.post" || toolName === "browser.interact")) {
     return extractFirstUrl(userContent);
+  }
+  return undefined;
+}
+
+function inferToolArgValueFromRecentToolRuns(
+  toolName: string,
+  field: string,
+  toolRuns: ChatToolRunRecord[] | undefined,
+): unknown {
+  if (field !== "url" || !toolRuns || toolRuns.length === 0) {
+    return undefined;
+  }
+  if (toolName !== "browser.navigate" && toolName !== "browser.extract") {
+    return undefined;
+  }
+  return inferRecentBrowserResultUrl(toolRuns);
+}
+
+function inferRecentBrowserResultUrl(toolRuns: ChatToolRunRecord[]): string | undefined {
+  for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
+    const run = toolRuns[index];
+    if (!run || run.status !== "executed" || !run.result || typeof run.result !== "object") {
+      continue;
+    }
+    const result = run.result as Record<string, unknown>;
+    if (Array.isArray(result.results)) {
+      for (const raw of result.results) {
+        const value = raw as Record<string, unknown>;
+        if (typeof value.url === "string" && /^https?:\/\//i.test(value.url)) {
+          return value.url;
+        }
+      }
+    }
+    if (typeof result.finalUrl === "string" && /^https?:\/\//i.test(result.finalUrl)) {
+      return result.finalUrl;
+    }
+    if (typeof result.url === "string" && /^https?:\/\//i.test(result.url)) {
+      return result.url;
+    }
   }
   return undefined;
 }
@@ -1817,8 +1874,11 @@ function buildToolFailureFallbackMessage(
     .slice(-4)
     .map((item) => `- ${item.toolName}: ${item.error ?? "failed"}`);
   const fallbackQuery = deriveLiveDataQuery(userPrompt);
+  const intro = reason.toLowerCase().includes("non-recoverable tool failure")
+    ? "I stopped tool execution because the next step could not be safely recovered."
+    : "I stopped retrying tool calls because the same failure repeated.";
   const lines = [
-    "I stopped retrying tool calls because the same failure repeated.",
+    intro,
     "",
     "Constraints:",
     `- ${reason}`,
