@@ -103,12 +103,19 @@ goatcitadel onboard
 goatcitadel up
 ```
 
-Alias also works:
+Short alias:
 
 ```bash
-gc help
-gc up
+goat help
+goat up
 ```
+
+PowerShell note:
+
+- use `goatcitadel` or `goat`
+- do not use `gc` in PowerShell because it is the built-in alias for `Get-Content`
+- if `goatcitadel` is not found immediately after install, open a new PowerShell window
+- immediate fallback: `& "$HOME\\.GoatCitadel\\bin\\goatcitadel.cmd" onboard`
 
 ### Update an existing install
 

@@ -107,6 +107,8 @@ exec node "${APP_DIR}/bin/goatcitadel.mjs" "\$@"
 EOF
 
 chmod +x "${BIN_DIR}/goatcitadel"
+cp "${BIN_DIR}/goatcitadel" "${BIN_DIR}/goat"
+chmod +x "${BIN_DIR}/goat"
 cp "${BIN_DIR}/goatcitadel" "${BIN_DIR}/gc"
 chmod +x "${BIN_DIR}/gc"
 
@@ -140,5 +142,5 @@ echo "Run:"
 echo "  ${BIN_DIR}/goatcitadel onboard"
 echo "  ${BIN_DIR}/goatcitadel up"
 echo "  ${BIN_DIR}/goatcitadel doctor --deep"
-echo "  ${BIN_DIR}/gc onboard"
-echo "  ${BIN_DIR}/gc up"
+echo "  ${BIN_DIR}/goat onboard"
+echo "  ${BIN_DIR}/goat up"

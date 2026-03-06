@@ -195,7 +195,7 @@ function printHelp() {
 
 Usage:
   goatcitadel <command>
-  gc <command>
+  goat <command> (short shell shortcut; works in PowerShell)
 
 Commands:
   install    Install GoatCitadel from GitHub [--install-dir <path>] [--repo <url>]

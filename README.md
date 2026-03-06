@@ -97,12 +97,19 @@ goatcitadel onboard
 goatcitadel up
 ```
 
-Short alias also works:
+Short alias:
 
 ```bash
-gc doctor --deep
-gc up
+goat doctor --deep
+goat up
 ```
+
+PowerShell note:
+
+- use `goatcitadel` or `goat`
+- do not use `gc` in PowerShell because it is the built-in alias for `Get-Content`
+- if `goatcitadel` is not found immediately after install, open a new PowerShell window
+- immediate fallback: `& "$HOME\\.GoatCitadel\\bin\\goatcitadel.cmd" onboard`
 
 ### Update An Existing Install
 

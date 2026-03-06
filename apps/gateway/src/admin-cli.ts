@@ -158,12 +158,12 @@ function resolveRootDir(): string {
 
 function printUsage(): void {
   console.log(`Usage:
-  gc admin backup create [--name <name>] [--output <path>]
-  gc admin backup list [--limit <n>]
-  gc admin backup restore --file <path> --confirm
-  gc admin retention show
-  gc admin retention set --realtime-days <n> --backup-keep <n> [--transcript-days <n>|off] [--audit-days <n>|off]
-  gc admin retention prune [--dry-run|--apply]`);
+  goat admin backup create [--name <name>] [--output <path>]
+  goat admin backup list [--limit <n>]
+  goat admin backup restore --file <path> --confirm
+  goat admin retention show
+  goat admin retention set --realtime-days <n> --backup-keep <n> [--transcript-days <n>|off] [--audit-days <n>|off]
+  goat admin retention prune [--dry-run|--apply]`);
 }
 
 main().catch((error) => {

@@ -20,7 +20,7 @@ Use this checklist before you announce GoatCitadel publicly or hand a clean inst
 - [ ] Windows installer path works from a clean directory.
 - [ ] macOS/Linux installer path is documented accurately.
 - [ ] Manual clone path works exactly as documented.
-- [ ] `goatcitadel` and `gc` launchers expose the same command surface as the repo CLI.
+- [ ] `goatcitadel` and `goat` launchers expose the same command surface as the repo CLI.
 - [ ] Update flow works with `goatcitadel update`.
 
 ## Security Readiness

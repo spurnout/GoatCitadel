@@ -110,7 +110,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     optionArgs = [second, ...rest].filter((value) => value !== undefined) as string[];
   } else {
     throw new Error(
-      "Usage: gc tools catalog | gc tools grant add --tool <pattern> --scope <scope> [--scope-ref <id>] | gc tools grant revoke --grant-id <id> | gc tools invoke --tool <name> --args '{\"k\":\"v\"}' [--dry-run]",
+      "Usage: goat tools catalog | goat tools grant add --tool <pattern> --scope <scope> [--scope-ref <id>] | goat tools grant revoke --grant-id <id> | goat tools invoke --tool <name> --args '{\"k\":\"v\"}' [--dry-run]",
     );
   }
 
