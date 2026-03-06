@@ -83,26 +83,26 @@ async function main() {
 }
 
 function installOrUpdate() {
-  requireCommand("git");
+  const gitCmd = requireCommand("git");
   requireCommand("node");
-  requireCommand("corepack");
+  const corepackCmd = requireCommand("corepack");
 
   fs.mkdirSync(baseDir, { recursive: true });
 
   if (fs.existsSync(path.join(appDir, ".git"))) {
     console.log(`Updating GoatCitadel in ${appDir}...`);
-    run("git", ["-C", appDir, "fetch", "--all", "--prune"]);
-    run("git", ["-C", appDir, "pull", "--ff-only"]);
+    run(gitCmd, ["-C", appDir, "fetch", "--all", "--prune"]);
+    run(gitCmd, ["-C", appDir, "pull", "--ff-only"]);
   } else {
     if (fs.existsSync(appDir)) {
       fs.rmSync(appDir, { recursive: true, force: true });
     }
     console.log(`Cloning GoatCitadel from ${repoUrl}...`);
-    run("git", ["clone", repoUrl, appDir]);
+    run(gitCmd, ["clone", repoUrl, appDir]);
   }
 
-  run("corepack", ["enable"]);
-  run("corepack", ["prepare", `pnpm@${pnpmVersion}`, "--activate"]);
+  run(corepackCmd, ["enable"]);
+  run(corepackCmd, ["prepare", `pnpm@${pnpmVersion}`, "--activate"]);
   runPnpm(["--dir", appDir, "install", "--frozen-lockfile"]);
 
   console.log("");
@@ -174,25 +174,39 @@ function maybeShowVersion(cmd, cmdArgs) {
 }
 
 function requireCommand(cmd) {
-  if (!commandAvailable(cmd)) {
+  const resolved = resolveCommandExecutable(cmd);
+  if (!resolved) {
     throw new Error(`Missing required command: ${cmd}`);
   }
+  return resolved;
 }
 
 function commandAvailable(cmd) {
+  return resolveCommandExecutable(cmd) !== null;
+}
+
+function resolveCommandExecutable(cmd) {
   const candidates = process.platform === "win32"
     ? [cmd, `${cmd}.cmd`, `${cmd}.exe`]
     : [cmd];
   for (const candidate of candidates) {
     const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
     if (!result.error && result.status === 0) {
-      return true;
+      return candidate;
     }
   }
-  return false;
+  return null;
 }
 
 function resolvePnpmRunner() {
+  const localPnpm = path.join(baseDir, "bin", process.platform === "win32" ? "pnpm.cmd" : "pnpm");
+  if (fs.existsSync(localPnpm)) {
+    return {
+      cmd: localPnpm,
+      prefix: [],
+    };
+  }
+
   const candidates = process.platform === "win32"
     ? ["pnpm.cmd", "pnpm", "pnpm.exe"]
     : ["pnpm"];
@@ -207,9 +221,10 @@ function resolvePnpmRunner() {
     }
   }
 
-  if (commandAvailable("corepack")) {
+  const corepackCmd = resolveCommandExecutable("corepack");
+  if (corepackCmd) {
     return {
-      cmd: "corepack",
+      cmd: corepackCmd,
       prefix: ["pnpm"],
     };
   }

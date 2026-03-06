@@ -22,6 +22,8 @@ Default installer home is under your user home directory:
 - app dir: `~/.GoatCitadel/app`
 - launcher dir: `~/.GoatCitadel/bin`
 
+The installer also places a local `pnpm` shim in the launcher directory, so GoatCitadel runtime commands do not require a separate global pnpm install after setup.
+
 You can override the install root:
 
 - PowerShell installer: `-InstallDir <path>`

@@ -76,6 +76,7 @@ require_cmd() {
 require_cmd git
 require_cmd node
 require_cmd corepack
+COREPACK_BIN="$(command -v corepack)"
 
 mkdir -p "${BASE_DIR}" "${BIN_DIR}"
 
@@ -103,12 +104,19 @@ cat > "${BIN_DIR}/goatcitadel" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export GOATCITADEL_HOME="${BASE_DIR}"
+export PATH="${BIN_DIR}:\$PATH"
 exec node "${APP_DIR}/bin/goatcitadel.mjs" "\$@"
 EOF
 
 chmod +x "${BIN_DIR}/goatcitadel"
 cp "${BIN_DIR}/goatcitadel" "${BIN_DIR}/goat"
 chmod +x "${BIN_DIR}/goat"
+cat > "${BIN_DIR}/pnpm" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${COREPACK_BIN}" pnpm "\$@"
+EOF
+chmod +x "${BIN_DIR}/pnpm"
 cp "${BIN_DIR}/goatcitadel" "${BIN_DIR}/gc"
 chmod +x "${BIN_DIR}/gc"
 

@@ -46,6 +46,7 @@ Still evolving:
 ## Quick Install
 
 Default installer location is your home directory under `~/.GoatCitadel` with launchers in `~/.GoatCitadel/bin`.
+The installer also provisions a local `pnpm` shim in that same bin directory, so GoatCitadel commands do not depend on a separate global pnpm installation after setup.
 
 ### Windows (recommended)
 

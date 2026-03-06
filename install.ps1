@@ -53,6 +53,7 @@ if ($InstallMethod -ne "git") {
 Require-Command "git"
 Require-Command "node"
 Require-Command "corepack"
+$corepackExecutable = (Get-Command "corepack").Source
 
 New-Item -ItemType Directory -Force -Path $BaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
@@ -85,6 +86,7 @@ $launcherCmd = @"
 @echo off
 setlocal
 set "GOATCITADEL_HOME=$($BaseDir)"
+set "PATH=$($BinDir);%PATH%"
 node "$($AppDir)\bin\goatcitadel.mjs" %*
 exit /b %ERRORLEVEL%
 "@
@@ -106,10 +108,27 @@ if (`$Args.Count -gt 0) {
 & "$($BinDir)\goatcitadel.cmd" `$cmd @Args
 "@
 
+$pnpmCmd = @"
+@echo off
+setlocal
+"$($corepackExecutable)" pnpm %*
+exit /b %ERRORLEVEL%
+"@
+
+$pnpmPs1 = @"
+param(
+  [Parameter(ValueFromRemainingArguments = `$true)]
+  [string[]]`$Args
+)
+& "$($corepackExecutable)" "pnpm" @Args
+"@
+
 $launcherCmdPath = Join-Path $BinDir "goatcitadel.cmd"
 $launcherPs1Path = Join-Path $BinDir "goatcitadel.ps1"
 $launcherGoatCmdPath = Join-Path $BinDir "goat.cmd"
 $launcherGoatPs1Path = Join-Path $BinDir "goat.ps1"
+$pnpmCmdPath = Join-Path $BinDir "pnpm.cmd"
+$pnpmPs1Path = Join-Path $BinDir "pnpm.ps1"
 $launcherGcCmdPath = Join-Path $BinDir "gc.cmd"
 $launcherGcPs1Path = Join-Path $BinDir "gc.ps1"
 
@@ -117,6 +136,8 @@ Set-Content -Path $launcherCmdPath -Value $launcherCmd -Encoding Ascii
 Set-Content -Path $launcherPs1Path -Value $launcherPs1 -Encoding Ascii
 Set-Content -Path $launcherGoatCmdPath -Value $launcherCmd -Encoding Ascii
 Set-Content -Path $launcherGoatPs1Path -Value $launcherPs1 -Encoding Ascii
+Set-Content -Path $pnpmCmdPath -Value $pnpmCmd -Encoding Ascii
+Set-Content -Path $pnpmPs1Path -Value $pnpmPs1 -Encoding Ascii
 Set-Content -Path $launcherGcCmdPath -Value $launcherCmd -Encoding Ascii
 Set-Content -Path $launcherGcPs1Path -Value $launcherPs1 -Encoding Ascii
 
