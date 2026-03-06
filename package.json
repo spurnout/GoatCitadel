@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.29.3",
   "bin": {
     "goatcitadel": "./bin/goatcitadel.mjs",
+    "goat": "./bin/goatcitadel.mjs",
     "gc": "./bin/goatcitadel.mjs"
   },
   "scripts": {

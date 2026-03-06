@@ -37,35 +37,35 @@ async function main() {
   }
 
   if (command === "up") {
-    run("pnpm", ["--dir", appDir, "dev", ...rest]);
+    runPnpm(["--dir", appDir, "dev", ...rest]);
     return;
   }
   if (command === "gateway") {
-    run("pnpm", ["--dir", appDir, "dev:gateway", ...rest]);
+    runPnpm(["--dir", appDir, "dev:gateway", ...rest]);
     return;
   }
   if (command === "ui") {
-    run("pnpm", ["--dir", appDir, "dev:ui", ...rest]);
+    runPnpm(["--dir", appDir, "dev:ui", ...rest]);
     return;
   }
   if (command === "onboard") {
-    run("pnpm", ["--dir", appDir, "onboarding:tui", ...rest]);
+    runPnpm(["--dir", appDir, "onboarding:tui", ...rest]);
     return;
   }
   if (command === "tui") {
-    run("pnpm", ["--dir", appDir, "tui", ...rest]);
+    runPnpm(["--dir", appDir, "tui", ...rest]);
     return;
   }
   if (command === "tools") {
-    run("pnpm", ["--dir", appDir, "tools", ...rest]);
+    runPnpm(["--dir", appDir, "tools", ...rest]);
     return;
   }
   if (command === "admin") {
-    run("pnpm", ["--dir", appDir, "admin", ...rest]);
+    runPnpm(["--dir", appDir, "admin", ...rest]);
     return;
   }
   if (command === "smoke") {
-    run("pnpm", ["--dir", appDir, "smoke", ...rest]);
+    runPnpm(["--dir", appDir, "smoke", ...rest]);
     return;
   }
   if (command === "npu" || command === "npu-sidecar") {
@@ -103,7 +103,7 @@ function installOrUpdate() {
 
   run("corepack", ["enable"]);
   run("corepack", ["prepare", `pnpm@${pnpmVersion}`, "--activate"]);
-  run("pnpm", ["--dir", appDir, "install", "--frozen-lockfile"]);
+  runPnpm(["--dir", appDir, "install", "--frozen-lockfile"]);
 
   console.log("");
   console.log("GoatCitadel install complete.");
@@ -160,7 +160,7 @@ function resolveBaseDir(installDirOverride) {
 
 function doctor(extraArgs = []) {
   console.log("Running GoatCitadel doctor...");
-  run("pnpm", ["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "doctor", ...extraArgs]);
+  runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "doctor", ...extraArgs]);
 }
 
 function maybeShowVersion(cmd, cmdArgs) {
@@ -174,10 +174,52 @@ function maybeShowVersion(cmd, cmdArgs) {
 }
 
 function requireCommand(cmd) {
-  const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
-  if (result.error || result.status !== 0) {
+  if (!commandAvailable(cmd)) {
     throw new Error(`Missing required command: ${cmd}`);
   }
+}
+
+function commandAvailable(cmd) {
+  const candidates = process.platform === "win32"
+    ? [cmd, `${cmd}.cmd`, `${cmd}.exe`]
+    : [cmd];
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    if (!result.error && result.status === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolvePnpmRunner() {
+  const candidates = process.platform === "win32"
+    ? ["pnpm.cmd", "pnpm", "pnpm.exe"]
+    : ["pnpm"];
+
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    if (!result.error && result.status === 0) {
+      return {
+        cmd: candidate,
+        prefix: [],
+      };
+    }
+  }
+
+  if (commandAvailable("corepack")) {
+    return {
+      cmd: "corepack",
+      prefix: ["pnpm"],
+    };
+  }
+
+  throw new Error("pnpm is not available. Run `corepack enable` or reinstall GoatCitadel prerequisites.");
+}
+
+function runPnpm(args) {
+  const runner = resolvePnpmRunner();
+  run(runner.cmd, [...runner.prefix, ...args]);
 }
 
 function run(cmd, cmdArgs) {
