@@ -8,6 +8,9 @@ BIN_DIR="${BASE_DIR}/bin"
 INSTALL_METHOD="git"
 NO_PATH_UPDATE="0"
 PNPM_VERSION="10.29.3"
+WORKSPACE_BOOTSTRAP_BUILD_PACKAGES=(
+  "@goatcitadel/contracts"
+)
 MANAGED_MUTABLE_CONFIG_PATHS=(
   "config/assistant.config.json"
   "config/tool-policy.json"
@@ -159,6 +162,10 @@ corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 echo "Installing workspace dependencies..."
 pnpm --dir "${APP_DIR}" install --frozen-lockfile
+for workspace_package in "${WORKSPACE_BOOTSTRAP_BUILD_PACKAGES[@]}"; do
+  echo "Building bootstrap package ${workspace_package}..."
+  pnpm --dir "${APP_DIR}" --filter "${workspace_package}" build
+done
 if [[ -n "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
   echo "Re-syncing preserved GoatCitadel config after update..."
   pnpm --dir "${APP_DIR}" config:sync

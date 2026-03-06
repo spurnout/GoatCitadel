@@ -1,7 +1,10 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "::1", "bld", ".ts.net"];
+const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveViteAllowedHosts(env: Record<string, string | undefined> = process.env): string[] {
   const raw = env.GOATCITADEL_VITE_ALLOWED_HOSTS?.trim();
@@ -18,6 +21,13 @@ export function resolveViteAllowedHosts(env: Record<string, string | undefined> 
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // Fresh installer-based copies may not have workspace package dist output yet.
+    // Resolve contracts from source so Mission Control stays bootable in dev mode.
+    alias: {
+      "@goatcitadel/contracts": path.resolve(configDir, "../../packages/contracts/src/index.ts"),
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: 5173,

@@ -8,6 +8,9 @@ const defaultRepoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/s
 const preferredBaseDir = path.join(os.homedir(), ".GoatCitadel");
 const legacyBaseDir = path.join(os.homedir(), ".goatcitadel");
 const pnpmVersion = "10.29.3";
+const workspaceBootstrapBuildPackages = [
+  "@goatcitadel/contracts",
+];
 const managedMutableConfigPaths = [
   "config/assistant.config.json",
   "config/tool-policy.json",
@@ -45,6 +48,7 @@ async function main() {
   }
 
   if (command === "up") {
+    ensureWorkspaceBootstrapBuilds();
     runPnpm(["--dir", appDir, "dev", ...rest]);
     return;
   }
@@ -53,6 +57,7 @@ async function main() {
     return;
   }
   if (command === "ui") {
+    ensureWorkspaceBootstrapBuilds();
     runPnpm(["--dir", appDir, "dev:ui", ...rest]);
     return;
   }
@@ -120,6 +125,7 @@ function installOrUpdate() {
   run(corepackCmd, ["enable"]);
   run(corepackCmd, ["prepare", `pnpm@${pnpmVersion}`, "--activate"]);
   runPnpm(["--dir", appDir, "install", "--frozen-lockfile"]);
+  buildWorkspaceBootstrapPackages();
   if (preservedManagedConfig) {
     console.log("Re-syncing preserved GoatCitadel config after update...");
     runPnpm(["--dir", appDir, "config:sync"]);
@@ -240,6 +246,34 @@ function restorePreservedManagedConfig(repositoryPath, preservedState) {
 function doctor(extraArgs = []) {
   console.log("Running GoatCitadel doctor...");
   runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "doctor", ...extraArgs]);
+}
+
+function ensureWorkspaceBootstrapBuilds() {
+  let builtAny = false;
+  for (const workspacePackage of workspaceBootstrapBuildPackages) {
+    if (workspacePackageNeedsBuild(workspacePackage)) {
+      if (!builtAny) {
+        console.log("Preparing GoatCitadel workspace packages...");
+        builtAny = true;
+      }
+      console.log(`  Building ${workspacePackage}...`);
+      runPnpm(["--dir", appDir, "--filter", workspacePackage, "build"]);
+    }
+  }
+}
+
+function buildWorkspaceBootstrapPackages() {
+  for (const workspacePackage of workspaceBootstrapBuildPackages) {
+    console.log(`Building bootstrap package ${workspacePackage}...`);
+    runPnpm(["--dir", appDir, "--filter", workspacePackage, "build"]);
+  }
+}
+
+function workspacePackageNeedsBuild(workspacePackage) {
+  if (workspacePackage !== "@goatcitadel/contracts") {
+    return false;
+  }
+  return !fs.existsSync(path.join(appDir, "packages", "contracts", "dist", "index.js"));
 }
 
 function maybeShowVersion(cmd, cmdArgs) {
