@@ -6,12 +6,17 @@ import type { ToolPolicyConfig } from "@goatcitadel/contracts";
 
 const mocked = vi.hoisted(() => ({
   launch: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 vi.mock("playwright", () => ({
   chromium: {
     launch: mocked.launch,
   },
+}));
+
+vi.mock("node:child_process", () => ({
+  spawnSync: mocked.spawnSync,
 }));
 
 import { executeBrowserTool, isBrowserToolName } from "./browser-tools.js";
@@ -103,8 +108,18 @@ describe("browser tools coverage sweep", () => {
 
   beforeEach(async () => {
     mocked.launch.mockReset();
+    mocked.spawnSync.mockReset();
     tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "browser-tools-coverage-"));
     mocked.launch.mockResolvedValue(createPlaywrightStub() as never);
+    mocked.spawnSync.mockImplementation((command: string, args?: string[]) => {
+      if (Array.isArray(args) && args[0] === "--version") {
+        return { status: 0, stdout: "10.29.3", stderr: "" };
+      }
+      if (Array.isArray(args) && args.join(" ") === "exec playwright install chromium") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected spawnSync call in test: ${command} ${(args ?? []).join(" ")}`);
+    });
     globalThis.fetch = vi.fn(async () => new Response(
       [
         '<a href="https://example.com/a">Result A</a>',
@@ -233,6 +248,30 @@ describe("browser tools coverage sweep", () => {
     );
     expect(extracted.fallbackUsed).toBe(true);
     expect(String(extracted.text)).toContain("News coverage summary");
+  });
+
+  it("auto-installs Playwright Chromium when the executable is missing and retries launch", async () => {
+    const config = createConfig(tempRoot);
+    mocked.launch
+      .mockRejectedValueOnce(new Error("browserType.launch: Executable doesn't exist at C:\\\\missing\\\\chrome.exe"))
+      .mockResolvedValueOnce(createPlaywrightStub() as never);
+
+    const response = await executeBrowserTool(
+      "browser.navigate",
+      { url: "https://example.com/weather", maxChars: 400 },
+      config,
+    );
+
+    expect(response.fallbackUsed).toBe(false);
+    expect(mocked.launch).toHaveBeenCalledTimes(2);
+    expect(mocked.spawnSync).toHaveBeenCalledWith(
+      expect.stringMatching(/pnpm(\.cmd|\.exe)?$/i),
+      ["exec", "playwright", "install", "chromium"],
+      expect.objectContaining({
+        cwd: process.cwd(),
+        stdio: "inherit",
+      }),
+    );
   });
 
   it("rejects disallowed hosts and invalid interact steps", async () => {

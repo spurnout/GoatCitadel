@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { ToolPolicyConfig } from "@goatcitadel/contracts";
 import { assertHostAllowed } from "./sandbox/network-guard.js";
 import { assertWritePathInJail } from "./sandbox/path-jail.js";
@@ -18,6 +19,8 @@ interface BrowserStepInput {
   key?: string;
   timeoutMs?: number;
 }
+
+let playwrightChromiumInstallPromise: Promise<void> | null = null;
 
 export function isBrowserToolName(name: string): name is BrowserToolName {
   return (
@@ -337,7 +340,7 @@ async function withBrowserPage(
   const headless = asBoolean(args.headless, true);
   const timeout = clampInteger(args.timeoutMs, 20000, 2000, 120000);
   const waitUntil = parseWaitUntil(args.waitUntil);
-  const browser = await playwright.chromium.launch({ headless });
+  const browser = await launchPlaywrightChromium(playwright, headless);
 
   try {
     const context = await browser.newContext();
@@ -373,6 +376,74 @@ async function loadPlaywright(): Promise<PlaywrightModule> {
       `Playwright runtime is unavailable: ${reason}. Install dependencies and run "pnpm exec playwright install chromium".`,
     );
   }
+}
+
+async function launchPlaywrightChromium(
+  playwright: PlaywrightModule,
+  headless: boolean,
+): Promise<PlaywrightBrowser> {
+  try {
+    return await playwright.chromium.launch({ headless });
+  } catch (error) {
+    if (!isMissingPlaywrightBrowserError(error)) {
+      throw error;
+    }
+    await ensurePlaywrightChromiumInstalled();
+    return playwright.chromium.launch({ headless });
+  }
+}
+
+function isMissingPlaywrightBrowserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /browsertype\.launch: executable doesn't exist/i.test(message);
+}
+
+async function ensurePlaywrightChromiumInstalled(): Promise<void> {
+  if (!playwrightChromiumInstallPromise) {
+    playwrightChromiumInstallPromise = (async () => {
+      const appDir = resolvePlaywrightInstallDir();
+      const pnpmCommand = resolvePnpmCommand();
+      const result = spawnSync(
+        pnpmCommand,
+        ["exec", "playwright", "install", "chromium"],
+        {
+          cwd: appDir,
+          stdio: "inherit",
+          env: process.env,
+        },
+      );
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.status !== 0) {
+        throw new Error(`Failed to install Playwright Chromium runtime (exit code ${result.status ?? "unknown"})`);
+      }
+    })().finally(() => {
+      playwrightChromiumInstallPromise = null;
+    });
+  }
+  return playwrightChromiumInstallPromise;
+}
+
+function resolvePlaywrightInstallDir(): string {
+  const fromEnv = process.env.GOATCITADEL_APP_DIR?.trim();
+  if (fromEnv) {
+    return path.resolve(fromEnv);
+  }
+  return process.cwd();
+}
+
+function resolvePnpmCommand(): string {
+  const candidates = process.platform === "win32"
+    ? ["pnpm.cmd", "pnpm", "pnpm.exe"]
+    : ["pnpm"];
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    if (!result.error && result.status === 0) {
+      return candidate;
+    }
+  }
+  throw new Error("pnpm is not available to install Playwright Chromium runtime");
 }
 
 async function extractText(page: PlaywrightPage, selector: string, maxChars: number): Promise<string> {
