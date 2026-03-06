@@ -49,7 +49,12 @@ async function main() {
     return;
   }
   if (command === "onboard") {
-    runPnpm(["--dir", appDir, "onboarding:tui", ...rest]);
+    runPnpm(["--dir", appDir, "onboarding:tui", ...rest], {
+      env: {
+        ...process.env,
+        GOATCITADEL_APP_DIR: appDir,
+      },
+    });
     return;
   }
   if (command === "tui") {
@@ -109,8 +114,12 @@ function installOrUpdate() {
   console.log("GoatCitadel install complete.");
   console.log(`Install directory: ${appDir}`);
   console.log("Run:");
-  console.log("  goatcitadel onboard");
   console.log("  goatcitadel up");
+  console.log("  goatcitadel onboard");
+  console.log("  goatcitadel doctor --deep");
+  console.log("  goat up");
+  console.log("  goat onboard");
+  console.log("  goat doctor --deep");
 }
 
 function parseInstallArgs(argv) {
@@ -232,13 +241,13 @@ function resolvePnpmRunner() {
   throw new Error("pnpm is not available. Run `corepack enable` or reinstall GoatCitadel prerequisites.");
 }
 
-function runPnpm(args) {
+function runPnpm(args, options = {}) {
   const runner = resolvePnpmRunner();
-  run(runner.cmd, [...runner.prefix, ...args]);
+  run(runner.cmd, [...runner.prefix, ...args], options);
 }
 
-function run(cmd, cmdArgs) {
-  const result = spawnCommandSync(cmd, cmdArgs, { stdio: "inherit" });
+function run(cmd, cmdArgs, options = {}) {
+  const result = spawnCommandSync(cmd, cmdArgs, { stdio: "inherit", ...options });
   if (result.error) {
     throw result.error;
   }
@@ -248,14 +257,28 @@ function run(cmd, cmdArgs) {
 }
 
 function spawnCommandSync(cmd, cmdArgs, options = {}) {
-  return spawnSync(cmd, cmdArgs, {
-    shell: isWindowsBatchCommand(cmd),
-    ...options,
-  });
+  if (isWindowsBatchCommand(cmd)) {
+    return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", buildWindowsCommand([cmd, ...cmdArgs])], options);
+  }
+  return spawnSync(cmd, cmdArgs, options);
 }
 
 function isWindowsBatchCommand(cmd) {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd);
+}
+
+function buildWindowsCommand(parts) {
+  return parts.map((value) => quoteWindowsCommandArg(String(value))).join(" ");
+}
+
+function quoteWindowsCommandArg(value) {
+  if (value.length === 0) {
+    return "\"\"";
+  }
+  if (!/[\s"&()^<>|]/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/(["\\])/g, "\\$1")}"`;
 }
 
 function printHelp() {

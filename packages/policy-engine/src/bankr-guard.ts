@@ -129,10 +129,11 @@ export function normalizeBankrAction(
 export function evaluateBankrActionPreview(
   storage: Storage,
   input: BankrActionPreviewRequest,
+  at = new Date(),
 ): BankrActionPreviewResponse {
   const policy = readBankrSafetyPolicy(storage);
   const normalized = normalizeBankrAction(input as unknown as Record<string, unknown>);
-  const day = currentDayKey();
+  const day = currentDayKey(at);
   const dailyUsageUsd = readBankrDailyUsage(storage, day);
   const isWrite = WRITE_ACTION_TYPES.has(normalized.actionType);
 

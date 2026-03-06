@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import type { OnboardingBootstrapResult, OnboardingState } from "@goatcitadel/contracts";
@@ -48,12 +51,34 @@ async function run(): Promise<void> {
       auth.password = await ask(rl, "Gateway password");
     }
 
-    const initialState = await requestJson<OnboardingState>(
-      gatewayBaseUrl,
-      "/api/v1/onboarding/state",
-      { method: "GET" },
-      auth,
-    );
+    let initialState: OnboardingState;
+    try {
+      initialState = await requestJson<OnboardingState>(
+        gatewayBaseUrl,
+        "/api/v1/onboarding/state",
+        { method: "GET" },
+        auth,
+      );
+    } catch (error) {
+      if (!isLoopbackGatewayUrl(gatewayBaseUrl)) {
+        throw error;
+      }
+
+      output.write("\nThe local gateway is not reachable yet.\n");
+      output.write("GoatCitadel can start the local gateway for you and wait for /health.\n\n");
+      const startLocalGateway = await askYesNo(rl, "Start the local gateway now?", true);
+      if (!startLocalGateway) {
+        throw error;
+      }
+
+      await startLocalGatewayProcess(gatewayBaseUrl);
+      initialState = await requestJson<OnboardingState>(
+        gatewayBaseUrl,
+        "/api/v1/onboarding/state",
+        { method: "GET" },
+        auth,
+      );
+    }
 
     output.write("\nCurrent checklist:\n");
     for (const item of initialState.checklist) {
@@ -305,6 +330,109 @@ async function requestJson<T>(
     throw new Error(`${init.method ?? "GET"} ${path} failed (${response.status}): ${body}`);
   }
   return (await response.json()) as T;
+}
+
+async function startLocalGatewayProcess(gatewayBaseUrl: string): Promise<void> {
+  const appDir = process.env.GOATCITADEL_APP_DIR?.trim();
+  if (!appDir) {
+    throw new Error("Cannot auto-start local gateway: GOATCITADEL_APP_DIR is not set.");
+  }
+
+  const pnpmCommand = resolvePnpmCommand(appDir);
+  const child = spawnCommand(pnpmCommand.cmd, [...pnpmCommand.prefix, "--dir", appDir, "dev:gateway"], {
+    cwd: appDir,
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      GOATCITADEL_GATEWAY_URL: gatewayBaseUrl,
+    },
+  });
+  child.unref();
+
+  output.write("Waiting for the local gateway to become healthy...\n");
+  await waitForGatewayHealth(gatewayBaseUrl, 20_000);
+  output.write("Local gateway is healthy.\n\n");
+}
+
+function resolvePnpmCommand(appDir: string): { cmd: string; prefix: string[] } {
+  const baseDir = path.dirname(appDir);
+  const localCandidates = process.platform === "win32"
+    ? [path.join(baseDir, "bin", "pnpm.cmd"), path.join(baseDir, "bin", "pnpm.ps1")]
+    : [path.join(baseDir, "bin", "pnpm")];
+
+  for (const candidate of localCandidates) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+    if (candidate.endsWith(".ps1")) {
+      return {
+        cmd: "powershell.exe",
+        prefix: ["-ExecutionPolicy", "Bypass", "-File", candidate],
+      };
+    }
+    return {
+      cmd: candidate,
+      prefix: [],
+    };
+  }
+
+  return process.platform === "win32"
+    ? { cmd: "pnpm.cmd", prefix: [] }
+    : { cmd: "pnpm", prefix: [] };
+}
+
+function spawnCommand(
+  cmd: string,
+  args: string[],
+  options: Parameters<typeof spawn>[2] = {},
+) {
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd)) {
+    return spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", buildWindowsCommand([cmd, ...args])], options);
+  }
+  return spawn(cmd, args, options);
+}
+
+function buildWindowsCommand(parts: string[]): string {
+  return parts.map((value) => quoteWindowsCommandArg(value)).join(" ");
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  if (value.length === 0) {
+    return "\"\"";
+  }
+  if (!/[\s"&()^<>|]/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/(["\\])/g, "\\$1")}"`;
+}
+
+async function waitForGatewayHealth(baseUrl: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "fetch failed";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      if (response.ok) {
+        return;
+      }
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for local gateway health: ${lastError}`);
+}
+
+function isLoopbackGatewayUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
 }
 
 function clampOption<const T extends readonly string[]>(

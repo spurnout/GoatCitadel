@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createDefaultToolRegistry } from "./tool-registry.js";
 
 describe("tool registry", () => {
-  it("includes bankr tools by default", () => {
+  it("excludes bankr tools by default", () => {
     const catalog = createDefaultToolRegistry().toCatalog();
+    expect(catalog.some((tool) => tool.toolName.startsWith("bankr."))).toBe(false);
+  });
+
+  it("includes bankr tools when built-in support is explicitly enabled", () => {
+    const catalog = createDefaultToolRegistry({ bankrBuiltinEnabled: true }).toCatalog();
     expect(catalog.some((tool) => tool.toolName.startsWith("bankr."))).toBe(true);
   });
 

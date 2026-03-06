@@ -84,42 +84,33 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
     void load({ background: false });
   }, [load]);
 
-  useRefreshSubscription(
-    "improvement",
-    async () => {
-      await load({ background: true });
-    },
-    {
-      enabled: !isInitialLoading,
-      coalesceMs: 1200,
-      staleMs: 20000,
-      pollIntervalMs: 15000,
-      onFallbackStateChange: setIsFallbackRefreshing,
-    },
-  );
-
-  useEffect(() => {
-    if (!selectedRunId) {
-      setRunDetail(null);
-      return;
+  const refreshSelectedRunDetail = useCallback(async (
+    runId: string,
+    options?: { refreshListsOnTerminal?: boolean; isCancelled?: () => boolean },
+  ) => {
+    try {
+      const detail = await fetchImprovementReplayRun(runId);
+      if (options?.isCancelled?.()) {
+        return;
+      }
+      setRunDetail(detail);
+      setReplayRuns((current) => upsertReplayRun(current, detail.run));
+      if (detail.run.reportId) {
+        setSelectedReportId((prev) => prev ?? detail.run.reportId ?? null);
+      }
+      setLastRunEvent(`Run ${detail.run.runId.slice(0, 8)} is ${detail.run.status}.`);
+      setLastRunUpdateAt(new Date().toISOString());
+      if (
+        options?.refreshListsOnTerminal !== false
+        && detail.run.status !== "running"
+        && detail.run.status !== "queued"
+      ) {
+        await load({ background: true });
+      }
+    } catch {
+      // keep last known state when background detail refresh fails
     }
-    let cancelled = false;
-    void fetchImprovementReplayRun(selectedRunId)
-      .then((detail) => {
-        if (!cancelled) {
-          setRunDetail(detail);
-          if (detail.run.reportId) {
-            setSelectedReportId((current) => current ?? detail.run.reportId ?? null);
-          }
-        }
-      })
-      .catch(() => {
-        // keep previous detail when background fetch fails
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRunId]);
+  }, [load]);
 
   const reportDetail = useMemo(
     () => reports.find((item) => item.reportId === selectedReportId) ?? null,
@@ -135,43 +126,46 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
     return replayRuns.find((run) => run.runId === selectedRunId)?.status ?? null;
   }, [replayRuns, runDetail, selectedRunId]);
 
-  const latestSummary = reportDetail?.summary;
-  const topItems = useMemo(() => (runDetail?.items ?? []).slice(0, 8), [runDetail?.items]);
+  useRefreshSubscription(
+    "improvement",
+    async () => {
+      if (selectedRunId && (activeRunStatus === "running" || activeRunStatus === "queued")) {
+        await refreshSelectedRunDetail(selectedRunId, { refreshListsOnTerminal: true });
+        return;
+      }
+      await load({ background: true });
+    },
+    {
+      enabled: !isInitialLoading,
+      coalesceMs: 1200,
+      staleMs: 20000,
+      pollIntervalMs: selectedRunId && (activeRunStatus === "running" || activeRunStatus === "queued") ? 2000 : 15000,
+      onFallbackStateChange: setIsFallbackRefreshing,
+    },
+  );
 
   useEffect(() => {
-    if (!selectedRunId || (activeRunStatus !== "running" && activeRunStatus !== "queued")) {
+    if (!selectedRunId) {
+      setRunDetail(null);
       return;
     }
     let cancelled = false;
-    const pollRun = async () => {
-      try {
-        const detail = await fetchImprovementReplayRun(selectedRunId);
+    void refreshSelectedRunDetail(selectedRunId, {
+      refreshListsOnTerminal: false,
+      isCancelled: () => cancelled,
+    })
+      .then(() => {
         if (cancelled) {
           return;
         }
-        setRunDetail(detail);
-        setReplayRuns((current) => upsertReplayRun(current, detail.run));
-        if (detail.run.reportId) {
-          setSelectedReportId((prev) => prev ?? detail.run.reportId ?? null);
-        }
-        setLastRunEvent(`Run ${detail.run.runId.slice(0, 8)} is ${detail.run.status}.`);
-        setLastRunUpdateAt(new Date().toISOString());
-        if (detail.run.status !== "running" && detail.run.status !== "queued") {
-          void load({ background: true });
-        }
-      } catch {
-        // polling errors are transient; keep last known state
-      }
-    };
-    void pollRun();
-    const timer = window.setInterval(() => {
-      void pollRun();
-    }, 2000);
+      });
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
-  }, [activeRunStatus, load, selectedRunId]);
+  }, [refreshSelectedRunDetail, selectedRunId]);
+
+  const latestSummary = reportDetail?.summary;
+  const topItems = useMemo(() => (runDetail?.items ?? []).slice(0, 8), [runDetail?.items]);
 
   const handleRunNow = useCallback(async () => {
     setRunningReplay(true);

@@ -483,7 +483,7 @@ export interface CreateDefaultToolRegistryOptions {
 }
 
 export function createDefaultToolRegistry(options?: CreateDefaultToolRegistryOptions): ToolRegistry {
-  const bankrBuiltinEnabled = options?.bankrBuiltinEnabled ?? true;
+  const bankrBuiltinEnabled = options?.bankrBuiltinEnabled ?? false;
   const initialTools = bankrBuiltinEnabled
     ? BUILTIN_TOOLS
     : BUILTIN_TOOLS.filter((tool) => !tool.name.startsWith("bankr."));

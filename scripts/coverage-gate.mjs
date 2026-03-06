@@ -22,6 +22,14 @@ try {
   process.exit(1);
 }
 
+if (summary.status !== "success") {
+  console.error(
+    `[coverage:gate] coverage summary status is ${JSON.stringify(summary.status)}. `
+    + "Run pnpm coverage:collect and fix the failing collection before gating.",
+  );
+  process.exit(1);
+}
+
 const warnings = [];
 const resolved = resolveThresholds(warnings);
 const linePercent = Number(summary.linePercent ?? NaN);

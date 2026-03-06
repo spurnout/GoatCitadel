@@ -127,6 +127,12 @@ export function PromptLabPage({ workspaceId }: { workspaceId?: string }) {
   } | null>(null);
   const [scoreDraft, setScoreDraft] = useState<ScoreDraft>(DEFAULT_SCORE_DRAFT);
   const running = activeRun !== null;
+  const benchmarkActive = Boolean(
+    benchmarkRunId && (benchmarkPending || benchmarkStatus?.run.status === "queued" || benchmarkStatus?.run.status === "running"),
+  );
+  const regressionActive = Boolean(
+    regressionRunId && (regressionPending || regressionStatus?.run.status === "queued" || regressionStatus?.run.status === "running"),
+  );
 
   const loadLlmCatalog = useCallback(async () => {
     const config = await fetchLlmConfig();
@@ -230,16 +236,23 @@ export function PromptLabPage({ workspaceId }: { workspaceId?: string }) {
   useRefreshSubscription(
     "promptLab",
     async () => {
-      if (running) {
-        return;
+      if (!running) {
+        await load({ background: true });
       }
-      await load({ background: true });
+      await Promise.all([
+        benchmarkActive && benchmarkRunId
+          ? loadBenchmarkStatus(benchmarkRunId).catch(() => undefined)
+          : Promise.resolve(),
+        regressionActive && regressionRunId
+          ? loadRegressionStatus(regressionRunId).catch(() => undefined)
+          : Promise.resolve(),
+      ]);
     },
     {
       enabled: !initialLoading,
       coalesceMs: 1200,
       staleMs: 20000,
-      pollIntervalMs: 15000,
+      pollIntervalMs: benchmarkActive || regressionActive ? 2500 : 15000,
       onFallbackStateChange: setIsFallbackRefreshing,
     },
   );
@@ -764,21 +777,6 @@ export function PromptLabPage({ workspaceId }: { workspaceId?: string }) {
   }, [benchmarkRunId, benchmarkTestCodes, loadRegressionStatus, selectedPackId]);
 
   useEffect(() => {
-    if (!benchmarkRunId) {
-      return;
-    }
-    if (!benchmarkPending && benchmarkStatus?.run.status !== "queued" && benchmarkStatus?.run.status !== "running") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadBenchmarkStatus(benchmarkRunId).catch(() => {
-        // keep polling until terminal state; transient errors surface in next manual refresh
-      });
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [benchmarkPending, benchmarkRunId, benchmarkStatus?.run.status, loadBenchmarkStatus]);
-
-  useEffect(() => {
     if (!selectedPackId) {
       setTrendSeries([]);
       return;
@@ -787,21 +785,6 @@ export function PromptLabPage({ workspaceId }: { workspaceId?: string }) {
       setTrendSeries([]);
     });
   }, [loadTrends, selectedPackId]);
-
-  useEffect(() => {
-    if (!regressionRunId) {
-      return;
-    }
-    if (!regressionPending && regressionStatus?.run.status !== "queued" && regressionStatus?.run.status !== "running") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadRegressionStatus(regressionRunId).catch(() => {
-        // keep polling until terminal state; transient errors are expected.
-      });
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [loadRegressionStatus, regressionPending, regressionRunId, regressionStatus?.run.status]);
 
   const handleImport = useCallback(async () => {
     const content = importText.trim();

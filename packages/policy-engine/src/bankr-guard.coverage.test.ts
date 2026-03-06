@@ -94,6 +94,7 @@ describe("bankr guard coverage sweep", () => {
 
   it("evaluates read/write actions against mode, symbol, and budget caps", () => {
     const { storage } = createStorageStub();
+    const testDay = new Date("2026-03-05T10:00:00.000Z");
 
     writeBankrSafetyPolicy(storage, {
       mode: "read_only",
@@ -131,7 +132,7 @@ describe("bankr guard coverage sweep", () => {
       chain: "base",
       symbol: "ETH",
       usdEstimate: 55,
-    });
+    }, testDay);
     expect(tooLarge.allowed).toBe(false);
     expect(tooLarge.reasonCode).toBe("per_action_cap_exceeded");
 
@@ -140,11 +141,11 @@ describe("bankr guard coverage sweep", () => {
       chain: "base",
       symbol: "ETH",
       usdEstimate: 35,
-    });
+    }, testDay);
     expect(writeAllowed.allowed).toBe(true);
     expect(writeAllowed.remainingPerActionUsd).toBe(5);
 
-    const afterUsage = applyBankrBudgetUsage(storage, 70, new Date("2026-03-05T10:00:00.000Z"));
+    const afterUsage = applyBankrBudgetUsage(storage, 70, testDay);
     expect(afterUsage).toBe(70);
     expect(readBankrDailyUsage(storage, "2026-03-05")).toBe(70);
 
@@ -153,9 +154,61 @@ describe("bankr guard coverage sweep", () => {
       chain: "base",
       symbol: "ETH",
       usdEstimate: 40,
-    });
+    }, testDay);
     expect(dailyExceeded.allowed).toBe(false);
     expect(dailyExceeded.reasonCode).toBe("daily_cap_exceeded");
+  });
+
+  it("uses the same UTC day for preview and budget usage when an explicit date is provided", () => {
+    const { storage } = createStorageStub();
+    const boundary = new Date("2026-03-05T23:59:59.900Z");
+
+    writeBankrSafetyPolicy(storage, {
+      enabled: true,
+      mode: "read_write",
+      dailyUsdCap: 100,
+      perActionUsdCap: 100,
+      allowedChains: ["base"],
+      allowedActionTypes: ["trade"],
+      blockedSymbols: [],
+    });
+
+    applyBankrBudgetUsage(storage, 80, boundary);
+    const preview = evaluateBankrActionPreview(storage, {
+      actionType: "trade",
+      chain: "base",
+      symbol: "ETH",
+      usdEstimate: 25,
+    }, boundary);
+
+    expect(preview.allowed).toBe(false);
+    expect(preview.reasonCode).toBe("daily_cap_exceeded");
+  });
+
+  it("still defaults to the current UTC day when no explicit date is provided", () => {
+    const { storage } = createStorageStub();
+    const now = new Date();
+
+    writeBankrSafetyPolicy(storage, {
+      enabled: true,
+      mode: "read_write",
+      dailyUsdCap: 100,
+      perActionUsdCap: 100,
+      allowedChains: ["base"],
+      allowedActionTypes: ["trade"],
+      blockedSymbols: [],
+    });
+
+    applyBankrBudgetUsage(storage, 60, now);
+    const preview = evaluateBankrActionPreview(storage, {
+      actionType: "trade",
+      chain: "base",
+      symbol: "ETH",
+      usdEstimate: 30,
+    });
+
+    expect(preview.allowed).toBe(true);
+    expect(preview.dailyUsageUsd).toBe(60);
   });
 
   it("normalizes prompt-derived action/chain/symbol/usd and appends audit", () => {

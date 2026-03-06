@@ -93,21 +93,23 @@ bash install.sh --install-dir "$HOME/.GoatCitadel"
 ### Verify The Installed Launcher
 
 ```bash
-goatcitadel doctor --deep
-goatcitadel onboard
 goatcitadel up
+goatcitadel onboard
+goatcitadel doctor --deep
 ```
 
 Short alias:
 
 ```bash
-goat doctor --deep
 goat up
+goat onboard
+goat doctor --deep
 ```
 
 PowerShell note:
 
 - use `goatcitadel` or `goat`
+- onboarding uses the live gateway API, so start with `goat up`
 - do not use `gc` in PowerShell because it is the built-in alias for `Get-Content`
 - if `goatcitadel` is not found immediately after install, open a new PowerShell window
 - immediate fallback: `& "$HOME\\.GoatCitadel\\bin\\goatcitadel.cmd" onboard`
@@ -153,11 +155,12 @@ pnpm dev
 
 ## First Run
 
-1. Run `goatcitadel doctor --deep` or `pnpm doctor -- --deep`.
+1. Start GoatCitadel with `goat up` or `pnpm dev`.
 2. Complete onboarding in the TUI or Mission Control.
-3. Set at least one provider/model in Settings.
-4. Open Dashboard and Chat first.
-5. Keep approvals on for anything risky or externally connected.
+3. Run `goat doctor --deep` or `pnpm doctor -- --deep` after the runtime is available.
+4. Set at least one provider/model in Settings.
+5. Open Dashboard and Chat first.
+6. Keep approvals on for anything risky or externally connected.
 
 Mission Control default local URLs:
 

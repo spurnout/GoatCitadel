@@ -181,6 +181,7 @@ export function OfficePage() {
   const [assetPack, setAssetPack] = useState<OfficeAssetPack>({});
   const [dockTab, setDockTab] = useState<OfficeDockTab>("inspector");
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [sceneReady, setSceneReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -357,6 +358,14 @@ export function OfficePage() {
     operatorPrefs.preset,
     pendingApprovals.length,
   ]);
+
+  useEffect(() => {
+    if (officeAgents.length === 0) {
+      setSceneReady(false);
+      return;
+    }
+    return scheduleSceneActivation(() => setSceneReady(true));
+  }, [officeAgents.length]);
 
   const officeCopy = pageCopy.office;
   const officeGuide = officeCopy.guide ?? {
@@ -678,25 +687,31 @@ export function OfficePage() {
         ) : (
           <>
             <OfficeCanvasErrorBoundary>
-              <Suspense
-                fallback={(
-                  <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-                    <p>Loading office scene...</p>
-                  </div>
-                )}
-              >
-                <OfficeCanvasScene
-                  operator={operatorModel}
-                  agents={officeAgents}
-                  selectedEntityId={selectedEntityId}
-                  onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
-                  assetPack={assetPack}
-                  motionMode={effectiveMotionMode}
-                  showCollabOverlay={operatorPrefs.showCollabOverlay}
-                  idleMillingEnabled={operatorPrefs.idleMillingEnabled}
-                  collaborationEdges={collaborationEdges}
-                />
-              </Suspense>
+              {sceneReady ? (
+                <Suspense
+                  fallback={(
+                    <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                      <p>Loading office scene...</p>
+                    </div>
+                  )}
+                >
+                  <OfficeCanvasScene
+                    operator={operatorModel}
+                    agents={officeAgents}
+                    selectedEntityId={selectedEntityId}
+                    onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
+                    assetPack={assetPack}
+                    motionMode={effectiveMotionMode}
+                    showCollabOverlay={operatorPrefs.showCollabOverlay}
+                    idleMillingEnabled={operatorPrefs.idleMillingEnabled}
+                    collaborationEdges={collaborationEdges}
+                  />
+                </Suspense>
+              ) : (
+                <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                  <p>Loading office scene...</p>
+                </div>
+              )}
             </OfficeCanvasErrorBoundary>
             <div className="office-desk-list">
               <button type="button"
@@ -1304,6 +1319,23 @@ function buildOperatorThought(input: {
     return "No goats are currently active. Ready to assign a fresh wave.";
   }
   return `${input.activeAgents} goats are running at ${input.eventFlow.toFixed(1)} events per minute.`;
+}
+
+function scheduleSceneActivation(callback: () => void): () => void {
+  if (typeof window === "undefined") {
+    callback();
+    return () => undefined;
+  }
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (cb: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    const handle = idleWindow.requestIdleCallback(callback, { timeout: 250 });
+    return () => idleWindow.cancelIdleCallback?.(handle);
+  }
+  const handle = window.setTimeout(callback, 120);
+  return () => window.clearTimeout(handle);
 }
 
 async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {

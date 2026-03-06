@@ -98,4 +98,36 @@ describe("CostLedgerRepository", () => {
     assert.equal(availability.trackedEvents, 1);
     assert.equal(availability.unknownEvents, 1);
   });
+
+  it("rolls back the insert when prune fails on the 50th write", () => {
+    const repo = createRepo();
+    const internal = repo as unknown as {
+      insertCount: number;
+      pruneStmt: { run: (params: { cutoff: string }) => unknown };
+    };
+
+    internal.insertCount = 49;
+    const originalRun = internal.pruneStmt.run.bind(internal.pruneStmt);
+    internal.pruneStmt.run = () => {
+      throw new Error("prune failed");
+    };
+
+    assert.throws(() => {
+      repo.insert({
+        sessionId: "s-rollback",
+        agentId: "assistant",
+        taskId: "task-rollback",
+        tokenInput: 1,
+        tokenOutput: 1,
+        tokenCachedInput: 0,
+        costUsd: 0.01,
+        createdAt: "2026-02-27T11:00:00.000Z",
+      });
+    }, /prune failed/);
+
+    internal.pruneStmt.run = originalRun;
+    const summary = repo.summary("session", "2026-02-27T00:00:00.000Z", "2026-02-27T23:59:59.999Z");
+    assert.equal(summary.length, 0);
+    assert.equal(internal.insertCount, 49);
+  });
 });

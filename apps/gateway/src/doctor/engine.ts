@@ -691,6 +691,7 @@ async function checkGatewayHealth(
 ): Promise<{ check: DoctorCheckResult; health: GatewayHealthResult }> {
   const id = "gateway.health";
   const result = await probeGatewayHealth(context.gatewayBaseUrl);
+  const localLoopbackUnreachable = !result.reachable && isLoopbackGatewayBaseUrl(context.gatewayBaseUrl);
   repairs.push({
     checkId: id,
     applied: false,
@@ -702,9 +703,11 @@ async function checkGatewayHealth(
       id,
       group: "runtime",
       title: "Gateway reachability and health",
-      status: result.reachable ? "ok" : "warn",
-      severity: result.reachable ? "info" : "warning",
-      detail: result.detail,
+      status: result.reachable ? "ok" : (localLoopbackUnreachable ? "skipped" : "warn"),
+      severity: result.reachable ? "info" : (localLoopbackUnreachable ? "info" : "warning"),
+      detail: localLoopbackUnreachable
+        ? "Gateway is not running yet on the local loopback address. Start GoatCitadel with `goat up`, then rerun `goat doctor --deep` for runtime checks."
+        : result.detail,
       repairable: false,
     },
     health: result,
@@ -735,6 +738,7 @@ async function checkDeepRuntime(
     };
   }
   if (!health.reachable) {
+    const localLoopbackUnreachable = isLoopbackGatewayBaseUrl(context.gatewayBaseUrl);
     repairs.push({
       checkId: id,
       applied: false,
@@ -746,8 +750,10 @@ async function checkDeepRuntime(
       group: "runtime",
       title: "Deep runtime checks",
       status: "skipped",
-      severity: "warning",
-      detail: "Skipped deep checks because gateway health probe failed.",
+      severity: localLoopbackUnreachable ? "info" : "warning",
+      detail: localLoopbackUnreachable
+        ? "Skipped deep runtime checks because the local gateway is not running yet."
+        : "Skipped deep checks because gateway health probe failed.",
       repairable: false,
     };
   }
@@ -1052,6 +1058,16 @@ async function probeGatewayHealth(baseUrl: string): Promise<GatewayHealthResult>
     statusText: "ok",
     detail: `Gateway health check OK (${response.statusCode ?? 200}).`,
   };
+}
+
+function isLoopbackGatewayBaseUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
 }
 
 async function fetchGatewayJson(

@@ -21,6 +21,7 @@ Use this checklist before you announce GoatCitadel publicly or hand a clean inst
 - [ ] macOS/Linux installer path is documented accurately.
 - [ ] Manual clone path works exactly as documented.
 - [ ] `goatcitadel` and `goat` launchers expose the same command surface as the repo CLI.
+- [ ] First-run guidance says `goat up` before `goat onboard`.
 - [ ] Update flow works with `goatcitadel update`.
 
 ## Security Readiness

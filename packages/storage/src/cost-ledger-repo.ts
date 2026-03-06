@@ -119,16 +119,26 @@ export class CostLedgerRepository {
 
   public insert(record: CostLedgerRecord): void {
     const day = record.createdAt.slice(0, 10);
-    this.insertStmt.run({
-      ...record,
-      day,
-      agentId: record.agentId ?? null,
-      taskId: record.taskId ?? null,
-    });
-    this.insertCount += 1;
-    if (this.insertCount % 50 === 0) {
-      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      this.pruneStmt.run({ cutoff });
+    const nextInsertCount = this.insertCount + 1;
+    const shouldPrune = nextInsertCount % 50 === 0;
+    this.db.exec("SAVEPOINT cost_ledger_insert");
+    try {
+      this.insertStmt.run({
+        ...record,
+        day,
+        agentId: record.agentId ?? null,
+        taskId: record.taskId ?? null,
+      });
+      if (shouldPrune) {
+        const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+        this.pruneStmt.run({ cutoff });
+      }
+      this.db.exec("RELEASE SAVEPOINT cost_ledger_insert");
+      this.insertCount = nextInsertCount;
+    } catch (error) {
+      this.db.exec("ROLLBACK TO SAVEPOINT cost_ledger_insert");
+      this.db.exec("RELEASE SAVEPOINT cost_ledger_insert");
+      throw error;
     }
   }
 

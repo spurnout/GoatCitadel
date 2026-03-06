@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create } from "react-test-renderer";
+import { ActivityPage } from "./pages/ActivityPage";
+import { LiveFeedPage } from "./pages/LiveFeedPage";
+import { MeshPage } from "./pages/MeshPage";
+import { OfficePage } from "./pages/OfficePage";
 import { App } from "./App";
 import { AgentsPage } from "./pages/AgentsPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
@@ -19,6 +23,7 @@ import { PromptLabPage } from "./pages/PromptLabPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SkillsPage } from "./pages/SkillsPage";
+import { SystemPage } from "./pages/SystemPage";
 import { TasksPage } from "./pages/TasksPage";
 import { ToolsPage } from "./pages/ToolsPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
@@ -75,8 +80,123 @@ function createMemoryStorage(): Storage {
   };
 }
 
+class TestBoundary extends React.Component<
+  { children: React.ReactNode; onError: (message: string) => void },
+  { hasError: boolean }
+> {
+  public override state = { hasError: false };
+
+  public static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  public override componentDidCatch(error: Error): void {
+    this.props.onError(error.message);
+  }
+
+  public override render() {
+    if (this.state.hasError) {
+      return <div>page-error-boundary</div>;
+    }
+    return this.props.children;
+  }
+}
+
+function createRuntimeSettings() {
+  return {
+    environment: "coverage",
+    workspaceDir: "workspace",
+    defaultToolProfile: "standard",
+    budgetMode: "balanced",
+    networkAllowlist: ["127.0.0.1", "localhost"],
+    auth: {
+      mode: "none",
+      allowLoopbackBypass: true,
+      tokenConfigured: false,
+      basicConfigured: false,
+    },
+    llm: {
+      activeProviderId: "glm",
+      activeModel: "glm-5",
+      providers: [
+        {
+          providerId: "glm",
+          label: "GLM",
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          defaultModel: "glm-5",
+          apiKeyEnv: "GLM_API_KEY",
+          headers: {},
+        },
+      ],
+    },
+    memory: {
+      enabled: true,
+      qmdEnabled: true,
+      qmdApplyToChat: true,
+      qmdApplyToOrchestration: true,
+      qmdMaxContextTokens: 4000,
+      qmdMinPromptChars: 120,
+      qmdCacheTtlSeconds: 3600,
+      qmdDistillerProviderId: "glm",
+      qmdDistillerModel: "glm-5",
+    },
+    mesh: {
+      enabled: false,
+      mode: "lan",
+      nodeId: "mesh-local",
+      mdns: true,
+      staticPeers: [],
+      requireMtls: true,
+      tailnetEnabled: false,
+    },
+    npu: {
+      enabled: false,
+      autoStart: false,
+      sidecarUrl: "http://127.0.0.1:11440",
+    },
+    features: {
+      computerUseGuardrailsV1Enabled: true,
+      bankrBuiltinEnabled: false,
+    },
+  };
+}
+
+function createOnboardingState() {
+  return {
+    completed: false,
+    checklist: [],
+    settings: createRuntimeSettings(),
+  };
+}
+
+function createNpuStatus(now: string) {
+  return {
+    processState: "stopped",
+    desiredState: "stopped",
+    healthy: false,
+    backend: "local",
+    sidecarUrl: "http://127.0.0.1:11440",
+    sidecarPid: null,
+    activeModelId: null,
+    updatedAt: now,
+    lastError: "",
+    capability: {
+      isWindowsArm64: false,
+      onnxRuntimeAvailable: false,
+      onnxRuntimeGenAiAvailable: false,
+      qnnExecutionProviderAvailable: false,
+      supported: false,
+      details: [],
+    },
+  };
+}
+
 function buildPayload(pathname: string, method: string): unknown {
   const now = new Date().toISOString();
+  const settings = createRuntimeSettings();
+  if (pathname.endsWith("/workspaces")) {
+    return { items: [] };
+  }
   if (pathname.endsWith("/dashboard/state")) {
     return {
       timestamp: now,
@@ -103,31 +223,36 @@ function buildPayload(pathname: string, method: string): unknown {
       processHeapUsedBytes: 1,
     };
   }
+  if (pathname.endsWith("/daemon/status")) {
+    return { state: "stopped", running: false, pid: 0, uptimeSeconds: 0 };
+  }
+  if (pathname.endsWith("/daemon/logs")) {
+    return { items: [] };
+  }
+  if (pathname.endsWith("/operators")) {
+    return { items: [] };
+  }
   if (pathname.endsWith("/settings") || pathname.endsWith("/auth/settings")) {
-    return {
-      budgetMode: "balanced",
-      defaultToolProfile: "standard",
-      uiPreferences: {},
-      providers: [],
-      npu: {
-        enabled: false,
-        autoStart: false,
-        sidecarUrl: "http://127.0.0.1:11440",
-      },
-      auth: {
-        mode: "none",
-      },
-      features: {
-        computerUseGuardrailsV1Enabled: true,
-      },
-      applyRecommendations: [],
-    };
+    return settings;
   }
   if (pathname.includes("/onboarding/state")) {
-    return { completed: false, checklist: [] };
+    return createOnboardingState();
   }
   if (pathname.includes("/costs/summary")) {
-    return { scope: "day", from: now, to: now, items: [] };
+    return {
+      scope: "day",
+      from: now,
+      to: now,
+      items: [],
+      usageAvailability: {
+        trackedEvents: 0,
+        unknownEvents: 0,
+        totalAgentEvents: 0,
+      },
+    };
+  }
+  if (pathname.includes("/costs/run-cheaper")) {
+    return { mode: "balanced", actions: [] };
   }
   if (pathname.includes("/memory/qmd/stats")) {
     return {
@@ -140,21 +265,231 @@ function buildPayload(pathname: string, method: string): unknown {
       failedRuns: 0,
       originalTokenEstimate: 0,
       distilledTokenEstimate: 0,
+      netTokenDelta: 0,
       savingsPercent: 0,
+      compressionPercent: 0,
+      expansionPercent: 0,
+      efficiencyLabel: "neutral",
       recent: [],
     };
   }
+  if (pathname.includes("/memory/items") && pathname.includes("/history")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/memory/items")) {
+    return { items: [] };
+  }
   if (pathname.includes("/npu/status")) {
-    return { status: "stopped", available: false };
+    return createNpuStatus(now);
   }
   if (pathname.includes("/npu/models")) {
     return { items: [] };
   }
+  if (pathname.includes("/mesh/status")) {
+    return {
+      enabled: false,
+      mode: "lan",
+      localNodeId: "mesh-local",
+      tailnetEnabled: false,
+      nodesOnline: 0,
+      activeLeases: 0,
+      ownedSessions: 0,
+    };
+  }
+  if (pathname.includes("/mesh/nodes") || pathname.includes("/mesh/leases") || pathname.includes("/mesh/sessions/owners") || pathname.includes("/mesh/replication/offsets")) {
+    return { items: [] };
+  }
   if (pathname.includes("/ui/change-risk/evaluate")) {
-    return { risk: "low", checks: [], score: 0 };
+    return { overall: "safe", items: [], risk: "low", checks: [], score: 0 };
+  }
+  if (pathname.includes("/llm/config")) {
+    return settings.llm;
+  }
+  if (pathname.includes("/llm/models")) {
+    return { items: [{ id: "glm-5", ownedBy: "glm", created: 0 }] };
+  }
+  if (pathname.includes("/secrets/providers/") && pathname.endsWith("/status")) {
+    const providerId = pathname.split("/").at(-2) ?? "glm";
+    return { providerId, hasSecret: false, source: "none" };
+  }
+  if (pathname.includes("/voice/status")) {
+    return {
+      wakeActive: false,
+      talkActive: false,
+      activeSessionId: null,
+      lastTranscript: null,
+      stt: {
+        provider: "none",
+        model: "none",
+        state: "idle",
+      },
+      tts: {
+        provider: "none",
+        voice: "none",
+      },
+      talk: {
+        state: "idle",
+        sessionId: null,
+      },
+      wake: {
+        state: "idle",
+      },
+    };
+  }
+  if (pathname.includes("/guidance/global")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/guidance")) {
+    return { global: [], workspace: [] };
+  }
+  if (pathname.includes("/improvement/reports")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/improvement/replay/runs")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/prompt-packs/") && pathname.endsWith("/report")) {
+    return {
+      runs: [],
+      scores: [],
+      summary: {
+        totalTests: 0,
+        completedRuns: 0,
+        failedRuns: 0,
+        runFailureCount: 0,
+        scoreFailureCount: 0,
+        needsScoreCount: 0,
+        passThreshold: 7,
+        averageTotalScore: 0,
+        passRate: 0,
+        failingCodes: [],
+      },
+    };
+  }
+  if (pathname.includes("/prompt-packs/") && pathname.endsWith("/export")) {
+    return { packId: "pack-1", path: "", exists: false, sizeBytes: 0 };
+  }
+  if (pathname.includes("/prompt-packs/") && pathname.endsWith("/tests")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/prompt-packs")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/tools/catalog")) {
+    return {
+      items: [
+        {
+          toolName: "fs.list",
+          category: "files",
+          description: "List files",
+          pack: "core",
+          riskLevel: "low",
+          requiresApproval: false,
+        },
+      ],
+    };
+  }
+  if (pathname.includes("/tools/grants")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/tools/access/evaluate")) {
+    return {
+      toolName: "fs.list",
+      decision: "allow",
+      riskLevel: "low",
+      requiresApproval: false,
+      matchedGrantIds: [],
+    };
+  }
+  if (pathname.includes("/integrations/obsidian/status")) {
+    return {
+      enabled: false,
+      vaultPath: "",
+      vaultReachable: false,
+      mode: "read_append",
+      allowedSubpaths: [],
+      checkedAt: now,
+      lastOperationAt: undefined,
+      lastError: "",
+    };
+  }
+  if (pathname.includes("/integrations/catalog")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/integrations/connections")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/integrations/plugins")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/cron/jobs/")) {
+    return {
+      jobId: "cron-1",
+      name: "Nightly Sync",
+      schedule: "0 2 * * * America/Los_Angeles",
+      enabled: true,
+      updatedAt: now,
+    };
+  }
+  if (pathname.includes("/cron/jobs")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/sessions/") && pathname.includes("/summary")) {
+    return {
+      sessionId: "session-1",
+      sessionKey: "dm:test",
+      health: "healthy",
+      tokenTotal: 0,
+      costUsdTotal: 0,
+      openedAt: now,
+      lastEventAt: now,
+      lastCheckpointAt: now,
+      taskCount: 0,
+      approvalCount: 0,
+      eventCount: 0,
+      metrics: [],
+    };
+  }
+  if (pathname.includes("/sessions/") && pathname.includes("/timeline")) {
+    return { items: [] };
   }
   if (pathname.includes("/chat/sessions") && pathname.endsWith("/messages") && method === "POST") {
     return { messageId: "msg-1", output: "ok" };
+  }
+  if (pathname.includes("/chat/catalog/commands")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/chat/sessions") && pathname.endsWith("/prefs")) {
+    return {
+      sessionId: "session-1",
+      agentEnabled: true,
+      stream: true,
+      webMode: "quick",
+      thinkingLevel: "standard",
+    };
+  }
+  if (pathname.includes("/chat/sessions") && pathname.endsWith("/binding")) {
+    return { item: null };
+  }
+  if (pathname.includes("/chat/sessions") && pathname.includes("/proactive/status")) {
+    return {
+      policy: {
+        mode: "off",
+        autonomyBudget: { maxActionsPerHour: 0, maxBackgroundTurnsPerHour: 0 },
+        retrievalMode: "manual",
+        reflectionMode: "manual",
+      },
+      idleSeconds: 0,
+      hasRunningTurn: false,
+      pendingSuggestions: 0,
+      actionsLastHour: 0,
+    };
+  }
+  if (pathname.includes("/chat/sessions") && pathname.includes("/proactive/runs")) {
+    return { items: [] };
+  }
+  if (pathname.includes("/chat/sessions") && pathname.includes("/learned-memory")) {
+    return { items: [], conflicts: [] };
   }
   if (pathname.includes("/chat/sessions") && pathname.includes("/messages")) {
     return { items: [], nextCursor: undefined };
@@ -183,18 +518,39 @@ function installWindowAndFetch(): void {
     hostname: "localhost",
     href: "http://localhost",
     pathname: "/",
+    origin: "http://localhost",
+    search: "",
+    hash: "",
+    assign: () => undefined,
+    replace: () => undefined,
+    reload: () => undefined,
+  };
+  const history = {
+    replaceState: () => undefined,
+    pushState: () => undefined,
   };
   const win = {
     location,
+    history,
+    navigator: {
+      clipboard: {
+        writeText: async () => undefined,
+      },
+      userAgent: "vitest",
+    },
     localStorage: createMemoryStorage(),
     sessionStorage: createMemoryStorage(),
     setInterval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
     setTimeout: globalThis.setTimeout.bind(globalThis),
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    requestAnimationFrame: (callback: FrameRequestCallback) => globalThis.setTimeout(() => callback(Date.now()), 0),
+    cancelAnimationFrame: (handle: number) => globalThis.clearTimeout(handle),
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
     matchMedia: () => ({ matches: false, media: "", onchange: null, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false }),
+    confirm: () => true,
+    prompt: () => "",
   };
   Object.defineProperty(globalThis, "window", {
     configurable: true,
@@ -234,11 +590,53 @@ function installWindowAndFetch(): void {
     writable: true,
     value: {
       body: {},
-      createElement: () => ({}),
+      hidden: false,
+      visibilityState: "visible",
+      createElement: () => ({
+        setAttribute: () => undefined,
+        click: () => undefined,
+        remove: () => undefined,
+        style: {},
+      }),
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
+      dispatchEvent: () => true,
     },
   });
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: win.navigator,
+  });
+  Object.defineProperty(globalThis, "history", {
+    configurable: true,
+    writable: true,
+    value: history,
+  });
+  Object.defineProperty(globalThis, "confirm", {
+    configurable: true,
+    writable: true,
+    value: () => true,
+  });
+  Object.defineProperty(globalThis, "prompt", {
+    configurable: true,
+    writable: true,
+    value: () => "",
+  });
+  if (typeof URL.createObjectURL !== "function") {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: () => "blob:coverage",
+    });
+  }
+  if (typeof URL.revokeObjectURL !== "function") {
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
 
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
@@ -259,61 +657,10 @@ async function flush(): Promise<void> {
   });
 }
 
-async function exerciseInteractions(renderer: ReactTestRenderer): Promise<void> {
-  const root = renderer.root;
-  const invoke = async (handler: unknown, value: unknown): Promise<void> => {
-    if (typeof handler !== "function") {
-      return;
-    }
-    try {
-      await act(async () => {
-        await Promise.resolve((handler as (arg?: unknown) => unknown)(value));
-      });
-    } catch {
-      // Ignore handler-level validation errors in coverage pass.
-    }
-  };
-
-  const clickable = root.findAll((node) => typeof node.props.onClick === "function");
-  for (const node of clickable.slice(0, 12)) {
-    await invoke(node.props.onClick, {
-      preventDefault: () => undefined,
-      stopPropagation: () => undefined,
-      target: { value: "coverage" },
-      currentTarget: { value: "coverage" },
-    });
-  }
-
-  const changes = root.findAll((node) => typeof node.props.onChange === "function");
-  for (const node of changes.slice(0, 10)) {
-    await invoke(node.props.onChange, {
-      target: { value: "coverage" },
-      currentTarget: { value: "coverage" },
-    });
-  }
-
-  const submitters = root.findAll((node) => typeof node.props.onSubmit === "function");
-  for (const node of submitters.slice(0, 4)) {
-    await invoke(node.props.onSubmit, {
-      preventDefault: () => undefined,
-      stopPropagation: () => undefined,
-      currentTarget: { elements: [] },
-    });
-  }
-
-  const valueChanges = root.findAll((node) => typeof node.props.onValueChange === "function");
-  for (const node of valueChanges.slice(0, 8)) {
-    await invoke(node.props.onValueChange, "coverage");
-  }
-
-  const checkedChanges = root.findAll((node) => typeof node.props.onCheckedChange === "function");
-  for (const node of checkedChanges.slice(0, 8)) {
-    await invoke(node.props.onCheckedChange, true);
-  }
-}
-
 const targets: Array<{ name: string; element: React.ReactElement }> = [
   { name: "App", element: <App /> },
+  { name: "ActivityPage", element: <ActivityPage /> },
+  { name: "LiveFeedPage", element: <LiveFeedPage /> },
   { name: "DashboardPage", element: <DashboardPage onNavigate={() => undefined} /> },
   { name: "ChatPage", element: <ChatPage workspaceId="default" /> },
   { name: "PromptLabPage", element: <PromptLabPage workspaceId="default" /> },
@@ -326,6 +673,9 @@ const targets: Array<{ name: string; element: React.ReactElement }> = [
   { name: "CronPage", element: <CronPage /> },
   { name: "FilesPage", element: <FilesPage workspaceId="default" /> },
   { name: "CostConsolePage", element: <CostConsolePage /> },
+  { name: "MeshPage", element: <MeshPage /> },
+  { name: "SystemPage", element: <SystemPage /> },
+  { name: "OfficePage", element: <OfficePage /> },
   { name: "SkillsPage", element: <SkillsPage /> },
   { name: "WorkspacesPage", element: <WorkspacesPage activeWorkspaceId="default" onWorkspaceChange={() => undefined} /> },
   { name: "SessionsPage", element: <SessionsPage /> },
@@ -345,15 +695,23 @@ describe("mission-control interaction coverage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders and exercises high-traffic pages", async () => {
+  it("renders high-traffic pages without crashing", async () => {
     const failures: string[] = [];
 
     for (const target of targets) {
       let renderer: { root: unknown } | null = null;
       let dispose: () => void = () => undefined;
+      let boundaryError: string | null = null;
       try {
         await act(async () => {
-          const created = create(target.element);
+          const created = create(
+            <TestBoundary onError={(message) => {
+              boundaryError = message;
+            }}
+            >
+              {target.element}
+            </TestBoundary>,
+          );
           renderer = created as unknown as { root: unknown };
           dispose = () => created.unmount();
         });
@@ -361,8 +719,9 @@ describe("mission-control interaction coverage", () => {
           throw new Error("renderer not created");
         }
         await flush();
-        await exerciseInteractions(renderer as unknown as ReactTestRenderer);
-        await flush();
+        if (boundaryError) {
+          throw new Error(boundaryError);
+        }
       } catch (error) {
         failures.push(`${target.name}: ${(error as Error).message}`);
       } finally {
@@ -373,6 +732,6 @@ describe("mission-control interaction coverage", () => {
     if (failures.length > 0) {
       console.warn(`[interaction-coverage] skipped ${failures.length} target(s): ${failures.join("; ")}`);
     }
-    expect(failures.length).toBeLessThan(targets.length);
+    expect(failures).toEqual([]);
   });
 });

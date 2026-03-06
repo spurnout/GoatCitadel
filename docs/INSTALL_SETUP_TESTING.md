@@ -100,9 +100,9 @@ bash install.sh --install-dir "$HOME/.GoatCitadel"
 
 ```bash
 goatcitadel help
-goatcitadel doctor --deep
-goatcitadel onboard
 goatcitadel up
+goatcitadel onboard
+goatcitadel doctor --deep
 ```
 
 Short alias:
@@ -110,11 +110,14 @@ Short alias:
 ```bash
 goat help
 goat up
+goat onboard
+goat doctor --deep
 ```
 
 PowerShell note:
 
 - use `goatcitadel` or `goat`
+- onboarding uses the live gateway API, so start with `goat up`
 - do not use `gc` in PowerShell because it is the built-in alias for `Get-Content`
 - if `goatcitadel` is not found immediately after install, open a new PowerShell window
 - immediate fallback: `& "$HOME\\.GoatCitadel\\bin\\goatcitadel.cmd" onboard`

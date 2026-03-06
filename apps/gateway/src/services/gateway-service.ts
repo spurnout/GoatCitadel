@@ -257,6 +257,7 @@ import {
   normalizeCronSchedule,
   PRIVATE_BETA_BACKUP_JOB_ID,
 } from "./gateway/cron-automation-service.js";
+import { OperatorSummaryCache } from "./gateway/operator-summary-cache.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -681,6 +682,7 @@ export class GatewayService {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
   private readonly chatMessageProjectionBackfillAttempted = new Set<string>();
+  private readonly operatorSummaryCache = new OperatorSummaryCache(15_000);
   private readonly onboardingMarkerPath: string;
   private proactiveScheduler?: NodeJS.Timeout;
   private improvementScheduler?: NodeJS.Timeout;
@@ -1186,6 +1188,7 @@ export class GatewayService {
       displayName: input.title?.trim() || undefined,
       timestamp: now,
     });
+    this.operatorSummaryCache.invalidate();
     this.storage.chatSessionMeta.ensure(resolution.sessionId, now, workspaceId);
     this.storage.chatSessionPrefs.ensure(resolution.sessionId, now);
     this.ensureChatSessionRuntimeGrants(resolution.sessionId);
@@ -8002,35 +8005,7 @@ export class GatewayService {
 
   public listOperators(): OperatorSummary[] {
     const sessions = this.storage.sessions.list(10000);
-    const byOperator = new Map<string, OperatorSummary>();
-    const activeThreshold = Date.now() - 10 * 60 * 1000;
-
-    for (const session of sessions) {
-      const key = session.account;
-      const existing = byOperator.get(key) ?? {
-        operatorId: key,
-        sessionCount: 0,
-        activeSessions: 0,
-        lastActivityAt: undefined,
-      };
-
-      existing.sessionCount += 1;
-      if (Date.parse(session.lastActivityAt) >= activeThreshold) {
-        existing.activeSessions += 1;
-      }
-
-      if (!existing.lastActivityAt || Date.parse(session.lastActivityAt) > Date.parse(existing.lastActivityAt)) {
-        existing.lastActivityAt = session.lastActivityAt;
-      }
-
-      byOperator.set(key, existing);
-    }
-
-    return Array.from(byOperator.values()).sort((a, b) => {
-      const left = Date.parse(a.lastActivityAt ?? "1970-01-01T00:00:00.000Z");
-      const right = Date.parse(b.lastActivityAt ?? "1970-01-01T00:00:00.000Z");
-      return right - left;
-    });
+    return this.operatorSummaryCache.get(sessions);
   }
 
   public listCronJobs(): CronJobRecord[] {

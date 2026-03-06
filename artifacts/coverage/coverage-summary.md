@@ -1,13 +1,20 @@
 # Coverage Summary
 
-- Generated: 2026-03-05T23:09:31.477Z
-- File coverage: 86.42% (229/265)
-- Line coverage: 65.19% (45881/70383)
-- Branch coverage: 61.54% (5379/8740)
+- Generated: 2026-03-06T03:48:09.279Z
+- Status: success
+- Run ID: fe47354b-f591-432c-910f-5f131fd614e6
+- Run started: 2026-03-06T03:45:57.293Z
+- Run finished: 2026-03-06T03:48:09.279Z
+- File coverage: 86.47% (230/266)
+- Line coverage: 66.02% (46582/70559)
+- Branch coverage: 62.89% (5521/8779)
 - Effective thresholds: line 65%, branch 45%
 - Threshold source: line=default, branch=default
 
 ## Warnings
+- Coverage includes 9 module-load smoke test(s). Treat package import coverage as packaging confidence, not behavioral coverage.
+
+## Collection Error
 - none
 
 ## Coverage Reports
@@ -23,6 +30,17 @@
 - `packages/policy-engine/coverage/coverage-final.json`
 - `packages/skills/coverage/coverage-final.json`
 - `packages/storage/coverage/coverage-final.json`
+
+## Synthetic Coverage Notes
+- `apps/gateway/src/module-load-smoke.test.ts`
+- `apps/mission-control/src/module-load-smoke.test.ts`
+- `packages/contracts/src/module-load-smoke.test.ts`
+- `packages/gateway-core/src/module-load-smoke.test.ts`
+- `packages/memory-core/src/module-load-smoke.test.ts`
+- `packages/mesh-core/src/module-load-smoke.test.ts`
+- `packages/policy-engine/src/module-load-smoke.test.ts`
+- `packages/skills/src/module-load-smoke.test.ts`
+- `packages/storage/src/module-load-smoke.test.ts`
 
 ## Uncovered Sample (first 200)
 - `packages/contracts/src/admin.ts`

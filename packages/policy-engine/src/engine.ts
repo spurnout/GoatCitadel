@@ -52,10 +52,10 @@ export class ToolPolicyEngine {
     runtimeOptions: ToolPolicyEngineRuntimeOptions = {},
   ) {
     this.runtimeOptions = {
-      isBankrBuiltinEnabled: runtimeOptions.isBankrBuiltinEnabled ?? (() => true),
+      isBankrBuiltinEnabled: runtimeOptions.isBankrBuiltinEnabled ?? (() => false),
     };
     this.registry = registry
-      ?? createDefaultToolRegistry({ bankrBuiltinEnabled: true });
+      ?? createDefaultToolRegistry({ bankrBuiltinEnabled: this.runtimeOptions.isBankrBuiltinEnabled() });
     this.approvals = new ApprovalGate(storage);
   }
 

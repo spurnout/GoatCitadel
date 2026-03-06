@@ -189,6 +189,8 @@ function installBrowserStubs(): void {
     sessionStorage: createMemoryStorage(),
     setInterval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
     matchMedia,
   };
   Object.defineProperty(globalThis, "window", {

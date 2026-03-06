@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import crypto from "node:crypto";
 import ts from "typescript";
 
 const repoRoot = process.cwd();
@@ -9,28 +10,61 @@ const summaryJsonPath = path.join(artifactsDir, "coverage-summary.json");
 const summaryMdPath = path.join(artifactsDir, "coverage-summary.md");
 const DEFAULT_LINE_THRESHOLD = 65;
 const DEFAULT_BRANCH_THRESHOLD = 45;
+const sourceRunId = crypto.randomUUID();
+const runStartedAt = new Date().toISOString();
 
 const warnings = [];
 
 await removeCoverageDirectories(path.join(repoRoot, "apps"));
 await removeCoverageDirectories(path.join(repoRoot, "packages"));
+await fs.mkdir(artifactsDir, { recursive: true });
+await writeSummary({
+  generatedAt: runStartedAt,
+  status: "running",
+  sourceRunId,
+  runStartedAt,
+  warnings,
+});
 
-execSync("pnpm -r --if-present test:coverage", {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
-execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:smoke", {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
-execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:exercise", {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
+try {
+  execSync("pnpm -r --if-present test:coverage", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:smoke", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  execSync("pnpm --filter @goatcitadel/gateway --if-present coverage:exercise", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+} catch (error) {
+  const failedAt = new Date().toISOString();
+  warnings.push("Coverage collection failed before summary generation completed.");
+  await writeSummary({
+    generatedAt: failedAt,
+    status: "failed",
+    sourceRunId,
+    runStartedAt,
+    runFinishedAt: failedAt,
+    warnings,
+    error: error instanceof Error ? error.message : String(error),
+  });
+  throw error;
+}
 
 const coverageFiles = await findCoverageFinalFiles(repoRoot);
 const coverageMap = await loadCoverageMap(coverageFiles, warnings);
 const sourceFiles = await collectSourceFiles(repoRoot);
+const moduleLoadSmokeTests = await findModuleLoadSmokeTests(repoRoot);
+
+if (moduleLoadSmokeTests.length > 0) {
+  warnings.push(
+    `Coverage includes ${moduleLoadSmokeTests.length} module-load smoke test(s). `
+    + "Treat package import coverage as packaging confidence, not behavioral coverage.",
+  );
+}
 
 let coveredFiles = 0;
 let uncoveredFiles = 0;
@@ -81,6 +115,10 @@ const resolvedThresholds = resolveThresholds(warnings);
 
 const summary = {
   generatedAt: new Date().toISOString(),
+  status: "success",
+  sourceRunId,
+  runStartedAt,
+  runFinishedAt: new Date().toISOString(),
   sourceFiles: sourceFiles.length,
   coveredFiles,
   uncoveredFiles,
@@ -106,11 +144,12 @@ const summary = {
   warnings,
   coverageFinalFiles: coverageFiles.map((filePath) => path.relative(repoRoot, filePath).replaceAll("\\", "/")),
   uncoveredSample,
+  syntheticCoverageNotes: {
+    moduleLoadSmokeTests,
+  },
 };
 
-await fs.mkdir(artifactsDir, { recursive: true });
-await fs.writeFile(summaryJsonPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
-await fs.writeFile(summaryMdPath, buildMarkdownSummary(summary), "utf8");
+await writeSummary(summary);
 
 console.log(`[coverage] summary written to ${path.relative(repoRoot, summaryJsonPath)}`);
 console.log(`[coverage] line coverage: ${summary.linePercent}% (${summary.lineTotals.covered}/${summary.lineTotals.total})`);
@@ -254,6 +293,33 @@ async function collectSourceFiles(root) {
     await walk(baseDir, out);
   }
   return out;
+}
+
+async function findModuleLoadSmokeTests(root) {
+  const out = [];
+  for (const base of ["apps", "packages"]) {
+    const baseDir = path.join(root, base);
+    await walkModuleLoadSmokeTests(baseDir, out);
+  }
+  return out;
+}
+
+async function walkModuleLoadSmokeTests(current, out) {
+  const entries = await safeReadDir(current);
+  for (const entry of entries) {
+    const fullPath = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "dist" || entry.name === "node_modules" || entry.name.startsWith("coverage")) {
+        continue;
+      }
+      await walkModuleLoadSmokeTests(fullPath, out);
+      continue;
+    }
+    if (!entry.name.match(/module-load-smoke\.test\.tsx?$/)) {
+      continue;
+    }
+    out.push(path.relative(repoRoot, fullPath).replaceAll("\\", "/"));
+  }
 }
 
 async function walk(current, out) {
@@ -479,32 +545,57 @@ async function safeReadDir(dir) {
   }
 }
 
+async function writeSummary(summary) {
+  await fs.writeFile(summaryJsonPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  await fs.writeFile(summaryMdPath, buildMarkdownSummary(summary), "utf8");
+}
+
 function buildMarkdownSummary(summary) {
-  const coverageFiles = summary.coverageFinalFiles.length > 0
-    ? summary.coverageFinalFiles.map((item) => `- \`${item}\``).join("\n")
+  const coverageFinalFiles = Array.isArray(summary.coverageFinalFiles) ? summary.coverageFinalFiles : [];
+  const uncoveredSample = Array.isArray(summary.uncoveredSample) ? summary.uncoveredSample : [];
+  const lineTotals = summary.lineTotals ?? { covered: 0, total: 0 };
+  const branchTotals = summary.branchTotals ?? { covered: 0, total: 0 };
+  const effectiveThresholds = summary.effectiveThresholds ?? { line: DEFAULT_LINE_THRESHOLD, branch: DEFAULT_BRANCH_THRESHOLD };
+  const thresholdSource = summary.thresholdSource ?? { line: "default", branch: "default" };
+  const coverageFiles = coverageFinalFiles.length > 0
+    ? coverageFinalFiles.map((item) => `- \`${item}\``).join("\n")
     : "- none";
-  const uncovered = summary.uncoveredSample.length > 0
-    ? summary.uncoveredSample.map((item) => `- \`${item}\``).join("\n")
+  const uncovered = uncoveredSample.length > 0
+    ? uncoveredSample.map((item) => `- \`${item}\``).join("\n")
     : "- none";
   const warningsSection = summary.warnings.length > 0
     ? summary.warnings.map((item) => `- ${item}`).join("\n")
+    : "- none";
+  const syntheticCoverageNotes = summary.syntheticCoverageNotes?.moduleLoadSmokeTests ?? [];
+  const syntheticSection = syntheticCoverageNotes.length > 0
+    ? syntheticCoverageNotes.map((item) => `- \`${item}\``).join("\n")
     : "- none";
 
   return [
     "# Coverage Summary",
     "",
     `- Generated: ${summary.generatedAt}`,
-    `- File coverage: ${summary.fileCoveragePercent}% (${summary.coveredFiles}/${summary.sourceFiles})`,
-    `- Line coverage: ${summary.linePercent}% (${summary.lineTotals.covered}/${summary.lineTotals.total})`,
-    `- Branch coverage: ${summary.branchPercent}% (${summary.branchTotals.covered}/${summary.branchTotals.total})`,
-    `- Effective thresholds: line ${summary.effectiveThresholds.line}%, branch ${summary.effectiveThresholds.branch}%`,
-    `- Threshold source: line=${summary.thresholdSource.line}, branch=${summary.thresholdSource.branch}`,
+    `- Status: ${summary.status ?? "unknown"}`,
+    `- Run ID: ${summary.sourceRunId ?? "unknown"}`,
+    `- Run started: ${summary.runStartedAt ?? "unknown"}`,
+    `- Run finished: ${summary.runFinishedAt ?? "n/a"}`,
+    `- File coverage: ${summary.fileCoveragePercent ?? 0}% (${summary.coveredFiles ?? 0}/${summary.sourceFiles ?? 0})`,
+    `- Line coverage: ${summary.linePercent ?? 0}% (${lineTotals.covered}/${lineTotals.total})`,
+    `- Branch coverage: ${summary.branchPercent ?? 0}% (${branchTotals.covered}/${branchTotals.total})`,
+    `- Effective thresholds: line ${effectiveThresholds.line}%, branch ${effectiveThresholds.branch}%`,
+    `- Threshold source: line=${thresholdSource.line}, branch=${thresholdSource.branch}`,
     "",
     "## Warnings",
     warningsSection,
     "",
+    "## Collection Error",
+    summary.error ? `- ${summary.error}` : "- none",
+    "",
     "## Coverage Reports",
     coverageFiles,
+    "",
+    "## Synthetic Coverage Notes",
+    syntheticSection,
     "",
     "## Uncovered Sample (first 200)",
     uncovered,

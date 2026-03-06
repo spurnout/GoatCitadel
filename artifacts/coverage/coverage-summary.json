@@ -1,18 +1,22 @@
 {
-  "generatedAt": "2026-03-05T23:09:31.477Z",
-  "sourceFiles": 265,
-  "coveredFiles": 229,
+  "generatedAt": "2026-03-06T03:48:09.279Z",
+  "status": "success",
+  "sourceRunId": "fe47354b-f591-432c-910f-5f131fd614e6",
+  "runStartedAt": "2026-03-06T03:45:57.293Z",
+  "runFinishedAt": "2026-03-06T03:48:09.279Z",
+  "sourceFiles": 266,
+  "coveredFiles": 230,
   "uncoveredFiles": 36,
-  "fileCoveragePercent": 86.42,
-  "linePercent": 65.19,
-  "branchPercent": 61.54,
+  "fileCoveragePercent": 86.47,
+  "linePercent": 66.02,
+  "branchPercent": 62.89,
   "lineTotals": {
-    "covered": 45881,
-    "total": 70383
+    "covered": 46582,
+    "total": 70559
   },
   "branchTotals": {
-    "covered": 5379,
-    "total": 8740
+    "covered": 5521,
+    "total": 8779
   },
   "effectiveThresholds": {
     "line": 65,
@@ -22,7 +26,9 @@
     "line": "default",
     "branch": "default"
   },
-  "warnings": [],
+  "warnings": [
+    "Coverage includes 9 module-load smoke test(s). Treat package import coverage as packaging confidence, not behavioral coverage."
+  ],
   "coverageFinalFiles": [
     "apps/gateway/coverage/coverage-final.json",
     "apps/gateway/coverage-exercise/coverage-final.json",
@@ -74,5 +80,18 @@
     "packages/contracts/src/voice.ts",
     "packages/contracts/src/workspaces.ts",
     "packages/memory-core/src/types.ts"
-  ]
+  ],
+  "syntheticCoverageNotes": {
+    "moduleLoadSmokeTests": [
+      "apps/gateway/src/module-load-smoke.test.ts",
+      "apps/mission-control/src/module-load-smoke.test.ts",
+      "packages/contracts/src/module-load-smoke.test.ts",
+      "packages/gateway-core/src/module-load-smoke.test.ts",
+      "packages/memory-core/src/module-load-smoke.test.ts",
+      "packages/mesh-core/src/module-load-smoke.test.ts",
+      "packages/policy-engine/src/module-load-smoke.test.ts",
+      "packages/skills/src/module-load-smoke.test.ts",
+      "packages/storage/src/module-load-smoke.test.ts"
+    ]
+  }
 }
