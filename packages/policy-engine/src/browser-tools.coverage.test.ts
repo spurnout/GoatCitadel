@@ -203,6 +203,38 @@ describe("browser tools coverage sweep", () => {
     expect((response.results as Array<unknown>).length).toBeGreaterThan(0);
   });
 
+  it("uses HTML fetch fallback for navigate and extract when playwright runtime is unavailable", async () => {
+    const config = createConfig(tempRoot);
+    globalThis.fetch = vi.fn(async () => new Response(
+      [
+        "<html><head><title>Kristi Noem latest</title></head>",
+        "<body><main><h1>Kristi Noem latest</h1><p>News coverage summary.</p></main></body></html>",
+      ].join(""),
+      {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      },
+    )) as unknown as typeof fetch;
+    mocked.launch.mockRejectedValue(new Error("missing browser runtime"));
+
+    const nav = await executeBrowserTool(
+      "browser.navigate",
+      { url: "https://example.com/news", maxChars: 400 },
+      config,
+    );
+    expect(nav.fallbackUsed).toBe(true);
+    expect(nav.extractionMode).toBe("html-fetch");
+    expect(String(nav.textSnippet)).toContain("Kristi Noem");
+
+    const extracted = await executeBrowserTool(
+      "browser.extract",
+      { url: "https://example.com/news", selector: "article", maxChars: 400 },
+      config,
+    );
+    expect(extracted.fallbackUsed).toBe(true);
+    expect(String(extracted.text)).toContain("News coverage summary");
+  });
+
   it("rejects disallowed hosts and invalid interact steps", async () => {
     const config = createConfig(tempRoot);
 

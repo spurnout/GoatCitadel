@@ -42,7 +42,7 @@ Required:
 Optional:
 
 - Python 3.10+ for the local NPU sidecar
-- Playwright Chromium if you plan to use browser automation or refresh screenshots
+- Playwright Chromium if you plan to use browser automation or refresh screenshots from a raw source clone
 
 Quick checks:
 
@@ -268,7 +268,11 @@ pnpm tools -- catalog
 pnpm admin -- backups list
 ```
 
-## Optional: Browser Automation Prerequisite
+## Browser Automation Prerequisite
+
+Installer-based installs provision Playwright Chromium automatically.
+
+If you are running from a raw source clone, install Chromium once with:
 
 ```bash
 pnpm exec playwright install chromium

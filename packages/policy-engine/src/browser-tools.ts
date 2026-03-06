@@ -128,32 +128,42 @@ async function executeBrowserNavigate(
 ): Promise<Record<string, unknown>> {
   const url = asNonEmptyString(args.url, "url");
   const maxChars = clampInteger(args.maxChars, 6000, 200, 20000);
-
-  return withBrowserPage(url, args, config, async (page, responseStatus) => {
-    const title = await page.title();
-    const domWeather = await extractWeatherSnapshot(page, title);
-    let visualTextSnippet: string | undefined;
-    const visualWeather = domWeather
-      ? undefined
-      : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
-    if (visualWeather) {
-      visualTextSnippet = visualWeather.visualTextSnippet;
-    }
-    const weather = domWeather ?? visualWeather?.weather;
-    const bodyText = await extractText(page, "body", maxChars);
-    const textSnippet = weather
-      ? `${weather.summary}\n\n${bodyText}`.slice(0, maxChars)
-      : bodyText;
+  try {
+    return await withBrowserPage(url, args, config, async (page, responseStatus) => {
+      const title = await page.title();
+      const domWeather = await extractWeatherSnapshot(page, title);
+      let visualTextSnippet: string | undefined;
+      const visualWeather = domWeather
+        ? undefined
+        : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
+      if (visualWeather) {
+        visualTextSnippet = visualWeather.visualTextSnippet;
+      }
+      const weather = domWeather ?? visualWeather?.weather;
+      const bodyText = await extractText(page, "body", maxChars);
+      const textSnippet = weather
+        ? `${weather.summary}\n\n${bodyText}`.slice(0, maxChars)
+        : bodyText;
+      return {
+        action: "navigate",
+        title,
+        status: responseStatus,
+        textSnippet,
+        weather,
+        extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
+        visualTextSnippet,
+        fallbackUsed: false,
+      };
+    });
+  } catch (playwrightError) {
+    const fallback = await executeBrowserNavigateFallback(url, maxChars, config);
     return {
+      ...fallback,
       action: "navigate",
-      title,
-      status: responseStatus,
-      textSnippet,
-      weather,
-      extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
-      visualTextSnippet,
+      fallbackUsed: true,
+      fallbackReason: (playwrightError as Error).message,
     };
-  });
+  }
 }
 
 async function executeBrowserExtract(
@@ -163,33 +173,43 @@ async function executeBrowserExtract(
   const url = asNonEmptyString(args.url, "url");
   const selector = asString(args.selector) ?? "body";
   const maxChars = clampInteger(args.maxChars, 12000, 200, 50000);
-
-  return withBrowserPage(url, args, config, async (page, responseStatus) => {
-    const title = await page.title();
-    const domWeather = await extractWeatherSnapshot(page, title);
-    let visualTextSnippet: string | undefined;
-    const visualWeather = domWeather
-      ? undefined
-      : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
-    if (visualWeather) {
-      visualTextSnippet = visualWeather.visualTextSnippet;
-    }
-    const weather = domWeather ?? visualWeather?.weather;
-    const extracted = await extractText(page, selector, maxChars);
-    const text = weather && selector === "body"
-      ? `${weather.summary}\n\n${extracted}`.slice(0, maxChars)
-      : extracted;
+  try {
+    return await withBrowserPage(url, args, config, async (page, responseStatus) => {
+      const title = await page.title();
+      const domWeather = await extractWeatherSnapshot(page, title);
+      let visualTextSnippet: string | undefined;
+      const visualWeather = domWeather
+        ? undefined
+        : await extractWeatherSnapshotFromVisualTree(page, title, maxChars);
+      if (visualWeather) {
+        visualTextSnippet = visualWeather.visualTextSnippet;
+      }
+      const weather = domWeather ?? visualWeather?.weather;
+      const extracted = await extractText(page, selector, maxChars);
+      const text = weather && selector === "body"
+        ? `${weather.summary}\n\n${extracted}`.slice(0, maxChars)
+        : extracted;
+      return {
+        action: "extract",
+        title,
+        selector,
+        status: responseStatus,
+        text,
+        weather,
+        extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
+        visualTextSnippet,
+        fallbackUsed: false,
+      };
+    });
+  } catch (playwrightError) {
+    const fallback = await executeBrowserExtractFallback(url, selector, maxChars, config);
     return {
+      ...fallback,
       action: "extract",
-      title,
-      selector,
-      status: responseStatus,
-      text,
-      weather,
-      extractionMode: domWeather ? "dom" : visualWeather ? "visual" : "text",
-      visualTextSnippet,
+      fallbackUsed: true,
+      fallbackReason: (playwrightError as Error).message,
     };
-  });
+  }
 }
 
 async function executeBrowserScreenshot(
@@ -709,6 +729,44 @@ async function executeBrowserSearchFallback(
   };
 }
 
+async function executeBrowserNavigateFallback(
+  url: string,
+  maxChars: number,
+  config: ToolPolicyConfig,
+): Promise<Record<string, unknown>> {
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  const title = extractHtmlTitle(page.html) ?? page.finalUrl;
+  const textSnippet = extractHtmlText(page.html, maxChars);
+  return {
+    url,
+    finalUrl: page.finalUrl,
+    title,
+    status: 200,
+    textSnippet,
+    extractionMode: "html-fetch",
+  };
+}
+
+async function executeBrowserExtractFallback(
+  url: string,
+  selector: string,
+  maxChars: number,
+  config: ToolPolicyConfig,
+): Promise<Record<string, unknown>> {
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  const title = extractHtmlTitle(page.html) ?? page.finalUrl;
+  const text = extractHtmlText(page.html, maxChars);
+  return {
+    url,
+    finalUrl: page.finalUrl,
+    title,
+    selector,
+    status: 200,
+    text,
+    extractionMode: selector === "body" ? "html-fetch" : "html-fetch-body-fallback",
+  };
+}
+
 async function fetchTextAllowlisted(
   url: string,
   allowlist: string[],
@@ -806,6 +864,24 @@ function extractSnippetNear(html: string, index: number, maxChars: number): stri
   const window = html.slice(Math.max(0, index), Math.min(html.length, index + 900));
   const stripped = stripHtml(decodeHtmlEntities(window)).replace(/\s+/g, " ").trim();
   return stripped.slice(0, maxChars);
+}
+
+function extractHtmlTitle(html: string): string | undefined {
+  const matched = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const raw = matched?.[1];
+  if (!raw) {
+    return undefined;
+  }
+  const title = stripHtml(decodeHtmlEntities(raw)).replace(/\s+/g, " ").trim();
+  return title || undefined;
+}
+
+function extractHtmlText(html: string, maxChars: number): string {
+  const withoutNoise = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ");
+  return stripHtml(decodeHtmlEntities(withoutNoise)).replace(/\s+/g, " ").trim().slice(0, maxChars);
 }
 
 function stripHtml(input: string): string {

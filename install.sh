@@ -166,6 +166,8 @@ for workspace_package in "${WORKSPACE_BOOTSTRAP_BUILD_PACKAGES[@]}"; do
   echo "Building bootstrap package ${workspace_package}..."
   pnpm --dir "${APP_DIR}" --filter "${workspace_package}" build
 done
+echo "Installing Playwright Chromium runtime..."
+pnpm --dir "${APP_DIR}" exec playwright install chromium
 if [[ -n "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
   echo "Re-syncing preserved GoatCitadel config after update..."
   pnpm --dir "${APP_DIR}" config:sync
