@@ -164,7 +164,7 @@ function doctor(extraArgs = []) {
 }
 
 function maybeShowVersion(cmd, cmdArgs) {
-  const result = spawnSync(cmd, cmdArgs, { encoding: "utf8" });
+  const result = spawnCommandSync(cmd, cmdArgs, { encoding: "utf8" });
   if (result.error) {
     console.log(`  ${cmd}: not found`);
     return;
@@ -190,7 +190,7 @@ function resolveCommandExecutable(cmd) {
     ? [cmd, `${cmd}.cmd`, `${cmd}.exe`]
     : [cmd];
   for (const candidate of candidates) {
-    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    const result = spawnCommandSync(candidate, ["--version"], { encoding: "utf8" });
     if (!result.error && result.status === 0) {
       return candidate;
     }
@@ -212,7 +212,7 @@ function resolvePnpmRunner() {
     : ["pnpm"];
 
   for (const candidate of candidates) {
-    const result = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    const result = spawnCommandSync(candidate, ["--version"], { encoding: "utf8" });
     if (!result.error && result.status === 0) {
       return {
         cmd: candidate,
@@ -238,13 +238,24 @@ function runPnpm(args) {
 }
 
 function run(cmd, cmdArgs) {
-  const result = spawnSync(cmd, cmdArgs, { stdio: "inherit" });
+  const result = spawnCommandSync(cmd, cmdArgs, { stdio: "inherit" });
   if (result.error) {
     throw result.error;
   }
   if (result.status !== 0) {
     throw new Error(`${cmd} exited with code ${result.status}`);
   }
+}
+
+function spawnCommandSync(cmd, cmdArgs, options = {}) {
+  return spawnSync(cmd, cmdArgs, {
+    shell: isWindowsBatchCommand(cmd),
+    ...options,
+  });
+}
+
+function isWindowsBatchCommand(cmd) {
+  return process.platform === "win32" && /\.(cmd|bat)$/i.test(cmd);
 }
 
 function printHelp() {
