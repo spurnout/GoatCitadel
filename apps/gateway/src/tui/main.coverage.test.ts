@@ -160,7 +160,7 @@ function buildResponse(methodName: string): unknown {
     case "getApprovalReplay":
       return { approval: { approvalId: "approval-1", status: "pending" } };
     case "resolveApproval":
-      return { ok: true };
+      return { approval: { approvalId: "approval-1", status: "approved" } };
     case "listPromptPacks":
       return {
         items: [
@@ -272,7 +272,7 @@ function buildResponse(methodName: string): unknown {
         recent: [],
       };
     case "runCheaper":
-      return { ok: true };
+      return { mode: "balanced", actions: [] };
     case "toolsCatalog":
       return { items: [{ toolName: "session.status", riskLevel: "low" }] };
     case "toolsListGrants":
@@ -422,13 +422,16 @@ async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void
 describe("tui main coverage", () => {
   it("walks all views and executes non-back actions", async () => {
     const priorArgv = process.argv;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     process.argv = ["node", "main.ts"];
     try {
       await import("./main.js");
       await waitFor(() => state.liveStop.mock.calls.length > 0);
       expect(state.liveStop).toHaveBeenCalled();
       expect(state.navigateQueue.length).toBe(0);
+      expect(errorSpy).not.toHaveBeenCalled();
     } finally {
+      errorSpy.mockRestore();
       process.argv = priorArgv;
     }
   });

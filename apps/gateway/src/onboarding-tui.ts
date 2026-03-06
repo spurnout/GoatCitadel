@@ -9,6 +9,8 @@ import type {
   OnboardingBootstrapResult,
   OnboardingState,
 } from "@goatcitadel/contracts";
+import { providerTemplates } from "@goatcitadel/contracts";
+import { resolveGoatCitadelAppDir } from "./onboarding-tui-paths.js";
 import { renderBox, renderBulletList, renderKeyValueSummary, renderSection } from "./tui/render.js";
 import { tuiTheme } from "./tui/theme.js";
 
@@ -28,72 +30,82 @@ interface ProviderTemplate {
   note: string;
 }
 
-const PROVIDER_TEMPLATES: ProviderTemplate[] = [
-  {
-    providerId: "openai",
-    label: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4.1-mini",
+const PROVIDER_TEMPLATE_META: Record<string, { envVar: string; note: string }> = {
+  openai: {
     envVar: "OPENAI_API_KEY",
     note: "General-purpose default. Higher cost than GLM for many everyday tasks.",
   },
-  {
-    providerId: "anthropic",
-    label: "Anthropic",
-    baseUrl: "https://api.anthropic.com/v1",
-    defaultModel: "claude-3-7-sonnet-latest",
+  anthropic: {
     envVar: "ANTHROPIC_API_KEY",
     note: "Good for long-form reasoning. Cloud provider.",
   },
-  {
-    providerId: "google",
-    label: "Google",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    defaultModel: "gemini-2.0-flash",
+  google: {
     envVar: "GOOGLE_API_KEY",
     note: "Fast multimodal option. Cloud provider.",
   },
-  {
-    providerId: "glm",
-    label: "GLM (Z.AI)",
-    baseUrl: "https://api.z.ai/api/paas/v4",
-    defaultModel: "glm-5",
-    envVar: "GLM_API_KEY",
-    note: "Recommended cost-oriented cloud default. Good first choice for beta testing.",
+  minimax: {
+    envVar: "MINIMAX_API_KEY",
+    note: "Cloud provider with OpenAI-compatible endpoint support.",
   },
-  {
-    providerId: "moonshot",
-    label: "Moonshot (Kimi API)",
-    baseUrl: "https://api.moonshot.ai/v1",
-    defaultModel: "kimi-k2.5",
-    envVar: "MOONSHOT_API_KEY",
-    note: "Useful second cloud option when you want Kimi models.",
+  vercel: {
+    envVar: "VERCEL_AI_GATEWAY_API_KEY",
+    note: "Brokered gateway if you already route traffic through Vercel AI Gateway.",
   },
-  {
-    providerId: "openrouter",
-    label: "OpenRouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "openai/gpt-4.1-mini",
-    envVar: "OPENROUTER_API_KEY",
-    note: "Brokered access to many providers.",
-  },
-  {
-    providerId: "lmstudio",
-    label: "LM Studio",
-    baseUrl: "http://127.0.0.1:1234/v1",
-    defaultModel: "local-model",
+  lmstudio: {
     envVar: "",
     note: "Local endpoint. Good for private single-machine testing.",
   },
-  {
-    providerId: "ollama",
-    label: "Ollama",
-    baseUrl: "http://127.0.0.1:11434/v1",
-    defaultModel: "llama3.1",
+  ollama: {
     envVar: "",
     note: "Local endpoint with built-in model management.",
   },
-];
+  localai: {
+    envVar: "LOCALAI_API_KEY",
+    note: "Local or self-hosted OpenAI-compatible endpoint.",
+  },
+  "npu-local": {
+    envVar: "",
+    note: "Local NPU sidecar for supported on-device inference setups.",
+  },
+  "genie-ir20": {
+    envVar: "",
+    note: "Tailnet-accessible shared runtime. Use only if you intentionally connect to that remote node.",
+  },
+  openrouter: {
+    envVar: "OPENROUTER_API_KEY",
+    note: "Brokered access to many providers.",
+  },
+  mistral: {
+    envVar: "MISTRAL_API_KEY",
+    note: "Cloud provider optimized for lighter-weight reasoning and chat.",
+  },
+  deepseek: {
+    envVar: "DEEPSEEK_API_KEY",
+    note: "Cost-oriented cloud provider for coding and general chat.",
+  },
+  glm: {
+    envVar: "GLM_API_KEY",
+    note: "Recommended cost-oriented cloud default. Good first choice for beta testing.",
+  },
+  moonshot: {
+    envVar: "MOONSHOT_API_KEY",
+    note: "Useful second cloud option when you want Kimi models.",
+  },
+  perplexity: {
+    envVar: "PERPLEXITY_API_KEY",
+    note: "Search-oriented cloud provider.",
+  },
+  huggingface: {
+    envVar: "HUGGINGFACE_API_KEY",
+    note: "Inference router for supported HuggingFace-served models.",
+  },
+};
+
+const PROVIDER_TEMPLATES: ProviderTemplate[] = providerTemplates.map((template) => ({
+  ...template,
+  envVar: PROVIDER_TEMPLATE_META[template.providerId]?.envVar ?? "",
+  note: PROVIDER_TEMPLATE_META[template.providerId]?.note ?? "OpenAI-compatible provider template.",
+}));
 
 const TOOL_PROFILES = ["minimal", "standard", "coding", "ops", "research", "danger"] as const;
 const BUDGET_MODES = ["saver", "balanced", "power"] as const;
@@ -655,9 +667,9 @@ async function requestJson<T>(
 }
 
 async function startLocalGatewayProcess(gatewayBaseUrl: string): Promise<void> {
-  const appDir = process.env.GOATCITADEL_APP_DIR?.trim();
+  const appDir = resolveGoatCitadelAppDir();
   if (!appDir) {
-    throw new Error("Cannot auto-start local gateway: GOATCITADEL_APP_DIR is not set.");
+    throw new Error("Cannot auto-start local gateway: GoatCitadel app root could not be resolved.");
   }
 
   const pnpmCommand = resolvePnpmCommand(appDir);

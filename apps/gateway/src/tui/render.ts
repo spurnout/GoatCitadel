@@ -5,7 +5,7 @@ function border(width: number, left: string, fill: string, right: string): strin
 }
 
 function pad(text: string, width: number): string {
-  return ` ${text}${" ".repeat(Math.max(0, width - text.length - 3))} `;
+  return ` ${text}${" ".repeat(Math.max(0, width - text.length - 2))} `;
 }
 
 function textWidth(lines: string[]): number {

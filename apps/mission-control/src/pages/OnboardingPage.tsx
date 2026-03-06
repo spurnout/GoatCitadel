@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { providerTemplates } from "@goatcitadel/contracts";
 import {
   bootstrapOnboarding,
   completeOnboarding,
@@ -22,22 +23,6 @@ const TOOL_PROFILE_OPTIONS: SelectOption[] = [
   { value: "ops", label: "ops" },
   { value: "research", label: "research" },
   { value: "danger", label: "danger (high risk)" },
-];
-
-const PROVIDER_TEMPLATES: Array<{
-  providerId: string;
-  label: string;
-  baseUrl: string;
-  defaultModel: string;
-}> = [
-  { providerId: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4.1-mini" },
-  { providerId: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-3-7-sonnet-latest" },
-  { providerId: "google", label: "Google", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", defaultModel: "gemini-2.0-flash" },
-  { providerId: "glm", label: "GLM (Z.AI)", baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "glm-5" },
-  { providerId: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", defaultModel: "kimi-k2.5" },
-  { providerId: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4.1-mini" },
-  { providerId: "lmstudio", label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", defaultModel: "local-model" },
-  { providerId: "ollama", label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", defaultModel: "llama3.1" },
 ];
 
 const BUDGET_OPTIONS: Array<RuntimeSettingsResponse["budgetMode"]> = ["saver", "balanced", "power"];
@@ -131,7 +116,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       value: provider.providerId,
       label: `${provider.providerId} (${provider.baseUrl})`,
     }));
-    const fromTemplates = PROVIDER_TEMPLATES.map((template) => ({
+    const fromTemplates = providerTemplates.map((template) => ({
       value: template.providerId,
       label: `${template.providerId} (${template.baseUrl})`,
     }));
@@ -144,7 +129,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       providerDefaultModel,
       ...availableModels,
       ...(runtimeProviderCatalog.map((provider) => provider.defaultModel) ?? []),
-      ...PROVIDER_TEMPLATES.map((template) => template.defaultModel),
+      ...providerTemplates.map((template) => template.defaultModel),
     ].filter(Boolean);
     return [...new Set(values)].map((value) => ({ value, label: value }));
   }, [activeModel, availableModels, providerDefaultModel, runtimeProviderCatalog]);
@@ -153,7 +138,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     const values = [
       providerLabel,
       ...(state?.settings.llm.providers.map((provider) => provider.label) ?? []),
-      ...PROVIDER_TEMPLATES.map((template) => template.label),
+      ...providerTemplates.map((template) => template.label),
     ].filter(Boolean);
     return [...new Set(values)].map((value) => ({ value, label: value }));
   }, [providerLabel, state]);
@@ -318,7 +303,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   const applyProviderTemplate = (providerId: string) => {
     const existing = runtimeProviderCatalog.find((provider) => provider.providerId === providerId)
       ?? state?.settings.llm.providers.find((provider) => provider.providerId === providerId);
-    const template = PROVIDER_TEMPLATES.find((candidate) => candidate.providerId === providerId);
+    const template = providerTemplates.find((candidate) => candidate.providerId === providerId);
     const source = existing ?? template;
     if (!source) {
       return;
@@ -531,7 +516,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
               id="wizard-provider-url"
               value={providerBaseUrl}
               onChange={setProviderBaseUrl}
-              options={PROVIDER_TEMPLATES.map((template) => ({
+              options={providerTemplates.map((template) => ({
                 value: template.baseUrl,
                 label: template.baseUrl,
               }))}

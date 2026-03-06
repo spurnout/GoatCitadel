@@ -28,6 +28,29 @@ vi.mock("@inquirer/prompts", () => ({
   confirm: confirmMock,
 }));
 
+vi.mock("@goatcitadel/contracts", () => ({
+  providerTemplates: [
+    {
+      providerId: "openai",
+      label: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4.1-mini",
+    },
+    {
+      providerId: "glm",
+      label: "GLM (Z.AI)",
+      baseUrl: "https://api.z.ai/api/paas/v4",
+      defaultModel: "glm-5",
+    },
+    {
+      providerId: "moonshot",
+      label: "Moonshot (Kimi API)",
+      baseUrl: "https://api.moonshot.ai/v1",
+      defaultModel: "kimi-k2.5",
+    },
+  ],
+}));
+
 const spawnMock = vi.fn(() => ({
   unref: vi.fn(),
 }));
@@ -189,6 +212,7 @@ describe("onboarding tui entrypoint coverage", () => {
   });
 
   it("logs failures when onboarding bootstrap fails", async () => {
+    promptQueues.confirm = [false];
     const fetchMock = vi.fn().mockRejectedValue(new Error("offline"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal("fetch", fetchMock);

@@ -311,20 +311,23 @@ async function viewDashboard(client: TuiApiClient): Promise<void> {
   const spinner = ora("Loading dashboard...").start();
   const state = await client.dashboard();
   spinner.stop();
+  const sessions = state.sessions ?? [];
+  const taskStatusCounts = state.taskStatusCounts ?? [];
+  const recentEvents = state.recentEvents ?? [];
 
   console.log(renderSection("Dashboard", "Fast health snapshot before you dive into a view."));
   console.log(renderBox("Current state", [
     `Timestamp: ${state.timestamp}`,
-    `Sessions: ${state.sessions.length}`,
+    `Sessions: ${sessions.length}`,
     `Pending approvals: ${state.pendingApprovals}`,
     `Active subagents: ${state.activeSubagents}`,
-    `Daily cost (USD): ${state.dailyCostUsd.toFixed(4)}`,
+    `Daily cost (USD): ${Number(state.dailyCostUsd ?? 0).toFixed(4)}`,
   ], "info"));
   console.log(tuiTheme.heading("\nTask Status Counts"));
-  console.table(state.taskStatusCounts);
+  console.table(taskStatusCounts);
   console.log(tuiTheme.heading("Recent Events"));
   console.table(
-    state.recentEvents.slice(0, 12).map((event) => ({
+    recentEvents.slice(0, 12).map((event) => ({
       timestamp: event.timestamp,
       eventType: event.eventType,
       source: event.source,
@@ -347,9 +350,10 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     ], "info"));
   }
   console.log(tuiTheme.heading("Chat Sessions"));
-  if (sessions.items.length > 0) {
+  const sessionItems = sessions.items ?? [];
+  if (sessionItems.length > 0) {
     console.table(
-      sessions.items.map((session) => ({
+      sessionItems.map((session) => ({
         sessionId: toText(session.sessionId),
         title: toText(session.title),
         kind: toText(session.kind),
@@ -440,10 +444,11 @@ async function viewChat(client: TuiApiClient): Promise<void> {
   }
 
   const messages = await client.listChatMessages(sessionId, 30);
-  if (messages.items.length > 0) {
+  const messageItems = messages.items ?? [];
+  if (messageItems.length > 0) {
     console.log(tuiTheme.heading(`Recent messages for ${sessionId}`));
     console.table(
-      messages.items.slice(-20).map((msg) => ({
+      messageItems.slice(-20).map((msg) => ({
         messageId: toText(msg.messageId),
         role: toText(msg.role),
         at: toText(msg.createdAt),
@@ -601,13 +606,14 @@ async function viewChat(client: TuiApiClient): Promise<void> {
 async function viewPromptLab(client: TuiApiClient): Promise<void> {
   const packs = await client.listPromptPacks(80);
   console.log(chalk.bold("Prompt Packs"));
-  if (packs.items.length === 0) {
+  const packItems = packs.items ?? [];
+  if (packItems.length === 0) {
     console.log("No prompt packs available.");
     await pause();
     return;
   }
   console.table(
-    packs.items.map((pack) => ({
+    packItems.map((pack) => ({
       packId: toText(pack.packId),
       label: toText(pack.label),
       version: toText(pack.version),
@@ -732,11 +738,12 @@ async function viewMemoryLifecycle(client: TuiApiClient): Promise<void> {
   });
 
   console.log(chalk.bold("Memory Items"));
-  if (list.items.length === 0) {
+  const memoryItems = list.items ?? [];
+  if (memoryItems.length === 0) {
     console.log("No memory items found.");
   } else {
     console.table(
-      list.items.map((item) => ({
+      memoryItems.map((item) => ({
         itemId: toText(item.itemId),
         namespace: toText(item.namespace),
         title: toText(item.title),
@@ -909,10 +916,11 @@ async function viewCron(client: TuiApiClient): Promise<void> {
       lastStatus: toText(job.lastStatus),
     })),
   );
-  if (queue.items.length > 0) {
+  const queueItems = queue.items ?? [];
+  if (queueItems.length > 0) {
     console.log(chalk.bold("Review Queue"));
     console.table(
-      queue.items.map((item) => ({
+      queueItems.map((item) => ({
         itemId: toText(item.itemId),
         status: toText(item.status),
         severity: toText(item.severity),
@@ -1106,13 +1114,14 @@ async function viewApprovals(client: TuiApiClient): Promise<void> {
 
   const approvals = await client.listApprovals(status);
   console.log(chalk.bold(`Approvals (${status})`));
-  if (approvals.items.length === 0) {
+  const approvalItems = approvals.items ?? [];
+  if (approvalItems.length === 0) {
     console.log("No approvals in this status.");
     await pause();
     return;
   }
   console.table(
-    approvals.items.map((approval) => ({
+    approvalItems.map((approval) => ({
       approvalId: approval.approvalId,
       kind: approval.kind,
       riskLevel: approval.riskLevel,
@@ -1132,10 +1141,11 @@ async function viewApprovals(client: TuiApiClient): Promise<void> {
   const replay = await client.getApprovalReplay(selectedId.trim());
   console.log(chalk.bold("Approval Detail"));
   console.log(JSON.stringify(replay.approval, null, 2));
-  if (replay.events.length > 0) {
+  const replayEvents = replay.events ?? [];
+  if (replayEvents.length > 0) {
     console.log(chalk.bold("Replay Trail"));
     console.table(
-      replay.events.map((event) => ({
+      replayEvents.map((event) => ({
         timestamp: event.timestamp,
         eventType: event.eventType,
         actorId: event.actorId,
@@ -1169,7 +1179,7 @@ async function viewApprovals(client: TuiApiClient): Promise<void> {
   }
 
   const result = await client.resolveApproval(replay.approval.approvalId, action);
-  console.log(`Resolved: ${result.approval.status}`);
+  console.log(`Resolved: ${toText(result.approval?.status ?? action)}`);
   await pause();
 }
 
@@ -1177,12 +1187,12 @@ async function viewSessions(client: TuiApiClient): Promise<void> {
   const sessions = await client.listSessions(100);
   console.log(chalk.bold("Sessions"));
   console.table(
-    sessions.items.map((session) => ({
+    (sessions.items ?? []).map((session) => ({
       sessionId: session.sessionId,
       kind: session.kind,
       health: session.health,
       tokenTotal: session.tokenTotal,
-      costUsdTotal: Number(session.costUsdTotal.toFixed(4)),
+      costUsdTotal: Number((session.costUsdTotal ?? 0).toFixed(4)),
       updatedAt: session.updatedAt,
     })),
   );
@@ -1203,15 +1213,15 @@ async function viewCosts(client: TuiApiClient): Promise<void> {
   const qmd = await client.listMemoryQmdStats();
   console.log(chalk.bold(`Costs (${scope})`));
   console.table(
-    costs.items.map((item) => ({
+    (costs.items ?? []).map((item) => ({
       key: item.key,
       tokenTotal: item.tokenTotal,
-      costUsd: Number(item.costUsd.toFixed(4)),
+      costUsd: Number((item.costUsd ?? 0).toFixed(4)),
     })),
   );
   console.log(
-    `QMD: ${qmd.totalRuns} runs, ${qmd.savingsPercent.toFixed(1)}% estimated savings ` +
-    `(${qmd.originalTokenEstimate} -> ${qmd.distilledTokenEstimate})`,
+    `QMD: ${qmd.totalRuns ?? 0} runs, ${Number(qmd.savingsPercent ?? 0).toFixed(1)}% estimated savings ` +
+    `(${qmd.originalTokenEstimate ?? 0} -> ${qmd.distilledTokenEstimate ?? 0})`,
   );
 
   const cheaper = await confirm({
@@ -1220,8 +1230,8 @@ async function viewCosts(client: TuiApiClient): Promise<void> {
   });
   if (cheaper) {
     const res = await client.runCheaper();
-    console.log(chalk.bold(`Mode: ${res.mode}`));
-    for (const action of res.actions) {
+    console.log(chalk.bold(`Mode: ${res.mode ?? "unchanged"}`));
+    for (const action of Array.isArray(res.actions) ? res.actions : []) {
       console.log(`- ${action}`);
     }
   }
@@ -1513,7 +1523,7 @@ async function viewSkills(client: TuiApiClient): Promise<void> {
   });
   if (action === "reload") {
     const result = await client.reloadSkills();
-    console.log(`Reloaded ${result.items.length} skills.`);
+    console.log(`Reloaded ${(result.items ?? []).length} skills.`);
     await pause();
   } else if (action === "resolve") {
     const text = await input({ message: "Prompt text for activation resolution" });
@@ -1730,10 +1740,11 @@ async function viewNpu(client: TuiApiClient): Promise<void> {
 
   console.log(chalk.bold("NPU Runtime"));
   console.log(JSON.stringify(status, null, 2));
-  if (models.items.length > 0) {
+  const npuModels = models.items ?? [];
+  if (npuModels.length > 0) {
     console.log(chalk.bold("NPU Models"));
     console.table(
-      models.items.map((model) => ({
+      npuModels.map((model) => ({
         modelId: model.modelId,
         family: model.family,
         source: model.source,
@@ -1829,7 +1840,7 @@ async function viewOnboarding(client: TuiApiClient): Promise<void> {
   console.log(chalk.bold("Onboarding State"));
   console.log(`Completed: ${state.completed ? "yes" : "no"}`);
   console.table(
-    state.checklist.map((item) => ({
+    (state.checklist ?? []).map((item) => ({
       id: item.id,
       label: item.label,
       status: item.status,
@@ -1851,7 +1862,7 @@ async function viewOnboarding(client: TuiApiClient): Promise<void> {
       return;
     }
     const result = await client.onboardingComplete("tui-operator");
-    console.log(`Onboarding completed: ${result.state.completed ? "yes" : "no"}`);
+    console.log(`Onboarding completed: ${result.state?.completed ? "yes" : "no"}`);
     await pause();
     return;
   }
