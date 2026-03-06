@@ -33,3 +33,8 @@ data/audit/*.jsonl
 data/npu-runtime-state.json
 workspace/chat/
 .assistant/
+assets/source/**/*.zip
+assets/source/**/*.7z
+assets/source/**/*.rar
+assets/source/**/*.tar
+assets/source/**/*.tar.gz

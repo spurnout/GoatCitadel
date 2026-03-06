@@ -1,7 +1,7 @@
 {
   "version": 1,
   "theme": "goatcitadel-office-v5",
-  "licensePolicy": "cc0-only",
+  "licensePolicy": "cc0-or-cc-by-4.0",
   "models": [
     {
       "id": "central-operator",
@@ -11,6 +11,10 @@
       "fallback": "procedural-human",
       "sourceUrl": "",
       "license": "CC0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "author": "",
+      "attributionText": "",
+      "embeddedTextures": false,
       "includedInRepo": false
     },
     {
@@ -19,9 +23,13 @@
       "path": "/assets/office/models/goat-subagent.glb",
       "required": false,
       "fallback": "procedural-goat",
-      "sourceUrl": "",
-      "license": "CC0",
-      "includedInRepo": false
+      "sourceUrl": "https://skfb.ly/osEZ8",
+      "license": "CC BY 4.0",
+      "licenseUrl": "http://creativecommons.org/licenses/by/4.0/",
+      "author": "hendrikReyneke",
+      "attributionText": "\"Goat\" (https://skfb.ly/osEZ8) by hendrikReyneke is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).",
+      "embeddedTextures": true,
+      "includedInRepo": true
     },
     {
       "id": "office-furniture-pack",
@@ -31,6 +39,10 @@
       "fallback": "procedural-furniture",
       "sourceUrl": "",
       "license": "CC0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "author": "",
+      "attributionText": "",
+      "embeddedTextures": false,
       "includedInRepo": false
     }
   ],
@@ -40,12 +52,17 @@
       "path": "/assets/office/textures/office-floor.png",
       "required": false,
       "license": "CC0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "author": "",
+      "attributionText": "",
+      "embeddedTextures": false,
       "includedInRepo": false
     }
   ],
   "notes": [
-    "All production assets must be CC0 and logged in ASSET_LICENSES.md.",
-    "Primary sourcing targets: Quaternius, Poly Pizza, Kenney (CC0-only verification required per asset).",
+    "Production assets must be CC0/Public Domain or CC BY 4.0 and logged in ASSET_LICENSES.md.",
+    "CC BY 4.0 assets must include exact attribution in ASSET_LICENSES.md and CREDITS.md.",
+    "Primary sourcing targets: Quaternius, Kenney, Poly Haven, ambientCG; Sketchfab is allowed only for explicit CC BY 4.0 or CC0 assets.",
     "If assets are missing, Office V5 falls back to procedural meshes."
   ]
 }

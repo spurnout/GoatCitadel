@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import { z } from "zod";
 import type {
   AddonActionResponse,
   AddonCatalogEntry,
@@ -17,6 +18,30 @@ import type {
 interface AddonManifestFile {
   items: Record<string, AddonInstalledRecord>;
 }
+
+const AddonInstalledRecordSchema = z.object({
+  addonId: z.string().min(1),
+  installedPath: z.string().min(1),
+  repoUrl: z.string().url(),
+  owner: z.string().min(1),
+  sameOwnerAsGoatCitadel: z.boolean(),
+  trustTier: z.enum(["trusted", "restricted", "community"]),
+  runtimeType: z.literal("separate_repo_app"),
+  webEntryMode: z.enum(["none", "external_local_url", "embedded_proxy"]),
+  launchUrl: z.string().url().optional(),
+  installRef: z.string().min(1).optional(),
+  installedAt: z.string().min(1),
+  updatedAt: z.string().min(1),
+  consentedAt: z.string().min(1),
+  consentedBy: z.string().min(1),
+  runtimeStatus: z.enum(["not_installed", "installed", "running", "stopped", "error"]),
+  pid: z.number().int().positive().optional(),
+  lastError: z.string().min(1).optional(),
+});
+
+const AddonManifestFileSchema = z.object({
+  items: z.record(AddonInstalledRecordSchema).default({}),
+});
 
 const ARENA_REPO_URL = "https://github.com/spurnout/goatcitadel-arena";
 const ARENA_SERVER_PORT = 3099;
@@ -154,23 +179,38 @@ export class AddonsService {
   public async update(addonId: string): Promise<AddonActionResponse> {
     const manifest = await this.readManifest();
     const current = this.requireInstalledRecord(addonId, manifest);
-    if (!fsSync.existsSync(current.installedPath)) {
-      throw new Error(`Installed add-on path is missing: ${current.installedPath}`);
+    const installedPath = assertAddonPathWithinRoot(current.installedPath, this.addonsRootDir);
+    if (!fsSync.existsSync(installedPath)) {
+      throw new Error(`Installed add-on path is missing: ${installedPath}`);
     }
-    runCommand("git", ["-C", current.installedPath, "pull", "--ff-only"], this.rootDir);
-    runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], current.installedPath);
-    runCommand("corepack", ["pnpm", "-r", "run", "build"], current.installedPath);
-    manifest.items[addonId] = {
-      ...current,
-      installRef: readGitRef(current.installedPath),
-      updatedAt: new Date().toISOString(),
-      runtimeStatus: current.runtimeStatus === "running" ? "running" : "installed",
-      lastError: undefined,
-    };
-    await this.writeManifest(manifest);
-    return {
-      status: await this.getStatus(addonId),
-    };
+    const previousRef = readGitRef(installedPath);
+    try {
+      runCommand("git", ["-C", installedPath, "pull", "--ff-only"], this.rootDir);
+      runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], installedPath);
+      runCommand("corepack", ["pnpm", "-r", "run", "build"], installedPath);
+      manifest.items[addonId] = {
+        ...current,
+        installedPath,
+        installRef: readGitRef(installedPath),
+        updatedAt: new Date().toISOString(),
+        runtimeStatus: current.runtimeStatus === "running" ? "running" : "installed",
+        lastError: undefined,
+      };
+      await this.writeManifest(manifest);
+      return {
+        status: await this.getStatus(addonId),
+      };
+    } catch (error) {
+      rollbackAddonRepo(installedPath, previousRef);
+      manifest.items[addonId] = {
+        ...current,
+        installedPath,
+        updatedAt: new Date().toISOString(),
+        lastError: error instanceof Error ? error.message : String(error),
+      };
+      await this.writeManifest(manifest);
+      throw error;
+    }
   }
 
   public async launch(addonId: string): Promise<AddonActionResponse> {
@@ -179,15 +219,16 @@ export class AddonsService {
     if (addonId !== "arena") {
       throw new Error(`Launch flow is not implemented for add-on ${addonId}.`);
     }
-    if (!fsSync.existsSync(current.installedPath)) {
-      throw new Error(`Installed add-on path is missing: ${current.installedPath}`);
+    const installedPath = assertAddonPathWithinRoot(current.installedPath, this.addonsRootDir);
+    if (!fsSync.existsSync(installedPath)) {
+      throw new Error(`Installed add-on path is missing: ${installedPath}`);
     }
     const alreadyRunning = typeof current.pid === "number" && isProcessRunning(current.pid);
     if (!alreadyRunning) {
       const child = spawnDetachedCommand(
         "corepack",
         ["pnpm", "--filter", "@arena/server", "start"],
-        current.installedPath,
+        installedPath,
         {
           ARENA_HOST: "127.0.0.1",
           ARENA_PORT: String(ARENA_SERVER_PORT),
@@ -201,6 +242,7 @@ export class AddonsService {
     const ready = await waitForHealth(ARENA_SERVER_HEALTH_URL, 12_000);
     const updated: AddonInstalledRecord = {
       ...current,
+      installedPath,
       runtimeStatus: ready ? "running" : "error",
       updatedAt: new Date().toISOString(),
       lastError: ready ? undefined : `Arena health check did not become ready at ${ARENA_SERVER_HEALTH_URL}.`,
@@ -215,11 +257,13 @@ export class AddonsService {
   public async stop(addonId: string): Promise<AddonActionResponse> {
     const manifest = await this.readManifest();
     const current = this.requireInstalledRecord(addonId, manifest);
+    const installedPath = assertAddonPathWithinRoot(current.installedPath, this.addonsRootDir);
     if (typeof current.pid === "number") {
       killProcessTree(current.pid);
     }
     const updated: AddonInstalledRecord = {
       ...current,
+      installedPath,
       pid: undefined,
       runtimeStatus: "stopped",
       updatedAt: new Date().toISOString(),
@@ -235,10 +279,11 @@ export class AddonsService {
   public async uninstall(addonId: string): Promise<AddonUninstallResponse> {
     const manifest = await this.readManifest();
     const current = this.requireInstalledRecord(addonId, manifest);
+    const installedPath = assertAddonPathWithinRoot(current.installedPath, this.addonsRootDir);
     if (typeof current.pid === "number") {
       killProcessTree(current.pid);
     }
-    await fs.rm(current.installedPath, { recursive: true, force: true });
+    await fs.rm(installedPath, { recursive: true, force: true });
     delete manifest.items[addonId];
     await this.writeManifest(manifest);
     return {
@@ -261,15 +306,16 @@ export class AddonsService {
       return checks;
     }
 
+    const installedPath = assertAddonPathWithinRoot(installed.installedPath, this.addonsRootDir);
     checks.push({
       key: "installed_path",
-      status: fsSync.existsSync(installed.installedPath) ? "pass" : "fail",
-      message: fsSync.existsSync(installed.installedPath)
-        ? `Installed at ${installed.installedPath}.`
-        : `Installed path is missing: ${installed.installedPath}.`,
+      status: fsSync.existsSync(installedPath) ? "pass" : "fail",
+      message: fsSync.existsSync(installedPath)
+        ? `Installed at ${installedPath}.`
+        : `Installed path is missing: ${installedPath}.`,
     });
 
-    const arenaServerEntry = path.join(installed.installedPath, "apps", "server", "dist", "index.js");
+    const arenaServerEntry = path.join(installedPath, "apps", "server", "dist", "index.js");
     checks.push({
       key: "build_output",
       status: fsSync.existsSync(arenaServerEntry) ? "pass" : "warn",
@@ -302,11 +348,13 @@ export class AddonsService {
     addon: AddonCatalogEntry,
     installed: AddonInstalledRecord,
   ): Promise<AddonInstalledRecord> {
-    if (!fsSync.existsSync(installed.installedPath)) {
+    const installedPath = assertAddonPathWithinRoot(installed.installedPath, this.addonsRootDir);
+    if (!fsSync.existsSync(installedPath)) {
       return {
         ...installed,
         runtimeStatus: "error",
-        lastError: `Installed path is missing: ${installed.installedPath}.`,
+        installedPath,
+        lastError: `Installed path is missing: ${installedPath}.`,
         updatedAt: new Date().toISOString(),
       };
     }
@@ -324,6 +372,7 @@ export class AddonsService {
       if (!healthy) {
         return {
           ...installed,
+          installedPath,
           runtimeStatus: "error",
           lastError: `Arena process is running but health check failed at ${ARENA_SERVER_HEALTH_URL}.`,
           updatedAt: new Date().toISOString(),
@@ -356,11 +405,20 @@ export class AddonsService {
     }
     try {
       const raw = await fs.readFile(this.manifestPath, "utf8");
-      const parsed = JSON.parse(raw) as AddonManifestFile;
-      return {
-        items: parsed.items ?? {},
-      };
-    } catch {
+      const parsed = AddonManifestFileSchema.parse(JSON.parse(raw));
+      const items = Object.fromEntries(
+        Object.entries(parsed.items).map(([addonId, record]) => {
+          if (record.addonId !== addonId) {
+            throw new Error(`Invalid add-on manifest at ${this.manifestPath}.`);
+          }
+          return [addonId, { ...record, installedPath: assertAddonPathWithinRoot(record.installedPath, this.addonsRootDir) }];
+        }),
+      );
+      return { items };
+    } catch (error) {
+      if (error instanceof SyntaxError || error instanceof z.ZodError || error instanceof Error) {
+        throw new Error(`Invalid add-on manifest at ${this.manifestPath}.`);
+      }
       return structuredClone(MANIFEST_VERSION);
     }
   }
@@ -397,7 +455,7 @@ function resolveGoatCitadelHome(rootDir: string): string {
 
 function runCommand(command: string, args: string[], cwd: string): void {
   if (process.platform === "win32") {
-    const commandLine = [command, ...args].map(quoteWindowsArg).join(" ");
+    const commandLine = buildWindowsCommand([command, ...args]);
     execFileSync("cmd.exe", ["/d", "/s", "/c", commandLine], {
       cwd,
       stdio: "pipe",
@@ -412,11 +470,18 @@ function runCommand(command: string, args: string[], cwd: string): void {
   });
 }
 
-function quoteWindowsArg(value: string): string {
-  if (!/[\\s"]/u.test(value)) {
+function buildWindowsCommand(parts: string[]): string {
+  return parts.map((value) => quoteWindowsCommandArg(value)).join(" ");
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  if (value.length === 0) {
+    return "\"\"";
+  }
+  if (!/[\s"&()^<>|]/.test(value)) {
     return value;
   }
-  return `"${value.replaceAll("\"", "\\\"")}"`;
+  return `"${value.replace(/(["\\])/g, "\\$1")}"`;
 }
 
 function spawnDetachedCommand(
@@ -426,7 +491,7 @@ function spawnDetachedCommand(
   extraEnv: Record<string, string>,
 ): { pid: number } {
   if (process.platform === "win32") {
-    const commandLine = [command, ...args].map(quoteWindowsArg).join(" ");
+    const commandLine = buildWindowsCommand([command, ...args]);
     const child = spawn("cmd.exe", ["/d", "/s", "/c", commandLine], {
       cwd,
       detached: true,
@@ -510,3 +575,33 @@ async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
   }
   return false;
 }
+
+function assertAddonPathWithinRoot(installedPath: string, addonsRootDir: string): string {
+  const resolvedRoot = path.resolve(addonsRootDir);
+  const resolvedPath = path.resolve(installedPath);
+  const safeRoot = fsSync.existsSync(resolvedRoot) ? fsSync.realpathSync.native(resolvedRoot) : resolvedRoot;
+  const safePath = fsSync.existsSync(resolvedPath) ? fsSync.realpathSync.native(resolvedPath) : resolvedPath;
+  const relative = path.relative(safeRoot, safePath);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return safePath;
+  }
+  throw new Error(`Add-on path escapes add-ons root: ${installedPath}`);
+}
+
+function rollbackAddonRepo(targetDir: string, previousRef: string | undefined): void {
+  if (!previousRef) {
+    return;
+  }
+  try {
+    runCommand("git", ["-C", targetDir, "reset", "--hard", previousRef], targetDir);
+  } catch {
+    // Best-effort rollback; the original failure is more important to surface.
+  }
+}
+
+export const __internal = {
+  AddonManifestFileSchema,
+  assertAddonPathWithinRoot,
+  buildWindowsCommand,
+  quoteWindowsCommandArg,
+};

@@ -43,6 +43,19 @@ Still evolving:
 - richer mobile/companion monitoring
 - deeper team and multi-tenant collaboration features
 
+Advanced surfaces currently present but disabled by default in the standard beta config:
+
+- durable kernel
+- replay overrides
+- memory lifecycle admin
+- connector diagnostics
+- cron review queue
+- replay regression
+
+Current default-on advanced guardrail:
+
+- computer-use guardrails
+
 ## Quick Install
 
 Default installer location is your home directory under `~/.GoatCitadel` with launchers in `~/.GoatCitadel/bin`.

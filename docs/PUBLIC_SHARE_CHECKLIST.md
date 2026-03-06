@@ -72,3 +72,10 @@ Use this checklist before you announce GoatCitadel publicly or hand a clean inst
 - Optional ecosystem: MCP, Skills, and Add-ons with explicit trust boundaries
 - Best first external channel: Discord
 - Public beta, not general availability
+
+## Sign-Off
+
+- Verified by:
+- Verified date:
+- Verified commit:
+- Notes:

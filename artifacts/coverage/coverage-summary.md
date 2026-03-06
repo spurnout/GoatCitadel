@@ -1,13 +1,13 @@
 # Coverage Summary
 
-- Generated: 2026-03-06T12:13:55.503Z
+- Generated: 2026-03-06T15:51:11.786Z
 - Status: success
-- Run ID: 012ab4ae-6032-4819-bc69-a2a477c9236a
-- Run started: 2026-03-06T12:11:48.760Z
-- Run finished: 2026-03-06T12:13:55.503Z
+- Run ID: 5849642e-8289-4d4a-baca-209e1a6f876b
+- Run started: 2026-03-06T15:48:51.358Z
+- Run finished: 2026-03-06T15:51:11.786Z
 - File coverage: 86.59% (239/276)
-- Line coverage: 65.49% (48274/73713)
-- Branch coverage: 62.3% (5652/9072)
+- Line coverage: 65.54% (48371/73808)
+- Branch coverage: 62.38% (5656/9067)
 - Effective thresholds: line 65%, branch 45%
 - Threshold source: line=default, branch=default
 

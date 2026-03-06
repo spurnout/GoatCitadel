@@ -1,6 +1,6 @@
 # GoatCitadel Credits
 
-Last updated: 2026-03-05
+Last updated: 2026-03-06
 
 ## Core Product
 
@@ -8,15 +8,25 @@ Last updated: 2026-03-05
 
 ## Asset Credits
 
-No external assets are bundled by default in this repository.
+Bundled third-party assets may use one of these licenses only:
 
-When CC0 assets are added, list creator/source links here and keep `ASSET_LICENSES.md` in sync.
+- CC0 / Public Domain
+- CC BY 4.0
+
+Every bundled CC BY 4.0 asset must include exact attribution here and detailed provenance in `ASSET_LICENSES.md`.
+
+### Current Attribution-Required Assets
+
+- "Goat" (https://skfb.ly/osEZ8) by hendrikReyneke is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
 
 ### Office V5 Sourcing Targets
 
 - Quaternius (CC0 packs): https://quaternius.com/
-- Poly Pizza (CC0 models): https://poly.pizza/
 - Kenney (CC0 assets): https://kenney.nl/assets
+- Poly Haven (CC0 HDRIs, textures, models): https://polyhaven.com/license
+- ambientCG (CC0 textures, HDRIs, models): https://ambientcg.com/
+- Sketchfab (only per-asset CC BY 4.0 or CC0 after verification): https://sketchfab.com/
+- Poly Pizza (mixed-license catalog; verify exact asset before use): https://poly.pizza/
 
 ## Documentation and Community
 
