@@ -48,6 +48,7 @@ import type {
   ChatAttachmentRecord,
   ChatAttachmentMediaType,
   ChatAttachmentPreviewResponse,
+  ChatCapabilityUpgradeSuggestion,
   ChatCitationRecord,
   ChatDelegateAcceptRequest,
   ChatDelegateRequest,
@@ -238,6 +239,7 @@ import type { GatewayRuntimeConfig } from "../config.js";
 import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
+import { scoutCapabilityUpgradeSuggestions } from "./chat-capability-scout.js";
 import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-catalog.js";
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
@@ -6602,11 +6604,23 @@ export class GatewayService {
         truncated: resolvedGuidance.truncated,
       },
     });
-    const hydratedTrace: ChatTurnTraceRecord = {
+    let hydratedTrace: ChatTurnTraceRecord = {
       ...trace,
       citations: turnResult.turnTrace.citations,
       toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
     };
+    const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+      sessionId,
+      content,
+      assistantText,
+      trace: hydratedTrace,
+    });
+    if (capabilityUpgradeSuggestions.length > 0) {
+      hydratedTrace = {
+        ...hydratedTrace,
+        capabilityUpgradeSuggestions,
+      };
+    }
 
     this.extractAndPersistLearnedMemory(sessionId, content, {
       role: "user",
@@ -6800,15 +6814,34 @@ export class GatewayService {
           truncated: resolvedGuidance.truncated,
         },
       });
+      let hydratedTrace: ChatTurnTraceRecord = {
+        ...updatedTrace,
+        citations: updatedTrace.citations,
+        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+      };
+      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+        sessionId,
+        content,
+        assistantText: finalText,
+        trace: hydratedTrace,
+      });
+      if (capabilityUpgradeSuggestions.length > 0) {
+        hydratedTrace = {
+          ...hydratedTrace,
+          capabilityUpgradeSuggestions,
+        };
+        yield {
+          type: "capability_upgrade_suggestion",
+          sessionId,
+          turnId,
+          capabilityUpgradeSuggestions,
+        };
+      }
       yield {
         type: "trace_update",
         sessionId,
         turnId,
-        trace: {
-          ...updatedTrace,
-          citations: updatedTrace.citations,
-          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-        },
+        trace: hydratedTrace,
       };
       this.extractAndPersistLearnedMemory(sessionId, content, {
         role: "user",
@@ -6826,6 +6859,32 @@ export class GatewayService {
       turnId,
       messageId: assistantMessageId,
     };
+  }
+
+  private async collectCapabilityUpgradeSuggestions(input: {
+    sessionId: string;
+    content: string;
+    assistantText: string;
+    trace?: ChatTurnTraceRecord;
+  }): Promise<ChatCapabilityUpgradeSuggestion[]> {
+    return scoutCapabilityUpgradeSuggestions({
+      ...input,
+      deps: {
+        listToolCatalog: () => this.listToolCatalog(),
+        evaluateToolAccess: (request) => this.evaluateToolAccess(request),
+        listSkills: () => this.listSkills(),
+        resolveSkillActivation: (request) => this.resolveSkillActivation(request),
+        listSkillSources: (query, limit) => this.listSkillSources(query, limit),
+        listMcpTemplates: () => this.listMcpTemplates(),
+        listMcpTemplateDiscovery: () => {
+          try {
+            return this.listMcpTemplateDiscovery();
+          } catch {
+            return [];
+          }
+        },
+      },
+    });
   }
 
   public async sendChatMessage(
@@ -10289,6 +10348,16 @@ export class GatewayService {
 
   public async listLlmModels(providerId?: string): Promise<LlmModelRecord[]> {
     return this.llmService.listModels(providerId);
+  }
+
+  public async previewLlmModels(input: {
+    providerId: string;
+    baseUrl: string;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    headers?: Record<string, string>;
+  }): Promise<{ items: LlmModelRecord[]; source: "remote" | "fallback"; warning?: string }> {
+    return this.llmService.previewModels(input);
   }
 
   public getNpuStatus(): NpuRuntimeStatus {

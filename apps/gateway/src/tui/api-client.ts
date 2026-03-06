@@ -1,16 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalRequest,
+  LlmRuntimeConfig,
   ApprovalReplayEvent,
   MemoryContextPack,
+  McpServerPolicy,
+  McpServerTemplateRecord,
+  McpTemplateDiscoveryResult,
   NpuModelManifest,
   NpuRuntimeStatus,
   OnboardingBootstrapInput,
   OnboardingBootstrapResult,
   OnboardingState,
+  LlmModelPreviewResponse,
   PendingApprovalAction,
   RealtimeEvent,
   SessionMeta,
+  SkillImportHistoryRecord,
+  SkillImportSourceType,
+  SkillImportValidationResult,
+  SkillRuntimeState,
+  SkillSourceListResponse,
+  SkillSourceProvider,
+  SkillStateRecord,
   ToolAccessEvaluateResponse,
   ToolCatalogEntry,
   ToolGrantRecord,
@@ -289,6 +301,48 @@ export class TuiApiClient {
     });
   }
 
+  public async listSkillSources(query?: string, limit = 25): Promise<SkillSourceListResponse> {
+    const params = new URLSearchParams();
+    if (query?.trim()) {
+      params.set("q", query.trim());
+    }
+    params.set("limit", String(Math.max(1, Math.min(limit, 100))));
+    return this.request(`/api/v1/skills/sources?${params.toString()}`, { method: "GET" });
+  }
+
+  public async installSkillImport(input: {
+    sourceRef: string;
+    sourceType?: SkillImportSourceType;
+    sourceProvider?: SkillSourceProvider;
+    force?: boolean;
+    confirmHighRisk?: boolean;
+  }): Promise<{
+    validation: SkillImportValidationResult;
+    installedPath: string;
+    sourceManifestPath: string;
+    installedSkillId?: string;
+  }> {
+    return this.request("/api/v1/skills/import/install", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async fetchSkillImportHistory(limit = 100): Promise<{ items: SkillImportHistoryRecord[] }> {
+    const bounded = Math.max(1, Math.min(limit, 300));
+    return this.request(`/api/v1/skills/import/history?limit=${bounded}`, { method: "GET" });
+  }
+
+  public async updateSkillState(
+    skillId: string,
+    input: { state: SkillRuntimeState; note?: string },
+  ): Promise<SkillStateRecord> {
+    return this.request(`/api/v1/skills/${encodeURIComponent(skillId)}/state`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
   public async integrationCatalog(kind?: string): Promise<{ items: Array<Record<string, unknown>> }> {
     const query = kind ? `?kind=${encodeURIComponent(kind)}` : "";
     return this.request(`/api/v1/integrations/catalog${query}`, { method: "GET" });
@@ -415,6 +469,28 @@ export class TuiApiClient {
     }, true);
   }
 
+  public async fetchLlmConfig(): Promise<LlmRuntimeConfig> {
+    return this.request("/api/v1/llm/config", { method: "GET" });
+  }
+
+  public async fetchLlmModels(providerId?: string): Promise<{ items: Array<{ id: string; ownedBy?: string; created?: number }> }> {
+    const query = providerId ? `?providerId=${encodeURIComponent(providerId)}` : "";
+    return this.request(`/api/v1/llm/models${query}`, { method: "GET" });
+  }
+
+  public async previewLlmModels(input: {
+    providerId: string;
+    baseUrl: string;
+    apiKey?: string;
+    apiKeyEnv?: string;
+    headers?: Record<string, string>;
+  }): Promise<LlmModelPreviewResponse> {
+    return this.request("/api/v1/llm/models/preview", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
   public async runtimeSettings(): Promise<Record<string, unknown>> {
     return this.request("/api/v1/settings", { method: "GET" });
   }
@@ -422,6 +498,34 @@ export class TuiApiClient {
   public async patchRuntimeSettings(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request("/api/v1/settings", {
       method: "PATCH",
+      body: JSON.stringify(input),
+    }, true);
+  }
+
+  public async fetchMcpTemplates(): Promise<{ items: Array<McpServerTemplateRecord & { installed: boolean }> }> {
+    return this.request("/api/v1/mcp/templates", { method: "GET" });
+  }
+
+  public async fetchMcpTemplateDiscovery(): Promise<{ items: McpTemplateDiscoveryResult[] }> {
+    return this.request("/api/v1/mcp/templates/discovery", { method: "GET" });
+  }
+
+  public async createMcpServer(input: {
+    label: string;
+    transport: "stdio" | "http" | "sse";
+    command?: string;
+    args?: string[];
+    url?: string;
+    authType?: "none" | "token" | "oauth2";
+    enabled?: boolean;
+    category?: string;
+    trustTier?: "trusted" | "restricted" | "quarantined";
+    costTier?: "free" | "mixed" | "paid" | "unknown";
+    policy?: Partial<McpServerPolicy>;
+    verifiedAt?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.request("/api/v1/mcp/servers", {
+      method: "POST",
       body: JSON.stringify(input),
     }, true);
   }

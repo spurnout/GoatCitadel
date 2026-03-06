@@ -105,9 +105,9 @@ const navSections: Array<{ label: string; items: Tab[] }> = appCopy.navSections;
 const nextStepByTab: Record<Tab, string> = appCopy.nextStepByTab;
 
 const refreshTopicRules: Array<{ topic: RefreshTopic; keywords: string[] }> = [
-  { topic: "dashboard", keywords: ["dashboard", "operator", "summit", "cron", "memory", "settings", "system"] },
+  { topic: "dashboard", keywords: ["dashboard", "operator", "summit", "cron", "memory", "settings", "system", "onboarding", "llm"] },
   { topic: "promptLab", keywords: ["prompt_pack", "promptlab", "prompt_lab", "prompt-pack"] },
-  { topic: "chat", keywords: ["chat", "message", "session", "delegate", "proactive", "learned_memory"] },
+  { topic: "chat", keywords: ["chat", "message", "session", "delegate", "proactive", "learned_memory", "llm", "provider", "model", "onboarding", "settings"] },
   { topic: "approvals", keywords: ["approval", "gatehouse"] },
   { topic: "tools", keywords: ["tool", "grant", "policy"] },
   { topic: "files", keywords: ["file", "artifact", "workspace"] },
@@ -118,7 +118,7 @@ const refreshTopicRules: Array<{ topic: RefreshTopic; keywords: string[] }> = [
   { topic: "tasks", keywords: ["task", "trailboard"] },
   { topic: "improvement", keywords: ["improvement", "replay", "autotune", "self_improvement"] },
   { topic: "integrations", keywords: ["integration", "plugin", "connection"] },
-  { topic: "npu", keywords: ["npu", "runtime", "sidecar", "model", "voice"] },
+  { topic: "npu", keywords: ["npu", "runtime", "sidecar", "model", "voice", "llm", "provider"] },
 ];
 
 function deriveRefreshTopics(event: RealtimeEvent): RefreshTopic[] {

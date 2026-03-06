@@ -1,22 +1,22 @@
 :root {
   color-scheme: dark;
   font-family: "IBM Plex Sans", "Segoe UI", "Verdana", sans-serif;
-  --bg: #090f18;
-  --bg-alt: #111a28;
-  --panel: #162334;
-  --panel-soft: #1d2d44;
-  --line: #2f4d72;
-  --line-strong: #5f8fc5;
-  --line-soft: rgba(117, 170, 236, 0.34);
-  --accent: #29d3ff;
-  --accent-soft: #d6f6ff;
-  --accent-muted: #9ddff0;
-  --text: #eef5ff;
-  --muted: #b4c6dd;
-  --danger: #ff7d88;
-  --ok: #89f2c4;
-  --warn: #ffd27c;
-  --focus: #8ef3ff;
+  --bg: #0f1724;
+  --bg-alt: #162233;
+  --panel: #1e3047;
+  --panel-soft: #273a56;
+  --line: #476788;
+  --line-strong: #8ec2ff;
+  --line-soft: rgba(142, 194, 255, 0.4);
+  --accent: #58dcff;
+  --accent-soft: #f1fbff;
+  --accent-muted: #b8ebff;
+  --text: #f7fbff;
+  --muted: #c5d6ea;
+  --danger: #ff8e98;
+  --ok: #95f5c9;
+  --warn: #ffd88f;
+  --focus: #b4f7ff;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -36,9 +36,10 @@
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 0% 0%, rgba(55, 130, 255, 0.26), transparent 42%),
-    radial-gradient(circle at 100% 100%, rgba(41, 211, 255, 0.18), transparent 48%),
-    linear-gradient(180deg, #0a111c 0%, #0a1018 62%, #070d15 100%);
+    radial-gradient(circle at 0% 0%, rgba(98, 163, 255, 0.34), transparent 40%),
+    radial-gradient(circle at 100% 0%, rgba(72, 233, 255, 0.22), transparent 34%),
+    radial-gradient(circle at 50% 100%, rgba(255, 203, 130, 0.12), transparent 36%),
+    linear-gradient(180deg, #111b2a 0%, #101827 55%, #0b1320 100%);
   color: var(--text);
 }
 
@@ -51,8 +52,9 @@ body {
 .sidebar {
   border-right: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(14, 23, 36, 0.96) 0%, rgba(10, 16, 26, 0.98) 100%),
+    linear-gradient(180deg, rgba(21, 34, 51, 0.96) 0%, rgba(14, 22, 35, 0.98) 100%),
     var(--bg-alt);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
   padding: 16px 12px;
   position: sticky;
   top: 0;
@@ -113,7 +115,7 @@ body {
 
 button {
   border: 1px solid var(--line);
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(49, 73, 108, 0.92), rgba(31, 49, 74, 0.96));
   color: var(--text);
   padding: 8px 10px;
   border-radius: 11px;
@@ -122,9 +124,9 @@ button {
 }
 
 button:hover {
-  border-color: var(--accent);
+  border-color: var(--line-strong);
   transform: translateY(-1px);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(88, 220, 255, 0.18);
 }
 
 button:disabled {
@@ -140,7 +142,7 @@ button:focus-visible {
 }
 
 button.active {
-  background: linear-gradient(180deg, #25476a 0%, #1a334f 100%);
+  background: linear-gradient(180deg, #35608c 0%, #254669 100%);
   border-color: var(--accent);
   color: var(--accent-soft);
 }
@@ -327,12 +329,13 @@ tbody tr:hover td {
 
 .card {
   background:
-    linear-gradient(165deg, rgba(255, 200, 124, 0.14), rgba(94, 55, 28, 0.2) 45%, rgba(42, 26, 16, 0.2)),
+    linear-gradient(165deg, rgba(255, 214, 148, 0.16), rgba(67, 110, 172, 0.14) 42%, rgba(23, 36, 52, 0.18)),
     var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 12px;
   margin-bottom: 10px;
+  box-shadow: 0 14px 28px rgba(4, 11, 19, 0.18);
 }
 
 .actions {
@@ -360,7 +363,7 @@ textarea {
   padding: 8px;
   border-radius: 9px;
   border: 1px solid var(--line);
-  background: var(--panel-soft);
+  background: linear-gradient(180deg, rgba(45, 66, 97, 0.96), rgba(35, 53, 80, 0.98));
   color: var(--text);
 }
 
@@ -416,7 +419,7 @@ textarea {
   align-items: center;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(94, 176, 255, 0.12);
+  background: rgba(88, 220, 255, 0.16);
   color: var(--accent-soft);
   font-size: 0.76rem;
   padding: 2px 9px;
@@ -1101,12 +1104,12 @@ pre {
 }
 
 .token-chip {
-  border: 1px solid rgba(41, 211, 255, 0.42);
+  border: 1px solid rgba(88, 220, 255, 0.48);
   border-radius: 999px;
   padding: 3px 8px;
   font-size: 0.78rem;
   color: var(--accent-soft);
-  background: rgba(41, 211, 255, 0.15);
+  background: rgba(88, 220, 255, 0.18);
 }
 
 .token-chip.token-chip-active {
@@ -1610,7 +1613,7 @@ pre {
 
 .status-banner.warning {
   border-color: #4bbdff;
-  background: color-mix(in srgb, #4bbdff 14%, var(--panel) 86%);
+  background: color-mix(in srgb, #4bbdff 18%, var(--panel) 82%);
   color: #fff3df;
 }
 
@@ -1662,6 +1665,8 @@ pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  background: linear-gradient(180deg, rgba(74, 112, 167, 0.94), rgba(44, 68, 101, 0.98));
+  border-color: rgba(143, 204, 255, 0.52);
 }
 
 .help-hint-tip {
@@ -1672,12 +1677,13 @@ pre {
   max-width: 340px;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid var(--line-soft);
-  background: rgba(19, 12, 7, 0.96);
+  border: 1px solid rgba(143, 204, 255, 0.38);
+  background: linear-gradient(180deg, rgba(31, 47, 71, 0.98), rgba(18, 29, 45, 0.99));
   color: var(--text);
   font-size: 0.78rem;
   line-height: 1.35;
   z-index: 30;
+  box-shadow: 0 14px 24px rgba(0, 0, 0, 0.32);
 }
 
 .change-badge {
@@ -1981,7 +1987,7 @@ pre {
   border: 1px solid var(--line-soft);
   border-radius: 10px;
   padding: 9px;
-  background: rgba(130, 196, 255, 0.08);
+  background: linear-gradient(180deg, rgba(84, 130, 196, 0.18), rgba(41, 61, 90, 0.24));
   display: grid;
   gap: 6px;
 }

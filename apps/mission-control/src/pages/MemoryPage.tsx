@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { HelpHint } from "../components/HelpHint";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -291,12 +292,18 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
           </p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">QMD Runs (24h)</p>
+          <p className="office-kpi-label">
+            QMD Runs (24h)
+            <HelpHint label="QMD runs help" text="How many query-time memory distillation runs happened in the last 24 hours. Generated means GoatCitadel built fresh context; cache hits means it reused a recent pack." />
+          </p>
           <p className="office-kpi-value">{qmdStats?.totalRuns ?? 0}</p>
           <p className="office-kpi-note">Generated {qmdStats?.generatedRuns ?? 0} / cache hits {qmdStats?.cacheHitRuns ?? 0}</p>
         </article>
         <article className="office-kpi-card">
-          <p className="office-kpi-label">QMD Context Impact</p>
+          <p className="office-kpi-label">
+            QMD Context Impact
+            <HelpHint label="QMD context impact help" text="Shows whether QMD reduced or expanded the token count compared with the original context payload. Negative savings means the distilled result grew instead of shrinking." />
+          </p>
           <p className="office-kpi-value">{qmdStats ? describeQmdImpact(qmdStats) : "-"}</p>
           <p className="office-kpi-note">
             {qmdStats
@@ -430,7 +437,10 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
       </article>
 
       <article className="card">
-        <h3>Memory Lifecycle Admin</h3>
+        <h3>
+          Memory Lifecycle Admin
+          <HelpHint label="Memory lifecycle admin help" text="This panel lets you inspect, pin, and forget saved memory records directly. It is for operator review, not normal day-to-day chatting." />
+        </h3>
         <p className="office-subtitle">
           Manage memory records directly (pin, inspect history, targeted forget). This panel is available when memory lifecycle admin is enabled.
         </p>
@@ -445,7 +455,10 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
                   <tr>
                     <th>Title</th>
                     <th>Namespace</th>
-                    <th>Status</th>
+                    <th>
+                      Status
+                      <HelpHint label="Memory status help" text="Active memory can influence future replies. Forgotten memory stays in history but should no longer be reused. Pinned memory stays favored until you unpin it." />
+                    </th>
                     <th>Updated</th>
                     <th>Actions</th>
                   </tr>
@@ -469,6 +482,7 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
                         </button>
                         <button
                           type="button"
+                          title="Pin keeps this memory favored. Unpin returns it to normal lifecycle behavior."
                           disabled={memoryBusyItemId === item.itemId}
                           onClick={() => void togglePin(item.itemId, item.pinned)}
                         >
@@ -494,12 +508,18 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
                 <>
                   <p><strong>Item ID:</strong> {selectedMemoryItem.itemId}</p>
                   <p><strong>Status:</strong> {selectedMemoryItem.status}</p>
-                  <p><strong>TTL Override:</strong> {selectedMemoryItem.ttlOverrideSeconds ?? "-"}</p>
+                  <p>
+                    <strong>
+                      TTL Override
+                      <HelpHint label="TTL override help" text="Optional per-item expiration in seconds. Blank means the normal memory lifecycle rules apply instead." />
+                    </strong>
+                    : {selectedMemoryItem.ttlOverrideSeconds ?? "-"}
+                  </p>
                   <pre>{selectedMemoryItem.content}</pre>
                 </>
               ) : null}
               <h4>Change History</h4>
-              {memoryHistory.length === 0 ? <p className="office-subtitle">No history loaded.</p> : null}
+              {memoryHistory.length === 0 ? <p className="office-subtitle">No history loaded yet. Inspect an item to see pin, forget, and edit events.</p> : null}
               <ul className="compact-list">
                 {memoryHistory.map((event) => (
                   <li key={event.changeId}>

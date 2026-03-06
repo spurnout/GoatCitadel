@@ -1,10 +1,16 @@
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
+import process from "node:process";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import type { OnboardingBootstrapResult, OnboardingState } from "@goatcitadel/contracts";
+import { confirm, input, password, select } from "@inquirer/prompts";
+import type {
+  LlmRuntimeConfig,
+  OnboardingBootstrapResult,
+  OnboardingState,
+} from "@goatcitadel/contracts";
+import { renderBox, renderBulletList, renderKeyValueSummary, renderSection } from "./tui/render.js";
+import { tuiTheme } from "./tui/theme.js";
 
 interface GatewayAuthInput {
   mode: "none" | "token" | "basic";
@@ -18,172 +24,138 @@ interface ProviderTemplate {
   label: string;
   baseUrl: string;
   defaultModel: string;
+  envVar: string;
+  note: string;
 }
 
 const PROVIDER_TEMPLATES: ProviderTemplate[] = [
-  { providerId: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4.1-mini" },
-  { providerId: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-3-7-sonnet-latest" },
-  { providerId: "google", label: "Google", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", defaultModel: "gemini-2.0-flash" },
-  { providerId: "glm", label: "GLM (Z.AI)", baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "glm-5" },
-  { providerId: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", defaultModel: "kimi-k2.5" },
-  { providerId: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4.1-mini" },
-  { providerId: "lmstudio", label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", defaultModel: "local-model" },
-  { providerId: "ollama", label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", defaultModel: "llama3.1" },
+  {
+    providerId: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4.1-mini",
+    envVar: "OPENAI_API_KEY",
+    note: "General-purpose default. Higher cost than GLM for many everyday tasks.",
+  },
+  {
+    providerId: "anthropic",
+    label: "Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    defaultModel: "claude-3-7-sonnet-latest",
+    envVar: "ANTHROPIC_API_KEY",
+    note: "Good for long-form reasoning. Cloud provider.",
+  },
+  {
+    providerId: "google",
+    label: "Google",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultModel: "gemini-2.0-flash",
+    envVar: "GOOGLE_API_KEY",
+    note: "Fast multimodal option. Cloud provider.",
+  },
+  {
+    providerId: "glm",
+    label: "GLM (Z.AI)",
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    defaultModel: "glm-5",
+    envVar: "GLM_API_KEY",
+    note: "Recommended cost-oriented cloud default. Good first choice for beta testing.",
+  },
+  {
+    providerId: "moonshot",
+    label: "Moonshot (Kimi API)",
+    baseUrl: "https://api.moonshot.ai/v1",
+    defaultModel: "kimi-k2.5",
+    envVar: "MOONSHOT_API_KEY",
+    note: "Useful second cloud option when you want Kimi models.",
+  },
+  {
+    providerId: "openrouter",
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModel: "openai/gpt-4.1-mini",
+    envVar: "OPENROUTER_API_KEY",
+    note: "Brokered access to many providers.",
+  },
+  {
+    providerId: "lmstudio",
+    label: "LM Studio",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    defaultModel: "local-model",
+    envVar: "",
+    note: "Local endpoint. Good for private single-machine testing.",
+  },
+  {
+    providerId: "ollama",
+    label: "Ollama",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    defaultModel: "llama3.1",
+    envVar: "",
+    note: "Local endpoint with built-in model management.",
+  },
 ];
 
 const TOOL_PROFILES = ["minimal", "standard", "coding", "ops", "research", "danger"] as const;
 const BUDGET_MODES = ["saver", "balanced", "power"] as const;
 const MESH_MODES = ["lan", "wan", "tailnet"] as const;
+const MANUAL_MODEL_ENTRY = "__manual__";
+const RETRY_MODEL_PREVIEW = "__retry__";
+const USE_DEFAULT_MODEL = "__default__";
 
 async function run(): Promise<void> {
-  const rl = createInterface({ input, output });
   try {
-    output.write("\nGoatCitadel Onboarding Wizard (TUI)\n");
-    output.write("This wizard calls gateway onboarding APIs; no direct file edits are made here.\n\n");
-    output.write("Press Enter to accept any default shown in [brackets].\n\n");
+    console.log();
+    console.log(renderSection("GoatCitadel Onboarding", "Guided local-first setup for gateway access, provider/model selection, runtime defaults, and optional mesh."));
+    console.log(renderBulletList([
+      "Press Enter to accept defaults shown in brackets.",
+      "Arrow keys move through choices. Enter selects the highlighted option.",
+      "Nothing is written until you confirm the final review step.",
+    ], "accent"));
+    console.log();
 
-    const gatewayBaseUrl = await ask(rl, "Gateway URL", process.env.GOATCITADEL_GATEWAY_URL ?? "http://127.0.0.1:8787");
-    const authMode = await askChoice(rl, "Gateway auth mode", ["none", "token", "basic"] as const, "none");
+    const gatewayBaseUrl = await promptGatewayBaseUrl();
+    const auth = await promptGatewayAuth();
+    const initialState = await fetchOnboardingStateWithRecovery(gatewayBaseUrl, auth);
 
-    const auth: GatewayAuthInput = { mode: authMode };
-    if (authMode === "token") {
-      auth.token = await ask(rl, "Gateway token");
-    } else if (authMode === "basic") {
-      auth.username = await ask(rl, "Gateway username");
-      auth.password = await ask(rl, "Gateway password");
+    console.log();
+    console.log(renderBox("Current checklist", initialState.checklist.map((item) => `${item.label}: ${item.status}${item.detail ? ` (${item.detail})` : ""}`), "info"));
+
+    const provider = await promptProviderAndModel(initialState, gatewayBaseUrl, auth);
+    const runtimeDefaults = await promptRuntimeDefaults(initialState, provider.providerBaseUrl);
+    const mesh = await promptMesh(initialState);
+    const completion = await promptCompletion(initialState);
+
+    console.log();
+    console.log(renderSection("Review and apply", "This is what GoatCitadel will write into runtime settings."));
+    console.log(renderKeyValueSummary([
+      { key: "Gateway", value: gatewayBaseUrl },
+      { key: "Gateway auth", value: auth.mode },
+      { key: "Provider", value: `${provider.providerLabel} (${provider.providerId})` },
+      { key: "Base URL", value: provider.providerBaseUrl },
+      { key: "Active model", value: provider.activeModel },
+      { key: "Default model", value: provider.providerDefaultModel },
+      { key: "Tool profile", value: runtimeDefaults.defaultToolProfile },
+      { key: "Budget mode", value: runtimeDefaults.budgetMode },
+      { key: "Network allowlist", value: runtimeDefaults.networkAllowlist.length > 0 ? runtimeDefaults.networkAllowlist.join(", ") : "none" },
+      { key: "Mesh", value: mesh.enabled ? `${mesh.mode} (${mesh.nodeId || "auto"})` : "disabled" },
+      { key: "Mark complete", value: completion.markComplete ? `yes (${completion.completedBy})` : "no" },
+    ]));
+    if (provider.providerApiKey && !provider.saveProviderApiKeyToSecureStore) {
+      console.log();
+      console.log(renderBox("Provider key note", [
+        "You entered a provider key but chose not to save it to the OS secure store.",
+        "Set the suggested env var or keep the .env file path available before future restarts.",
+      ], "warning"));
     }
 
-    let initialState: OnboardingState;
-    try {
-      initialState = await requestJson<OnboardingState>(
-        gatewayBaseUrl,
-        "/api/v1/onboarding/state",
-        { method: "GET" },
-        auth,
-      );
-    } catch (error) {
-      if (!isLoopbackGatewayUrl(gatewayBaseUrl)) {
-        throw error;
-      }
-
-      output.write("\nThe local gateway is not reachable yet.\n");
-      output.write("GoatCitadel can start the local gateway for you and wait for /health.\n\n");
-      const startLocalGateway = await askYesNo(rl, "Start the local gateway now?", true);
-      if (!startLocalGateway) {
-        throw error;
-      }
-
-      await startLocalGatewayProcess(gatewayBaseUrl);
-      initialState = await requestJson<OnboardingState>(
-        gatewayBaseUrl,
-        "/api/v1/onboarding/state",
-        { method: "GET" },
-        auth,
-      );
+    const apply = await confirm({
+      message: "Apply onboarding now?",
+      default: true,
+    });
+    if (!apply) {
+      console.log(tuiTheme.warning("Onboarding cancelled before changes were applied."));
+      return;
     }
-
-    output.write("\nCurrent checklist:\n");
-    for (const item of initialState.checklist) {
-      output.write(`- ${item.label}: ${item.status}${item.detail ? ` (${item.detail})` : ""}\n`);
-    }
-    output.write("\n");
-
-    const providerTemplateDefault = PROVIDER_TEMPLATES.some(
-      (entry) => entry.providerId === initialState.settings.llm.activeProviderId,
-    )
-      ? initialState.settings.llm.activeProviderId
-      : "custom";
-
-    const providerTemplate = await askChoice(
-      rl,
-      "Provider template",
-      [...PROVIDER_TEMPLATES.map((entry) => entry.providerId), "custom"] as const,
-      providerTemplateDefault as (typeof PROVIDER_TEMPLATES)[number]["providerId"] | "custom",
-    );
-
-    const activeProvider = initialState.settings.llm.providers.find(
-      (provider) => provider.providerId === initialState.settings.llm.activeProviderId,
-    );
-    const template = PROVIDER_TEMPLATES.find((entry) => entry.providerId === providerTemplate);
-
-    const providerId = await ask(
-      rl,
-      "Provider ID",
-      providerTemplate === "custom" ? (activeProvider?.providerId ?? "custom-provider") : providerTemplate,
-    );
-    const providerLabel = await ask(
-      rl,
-      "Provider label",
-      providerTemplate === "custom"
-        ? (activeProvider?.label ?? providerId)
-        : (template?.label ?? activeProvider?.label ?? providerId),
-    );
-    const providerBaseUrl = await ask(
-      rl,
-      "Provider base URL",
-      providerTemplate === "custom"
-        ? (activeProvider?.baseUrl ?? "http://127.0.0.1:1234/v1")
-        : (template?.baseUrl ?? activeProvider?.baseUrl ?? "http://127.0.0.1:1234/v1"),
-    );
-    const providerDefaultModel = await ask(
-      rl,
-      "Provider default model",
-      providerTemplate === "custom"
-        ? (activeProvider?.defaultModel ?? initialState.settings.llm.activeModel)
-        : (template?.defaultModel ?? activeProvider?.defaultModel ?? initialState.settings.llm.activeModel),
-    );
-    const activeModel = await ask(rl, "Active model", initialState.settings.llm.activeModel || providerDefaultModel);
-    const providerApiKey = await ask(rl, "Provider API key (optional)", "");
-    const saveProviderApiKeyToSecureStore = providerApiKey
-      ? await askYesNo(rl, "Save provider key to OS secure store?", true)
-      : false;
-    const providerApiKeyEnv = await ask(rl, "Provider API key env var (optional)", "");
-
-    const defaultToolProfile = await askChoice(
-      rl,
-      "Default tool profile",
-      TOOL_PROFILES,
-      clampOption(initialState.settings.defaultToolProfile, TOOL_PROFILES, "minimal"),
-    );
-    const budgetMode = await askChoice(
-      rl,
-      "Budget mode",
-      BUDGET_MODES,
-      clampOption(initialState.settings.budgetMode, BUDGET_MODES, "balanced"),
-    );
-    const networkAllowlist = await askMultiline(
-      rl,
-      "Network allowlist hosts (comma-separated, blank for none)",
-      initialState.settings.networkAllowlist.join(", "),
-    );
-
-    const meshEnabled = await askYesNo(rl, "Enable mesh?", initialState.settings.mesh.enabled);
-    const meshMode = meshEnabled
-      ? await askChoice(
-        rl,
-        "Mesh mode",
-        MESH_MODES,
-        clampOption(initialState.settings.mesh.mode, MESH_MODES, "lan"),
-      )
-      : initialState.settings.mesh.mode;
-    const meshNodeId = meshEnabled
-      ? await ask(rl, "Mesh node ID", initialState.settings.mesh.nodeId)
-      : initialState.settings.mesh.nodeId;
-    const meshMdns = meshEnabled
-      ? await askYesNo(rl, "Mesh mDNS discovery?", initialState.settings.mesh.mdns)
-      : initialState.settings.mesh.mdns;
-    const meshStaticPeers = meshEnabled
-      ? await askMultiline(rl, "Mesh static peers (comma-separated)", initialState.settings.mesh.staticPeers.join(", "))
-      : initialState.settings.mesh.staticPeers;
-    const meshRequireMtls = meshEnabled
-      ? await askYesNo(rl, "Mesh require mTLS?", initialState.settings.mesh.requireMtls)
-      : initialState.settings.mesh.requireMtls;
-    const meshTailnetEnabled = meshEnabled
-      ? await askYesNo(rl, "Mesh tailnet enabled?", initialState.settings.mesh.tailnetEnabled)
-      : initialState.settings.mesh.tailnetEnabled;
-
-    const markComplete = await askYesNo(rl, "Mark onboarding complete now?", true);
-    const completedBy = await ask(rl, "Completed by", "tui-operator");
 
     const bootstrap = await requestJson<OnboardingBootstrapResult>(
       gatewayBaseUrl,
@@ -191,123 +163,471 @@ async function run(): Promise<void> {
       {
         method: "POST",
         body: JSON.stringify({
-          defaultToolProfile,
-          budgetMode,
-          networkAllowlist,
+          defaultToolProfile: runtimeDefaults.defaultToolProfile,
+          budgetMode: runtimeDefaults.budgetMode,
+          networkAllowlist: runtimeDefaults.networkAllowlist,
           auth: {
-            mode: authMode,
+            mode: auth.mode,
             allowLoopbackBypass: initialState.settings.auth.allowLoopbackBypass,
-            token: authMode === "token" ? auth.token : undefined,
-            basicUsername: authMode === "basic" ? auth.username : undefined,
-            basicPassword: authMode === "basic" ? auth.password : undefined,
+            token: auth.mode === "token" ? auth.token : undefined,
+            basicUsername: auth.mode === "basic" ? auth.username : undefined,
+            basicPassword: auth.mode === "basic" ? auth.password : undefined,
           },
           llm: {
-            activeProviderId: providerId,
-            activeModel,
+            activeProviderId: provider.providerId,
+            activeModel: provider.activeModel,
             upsertProvider: {
-              providerId,
-              label: providerLabel,
-              baseUrl: providerBaseUrl,
-              defaultModel: providerDefaultModel,
-              apiKey: saveProviderApiKeyToSecureStore ? (providerApiKey || undefined) : undefined,
-              apiKeyEnv: providerApiKeyEnv || undefined,
+              providerId: provider.providerId,
+              label: provider.providerLabel,
+              baseUrl: provider.providerBaseUrl,
+              defaultModel: provider.providerDefaultModel,
+              apiKey: provider.saveProviderApiKeyToSecureStore ? provider.providerApiKey || undefined : undefined,
+              apiKeyEnv: provider.providerApiKeyEnv || undefined,
             },
           },
-          mesh: {
-            enabled: meshEnabled,
-            mode: meshMode,
-            nodeId: meshNodeId,
-            mdns: meshMdns,
-            staticPeers: meshStaticPeers,
-            requireMtls: meshRequireMtls,
-            tailnetEnabled: meshTailnetEnabled,
-          },
-          markComplete,
-          completedBy,
+          mesh,
+          markComplete: completion.markComplete,
+          completedBy: completion.completedBy,
         }),
       },
       auth,
     );
 
-    output.write("\nOnboarding applied.\n");
-    output.write(`- appliedAt: ${bootstrap.appliedAt}\n`);
-    output.write(`- completed: ${bootstrap.state.completed ? "yes" : "no"}\n`);
-    for (const item of bootstrap.state.checklist) {
-      output.write(`- ${item.label}: ${item.status}\n`);
-    }
-    if (providerApiKey && !saveProviderApiKeyToSecureStore) {
-      output.write("- provider key was not saved to secure store; set an env var if needed.\n");
-    }
+    const runtimeConfig = await requestJson<LlmRuntimeConfig>(
+      gatewayBaseUrl,
+      "/api/v1/llm/config",
+      { method: "GET" },
+      auth,
+    );
 
-    output.write("\nDone.\n");
-  } finally {
-    rl.close();
+    console.log();
+    console.log(renderBox("Onboarding applied", [
+      `Applied at ${bootstrap.appliedAt}`,
+      `Completed: ${bootstrap.state.completed ? "yes" : "no"}`,
+      `Effective provider: ${runtimeConfig.activeProviderId}`,
+      `Effective model: ${runtimeConfig.activeModel}`,
+    ], "success"));
+    console.log(renderBulletList([
+      "Next step: run `goat up` if the gateway is not already running.",
+      "Then open Mission Control or continue with `goat doctor --deep` after the app is up.",
+    ], "accent"));
+  } catch (error) {
+    console.error("Onboarding wizard failed.");
+    console.error(error);
+    process.exitCode = 1;
   }
 }
 
-async function ask(
-  rl: ReturnType<typeof createInterface>,
-  label: string,
-  defaultValue?: string,
-): Promise<string> {
-  const suffix = defaultValue !== undefined && defaultValue !== "" ? ` [${defaultValue}]` : "";
-  const raw = await rl.question(`${label}${suffix}: `);
-  const value = raw.trim();
-  if (!value && defaultValue !== undefined) {
-    return defaultValue;
-  }
-  return value;
+async function promptGatewayBaseUrl(): Promise<string> {
+  console.log();
+  console.log(renderSection("1. Gateway access", "This first step tells the wizard which GoatCitadel gateway it should talk to."));
+  console.log(renderBulletList([
+    "For a normal single-machine install, keep the loopback default.",
+    "Only change this if you intentionally run the gateway on a different machine or port.",
+  ]));
+  return (await input({
+    message: "Gateway URL",
+    default: process.env.GOATCITADEL_GATEWAY_URL ?? "http://127.0.0.1:8787",
+  })).trim();
 }
 
-async function askChoice<const T extends readonly string[]>(
-  rl: ReturnType<typeof createInterface>,
-  label: string,
-  options: T,
-  defaultValue: T[number],
-): Promise<T[number]> {
-  output.write(`\n${label}:\n`);
-  options.forEach((option, index) => {
-    output.write(`  ${index + 1}) ${option}${option === defaultValue ? " (default)" : ""}\n`);
+async function promptGatewayAuth(): Promise<GatewayAuthInput> {
+  const authMode = await select<GatewayAuthInput["mode"]>({
+    message: "Gateway auth mode",
+    default: "none",
+    choices: [
+      { name: "None - local single-user default", value: "none", description: "Use this for loopback-only local testing." },
+      { name: "Token - recommended when exposing beyond loopback", value: "token", description: "Bearer token auth." },
+      { name: "Basic - username/password", value: "basic", description: "Simple auth for controlled environments." },
+    ],
   });
-  const answer = await ask(rl, "Choose number or value", defaultValue);
-  const asNumber = Number(answer);
-  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= options.length) {
-    return options[asNumber - 1] as T[number];
+
+  if (authMode === "token") {
+    return {
+      mode: "token",
+      token: (await password({
+        message: "Gateway token",
+        mask: "*",
+      })).trim(),
+    };
   }
-  const direct = options.find((option) => option === answer);
-  return (direct ?? defaultValue) as T[number];
+
+  if (authMode === "basic") {
+    return {
+      mode: "basic",
+      username: (await input({ message: "Gateway username" })).trim(),
+      password: await password({ message: "Gateway password", mask: "*" }),
+    };
+  }
+
+  return { mode: "none" };
 }
 
-async function askYesNo(
-  rl: ReturnType<typeof createInterface>,
-  label: string,
-  defaultValue: boolean,
-): Promise<boolean> {
-  const answer = (await ask(rl, `${label} (y/n)`, defaultValue ? "y" : "n")).toLowerCase();
-  if (answer === "y" || answer === "yes" || answer === "true" || answer === "1") {
-    return true;
+async function fetchOnboardingStateWithRecovery(
+  gatewayBaseUrl: string,
+  auth: GatewayAuthInput,
+): Promise<OnboardingState> {
+  try {
+    return await requestJson<OnboardingState>(gatewayBaseUrl, "/api/v1/onboarding/state", { method: "GET" }, auth);
+  } catch (error) {
+    if (!isLoopbackGatewayUrl(gatewayBaseUrl)) {
+      throw error;
+    }
+
+    console.log();
+    console.log(renderBox("Local gateway not running yet", [
+      "The loopback gateway did not answer the onboarding health check.",
+      "GoatCitadel can start the local gateway process for you and continue once /health is ready.",
+    ], "warning"));
+
+    const startLocalGateway = await confirm({
+      message: "Start the local gateway now?",
+      default: true,
+    });
+    if (!startLocalGateway) {
+      throw error;
+    }
+
+    await startLocalGatewayProcess(gatewayBaseUrl);
+    return requestJson<OnboardingState>(gatewayBaseUrl, "/api/v1/onboarding/state", { method: "GET" }, auth);
   }
-  if (answer === "n" || answer === "no" || answer === "false" || answer === "0") {
-    return false;
-  }
-  return defaultValue;
 }
 
-async function askMultiline(
-  rl: ReturnType<typeof createInterface>,
-  label: string,
-  defaultValue: string,
-): Promise<string[]> {
-  const raw = await ask(rl, label, defaultValue);
-  return raw
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
+async function promptProviderAndModel(
+  initialState: OnboardingState,
+  gatewayBaseUrl: string,
+  auth: GatewayAuthInput,
+): Promise<{
+  providerId: string;
+  providerLabel: string;
+  providerBaseUrl: string;
+  providerDefaultModel: string;
+  activeModel: string;
+  providerApiKey: string;
+  saveProviderApiKeyToSecureStore: boolean;
+  providerApiKeyEnv: string;
+}> {
+  console.log();
+  console.log(renderSection("2. Provider and model", "Pick the model company first, then let GoatCitadel ask that provider which models it actually supports."));
+
+  const currentProvider = initialState.settings.llm.providers.find(
+    (provider) => provider.providerId === initialState.settings.llm.activeProviderId,
+  );
+  const defaultTemplateId = PROVIDER_TEMPLATES.some((item) => item.providerId === currentProvider?.providerId)
+    ? currentProvider?.providerId ?? "glm"
+    : "glm";
+
+  const providerChoice = await select<string>({
+    message: "Provider template",
+    default: defaultTemplateId,
+    choices: [
+      ...PROVIDER_TEMPLATES.map((template) => ({
+        name: `${template.label} (${template.providerId})`,
+        value: template.providerId,
+        description: template.note,
+      })),
+      {
+        name: "Custom provider",
+        value: "custom",
+        description: "Use this when you have a compatible endpoint not covered by the built-in templates.",
+      },
+    ],
+  });
+
+  const template = PROVIDER_TEMPLATES.find((item) => item.providerId === providerChoice);
+  const activeProvider = initialState.settings.llm.providers.find((provider) => provider.providerId === initialState.settings.llm.activeProviderId);
+  const providerId = (await input({
+    message: "Provider ID",
+    default: providerChoice === "custom"
+      ? (activeProvider?.providerId ?? "custom-provider")
+      : (template?.providerId ?? activeProvider?.providerId ?? "glm"),
+  })).trim();
+
+  console.log(renderBulletList([
+    "Provider ID is the stable machine name GoatCitadel uses internally, for example `glm` or `moonshot`.",
+    "If you picked a built-in template, keeping the default is usually correct.",
+  ]));
+
+  const providerLabel = (await input({
+    message: "Provider label",
+    default: providerChoice === "custom"
+      ? (activeProvider?.label ?? providerId)
+      : (template?.label ?? activeProvider?.label ?? providerId),
+  })).trim();
+
+  const providerBaseUrl = (await input({
+    message: "Provider base URL",
+    default: providerChoice === "custom"
+      ? (activeProvider?.baseUrl ?? "http://127.0.0.1:1234/v1")
+      : (template?.baseUrl ?? activeProvider?.baseUrl ?? "http://127.0.0.1:1234/v1"),
+  })).trim();
+
+  const suggestedEnvVar = template?.envVar
+    || activeProvider?.apiKeyRef
+    || `${providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}_API_KEY`;
+
+  console.log();
+  console.log(renderBox("Provider key guidance", [
+    "If this provider uses an API key, you can paste it now for onboarding.",
+    "You can also skip the secret here and rely on an env var later.",
+    `Suggested env var: ${suggestedEnvVar}`,
+  ], "info"));
+
+  const providerApiKey = await password({
+    message: "Provider API key (optional)",
+    mask: "*",
+  });
+  const saveProviderApiKeyToSecureStore = providerApiKey.trim().length > 0
+    ? await confirm({
+      message: "Save provider key to the OS secure store?",
+      default: true,
+    })
+    : false;
+
+  const providerApiKeyEnv = (await input({
+    message: "Provider API key env var (optional)",
+    default: suggestedEnvVar,
+  })).trim();
+
+  console.log(renderBulletList([
+    "The env var name is just the lookup key GoatCitadel should read later.",
+    "It is not the secret value itself.",
+  ]));
+
+  let preview = await requestJson<{ items: Array<{ id: string; label?: string }>; source: "remote" | "fallback"; warning?: string }>(
+    gatewayBaseUrl,
+    "/api/v1/llm/models/preview",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        providerId,
+        baseUrl: providerBaseUrl,
+        apiKey: providerApiKey.trim() || undefined,
+        apiKeyEnv: providerApiKeyEnv || undefined,
+      }),
+    },
+    auth,
+  );
+
+  while (true) {
+    const fallbackDefaultModel = providerChoice === "custom"
+      ? (activeProvider?.defaultModel ?? initialState.settings.llm.activeModel)
+      : (template?.defaultModel ?? activeProvider?.defaultModel ?? initialState.settings.llm.activeModel);
+    if (preview.warning) {
+      console.log();
+      console.log(renderBox("Model discovery warning", [
+        preview.warning,
+        preview.source === "fallback"
+          ? "GoatCitadel fell back to the template/default model because the provider did not return a live catalog."
+          : "GoatCitadel still returned live model results, but the provider sent a warning.",
+      ], "warning"));
+    } else {
+      console.log();
+      console.log(renderBox("Model discovery", [
+        preview.source === "remote"
+          ? "GoatCitadel successfully loaded a live model list from the provider API."
+          : "GoatCitadel did not get a live model list, so it is offering the built-in default as a safe fallback.",
+      ], preview.source === "remote" ? "success" : "warning"));
+    }
+
+    const modelChoice = await select<string>({
+      message: "Active model",
+      default: preview.items.find((item) => item.id === fallbackDefaultModel)?.id ?? preview.items[0]?.id ?? USE_DEFAULT_MODEL,
+      choices: [
+        ...preview.items.map((item) => ({
+          name: item.label ? `${item.label} (${item.id})` : item.id,
+          value: item.id,
+          description: preview.source === "remote" ? "Live provider-reported model" : "Fallback model entry",
+        })),
+        { name: `Use provider default (${fallbackDefaultModel})`, value: USE_DEFAULT_MODEL, description: "Skip live selection and keep the template default." },
+        { name: "Retry model discovery", value: RETRY_MODEL_PREVIEW, description: "Ask the provider for models again after changing key or endpoint details." },
+        { name: "Enter model manually", value: MANUAL_MODEL_ENTRY, description: "Use this only if the provider supports the model but did not list it." },
+      ],
+    });
+
+    if (modelChoice === RETRY_MODEL_PREVIEW) {
+      preview = await requestJson(
+        gatewayBaseUrl,
+        "/api/v1/llm/models/preview",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            providerId,
+            baseUrl: providerBaseUrl,
+            apiKey: providerApiKey.trim() || undefined,
+            apiKeyEnv: providerApiKeyEnv || undefined,
+          }),
+        },
+        auth,
+      );
+      continue;
+    }
+
+    const providerDefaultModel = (await input({
+      message: "Provider default model",
+      default: fallbackDefaultModel,
+    })).trim();
+
+    if (modelChoice === MANUAL_MODEL_ENTRY) {
+      const manualModel = (await input({
+        message: "Model id",
+        default: providerDefaultModel,
+      })).trim();
+      return {
+        providerId,
+        providerLabel,
+        providerBaseUrl,
+        providerDefaultModel,
+        activeModel: manualModel,
+        providerApiKey: providerApiKey.trim(),
+        saveProviderApiKeyToSecureStore,
+        providerApiKeyEnv,
+      };
+    }
+
+    return {
+      providerId,
+      providerLabel,
+      providerBaseUrl,
+      providerDefaultModel,
+      activeModel: modelChoice === USE_DEFAULT_MODEL ? providerDefaultModel : modelChoice,
+      providerApiKey: providerApiKey.trim(),
+      saveProviderApiKeyToSecureStore,
+      providerApiKeyEnv,
+    };
+  }
+}
+
+async function promptRuntimeDefaults(
+  initialState: OnboardingState,
+  providerBaseUrl: string,
+): Promise<{
+  defaultToolProfile: typeof TOOL_PROFILES[number];
+  budgetMode: typeof BUDGET_MODES[number];
+  networkAllowlist: string[];
+}> {
+  console.log();
+  console.log(renderSection("3. Runtime defaults", "These settings control how much GoatCitadel can do by default and which outbound hosts are allowed."));
+  console.log(renderBox("Network allowlist note", [
+    "This is an outbound host allowlist. It is not your machine's desktop or LAN IP.",
+    "Add cloud API hosts you want GoatCitadel to call, plus localhost when using local services.",
+  ], "info"));
+
+  const defaultToolProfile = await select<typeof TOOL_PROFILES[number]>({
+    message: "Default tool profile",
+    default: clampOption(initialState.settings.defaultToolProfile, TOOL_PROFILES, "minimal"),
+    choices: [
+      { name: "minimal", value: "minimal", description: "Safest default. Best for first-time testing." },
+      { name: "standard", value: "standard", description: "Balanced default for most everyday work." },
+      { name: "coding", value: "coding", description: "File and code oriented profile." },
+      { name: "ops", value: "ops", description: "Operational and runtime oriented profile." },
+      { name: "research", value: "research", description: "Discovery-oriented profile." },
+      { name: "danger", value: "danger", description: "High-risk profile. Only use when you intentionally want broad power." },
+    ],
+  });
+
+  const budgetMode = await select<typeof BUDGET_MODES[number]>({
+    message: "Budget mode",
+    default: clampOption(initialState.settings.budgetMode, BUDGET_MODES, "balanced"),
+    choices: [
+      { name: "saver", value: "saver", description: "Prefer cheaper defaults and conservative usage." },
+      { name: "balanced", value: "balanced", description: "Good everyday default." },
+      { name: "power", value: "power", description: "Spend more to favor stronger behavior." },
+    ],
+  });
+
+  const providerHost = safeHostnameFromUrl(providerBaseUrl);
+  const defaultAllowlist = initialState.settings.networkAllowlist.length > 0
+    ? initialState.settings.networkAllowlist.join(", ")
+    : ["127.0.0.1", "localhost", providerHost].filter(Boolean).join(", ");
+  const networkAllowlist = parseCommaSeparated((await input({
+    message: "Network allowlist hosts (comma-separated, blank for none)",
+    default: defaultAllowlist,
+  })).trim());
+
+  return { defaultToolProfile, budgetMode, networkAllowlist };
+}
+
+async function promptMesh(initialState: OnboardingState): Promise<OnboardingBootstrapResult["state"]["settings"]["mesh"]> {
+  console.log();
+  console.log(renderSection("4. Mesh (optional)", "Only enable mesh when you intentionally want this machine to participate in a multi-node GoatCitadel cluster."));
+  console.log(renderBulletList([
+    "For a single-machine setup, leave mesh disabled.",
+    "Static peers are other GoatCitadel nodes, not your own desktop IP unless you are explicitly peering to it.",
+  ]));
+
+  const enabled = await confirm({
+    message: "Enable mesh?",
+    default: initialState.settings.mesh.enabled,
+  });
+  if (!enabled) {
+    return {
+      ...initialState.settings.mesh,
+      enabled: false,
+    };
+  }
+
+  const mode = await select<typeof MESH_MODES[number]>({
+    message: "Mesh mode",
+    default: clampOption(initialState.settings.mesh.mode, MESH_MODES, "lan"),
+    choices: [
+      { name: "LAN", value: "lan", description: "Use mDNS and local network discovery." },
+      { name: "WAN", value: "wan", description: "Direct internet-reachable peer addresses." },
+      { name: "Tailnet", value: "tailnet", description: "Use your tailnet/private overlay network." },
+    ],
+  });
+
+  const nodeId = (await input({
+    message: "Mesh node ID",
+    default: initialState.settings.mesh.nodeId || `node-${process.pid}`,
+  })).trim();
+  const mdns = await confirm({
+    message: "Enable mDNS discovery?",
+    default: initialState.settings.mesh.mdns,
+  });
+  const staticPeers = parseCommaSeparated((await input({
+    message: "Mesh static peers (comma-separated, blank to rely on discovery)",
+    default: initialState.settings.mesh.staticPeers.join(", "),
+  })).trim());
+  const requireMtls = await confirm({
+    message: "Require mTLS between peers?",
+    default: initialState.settings.mesh.requireMtls,
+  });
+  const tailnetEnabled = mode === "tailnet"
+    ? await confirm({
+      message: "Tailnet path enabled?",
+      default: initialState.settings.mesh.tailnetEnabled || true,
+    })
+    : initialState.settings.mesh.tailnetEnabled;
+
+  return {
+    enabled,
+    mode,
+    nodeId,
+    mdns,
+    staticPeers,
+    requireMtls,
+    tailnetEnabled,
+  };
+}
+
+async function promptCompletion(initialState: OnboardingState): Promise<{ markComplete: boolean; completedBy: string }> {
+  console.log();
+  console.log(renderSection("5. Completion", "Choose whether this run should mark onboarding complete right now."));
+  const markComplete = await confirm({
+    message: "Mark onboarding complete now?",
+    default: true,
+  });
+  const completedBy = (await input({
+    message: "Completed by",
+    default: initialState.completedBy ?? "tui-operator",
+  })).trim() || "tui-operator";
+  return { markComplete, completedBy };
 }
 
 async function requestJson<T>(
   baseUrl: string,
-  path: string,
+  requestPath: string,
   init: RequestInit,
   auth: GatewayAuthInput,
 ): Promise<T> {
@@ -323,13 +643,13 @@ async function requestJson<T>(
     headers.set("Authorization", `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString("base64")}`);
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(`${baseUrl}${requestPath}`, {
     ...init,
     headers,
   });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`${init.method ?? "GET"} ${path} failed (${response.status}): ${body}`);
+    throw new Error(`${init.method ?? "GET"} ${requestPath} failed (${response.status}): ${body}`);
   }
   return (await response.json()) as T;
 }
@@ -352,9 +672,9 @@ async function startLocalGatewayProcess(gatewayBaseUrl: string): Promise<void> {
   });
   child.unref();
 
-  output.write("Waiting for the local gateway to become healthy...\n");
+  console.log(tuiTheme.info("Waiting for the local gateway to become healthy..."));
   await waitForGatewayHealth(gatewayBaseUrl, 20_000);
-  output.write("Local gateway is healthy.\n\n");
+  console.log(tuiTheme.success("Local gateway is healthy."));
 }
 
 function resolvePnpmCommand(appDir: string): { cmd: string; prefix: string[] } {
@@ -401,7 +721,7 @@ function buildWindowsCommand(parts: string[]): string {
 
 function quoteWindowsCommandArg(value: string): string {
   if (value.length === 0) {
-    return "\"\"";
+    return '""';
   }
   if (!/[\s"&()^<>|]/.test(value)) {
     return value;
@@ -445,8 +765,19 @@ function clampOption<const T extends readonly string[]>(
   return (options.find((option) => option === value) ?? fallback) as T[number];
 }
 
-run().catch((error) => {
-  console.error("Onboarding wizard failed.");
-  console.error(error);
-  process.exitCode = 1;
-});
+function parseCommaSeparated(value: string): string[] {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function safeHostnameFromUrl(value: string): string | undefined {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+void run();

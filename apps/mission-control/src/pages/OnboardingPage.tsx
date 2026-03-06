@@ -8,9 +8,12 @@ import {
   type RuntimeSettingsResponse,
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 import { pageCopy } from "../content/copy";
+import { previewProviderModels, useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
   { value: "minimal", label: "minimal (safest)" },
@@ -89,6 +92,10 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   const [providerDefaultModel, setProviderDefaultModel] = useState("gpt-4.1-mini");
   const [providerApiKey, setProviderApiKey] = useState("");
   const [providerApiKeyEnv, setProviderApiKeyEnv] = useState("");
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelDiscoverySource, setModelDiscoverySource] = useState<"remote" | "fallback" | null>(null);
+  const [modelDiscoveryWarning, setModelDiscoveryWarning] = useState<string | null>(null);
 
   const [defaultToolProfile, setDefaultToolProfile] = useState("minimal");
   const [budgetMode, setBudgetMode] = useState<RuntimeSettingsResponse["budgetMode"]>("balanced");
@@ -113,9 +120,14 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     overall: "safe",
     items: [],
   });
+  const {
+    config: runtimeLlmConfig,
+    providers: runtimeProviderCatalog,
+    reload: reloadProviderCatalog,
+  } = useProviderModelCatalog("system");
 
   const providerOptions = useMemo<SelectOption[]>(() => {
-    const fromState = (state?.settings.llm.providers ?? []).map((provider) => ({
+    const fromState = runtimeProviderCatalog.map((provider) => ({
       value: provider.providerId,
       label: `${provider.providerId} (${provider.baseUrl})`,
     }));
@@ -124,17 +136,18 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       label: `${template.providerId} (${template.baseUrl})`,
     }));
     return [...fromState, ...fromTemplates];
-  }, [state]);
+  }, [runtimeProviderCatalog]);
 
   const modelOptions = useMemo<SelectOption[]>(() => {
     const values = [
       activeModel,
       providerDefaultModel,
-      ...(state?.settings.llm.providers.map((provider) => provider.defaultModel) ?? []),
+      ...availableModels,
+      ...(runtimeProviderCatalog.map((provider) => provider.defaultModel) ?? []),
       ...PROVIDER_TEMPLATES.map((template) => template.defaultModel),
     ].filter(Boolean);
     return [...new Set(values)].map((value) => ({ value, label: value }));
-  }, [activeModel, providerDefaultModel, state]);
+  }, [activeModel, availableModels, providerDefaultModel, runtimeProviderCatalog]);
 
   const providerLabelOptions = useMemo<SelectOption[]>(() => {
     const values = [
@@ -148,6 +161,36 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!runtimeLlmConfig) {
+      return;
+    }
+    setState((current) => current ? {
+      ...current,
+      settings: {
+        ...current.settings,
+        llm: runtimeLlmConfig,
+      },
+    } : current);
+  }, [runtimeLlmConfig]);
+
+  useRefreshSubscription(
+    "system",
+    async (signal) => {
+      const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
+      if (!/\b(onboarding|llm|provider|model|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
+        return;
+      }
+      await load();
+    },
+    {
+      enabled: true,
+      coalesceMs: 900,
+      staleMs: 20000,
+      pollIntervalMs: 20000,
+    },
+  );
 
   useEffect(() => {
     void evaluateUiChangeRisk({
@@ -221,8 +264,60 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     setMeshTailnetEnabled(next.settings.mesh.tailnetEnabled);
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    const providerId = activeProviderId.trim();
+    const baseUrl = providerBaseUrl.trim();
+    if (!providerId || !baseUrl) {
+      setAvailableModels([]);
+      setModelDiscoverySource(null);
+      setModelDiscoveryWarning(null);
+      return;
+    }
+    setLoadingModels(true);
+    void previewProviderModels({
+      providerId,
+      baseUrl,
+      apiKey: providerApiKey.trim() || undefined,
+      apiKeyEnv: providerApiKeyEnv.trim() || undefined,
+      fallbackModel: providerDefaultModel || activeModel,
+    })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        setAvailableModels(result.items);
+        setModelDiscoverySource(result.source);
+        setModelDiscoveryWarning(result.warning ?? null);
+        const firstModel = result.items[0];
+        if (firstModel && (!activeModel.trim() || !result.items.includes(activeModel))) {
+          setActiveModel(firstModel);
+        }
+        if (firstModel && (!providerDefaultModel.trim() || !result.items.includes(providerDefaultModel))) {
+          setProviderDefaultModel(firstModel);
+        }
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        setAvailableModels([]);
+        setModelDiscoverySource("fallback");
+        setModelDiscoveryWarning((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingModels(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeModel, activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerDefaultModel]);
+
   const applyProviderTemplate = (providerId: string) => {
-    const existing = state?.settings.llm.providers.find((provider) => provider.providerId === providerId);
+    const existing = runtimeProviderCatalog.find((provider) => provider.providerId === providerId)
+      ?? state?.settings.llm.providers.find((provider) => provider.providerId === providerId);
     const template = PROVIDER_TEMPLATES.find((candidate) => candidate.providerId === providerId);
     const source = existing ?? template;
     if (!source) {
@@ -290,7 +385,8 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
 
       setState(bootstrap.state);
       hydrateFromState(bootstrap.state);
-      setApplyMessage("Apply complete. Use sidebar to continue.");
+      await reloadProviderCatalog();
+      setApplyMessage(`Apply complete. Active provider: ${bootstrap.state.settings.llm.activeProviderId} · model: ${bootstrap.state.settings.llm.activeModel}.`);
       if (bootstrap.state.completed) {
         onCompleted?.();
       }
@@ -343,8 +439,9 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       {step === 0 ? (
         <article className="card">
           <h3>Step 1: Gateway Access</h3>
+          <p className="office-subtitle">Choose how this GoatCitadel node should protect access. For a single local machine, <strong>none</strong> is the simplest starting point.</p>
           <div className="controls-row">
-            <label htmlFor="wizard-auth-mode">Auth mode</label>
+            <label htmlFor="wizard-auth-mode">Auth mode <HelpHint label="Auth mode help" text="Use none for trusted local-only testing. Use token or basic before exposing GoatCitadel on a non-loopback host." /></label>
             <select
               id="wizard-auth-mode"
               value={authMode}
@@ -356,7 +453,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
             </select>
           </div>
           <div className="controls-row">
-            <label htmlFor="wizard-loopback">Allow loopback bypass</label>
+            <label htmlFor="wizard-loopback">Allow loopback bypass <HelpHint label="Loopback bypass help" text="When enabled, localhost access can stay friction-free even if stronger auth is configured for remote access." /></label>
             <input
               id="wizard-loopback"
               type="checkbox"
@@ -402,8 +499,9 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       {step === 1 ? (
         <article className="card">
           <h3>Step 2: LLM Provider</h3>
+          <p className="office-subtitle">Pick the company or endpoint GoatCitadel should use, then choose from a live-discovered model list when possible instead of guessing model names.</p>
           <div className="controls-row">
-            <label htmlFor="wizard-provider-id">Provider</label>
+            <label htmlFor="wizard-provider-id">Provider <HelpHint label="Provider help" text="Provider is the endpoint family GoatCitadel will talk to, such as glm, moonshot, openai, or a local server like ollama." /></label>
             <SelectOrCustom
               id="wizard-provider-id"
               value={activeProviderId}
@@ -417,7 +515,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
             />
           </div>
           <div className="controls-row">
-            <label htmlFor="wizard-provider-label">Label</label>
+            <label htmlFor="wizard-provider-label">Label <HelpHint label="Provider label help" text="Label is the display name shown in the UI. It is human-facing and can be friendlier than the provider ID." /></label>
             <SelectOrCustom
               id="wizard-provider-label"
               value={providerLabel}
@@ -428,7 +526,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
             />
           </div>
           <div className="controls-row">
-            <label htmlFor="wizard-provider-url">Base URL</label>
+            <label htmlFor="wizard-provider-url">Base URL <HelpHint label="Base URL help" text="Base URL is the API root GoatCitadel will call. For GLM the recommended base URL is https://api.z.ai/api/paas/v4." /></label>
             <SelectOrCustom
               id="wizard-provider-url"
               value={providerBaseUrl}
@@ -442,7 +540,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
             />
           </div>
           <div className="controls-row">
-            <label htmlFor="wizard-model">Active model</label>
+            <label htmlFor="wizard-model">Active model <HelpHint label="Active model help" text="This is the model GoatCitadel will use immediately after onboarding. The list is discovered live when the provider supports it." /></label>
             <SelectOrCustom
               id="wizard-model"
               value={activeModel}
@@ -452,8 +550,14 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
               customLabel="Custom model"
             />
           </div>
+          {modelDiscoverySource ? (
+            <p className="office-subtitle">
+              Model discovery: {loadingModels ? "loading..." : modelDiscoverySource === "remote" ? "live provider list" : "fallback/default list"}
+              {modelDiscoveryWarning ? ` · ${modelDiscoveryWarning}` : ""}
+            </p>
+          ) : null}
           <div className="controls-row">
-            <label htmlFor="wizard-provider-default-model">Provider default model</label>
+            <label htmlFor="wizard-provider-default-model">Provider default model <HelpHint label="Provider default model help" text="Default model is the model GoatCitadel will prefer for this provider when a page or session has not pinned another one yet." /></label>
             <SelectOrCustom
               id="wizard-provider-default-model"
               value={providerDefaultModel}
@@ -465,6 +569,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
           </div>
           <details className="advanced-panel">
             <summary>Advanced provider auth</summary>
+            <p className="office-subtitle">Use secure-store or env-based auth when possible. If you enter an env var name, it should be the variable name itself, for example <code>GLM_API_KEY</code>.</p>
             <div className="controls-row">
               <label htmlFor="wizard-provider-api-key">API key (optional)</label>
               <input
@@ -475,7 +580,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
               />
             </div>
             <div className="controls-row">
-              <label htmlFor="wizard-provider-api-key-env">API key env var (optional)</label>
+              <label htmlFor="wizard-provider-api-key-env">API key env var (optional) <HelpHint label="Provider env var help" text="This is the environment variable name GoatCitadel should read at runtime, not the secret value itself." /></label>
               <input
                 id="wizard-provider-api-key-env"
                 value={providerApiKeyEnv}
@@ -489,6 +594,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       {step === 2 ? (
         <article className="card">
           <h3>Step 3: Runtime Defaults</h3>
+          <p className="office-subtitle">These defaults shape how aggressively GoatCitadel can act and which outbound hosts it may contact.</p>
           <div className="controls-row">
             <label htmlFor="wizard-tool-profile">Tool profile</label>
             <SelectOrCustom
@@ -515,7 +621,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
             </select>
           </div>
           <div className="controls-row">
-            <label htmlFor="wizard-allowlist-preset">Network allowlist preset</label>
+            <label htmlFor="wizard-allowlist-preset">Network allowlist preset <HelpHint label="Network allowlist help" text="The network allowlist controls outbound hosts GoatCitadel may contact. It is not your desktop IP. Include localhost for local services and provider domains such as api.z.ai for cloud models." /></label>
             <select
               id="wizard-allowlist-preset"
               value={allowlistPreset}
@@ -546,6 +652,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
       {step === 3 ? (
         <article className="card">
           <h3>Step 4: Mesh (Optional)</h3>
+          <p className="office-subtitle">Mesh is only needed when you want multiple GoatCitadel nodes to cooperate. For a single-machine setup, leaving it off is correct.</p>
           <div className="controls-row">
             <label htmlFor="wizard-mesh-enabled">Enable mesh</label>
             <input
@@ -558,7 +665,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
           {meshEnabled ? (
             <>
               <div className="controls-row">
-                <label htmlFor="wizard-mesh-mode">Mode</label>
+                <label htmlFor="wizard-mesh-mode">Mode <HelpHint label="Mesh mode help" text="LAN is for local-network discovery, WAN is for explicitly reachable remote nodes, and tailnet is for Tailscale-style private networking." /></label>
                 <select
                   id="wizard-mesh-mode"
                   value={meshMode}
@@ -570,7 +677,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
                 </select>
               </div>
               <div className="controls-row">
-                <label htmlFor="wizard-mesh-node-id">Node ID</label>
+                <label htmlFor="wizard-mesh-node-id">Node ID <HelpHint label="Mesh node ID help" text="Node ID is this GoatCitadel node's stable identity inside the mesh. It should be unique enough to distinguish this machine from other nodes." /></label>
                 <input
                   id="wizard-mesh-node-id"
                   value={meshNodeId}
@@ -578,7 +685,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
                 />
               </div>
               <div className="controls-row">
-                <label htmlFor="wizard-mesh-mdns">mDNS discovery</label>
+                <label htmlFor="wizard-mesh-mdns">mDNS discovery <HelpHint label="mDNS discovery help" text="mDNS lets local-network GoatCitadel nodes find each other automatically. Leave it on for simple LAN testing." /></label>
                 <input
                   id="wizard-mesh-mdns"
                   type="checkbox"
@@ -604,7 +711,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
                   onChange={(event) => setMeshTailnetEnabled(event.target.checked)}
                 />
               </div>
-              <label htmlFor="wizard-mesh-peers">Static peers (one per line)</label>
+              <label htmlFor="wizard-mesh-peers">Static peers (one per line) <HelpHint label="Static peers help" text="Static peers are other GoatCitadel nodes you want to connect to directly. Leave this blank unless you are intentionally linking to another machine." /></label>
               <textarea
                 id="wizard-mesh-peers"
                 rows={4}

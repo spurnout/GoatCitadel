@@ -1,4 +1,5 @@
 import process from "node:process";
+import type { ChatCapabilityUpgradeSuggestion } from "@goatcitadel/contracts";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
@@ -6,6 +7,8 @@ import { renderDoctorReport, runDoctor as runSharedDoctor } from "../doctor/engi
 import { TuiApiClient } from "./api-client.js";
 import { TuiLiveFeed } from "./live-feed.js";
 import { loadResolvedProfile, saveProfile, type TuiResolvedAuth } from "./profile.js";
+import { renderBox, renderBulletList, renderKeyValueSummary, renderSection } from "./render.js";
+import { tuiTheme } from "./theme.js";
 
 type HomeView =
   | "dashboard"
@@ -265,17 +268,15 @@ function printHeader(input: {
   lastEventAt?: string;
 }): void {
   console.clear();
-  console.log(chalk.bold("GoatCitadel Terminal Mission Control"));
-  console.log(
-    `${chalk.cyan("Profile")}: ${input.profile}  ` +
-    `${chalk.cyan("Gateway")}: ${input.gateway}  ` +
-    `${chalk.cyan("Live")}: ${input.liveState}  ` +
-    `${chalk.cyan("Mode")}: ${input.readOnly ? "read-only" : "read+safe-write"}`,
-  );
-  if (input.lastEventAt) {
-    console.log(`${chalk.cyan("Last event")}: ${new Date(input.lastEventAt).toLocaleString()}`);
-  }
-  console.log(chalk.gray("=".repeat(96)));
+  console.log(renderSection("GoatCitadel Terminal Mission Control", "Operator console for local-first runtime control."));
+  console.log(renderKeyValueSummary([
+    { key: "Profile", value: input.profile },
+    { key: "Gateway", value: input.gateway },
+    { key: "Live", value: input.liveState },
+    { key: "Mode", value: input.readOnly ? "read-only" : "read+safe-write" },
+    { key: "Last event", value: input.lastEventAt ? new Date(input.lastEventAt).toLocaleString() : "none yet" },
+  ]));
+  console.log("");
 }
 
 async function chooseNextView(): Promise<HomeView> {
@@ -311,17 +312,17 @@ async function viewDashboard(client: TuiApiClient): Promise<void> {
   const state = await client.dashboard();
   spinner.stop();
 
-  console.log(chalk.bold("Dashboard"));
-  console.log(`Timestamp: ${state.timestamp}`);
-  console.log(`Sessions: ${state.sessions.length}`);
-  console.log(`Pending approvals: ${state.pendingApprovals}`);
-  console.log(`Active subagents: ${state.activeSubagents}`);
-  console.log(`Daily cost (USD): ${state.dailyCostUsd.toFixed(4)}`);
-  console.log("");
-
-  console.log(chalk.bold("Task Status Counts"));
+  console.log(renderSection("Dashboard", "Fast health snapshot before you dive into a view."));
+  console.log(renderBox("Current state", [
+    `Timestamp: ${state.timestamp}`,
+    `Sessions: ${state.sessions.length}`,
+    `Pending approvals: ${state.pendingApprovals}`,
+    `Active subagents: ${state.activeSubagents}`,
+    `Daily cost (USD): ${state.dailyCostUsd.toFixed(4)}`,
+  ], "info"));
+  console.log(tuiTheme.heading("\nTask Status Counts"));
   console.table(state.taskStatusCounts);
-  console.log(chalk.bold("Recent Events"));
+  console.log(tuiTheme.heading("Recent Events"));
   console.table(
     state.recentEvents.slice(0, 12).map((event) => ({
       timestamp: event.timestamp,
@@ -333,8 +334,19 @@ async function viewDashboard(client: TuiApiClient): Promise<void> {
 }
 
 async function viewChat(client: TuiApiClient): Promise<void> {
-  const sessions = await client.listChatSessions({ limit: 60, view: "active" });
-  console.log(chalk.bold("Chat Sessions"));
+  const [sessions, runtimeLlm] = await Promise.all([
+    client.listChatSessions({ limit: 60, view: "active" }),
+    client.fetchLlmConfig().catch(() => null),
+  ]);
+  console.log(renderSection("Chat Workspace", "Start from an existing session or create one. Project creation is optional."));
+  if (runtimeLlm) {
+    console.log(renderBox("Runtime model", [
+      `Active provider: ${runtimeLlm.activeProviderId}`,
+      `Active model: ${runtimeLlm.activeModel}`,
+      "New chats fall back to this runtime selection when session prefs are blank.",
+    ], "info"));
+  }
+  console.log(tuiTheme.heading("Chat Sessions"));
   if (sessions.items.length > 0) {
     console.table(
       sessions.items.map((session) => ({
@@ -352,7 +364,7 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     message: "Chat action",
     choices: [
       { name: "Back", value: "back" },
-      { name: "Create session", value: "create" },
+      { name: "New chat", value: "create" },
       { name: "Open session", value: "open" },
       { name: "Patch session prefs", value: "prefs" },
     ],
@@ -366,7 +378,10 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     const title = await input({ message: "Session title (optional)" });
     const created = await client.createChatSession({ title: title.trim() || undefined });
     sessionId = toText(created.sessionId);
-    console.log(`Created session ${sessionId}`);
+    console.log(renderBox("Session created", [
+      `Session ID: ${sessionId}`,
+      "You can chat immediately. Creating a separate project is optional.",
+    ], "success"));
   } else {
     sessionId = (await input({ message: "Session ID" })).trim();
   }
@@ -426,7 +441,7 @@ async function viewChat(client: TuiApiClient): Promise<void> {
 
   const messages = await client.listChatMessages(sessionId, 30);
   if (messages.items.length > 0) {
-    console.log(chalk.bold(`Recent messages for ${sessionId}`));
+    console.log(tuiTheme.heading(`Recent messages for ${sessionId}`));
     console.table(
       messages.items.slice(-20).map((msg) => ({
         messageId: toText(msg.messageId),
@@ -479,9 +494,16 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     default: true,
   });
 
-  console.log(chalk.bold("Streaming response"));
+  console.log(renderBox("Request", [
+    `Session: ${sessionId}`,
+    `Mode: ${mode} / web ${webMode} / memory ${memoryMode} / thinking ${thinkingLevel}`,
+    `Agent path: ${agentMode ? "enabled" : "off"}`,
+    `Prompt: ${content}`,
+  ], "info"));
+  console.log(tuiTheme.heading("\nAssistant response"));
   let done = false;
   let renderedAny = false;
+  let capabilitySuggestions: ChatCapabilityUpgradeSuggestion[] = [];
   for await (const event of client.streamChatMessage(sessionId, {
     content,
     mode,
@@ -509,30 +531,57 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     }
     if (type === "tool_start") {
       const toolRun = asRecord(event.toolRun);
-      console.log(chalk.gray(`\n[tool:start] ${toText(toolRun.toolName)} ${toText(toolRun.status)}`));
+      console.log(renderBox("Tool start", [
+        `Tool: ${toText(toolRun.toolName)}`,
+        `Status: ${toText(toolRun.status)}`,
+      ], "info"));
       continue;
     }
     if (type === "tool_result") {
       const toolRun = asRecord(event.toolRun);
-      console.log(chalk.gray(`[tool:result] ${toText(toolRun.toolName)} ${toText(toolRun.status)}`));
+      console.log(renderBox("Tool result", [
+        `Tool: ${toText(toolRun.toolName)}`,
+        `Status: ${toText(toolRun.status)}`,
+      ], "success"));
       continue;
     }
     if (type === "trace_update") {
       const trace = asRecord(event.trace);
       const routing = asRecord(trace.routing);
       const note = toText(routing.fallbackReason);
+      const rawSuggestions = trace.capabilityUpgradeSuggestions;
+      const suggestions = Array.isArray(rawSuggestions)
+        ? (rawSuggestions as ChatCapabilityUpgradeSuggestion[])
+        : [];
+      if (suggestions.length > 0) {
+        capabilitySuggestions = suggestions;
+      }
       if (note) {
-        console.log(chalk.gray(`[trace] ${note}`));
+        console.log(renderBox("Routing note", [note], "warning"));
+      }
+      continue;
+    }
+    if (type === "capability_upgrade_suggestion") {
+      const rawSuggestions = event.capabilityUpgradeSuggestions;
+      const suggestions = Array.isArray(rawSuggestions)
+        ? (rawSuggestions as ChatCapabilityUpgradeSuggestion[])
+        : [];
+      if (suggestions.length > 0) {
+        capabilitySuggestions = suggestions;
       }
       continue;
     }
     if (type === "approval_required") {
       const approval = asRecord(event.approval);
-      console.log(chalk.yellow(`Approval required: ${toText(approval.approvalId)}`));
+      console.log(renderBox("Approval required", [
+        `Approval ID: ${toText(approval.approvalId)}`,
+        `Tool: ${toText(approval.toolName) || "unknown"}`,
+        `Reason: ${toText(approval.reason) || "Review before continuing."}`,
+      ], "warning"));
       continue;
     }
     if (type === "error") {
-      console.log(chalk.red(`Error: ${toText(event.error)}`));
+      console.log(renderBox("Error", [toText(event.error)], "danger"));
       continue;
     }
     if (type === "done") {
@@ -541,7 +590,10 @@ async function viewChat(client: TuiApiClient): Promise<void> {
     }
   }
   if (!done) {
-    console.log(chalk.yellow("Stream ended without explicit done event."));
+    console.log(renderBox("Stream note", ["Stream ended without an explicit done event."], "warning"));
+  }
+  if (capabilitySuggestions.length > 0) {
+    await handleCapabilitySuggestions(client, capabilitySuggestions);
   }
   await pause();
 }
@@ -1928,6 +1980,151 @@ async function viewSettings(
     });
     console.log(`Saved local profile "${profileName}" to ${profilePath}`);
     await pause();
+  }
+}
+
+async function handleCapabilitySuggestions(
+  client: TuiApiClient,
+  suggestions: ChatCapabilityUpgradeSuggestion[],
+): Promise<void> {
+  console.log(renderBox("Capability upgrade available", [
+    "GoatCitadel found a likely capability upgrade for this request.",
+    "Nothing is installed or enabled automatically. Every change still needs your approval.",
+  ], "warning"));
+  console.log(renderBulletList(
+    suggestions.map((item) => `${item.title}${item.riskLevel ? ` (${item.riskLevel} risk)` : ""} - ${item.summary}`),
+    "accent",
+  ));
+
+  const selectedValue = await select<string>({
+    message: "Capability follow-up",
+    choices: [
+      { name: "Not now", value: "skip" },
+      ...suggestions.map((suggestion, index) => ({
+        name: `${suggestion.title}${suggestion.riskLevel ? ` (${suggestion.riskLevel} risk)` : ""}`,
+        value: String(index),
+      })),
+    ],
+  });
+  if (selectedValue === "skip") {
+    return;
+  }
+
+  const suggestion = suggestions[Number(selectedValue)];
+  if (!suggestion) {
+    return;
+  }
+
+  console.log(renderBox("Suggestion details", [
+    suggestion.summary,
+    suggestion.reason,
+    `Recommended action: ${suggestion.recommendedAction}`,
+    `Source: ${suggestion.sourceProvider ?? "installed/local"}`,
+  ], suggestion.riskLevel === "high" ? "danger" : suggestion.riskLevel === "medium" ? "warning" : "info"));
+
+  const followUpChoices = [{ name: "Back", value: "back" }, { name: "Show details only", value: "details" }] as Array<{ name: string; value: string }>;
+  if (suggestion.recommendedAction === "enable_skill") {
+    followUpChoices.push({ name: "Enable skill now", value: "enable" });
+  }
+  if (suggestion.recommendedAction === "install_skill_disabled") {
+    followUpChoices.push({ name: "Install disabled now", value: "install" });
+  }
+  if (suggestion.recommendedAction === "add_mcp_template") {
+    followUpChoices.push({ name: "Add MCP template now", value: "mcp" });
+  }
+  if (suggestion.recommendedAction === "switch_tool_profile") {
+    followUpChoices.push({ name: "Open Tool Access next", value: "tools" });
+  }
+
+  const next = await select<string>({
+    message: "Choose action",
+    choices: followUpChoices,
+  });
+  if (next === "back" || next === "details") {
+    return;
+  }
+
+  if (next === "enable") {
+    if (!suggestion.candidateId) {
+      console.log(renderBox("Cannot enable", ["The installed skill ID is missing from this suggestion."], "danger"));
+      return;
+    }
+    const updated = await client.updateSkillState(suggestion.candidateId, {
+      state: "enabled",
+      note: "Enabled from TUI capability suggestion.",
+    });
+    console.log(renderBox("Skill enabled", [
+      `Skill ID: ${updated.skillId}`,
+      "Retry your request now.",
+    ], "success"));
+    return;
+  }
+
+  if (next === "install") {
+    if (!suggestion.sourceRef) {
+      console.log(renderBox("Cannot install", ["The import source is missing from this suggestion."], "danger"));
+      return;
+    }
+    const installed = await client.installSkillImport({
+      sourceRef: suggestion.sourceRef,
+      sourceProvider: suggestion.sourceProvider && suggestion.sourceProvider !== "mcp_template"
+        ? suggestion.sourceProvider
+        : undefined,
+      confirmHighRisk: suggestion.riskLevel === "high",
+    });
+    console.log(renderBox("Skill installed", [
+      installed.installedSkillId
+        ? `Installed ${installed.installedSkillId}.`
+        : "Installed the suggested skill source.",
+      "Imported skills stay disabled by default until you review and enable them.",
+    ], "success"));
+    return;
+  }
+
+  if (next === "mcp") {
+    const templateId = suggestion.candidateId ?? suggestion.sourceRef;
+    if (!templateId) {
+      console.log(renderBox("Cannot add MCP template", ["The template identifier is missing from this suggestion."], "danger"));
+      return;
+    }
+    const templates = await client.fetchMcpTemplates();
+    const template = templates.items.find((item) => item.templateId === templateId);
+    if (!template) {
+      console.log(renderBox("Cannot add MCP template", ["The suggested template is no longer available."], "danger"));
+      return;
+    }
+    if (template.installed) {
+      console.log(renderBox("MCP template already added", [
+        `${template.label} is already installed.`,
+        "Open the MCP view to connect or tune its policy.",
+      ], "info"));
+      return;
+    }
+    await client.createMcpServer({
+      label: template.label,
+      transport: template.transport,
+      command: template.command,
+      args: template.args,
+      url: template.url,
+      authType: template.authType,
+      enabled: template.enabledByDefault,
+      category: template.category,
+      trustTier: template.trustTier,
+      costTier: template.costTier,
+      policy: template.policy,
+    });
+    console.log(renderBox("MCP template added", [
+      `${template.label} was added to GoatCitadel.`,
+      "Review trust, auth, and policy before first live use.",
+    ], "success"));
+    return;
+  }
+
+  if (next === "tools") {
+    console.log(renderBox("Tool Access hint", [
+      "This capability is blocked by the current tool/profile policy.",
+      "Open the Tool Access view next and adjust the profile or grants before retrying.",
+    ], "warning"));
   }
 }
 

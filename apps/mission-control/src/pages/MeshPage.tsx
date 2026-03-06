@@ -11,6 +11,7 @@ import {
   type MeshSessionOwnerRecord,
   type MeshStatusResponse,
 } from "../api/client";
+import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -98,7 +99,10 @@ export function MeshPage() {
       {error ? <p className="error">{error}</p> : null}
 
       <article className="card">
-        <h3>Mesh Health Summary</h3>
+        <h3>
+          Mesh Health Summary
+          <HelpHint label="Mesh summary help" text="Mesh is only needed when multiple GoatCitadel nodes coordinate across machines. For single-machine use, disabled is normal." />
+        </h3>
         <p>
           {status.enabled
             ? `Mesh is enabled in ${status.mode} mode with ${status.nodesOnline} online node(s).`
@@ -116,15 +120,15 @@ export function MeshPage() {
         <article className="card">
           <h3>Cluster Status</h3>
           <p>Enabled: {status.enabled ? "yes" : "no"}</p>
-          <p>Mode: {status.mode}</p>
-          <p>Local node: {status.localNodeId}</p>
-          <p>Tailnet mode: {status.tailnetEnabled ? "on" : "off"}</p>
+          <p>Mode: {status.mode} <HelpHint label="Mesh mode help" text="LAN uses local-network discovery, WAN assumes explicitly reachable peers, and tailnet is for private-network overlays such as Tailscale." /></p>
+          <p>Local node: {status.localNodeId} <HelpHint label="Local node help" text="This node ID is this machine's stable identity inside the mesh. It should be unique per machine." /></p>
+          <p>Tailnet mode: {status.tailnetEnabled ? "on" : "off"} <HelpHint label="Tailnet help" text="Tailnet mode is for private-network routing. Leave it off unless you intentionally run GoatCitadel across a tailnet." /></p>
         </article>
         <article className="card">
           <h3>Live Counters</h3>
           <p>Online nodes: {status.nodesOnline}</p>
-          <p>Active leases: {status.activeLeases}</p>
-          <p>Owned sessions: {status.ownedSessions}</p>
+          <p>Active leases: {status.activeLeases} <HelpHint label="Active leases help" text="Leases are short-lived ownership locks used to coordinate work safely across multiple nodes." /></p>
+          <p>Owned sessions: {status.ownedSessions} <HelpHint label="Owned sessions help" text="Sessions currently claimed by this node for single-writer coordination." /></p>
         </article>
       </div>
 

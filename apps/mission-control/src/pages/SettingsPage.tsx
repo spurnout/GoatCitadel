@@ -4,7 +4,6 @@ import {
   createLlmChatCompletion,
   deleteProviderSecret,
   evaluateUiChangeRisk,
-  fetchLlmModels,
   getGatewayAuthStorageMode,
   persistGatewayAuthState,
   readStoredGatewayAuthState,
@@ -30,6 +29,8 @@ import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
+import { previewProviderModels, useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
+import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
 const TOOL_PROFILE_OPTIONS: SelectOption[] = [
   { value: "minimal", label: "minimal (safest)" },
@@ -219,6 +220,9 @@ export function SettingsPage() {
   const [basicPassword, setBasicPassword] = useState("");
   const [authStorageMode, setAuthStorageMode] = useState<GatewayAuthStorageMode>("session");
   const [models, setModels] = useState<Array<{ id: string; ownedBy?: string; created?: number }>>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelDiscoverySource, setModelDiscoverySource] = useState<"remote" | "fallback" | null>(null);
+  const [modelDiscoveryWarning, setModelDiscoveryWarning] = useState<string | null>(null);
   const [chatPrompt, setChatPrompt] = useState("Say hello from OpenAI-compatible chat completions.");
   const [chatPromptPresetId, setChatPromptPresetId] = useState("hello");
   const [chatUseMemory, setChatUseMemory] = useState(false);
@@ -243,8 +247,21 @@ export function SettingsPage() {
   const riskDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const riskAbortRef = useRef<AbortController | null>(null);
   const providerSecretAbortRef = useRef<AbortController | null>(null);
+  const modelPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const {
+    config: runtimeLlmConfig,
+    providers: runtimeProviderCatalog,
+    reload: reloadProviderCatalog,
+  } = useProviderModelCatalog("system");
 
-  const providerOptions = useMemo(() => settings?.llm.providers ?? [], [settings]);
+  const providerOptions = useMemo(() => runtimeProviderCatalog.map((provider) => ({
+    providerId: provider.providerId,
+    label: provider.label,
+    baseUrl: provider.baseUrl,
+    defaultModel: provider.defaultModel,
+    apiKeySource: provider.apiKeySource as "none" | "keychain" | "env" | "inline" | undefined,
+    apiKeyRef: provider.apiKeyRef,
+  })), [runtimeProviderCatalog]);
   const knownProviderIds = useMemo(() => {
     return new Set(providerOptions.map((provider) => provider.providerId.toLowerCase()));
   }, [providerOptions]);
@@ -317,6 +334,30 @@ export function SettingsPage() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (!runtimeLlmConfig) {
+      return;
+    }
+    setSettings((current) => current ? { ...current, llm: runtimeLlmConfig } : current);
+  }, [runtimeLlmConfig]);
+
+  useRefreshSubscription(
+    "system",
+    async (signal) => {
+      const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
+      if (!/\b(llm|provider|model|onboarding|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
+        return;
+      }
+      load();
+    },
+    {
+      enabled: true,
+      coalesceMs: 900,
+      staleMs: 20000,
+      pollIntervalMs: 20000,
+    },
+  );
 
   useEffect(() => {
     void fetchVoiceStatus()
@@ -429,6 +470,7 @@ export function SettingsPage() {
         networkAllowlist: allowlist,
       });
       setSettings(next);
+      await reloadProviderCatalog();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -447,6 +489,7 @@ export function SettingsPage() {
         },
       });
       setSettings(next);
+      await reloadProviderCatalog();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -470,6 +513,7 @@ export function SettingsPage() {
         },
       });
       setSettings(next);
+      await reloadProviderCatalog();
       if (providerApiKey.trim()) {
         const status = await saveProviderSecret(providerId, providerApiKey.trim());
         setProviderSecretStatus(status);
@@ -492,6 +536,7 @@ export function SettingsPage() {
       setProviderApiKey("");
       const next = await fetchSettings();
       setSettings(next);
+      await reloadProviderCatalog();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -503,6 +548,7 @@ export function SettingsPage() {
       setProviderSecretStatus(status);
       const next = await fetchSettings();
       setSettings(next);
+      await reloadProviderCatalog();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -510,12 +556,60 @@ export function SettingsPage() {
 
   const onLoadModels = async () => {
     try {
-      const res = await fetchLlmModels(activeProviderId || undefined);
-      setModels(res.items);
+      const targetProviderId = (providerId || activeProviderId).trim();
+      const targetBaseUrl = providerBaseUrl.trim();
+      if (!targetProviderId || !targetBaseUrl) {
+        setModels([]);
+        setModelDiscoverySource(null);
+        setModelDiscoveryWarning(null);
+        return;
+      }
+      setLoadingModels(true);
+      const res = await previewProviderModels({
+        providerId: targetProviderId,
+        baseUrl: targetBaseUrl,
+        apiKey: providerApiKey.trim() || undefined,
+        apiKeyEnv: providerApiKeyEnv.trim() || undefined,
+        fallbackModel: providerDefaultModel || activeModel,
+      });
+      setModels(res.items.map((id) => ({ id })));
+      setModelDiscoverySource(res.source);
+      setModelDiscoveryWarning(res.warning ?? null);
+      const firstModel = res.items[0];
+      if (firstModel && (!activeModel.trim() || !res.items.includes(activeModel))) {
+        setActiveModel(firstModel);
+      }
+      if (firstModel && (!providerDefaultModel.trim() || !res.items.includes(providerDefaultModel))) {
+        setProviderDefaultModel(firstModel);
+      }
     } catch (err) {
       setError((err as Error).message);
+      setModelDiscoverySource("fallback");
+      setModelDiscoveryWarning((err as Error).message);
+    } finally {
+      setLoadingModels(false);
     }
   };
+
+  useEffect(() => {
+    if (modelPreviewTimerRef.current) {
+      clearTimeout(modelPreviewTimerRef.current);
+      modelPreviewTimerRef.current = null;
+    }
+    const targetProviderId = (providerId || activeProviderId).trim();
+    if (!targetProviderId || !providerBaseUrl.trim()) {
+      return;
+    }
+    modelPreviewTimerRef.current = setTimeout(() => {
+      void onLoadModels();
+    }, 350);
+    return () => {
+      if (modelPreviewTimerRef.current) {
+        clearTimeout(modelPreviewTimerRef.current);
+        modelPreviewTimerRef.current = null;
+      }
+    };
+  }, [activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerDefaultModel, providerId]);
 
   const onTestChat = async () => {
     try {
@@ -942,7 +1036,7 @@ export function SettingsPage() {
         <details className="advanced-panel">
           <summary>Advanced runtime options</summary>
           <div className="controls-row">
-            <label htmlFor="allowlistPreset">Allowlist Preset</label>
+            <label htmlFor="allowlistPreset">Allowlist Preset <HelpHint label="Network allowlist help" text="This controls outbound hosts GoatCitadel is allowed to contact. It is not your machine's LAN IP. Use local hosts for local models, and provider domains such as api.z.ai for cloud models." /></label>
             <GCSelect
               id="allowlistPreset"
               value={allowlistPreset}
@@ -994,12 +1088,13 @@ export function SettingsPage() {
         </details>
 
         <div className="controls-row">
-          <label htmlFor="activeProvider">Active Provider</label>
+          <label htmlFor="activeProvider">Active Provider <HelpHint label="Active provider help" text="The active provider is the company or endpoint GoatCitadel will use for new chats and tests by default." /></label>
           <SelectOrCustom
             id="activeProvider"
             value={activeProviderId}
             onChange={(nextProviderId) => {
               setActiveProviderId(nextProviderId);
+              setProviderId(nextProviderId);
               applyProviderTemplate(nextProviderId);
             }}
             options={providerSelectOptions}
@@ -1009,7 +1104,7 @@ export function SettingsPage() {
         </div>
 
         <div className="controls-row">
-          <label htmlFor="activeModel">Active Model</label>
+          <label htmlFor="activeModel">Active Model <HelpHint label="Active model help" text="This is the actual model GoatCitadel will send prompts to for the active provider. The list below is discovered live when possible so you can pick a working model instead of guessing." /></label>
           <SelectOrCustom
             id="activeModel"
             value={activeModel}
@@ -1018,8 +1113,14 @@ export function SettingsPage() {
             customPlaceholder="Custom model id"
             customLabel="Custom active model"
           />
-          <button type="button" onClick={onLoadModels}>Load Models</button>
+          <button type="button" onClick={onLoadModels}>{loadingModels ? "Loading..." : "Refresh Models"}</button>
         </div>
+        {modelDiscoverySource ? (
+          <p className="office-subtitle">
+            Model discovery: {modelDiscoverySource === "remote" ? "live provider list" : "fallback/default list"}
+            {modelDiscoveryWarning ? ` · ${modelDiscoveryWarning}` : ""}
+          </p>
+        ) : null}
         {models.length > 0 ? (
           <ul className="compact-list">
             {models.map((model) => (
@@ -1036,7 +1137,7 @@ export function SettingsPage() {
           <div className="advanced-block">
             <h4>Add / Update Provider</h4>
             <div className="controls-row">
-              <label htmlFor="providerId">Provider ID</label>
+              <label htmlFor="providerId">Provider ID <HelpHint label="Provider ID help" text="Provider ID is GoatCitadel's stable machine name for this endpoint, such as glm or moonshot. It is how runtime settings and chats refer to the provider internally." /></label>
               <SelectOrCustom
                 id="providerId"
                 value={providerId}
@@ -1050,7 +1151,7 @@ export function SettingsPage() {
               />
             </div>
             <div className="controls-row">
-              <label htmlFor="providerLabel">Label</label>
+              <label htmlFor="providerLabel">Label <HelpHint label="Provider label help" text="Label is the human-readable display name shown in the UI. It does not have to match the provider ID exactly." /></label>
               <SelectOrCustom
                 id="providerLabel"
                 value={providerLabel}
@@ -1075,7 +1176,7 @@ export function SettingsPage() {
               />
             </div>
             <div className="controls-row">
-              <label htmlFor="providerDefaultModel">Default Model</label>
+              <label htmlFor="providerDefaultModel">Default Model <HelpHint label="Default model help" text="Default model is the model GoatCitadel should choose first for this provider when a chat or page has not pinned a different model yet." /></label>
               <SelectOrCustom
                 id="providerDefaultModel"
                 value={providerDefaultModel}
@@ -1106,7 +1207,7 @@ export function SettingsPage() {
               </button>
             </div>
             <div className="controls-row">
-              <label htmlFor="providerApiKeyEnv">API Key Env (optional)</label>
+              <label htmlFor="providerApiKeyEnv">API Key Env (optional) <HelpHint label="Provider API key env help" text="This is the environment variable name GoatCitadel should look for at runtime, for example GLM_API_KEY. It names the variable; it is not the secret value itself." /></label>
               <SelectOrCustom
                 id="providerApiKeyEnv"
                 value={providerApiKeyEnv}

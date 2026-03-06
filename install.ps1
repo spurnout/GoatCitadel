@@ -36,6 +36,89 @@ function Invoke-NativeOrThrow {
   }
 }
 
+function Get-DirtyTrackedPaths {
+  param([Parameter(Mandatory = $true)][string]$RepositoryPath)
+
+  $output = & git -C $RepositoryPath status --porcelain --untracked-files=no
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to inspect GoatCitadel working tree state."
+  }
+  if ([string]::IsNullOrWhiteSpace($output)) {
+    return @()
+  }
+
+  return @($output -split "`r?`n" | Where-Object { $_.Trim() -ne "" } | ForEach-Object {
+    $_.Substring(3).Trim()
+  })
+}
+
+function Preserve-ManagedConfigForUpdate {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryPath,
+    [Parameter(Mandatory = $true)][string[]]$ManagedPaths
+  )
+
+  $dirtyTrackedPaths = Get-DirtyTrackedPaths -RepositoryPath $RepositoryPath
+  if ($dirtyTrackedPaths.Count -eq 0) {
+    return $null
+  }
+
+  $managedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($managedPath in $ManagedPaths) {
+    [void]$managedSet.Add($managedPath)
+  }
+
+  $unexpected = @($dirtyTrackedPaths | Where-Object { -not $managedSet.Contains($_) })
+  if ($unexpected.Count -gt 0) {
+    throw "Update blocked because the installed checkout has non-config tracked changes: $($unexpected -join ', ')"
+  }
+
+  $backupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("goatcitadel-update-" + [guid]::NewGuid())
+  New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+  foreach ($relativePath in $dirtyTrackedPaths) {
+    $sourcePath = Join-Path $RepositoryPath $relativePath
+    if (-not (Test-Path $sourcePath)) {
+      continue
+    }
+    $backupPath = Join-Path $backupRoot $relativePath
+    $backupDir = Split-Path -Parent $backupPath
+    if (-not [string]::IsNullOrWhiteSpace($backupDir)) {
+      New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+    }
+    Copy-Item -Path $sourcePath -Destination $backupPath -Force
+    Invoke-NativeOrThrow -FilePath "git" -Arguments @("-C", $RepositoryPath, "restore", "--source=HEAD", "--", $relativePath) -FailureMessage "Failed to temporarily restore managed config before update"
+  }
+
+  return [pscustomobject]@{
+    BackupRoot = $backupRoot
+    Paths = $dirtyTrackedPaths
+  }
+}
+
+function Restore-PreservedManagedConfig {
+  param(
+    [Parameter(Mandatory = $true)][string]$RepositoryPath,
+    $PreservedState
+  )
+
+  if ($null -eq $PreservedState) {
+    return
+  }
+
+  foreach ($relativePath in $PreservedState.Paths) {
+    $backupPath = Join-Path $PreservedState.BackupRoot $relativePath
+    if (-not (Test-Path $backupPath)) {
+      continue
+    }
+    $destinationPath = Join-Path $RepositoryPath $relativePath
+    $destinationDir = Split-Path -Parent $destinationPath
+    if (-not [string]::IsNullOrWhiteSpace($destinationDir)) {
+      New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
+    }
+    Copy-Item -Path $backupPath -Destination $destinationPath -Force
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
   $BaseDir = Join-Path $HOME ".GoatCitadel"
 } else {
@@ -45,6 +128,15 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 $AppDir = Join-Path $BaseDir "app"
 $BinDir = Join-Path $BaseDir "bin"
 $PnpmVersion = "10.29.3"
+$ManagedMutableConfigPaths = @(
+  "config/assistant.config.json",
+  "config/tool-policy.json",
+  "config/budgets.json",
+  "config/llm-providers.json",
+  "config/cron-jobs.json",
+  "config/goatcitadel.json"
+)
+$preservedManagedConfig = $null
 
 if ($InstallMethod -ne "git") {
   throw "Unsupported install method '$InstallMethod'. Only 'git' is supported."
@@ -61,7 +153,9 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 if (Test-Path (Join-Path $AppDir ".git")) {
   Write-Host "Updating existing GoatCitadel install in $AppDir..."
   Invoke-NativeOrThrow -FilePath "git" -Arguments @("-C", $AppDir, "fetch", "--all", "--prune") -FailureMessage "Failed to fetch latest GoatCitadel changes"
+  $preservedManagedConfig = Preserve-ManagedConfigForUpdate -RepositoryPath $AppDir -ManagedPaths $ManagedMutableConfigPaths
   Invoke-NativeOrThrow -FilePath "git" -Arguments @("-C", $AppDir, "pull", "--ff-only") -FailureMessage "Failed to fast-forward GoatCitadel install"
+  Restore-PreservedManagedConfig -RepositoryPath $AppDir -PreservedState $preservedManagedConfig
 } else {
   if (Test-Path $AppDir) {
     Write-Host "Removing non-git directory at $AppDir..."
@@ -81,6 +175,10 @@ if (-not (Test-Path $lockfilePath)) {
   throw "Install source is missing pnpm-lock.yaml; this build cannot be installed with --frozen-lockfile."
 }
 Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "install", "--frozen-lockfile") -FailureMessage "Failed to install GoatCitadel workspace dependencies"
+if ($null -ne $preservedManagedConfig) {
+  Write-Host "Re-syncing preserved GoatCitadel config after update..."
+  Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "config:sync") -FailureMessage "Failed to sync preserved GoatCitadel config after update"
+}
 
 $launcherCmd = @"
 @echo off
@@ -174,4 +272,5 @@ Write-Host "  - Open a new PowerShell window if 'goatcitadel' is not found yet."
 Write-Host "  - The installer updates your user PATH for new shells, not the already-running parent shell."
 Write-Host "  - Use 'goatcitadel' or 'goat' in PowerShell. Do not use 'gc' there because it maps to Get-Content."
 Write-Host "  - Onboarding uses the live gateway API. Start with 'goat up' first, then run onboarding."
+Write-Host "  - Managed GoatCitadel config is preserved across installer updates."
 Write-Host "  - Immediate fallback: & `"$launcherCmdPath`" onboard"

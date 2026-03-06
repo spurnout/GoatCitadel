@@ -8,6 +8,14 @@ const defaultRepoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/s
 const preferredBaseDir = path.join(os.homedir(), ".GoatCitadel");
 const legacyBaseDir = path.join(os.homedir(), ".goatcitadel");
 const pnpmVersion = "10.29.3";
+const managedMutableConfigPaths = [
+  "config/assistant.config.json",
+  "config/tool-policy.json",
+  "config/budgets.json",
+  "config/llm-providers.json",
+  "config/cron-jobs.json",
+  "config/goatcitadel.json",
+];
 
 const args = process.argv.slice(2);
 const command = args[0] || "help";
@@ -91,13 +99,16 @@ function installOrUpdate() {
   const gitCmd = requireCommand("git");
   requireCommand("node");
   const corepackCmd = requireCommand("corepack");
+  let preservedManagedConfig = null;
 
   fs.mkdirSync(baseDir, { recursive: true });
 
   if (fs.existsSync(path.join(appDir, ".git"))) {
     console.log(`Updating GoatCitadel in ${appDir}...`);
     run(gitCmd, ["-C", appDir, "fetch", "--all", "--prune"]);
+    preservedManagedConfig = preserveManagedConfigForUpdate(gitCmd, appDir);
     run(gitCmd, ["-C", appDir, "pull", "--ff-only"]);
+    restorePreservedManagedConfig(appDir, preservedManagedConfig);
   } else {
     if (fs.existsSync(appDir)) {
       fs.rmSync(appDir, { recursive: true, force: true });
@@ -109,6 +120,10 @@ function installOrUpdate() {
   run(corepackCmd, ["enable"]);
   run(corepackCmd, ["prepare", `pnpm@${pnpmVersion}`, "--activate"]);
   runPnpm(["--dir", appDir, "install", "--frozen-lockfile"]);
+  if (preservedManagedConfig) {
+    console.log("Re-syncing preserved GoatCitadel config after update...");
+    runPnpm(["--dir", appDir, "config:sync"]);
+  }
 
   console.log("");
   console.log("GoatCitadel install complete.");
@@ -120,6 +135,7 @@ function installOrUpdate() {
   console.log("  goat up");
   console.log("  goat onboard");
   console.log("  goat doctor --deep");
+  console.log("  Managed GoatCitadel config is preserved across installer updates.");
 }
 
 function parseInstallArgs(argv) {
@@ -165,6 +181,60 @@ function resolveBaseDir(installDirOverride) {
     : fs.existsSync(path.join(legacyBaseDir, "app"))
       ? legacyBaseDir
       : preferredBaseDir;
+}
+
+function preserveManagedConfigForUpdate(gitCmd, repositoryPath) {
+  const status = spawnCommandSync(gitCmd, ["-C", repositoryPath, "status", "--porcelain", "--untracked-files=no"], {
+    encoding: "utf8",
+  });
+  if (status.error) {
+    throw status.error;
+  }
+  if (status.status !== 0) {
+    throw new Error("Failed to inspect GoatCitadel working tree state.");
+  }
+  const dirtyPaths = String(status.stdout || "")
+    .split(/\r?\n/g)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim());
+  if (dirtyPaths.length === 0) {
+    return null;
+  }
+  const unexpected = dirtyPaths.filter((item) => !managedMutableConfigPaths.includes(item));
+  if (unexpected.length > 0) {
+    throw new Error(`Update blocked because the installed checkout has non-config tracked changes: ${unexpected.join(", ")}`);
+  }
+  const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goatcitadel-update-"));
+  for (const relativePath of dirtyPaths) {
+    const sourcePath = path.join(repositoryPath, relativePath);
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+    const backupPath = path.join(backupRoot, relativePath);
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.copyFileSync(sourcePath, backupPath);
+    run(gitCmd, ["-C", repositoryPath, "restore", "--source=HEAD", "--", relativePath]);
+  }
+  return {
+    backupRoot,
+    paths: dirtyPaths,
+  };
+}
+
+function restorePreservedManagedConfig(repositoryPath, preservedState) {
+  if (!preservedState) {
+    return;
+  }
+  for (const relativePath of preservedState.paths) {
+    const backupPath = path.join(preservedState.backupRoot, relativePath);
+    if (!fs.existsSync(backupPath)) {
+      continue;
+    }
+    const destinationPath = path.join(repositoryPath, relativePath);
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.copyFileSync(backupPath, destinationPath);
+  }
 }
 
 function doctor(extraArgs = []) {

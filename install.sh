@@ -8,6 +8,16 @@ BIN_DIR="${BASE_DIR}/bin"
 INSTALL_METHOD="git"
 NO_PATH_UPDATE="0"
 PNPM_VERSION="10.29.3"
+MANAGED_MUTABLE_CONFIG_PATHS=(
+  "config/assistant.config.json"
+  "config/tool-policy.json"
+  "config/budgets.json"
+  "config/llm-providers.json"
+  "config/cron-jobs.json"
+  "config/goatcitadel.json"
+)
+PRESERVED_MANAGED_CONFIG_DIR=""
+PRESERVED_MANAGED_CONFIG_PATHS=()
 
 print_help() {
   cat <<'EOF'
@@ -73,6 +83,54 @@ require_cmd() {
   fi
 }
 
+is_managed_mutable_path() {
+  local path="$1"
+  for managed in "${MANAGED_MUTABLE_CONFIG_PATHS[@]}"; do
+    if [[ "${managed}" == "${path}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+preserve_managed_config_for_update() {
+  mapfile -t dirty_paths < <(git -C "${APP_DIR}" status --porcelain --untracked-files=no | awk 'NF { print substr($0, 4) }')
+  if [[ "${#dirty_paths[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local unexpected=()
+  local path
+  for path in "${dirty_paths[@]}"; do
+    if ! is_managed_mutable_path "${path}"; then
+      unexpected+=("${path}")
+    fi
+  done
+  if [[ "${#unexpected[@]}" -gt 0 ]]; then
+    echo "Update blocked because the installed checkout has non-config tracked changes: ${unexpected[*]}" >&2
+    exit 1
+  fi
+
+  PRESERVED_MANAGED_CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/goatcitadel-update.XXXXXX")"
+  PRESERVED_MANAGED_CONFIG_PATHS=("${dirty_paths[@]}")
+  for path in "${dirty_paths[@]}"; do
+    mkdir -p "${PRESERVED_MANAGED_CONFIG_DIR}/$(dirname "${path}")"
+    cp "${APP_DIR}/${path}" "${PRESERVED_MANAGED_CONFIG_DIR}/${path}"
+    git -C "${APP_DIR}" restore --source=HEAD -- "${path}"
+  done
+}
+
+restore_preserved_managed_config() {
+  if [[ -z "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
+    return 0
+  fi
+  local path
+  for path in "${PRESERVED_MANAGED_CONFIG_PATHS[@]}"; do
+    mkdir -p "${APP_DIR}/$(dirname "${path}")"
+    cp "${PRESERVED_MANAGED_CONFIG_DIR}/${path}" "${APP_DIR}/${path}"
+  done
+}
+
 require_cmd git
 require_cmd node
 require_cmd corepack
@@ -83,7 +141,9 @@ mkdir -p "${BASE_DIR}" "${BIN_DIR}"
 if [[ -d "${APP_DIR}/.git" ]]; then
   echo "Updating existing GoatCitadel install in ${APP_DIR}..."
   git -C "${APP_DIR}" fetch --all --prune
+  preserve_managed_config_for_update
   git -C "${APP_DIR}" pull --ff-only
+  restore_preserved_managed_config
 else
   if [[ -d "${APP_DIR}" ]]; then
     echo "Removing non-git directory at ${APP_DIR}..."
@@ -99,6 +159,10 @@ corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 echo "Installing workspace dependencies..."
 pnpm --dir "${APP_DIR}" install --frozen-lockfile
+if [[ -n "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
+  echo "Re-syncing preserved GoatCitadel config after update..."
+  pnpm --dir "${APP_DIR}" config:sync
+fi
 
 cat > "${BIN_DIR}/goatcitadel" <<EOF
 #!/usr/bin/env bash
@@ -153,3 +217,4 @@ echo "  ${BIN_DIR}/goatcitadel doctor --deep"
 echo "  ${BIN_DIR}/goat up"
 echo "  ${BIN_DIR}/goat onboard"
 echo "  ${BIN_DIR}/goat doctor --deep"
+echo "  Managed GoatCitadel config is preserved across installer updates."

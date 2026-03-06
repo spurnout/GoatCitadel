@@ -1,22 +1,22 @@
 {
-  "generatedAt": "2026-03-06T03:48:09.279Z",
+  "generatedAt": "2026-03-06T06:21:06.600Z",
   "status": "success",
-  "sourceRunId": "fe47354b-f591-432c-910f-5f131fd614e6",
-  "runStartedAt": "2026-03-06T03:45:57.293Z",
-  "runFinishedAt": "2026-03-06T03:48:09.279Z",
-  "sourceFiles": 266,
-  "coveredFiles": 230,
+  "sourceRunId": "886ec457-938b-4602-af3e-469e014de398",
+  "runStartedAt": "2026-03-06T06:18:52.009Z",
+  "runFinishedAt": "2026-03-06T06:21:06.600Z",
+  "sourceFiles": 270,
+  "coveredFiles": 234,
   "uncoveredFiles": 36,
-  "fileCoveragePercent": 86.47,
-  "linePercent": 66.02,
-  "branchPercent": 62.89,
+  "fileCoveragePercent": 86.67,
+  "linePercent": 65.77,
+  "branchPercent": 62.51,
   "lineTotals": {
-    "covered": 46582,
-    "total": 70559
+    "covered": 47519,
+    "total": 72245
   },
   "branchTotals": {
-    "covered": 5521,
-    "total": 8779
+    "covered": 5575,
+    "total": 8918
   },
   "effectiveThresholds": {
     "line": 65,

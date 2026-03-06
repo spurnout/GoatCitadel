@@ -185,6 +185,19 @@ export interface ChatToolRunRecord {
   error?: string;
 }
 
+export interface ChatCapabilityUpgradeSuggestion {
+  kind: "existing_but_disabled" | "skill_import" | "mcp_template";
+  title: string;
+  summary: string;
+  reason: string;
+  sourceProvider?: "agentskill" | "skillsmp" | "github" | "mcp_template";
+  sourceRef?: string;
+  riskLevel?: "low" | "medium" | "high";
+  recommendedAction: "enable_skill" | "install_skill_disabled" | "add_mcp_template" | "switch_tool_profile";
+  candidateId?: string;
+  requiresUserApproval: true;
+}
+
 export interface ChatTurnTraceRecord {
   turnId: string;
   sessionId: string;
@@ -238,6 +251,7 @@ export interface ChatTurnTraceRecord {
     workspaceFilesUsed: string[];
     truncated: boolean;
   };
+  capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
 }
 
 export interface ChatDelegationStepRecord {
@@ -355,6 +369,7 @@ export interface ChatStreamChunk {
     | "tool_result"
     | "approval_required"
     | "trace_update"
+    | "capability_upgrade_suggestion"
     | "citation"
     | "error"
     | "done";
@@ -377,5 +392,6 @@ export interface ChatStreamChunk {
     toolName?: string;
     reason?: string;
   };
+  capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
   error?: string;
 }

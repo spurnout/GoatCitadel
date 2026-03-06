@@ -19,6 +19,14 @@ const modelQuerySchema = z.object({
   providerId: z.string().min(1).optional(),
 });
 
+const modelPreviewSchema = z.object({
+  providerId: z.string().min(1),
+  baseUrl: z.string().url(),
+  apiKey: z.string().min(1).optional(),
+  apiKeyEnv: z.string().min(1).optional(),
+  headers: z.record(z.string()).optional(),
+});
+
 const chatCompletionSchema = z.object({
   providerId: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
@@ -77,6 +85,19 @@ export const llmRoutes: FastifyPluginAsync = async (fastify) => {
 
     try {
       return reply.send({ items: await fastify.gateway.listLlmModels(parsed.data.providerId) });
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/llm/models/preview", async (request, reply) => {
+    const parsed = modelPreviewSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    try {
+      return reply.send(await fastify.gateway.previewLlmModels(parsed.data));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }

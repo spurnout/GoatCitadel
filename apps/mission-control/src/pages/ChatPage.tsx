@@ -10,6 +10,7 @@ import {
 } from "react";
 import type {
   ChatAttachmentRecord,
+  ChatCapabilityUpgradeSuggestion,
   ChatDelegationSuggestionRecord,
   ChatMessageRecord,
   ChatSessionPrefsPatch,
@@ -26,6 +27,7 @@ import {
   approveChatTool,
   archiveChatSession,
   assignChatSessionProject,
+  createMcpServer,
   createChatProject,
   createChatSession,
   denyChatTool,
@@ -38,7 +40,9 @@ import {
   fetchChatLearnedMemory,
   fetchChatSessionPrefs,
   fetchChatSessions,
+  fetchMcpTemplates,
   fetchSettings,
+  installSkillImport,
   parseChatCommand,
   rebuildChatLearnedMemory,
   pinChatSession,
@@ -54,6 +58,7 @@ import {
   updateChatSession,
   updateChatLearnedMemoryItem,
   updateChatSessionPrefs,
+  updateSkillState,
   uploadChatAttachment,
   type ChatMessagesResponse,
   type ChatProjectsResponse,
@@ -70,6 +75,7 @@ import { CoworkCanvasPanel } from "../components/CoworkCanvasPanel";
 import { HelpHint } from "../components/HelpHint";
 import { InlineApprovalPrompt } from "../components/InlineApprovalPrompt";
 import { GCCombobox, GCSelect, GCSwitch } from "../components/ui";
+import { useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
 
@@ -98,6 +104,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
   const [commandCatalog, setCommandCatalog] = useState<CommandCatalogItem[]>([]);
   const [latestTrace, setLatestTrace] = useState<ChatTurnTraceRecord | null>(null);
+  const [capabilitySuggestions, setCapabilitySuggestions] = useState<ChatCapabilityUpgradeSuggestion[]>([]);
   const [pendingApproval, setPendingApproval] = useState<PendingApprovalState | null>(null);
   const [proactiveStatus, setProactiveStatus] = useState<ProactivePolicy | null>(null);
   const [proactiveRuns, setProactiveRuns] = useState<ProactiveRunRecord[]>([]);
@@ -133,6 +140,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const shouldFollowMessagesRef = useRef(true);
   const previousMessageCountRef = useRef(0);
   const lastLocalPrefMutationAtRef = useRef(0);
+  const {
+    config: runtimeLlmConfig,
+    providers: runtimeProviderCatalog,
+  } = useProviderModelCatalog("chat");
 
   const loadSidebar = useCallback(async () => {
     const [nextProjects, nextSessions] = await Promise.all([
@@ -149,6 +160,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setSettings(runtimeSettings);
     setCommandCatalog(commands.items);
   }, []);
+
+  useEffect(() => {
+    if (!runtimeLlmConfig) {
+      return;
+    }
+    setSettings((current) => current ? { ...current, llm: runtimeLlmConfig } : current);
+  }, [runtimeLlmConfig]);
 
   const loadSessionState = useCallback(async (
     sessionId: string,
@@ -181,6 +199,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setLearnedMemory(nextMemory.items);
       setDelegationSuggestion(null);
       setLatestTrace(null);
+      setCapabilitySuggestions([]);
       setPendingApproval(null);
     } finally {
       if (!background) {
@@ -340,17 +359,26 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   );
 
   const providerOptions = useMemo<ChatModelProviderOption[]>(() => {
-    const providers = settings?.llm.providers ?? [];
-    return providers.map((provider) => ({
+    const activeProviderId = runtimeLlmConfig?.activeProviderId ?? settings?.llm.activeProviderId;
+    const activeModel = runtimeLlmConfig?.activeModel ?? settings?.llm.activeModel;
+    return runtimeProviderCatalog.map((provider) => ({
       providerId: provider.providerId,
       label: provider.label,
       models: dedupeStrings([
-        provider.defaultModel,
-        provider.providerId === settings?.llm.activeProviderId ? settings?.llm.activeModel : undefined,
+        ...provider.models,
+        provider.providerId === activeProviderId ? activeModel : undefined,
         prefs?.providerId === provider.providerId ? prefs.model : undefined,
       ]),
     }));
-  }, [prefs?.model, prefs?.providerId, settings?.llm.activeModel, settings?.llm.activeProviderId, settings?.llm.providers]);
+  }, [
+    prefs?.model,
+    prefs?.providerId,
+    runtimeLlmConfig?.activeModel,
+    runtimeLlmConfig?.activeProviderId,
+    runtimeProviderCatalog,
+    settings?.llm.activeModel,
+    settings?.llm.activeProviderId,
+  ]);
 
   const commandSuggestions = useMemo(() => {
     if (!draft.trimStart().startsWith("/")) return [] as CommandCatalogItem[];
@@ -642,6 +670,124 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     composerRef.current?.focus();
   }, []);
 
+  const appendLocalSystemMessage = useCallback((content: string) => {
+    if (!selectedSessionId) {
+      return;
+    }
+    setMessages((current) => [...current, {
+      messageId: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      sessionId: selectedSessionId,
+      role: "system",
+      actorType: "system",
+      actorId: "capability",
+      content,
+      timestamp: new Date().toISOString(),
+    }]);
+  }, [selectedSessionId]);
+
+  const dismissCapabilitySuggestion = useCallback((suggestion: ChatCapabilityUpgradeSuggestion) => {
+    setCapabilitySuggestions((current) => current.filter((item) => (
+      item.kind !== suggestion.kind
+      || (item.candidateId ?? item.title) !== (suggestion.candidateId ?? suggestion.title)
+    )));
+  }, []);
+
+  const handleCapabilitySuggestionAction = useCallback(async (suggestion: ChatCapabilityUpgradeSuggestion) => {
+    try {
+      setError(null);
+      if (suggestion.recommendedAction === "enable_skill") {
+        if (!suggestion.candidateId) {
+          throw new Error("This suggestion is missing the installed skill identifier.");
+        }
+        const confirmed = window.confirm(`Enable ${suggestion.title}?`);
+        if (!confirmed) {
+          return;
+        }
+        const updated = await updateSkillState(suggestion.candidateId, {
+          state: "enabled",
+          note: "Enabled from chat capability suggestion.",
+        });
+        appendLocalSystemMessage(`Enabled skill ${updated.skillId}. You can retry the request now.`);
+        dismissCapabilitySuggestion(suggestion);
+        return;
+      }
+
+      if (suggestion.recommendedAction === "install_skill_disabled") {
+        if (!suggestion.sourceRef) {
+          throw new Error("This suggestion is missing the import source.");
+        }
+        const confirmed = window.confirm(
+          `${suggestion.title}\n\nInstall this skill in disabled state for review first?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+        const installed = await installSkillImport({
+          sourceRef: suggestion.sourceRef,
+          sourceProvider: suggestion.sourceProvider && suggestion.sourceProvider !== "mcp_template"
+            ? suggestion.sourceProvider
+            : undefined,
+          confirmHighRisk: suggestion.riskLevel === "high",
+        });
+        appendLocalSystemMessage(
+          installed.installedSkillId
+            ? `Installed ${installed.installedSkillId}. It remains disabled by default until you enable it.`
+            : "Installed the suggested skill. It remains disabled by default until you enable it.",
+        );
+        dismissCapabilitySuggestion(suggestion);
+        window.location.hash = "skills";
+        return;
+      }
+
+      if (suggestion.recommendedAction === "add_mcp_template") {
+        const templateId = suggestion.candidateId ?? suggestion.sourceRef;
+        if (!templateId) {
+          throw new Error("This suggestion is missing the MCP template identifier.");
+        }
+        const confirmed = window.confirm(`Add MCP template "${suggestion.title}" now?`);
+        if (!confirmed) {
+          return;
+        }
+        const templates = await fetchMcpTemplates();
+        const template = templates.items.find((item) => item.templateId === templateId);
+        if (!template) {
+          throw new Error("The suggested MCP template is no longer available.");
+        }
+        if (template.installed) {
+          appendLocalSystemMessage(`${template.label} is already installed. Review it in MCP Servers.`);
+          dismissCapabilitySuggestion(suggestion);
+          window.location.hash = "mcp";
+          return;
+        }
+        await createMcpServer({
+          label: template.label,
+          transport: template.transport,
+          command: template.command,
+          args: template.args,
+          url: template.url,
+          authType: template.authType,
+          enabled: template.enabledByDefault,
+          category: template.category,
+          trustTier: template.trustTier,
+          costTier: template.costTier,
+          policy: template.policy,
+        });
+        appendLocalSystemMessage(`${template.label} was added. Review trust/auth details in MCP before first live use.`);
+        dismissCapabilitySuggestion(suggestion);
+        window.location.hash = "mcp";
+        return;
+      }
+
+      if (suggestion.recommendedAction === "switch_tool_profile") {
+        appendLocalSystemMessage("This request is blocked by the current tool/profile policy. Review Tool Access and retry.");
+        window.location.hash = "tools";
+        return;
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [appendLocalSystemMessage, dismissCapabilitySuggestion]);
+
   const handleCommandExecution = useCallback(async (sessionId: string, commandText: string) => {
     const result = await parseChatCommand(sessionId, commandText);
     if (result.prefs) setPrefs(result.prefs);
@@ -737,6 +883,11 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           }
           if (chunk.type === "trace_update" && chunk.trace) {
             setLatestTrace(chunk.trace);
+            setCapabilitySuggestions(chunk.trace.capabilityUpgradeSuggestions ?? []);
+            return;
+          }
+          if (chunk.type === "capability_upgrade_suggestion") {
+            setCapabilitySuggestions(chunk.capabilityUpgradeSuggestions ?? []);
             return;
           }
           if (chunk.type === "approval_required" && chunk.approval?.approvalId) {
@@ -751,7 +902,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         committed = true;
         setMessages((current) => current.map((item) => item.messageId === localUserId ? sent.userMessage : item));
         if (sent.assistantMessage) setMessages((current) => [...current, sent.assistantMessage as ChatMessageRecord]);
-        if (sent.trace) setLatestTrace(sent.trace);
+        if (sent.trace) {
+          setLatestTrace(sent.trace);
+          setCapabilitySuggestions(sent.trace.capabilityUpgradeSuggestions ?? []);
+        }
       }
 
       await loadSidebar();
@@ -896,6 +1050,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           <div className="chat-v11-project-create">
             <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="New project name" />
             <input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="Project path (optional)" />
+            <p className="chat-v11-muted">
+              Project creation is optional. Leave the workspace on <strong>Main</strong> and click <strong>New Chat</strong> to start immediately.
+            </p>
             <button type="button" onClick={async () => {
               const name = projectName.trim();
               if (!name) return;
@@ -953,8 +1110,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <ChatModeSwitch value={messageMode} disabled={!selectedSessionId || sending} onChange={(mode) => void handlePrefPatch({ mode })} />
             <ChatModelPicker
               providers={providerOptions}
-              providerId={prefs?.providerId ?? settings?.llm.activeProviderId}
-              model={prefs?.model ?? settings?.llm.activeModel}
+              providerId={prefs?.providerId ?? runtimeLlmConfig?.activeProviderId ?? settings?.llm.activeProviderId}
+              model={prefs?.model ?? runtimeLlmConfig?.activeModel ?? settings?.llm.activeModel}
               disabled={!selectedSessionId || sending}
               onChangeProvider={(providerId) => {
                 const provider = providerOptions.find((item) => item.providerId === providerId);
@@ -1038,6 +1195,43 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     <h3>Suggestions inbox</h3>
                     <span className="token-chip">{proactiveRuns.filter((run) => run.status === "suggested").length} suggested</span>
                   </div>
+                  {capabilitySuggestions.length > 0 ? (
+                    <div className="chat-v11-suggestion-card">
+                      <p><strong>Capability upgrade available:</strong> GoatCitadel found a possible way to add what this request needs, but it still requires your approval.</p>
+                      <ul className="chat-v11-proactive-list">
+                        {capabilitySuggestions.slice(0, 3).map((suggestion) => (
+                          <li key={`${suggestion.kind}-${suggestion.candidateId ?? suggestion.title}`}>
+                            <p><strong>{suggestion.title}</strong>{suggestion.riskLevel ? ` · ${suggestion.riskLevel} risk` : ""}</p>
+                            <p>{suggestion.summary}</p>
+                            <p className="chat-v11-muted">{suggestion.reason}</p>
+                            <div className="chat-v11-row-actions">
+                              {suggestion.recommendedAction === "enable_skill" ? (
+                                <button type="button" onClick={() => void handleCapabilitySuggestionAction(suggestion)}>Enable skill</button>
+                              ) : null}
+                              {suggestion.recommendedAction === "install_skill_disabled" ? (
+                                <button type="button" onClick={() => void handleCapabilitySuggestionAction(suggestion)}>Install disabled</button>
+                              ) : null}
+                              {suggestion.recommendedAction === "add_mcp_template" ? (
+                                <button type="button" onClick={() => void handleCapabilitySuggestionAction(suggestion)}>Add MCP template</button>
+                              ) : null}
+                              {suggestion.recommendedAction === "switch_tool_profile" ? (
+                                <button type="button" onClick={() => void handleCapabilitySuggestionAction(suggestion)}>Review tool profile</button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  window.location.hash = suggestion.kind === "mcp_template" ? "mcp" : "skills";
+                                }}
+                              >
+                                {suggestion.kind === "mcp_template" ? "Open MCP" : "Open Skills"}
+                              </button>
+                              <button type="button" onClick={() => dismissCapabilitySuggestion(suggestion)}>Dismiss</button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                   {delegationSuggestion ? (
                     <div className="chat-v11-suggestion-card">
                       <p><strong>Delegation suggestion:</strong> {delegationSuggestion.reason}</p>
@@ -1063,7 +1257,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
                 <article className="card chat-v11-agentic-card">
                   <div className="chat-v11-agentic-head">
-                    <h3>Learned memory</h3>
+                    <h3>Learned memory <HelpHint label="Learned memory help" text="Learned memory stores facts, goals, preferences, and constraints GoatCitadel may reuse in future turns for this session." /></h3>
                     <button type="button" disabled={sending || !selectedSessionId} onClick={() => void handleRebuildLearnedMemory()}>
                       Rebuild
                     </button>
@@ -1072,12 +1266,28 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                   <ul className="chat-v11-memory-list">
                     {learnedMemory.slice(0, 6).map((item) => (
                       <li key={item.itemId}>
-                        <p><strong>{item.itemType}</strong> · {Math.round(item.confidence * 100)}% · {item.status}</p>
+                        <p>
+                          <strong>{item.itemType}</strong>
+                          {" · "}
+                          Confidence {Math.round(item.confidence * 100)}%
+                          <HelpHint label="Memory confidence help" text="Confidence is GoatCitadel's estimate of how reliable this memory is for future replies. It is not a completion score; higher means the system is more willing to reuse it." />
+                          {" · "}
+                          {item.status}
+                          <HelpHint label="Memory status help" text={
+                            item.status === "active"
+                              ? "Active memory is currently eligible to influence future turns."
+                              : item.status === "superseded"
+                                ? "Superseded memory was replaced by a newer or more accurate item."
+                                : item.status === "disabled"
+                                  ? "Disabled memory stays in history but no longer influences future turns."
+                                  : "Conflict means the memory needs review before it should influence future turns."
+                          } />
+                        </p>
                         <p>{item.content}</p>
                         <div className="chat-v11-row-actions">
-                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "active")}>Keep</button>
-                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "superseded")}>Supersede</button>
-                          <button type="button" disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "disabled")}>Disable</button>
+                          <button type="button" title="Keep this memory active so it continues influencing future turns." disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "active")}>Keep</button>
+                          <button type="button" title="Mark this memory as replaced by a newer or better one." disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "superseded")}>Supersede</button>
+                          <button type="button" title="Stop using this memory without deleting its history." disabled={sending} onClick={() => void handleMemoryStatusUpdate(item.itemId, "disabled")}>Disable</button>
                         </div>
                       </li>
                     ))}
@@ -1227,7 +1437,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           ) : (
             <article className="card chat-v11-empty-shell">
               <h3>No chat selected</h3>
-              <p className="office-subtitle">Pick a chat from the left, or click New Chat to start one.</p>
+              <p className="office-subtitle">Pick a chat from the left, or click New Chat to start one. You do not need to create a project first.</p>
             </article>
           )}
         </div>

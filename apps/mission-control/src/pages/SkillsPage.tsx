@@ -314,7 +314,10 @@ export function SkillsPage() {
           Imported skills are always installed in disabled state for safety.
         </p>
         <div className="controls-row">
-          <label htmlFor="skillSourceQuery">Search sources</label>
+          <label htmlFor="skillSourceQuery">
+            Search sources
+            <HelpHint label="Search skill sources help" text="Searches curated marketplaces and supported GitHub-backed sources for installable skills related to the capability you need." />
+          </label>
           <input
             id="skillSourceQuery"
             value={sourceQuery}
@@ -366,7 +369,10 @@ export function SkillsPage() {
           )}
         </details>
         <div className="controls-row">
-          <label htmlFor="importSourceType">Source type</label>
+          <label htmlFor="importSourceType">
+            Source type
+            <HelpHint label="Skill source type help" text="Choose where the import comes from: a local folder, a local zip, or a git URL." />
+          </label>
           <GCSelect
             id="importSourceType"
             value={importSourceType}
@@ -377,7 +383,10 @@ export function SkillsPage() {
               { value: "git_url", label: "git_url" },
             ]}
           />
-          <label htmlFor="importSourceProvider">Source provider</label>
+          <label htmlFor="importSourceProvider">
+            Source provider
+            <HelpHint label="Skill source provider help" text="Provider identifies the marketplace or source family. It helps GoatCitadel apply the right validation rules before install." />
+          </label>
           <GCSelect
             id="importSourceProvider"
             value={importSourceProvider}
@@ -391,7 +400,10 @@ export function SkillsPage() {
           />
         </div>
         <div className="controls-row">
-          <label htmlFor="importSourceRef">Source ref</label>
+          <label htmlFor="importSourceRef">
+            Source ref
+            <HelpHint label="Skill source reference help" text="The actual path or URL GoatCitadel should validate and import. Imported skills stay disabled until you enable them." />
+          </label>
           <input
             id="importSourceRef"
             value={importSourceRef}
@@ -532,7 +544,10 @@ export function SkillsPage() {
               <th>Source</th>
               <th>Tools</th>
               <th>Requires</th>
-              <th>State</th>
+              <th>
+                State
+                <HelpHint label="Skill state help" text="Enabled means the skill can activate automatically. Sleep means it only auto-activates when confidence is high enough. Disabled means it will not activate at all." />
+              </th>
               <th>Note</th>
               <th>Action</th>
             </tr>

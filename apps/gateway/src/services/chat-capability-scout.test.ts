@@ -1,0 +1,205 @@
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ChatTurnTraceRecord,
+  McpServerTemplateRecord,
+  McpTemplateDiscoveryResult,
+  SkillListItem,
+  SkillSourceListResponse,
+  ToolCatalogEntry,
+} from "@goatcitadel/contracts";
+import { scoutCapabilityUpgradeSuggestions } from "./chat-capability-scout.js";
+
+function createToolCatalog(): ToolCatalogEntry[] {
+  return [
+    {
+      toolName: "browser.search",
+      category: "research",
+      riskLevel: "safe",
+      requiresApproval: false,
+      description: "Search the web for current information.",
+      argSchema: {},
+      examples: [{ title: "Find latest docs", args: { query: "docs" } }],
+      pack: "core",
+    },
+  ];
+}
+
+function createSkills(): SkillListItem[] {
+  return [
+    {
+      skillId: "extra:Gmail Helper",
+      name: "Gmail Helper",
+      source: "extra",
+      dir: "F:/skills/gmail-helper",
+      declaredTools: ["comms.gmail.send"],
+      requires: [],
+      keywords: ["gmail", "email", "mail", "send"],
+      instructionBody: "Use Gmail tools safely.",
+      mtime: new Date().toISOString(),
+      state: "disabled",
+      note: "Imported skill starts disabled by default.",
+      stateUpdatedAt: new Date().toISOString(),
+    },
+  ];
+}
+
+function createTrace(status: ChatTurnTraceRecord["status"] = "completed"): ChatTurnTraceRecord {
+  return {
+    turnId: "turn-1",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    status,
+    mode: "chat",
+    webMode: "auto",
+    memoryMode: "auto",
+    thinkingLevel: "standard",
+    startedAt: new Date().toISOString(),
+    toolRuns: [],
+    citations: [],
+    routing: {},
+  };
+}
+
+describe("scoutCapabilityUpgradeSuggestions", () => {
+  it("suggests enabling a matching installed skill before import suggestions", async () => {
+    const suggestions = await scoutCapabilityUpgradeSuggestions({
+      content: "Send an email to my teammate with Gmail",
+      assistantText: "I can't do that right now because the needed capability is not available.",
+      sessionId: "session-1",
+      trace: createTrace(),
+      deps: {
+        listToolCatalog: createToolCatalog,
+        evaluateToolAccess: vi.fn(() => ({
+          toolName: "browser.search",
+          allowed: true,
+          matchedGrantId: undefined,
+          reasonCodes: [],
+          requiresApproval: false,
+          riskLevel: "safe" as const,
+        })),
+        listSkills: createSkills,
+        resolveSkillActivation: vi.fn(() => ({
+          suppressed: [{
+            skill: "Gmail Helper",
+            state: "disabled" as const,
+            confidence: 0.92,
+            reason: "skill_disabled",
+          }],
+        })),
+        listSkillSources: vi.fn(async (): Promise<SkillSourceListResponse> => ({
+          generatedAt: new Date().toISOString(),
+          providers: [],
+          items: [],
+        })),
+        listMcpTemplates: vi.fn((): Array<McpServerTemplateRecord & { installed: boolean }> => []),
+        listMcpTemplateDiscovery: vi.fn((): McpTemplateDiscoveryResult[] => []),
+      },
+    });
+
+    expect(suggestions[0]).toMatchObject({
+      kind: "existing_but_disabled",
+      recommendedAction: "enable_skill",
+      candidateId: "extra:Gmail Helper",
+    });
+  });
+
+  it("falls back to curated skill import and mcp template suggestions when no installed capability matches", async () => {
+    const suggestions = await scoutCapabilityUpgradeSuggestions({
+      content: "Connect GitHub issues and repository metadata to the chat",
+      assistantText: "I don't have that tool installed yet.",
+      sessionId: "session-1",
+      trace: createTrace(),
+      deps: {
+        listToolCatalog: createToolCatalog,
+        evaluateToolAccess: vi.fn(() => ({
+          toolName: "browser.search",
+          allowed: true,
+          matchedGrantId: undefined,
+          reasonCodes: [],
+          requiresApproval: false,
+          riskLevel: "safe" as const,
+        })),
+        listSkills: vi.fn(() => []),
+        resolveSkillActivation: vi.fn(() => ({ suppressed: [] })),
+        listSkillSources: vi.fn(async (): Promise<SkillSourceListResponse> => ({
+          generatedAt: new Date().toISOString(),
+          providers: [],
+          items: [{
+            sourceProvider: "github",
+            sourceUrl: "https://github.com/example/github-issues-skill",
+            repositoryUrl: "https://github.com/example/github-issues-skill",
+            name: "GitHub Issues Skill",
+            description: "Adds GitHub issue search and triage workflows.",
+            tags: ["github", "issues", "repo"],
+            canonicalKey: "github:github-issues-skill",
+            alternateProviders: [],
+            qualityScore: 0.8,
+            freshnessScore: 0.8,
+            trustScore: 0.7,
+            combinedScore: 8.2,
+          }],
+        })),
+        listMcpTemplates: vi.fn((): Array<McpServerTemplateRecord & { installed: boolean }> => [{
+          templateId: "github-http",
+          label: "GitHub MCP",
+          description: "Connect GitHub repos, issues, and PR workflows.",
+          transport: "http",
+          url: "https://example.invalid/mcp",
+          authType: "token",
+          category: "development",
+          trustTier: "restricted",
+          costTier: "free",
+          policy: {
+            requireFirstToolApproval: false,
+            redactionMode: "basic",
+            allowedToolPatterns: [],
+            blockedToolPatterns: [],
+          },
+          enabledByDefault: false,
+          installed: false,
+        }]),
+        listMcpTemplateDiscovery: vi.fn((): McpTemplateDiscoveryResult[] => [{
+          templateId: "github-http",
+          label: "GitHub MCP",
+          installed: false,
+          readiness: "needs_auth",
+          dependencyChecks: [],
+        }]),
+      },
+    });
+
+    expect(suggestions.some((item) => item.kind === "skill_import")).toBe(true);
+    expect(suggestions.some((item) => item.kind === "mcp_template")).toBe(true);
+  });
+
+  it("stays quiet for normal conversational replies without a capability gap", async () => {
+    const suggestions = await scoutCapabilityUpgradeSuggestions({
+      content: "Tell me a short story about a lighthouse.",
+      assistantText: "The old lighthouse keeper watched the storm roll in.",
+      sessionId: "session-1",
+      trace: createTrace(),
+      deps: {
+        listToolCatalog: createToolCatalog,
+        evaluateToolAccess: vi.fn(() => ({
+          toolName: "browser.search",
+          allowed: true,
+          matchedGrantId: undefined,
+          reasonCodes: [],
+          requiresApproval: false,
+          riskLevel: "safe" as const,
+        })),
+        listSkills: createSkills,
+        resolveSkillActivation: vi.fn(() => ({ suppressed: [] })),
+        listSkillSources: vi.fn(async (): Promise<SkillSourceListResponse> => ({
+          generatedAt: new Date().toISOString(),
+          providers: [],
+          items: [],
+        })),
+        listMcpTemplates: vi.fn((): Array<McpServerTemplateRecord & { installed: boolean }> => []),
+        listMcpTemplateDiscovery: vi.fn((): McpTemplateDiscoveryResult[] => []),
+      },
+    });
+
+    expect(suggestions).toEqual([]);
+  });
+});

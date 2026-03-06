@@ -52,6 +52,20 @@ export interface LlmModelRecord {
   created?: number;
 }
 
+export interface LlmModelPreviewRequest {
+  providerId: string;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  headers?: Record<string, string>;
+}
+
+export interface LlmModelPreviewResponse {
+  items: LlmModelRecord[];
+  source: "remote" | "fallback";
+  warning?: string;
+}
+
 export interface ChatCompletionMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | Array<Record<string, unknown>>;

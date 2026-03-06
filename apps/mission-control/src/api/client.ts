@@ -2800,6 +2800,23 @@ export async function fetchLlmModels(providerId?: string): Promise<{ items: Arra
   return request(`/api/v1/llm/models${query}`);
 }
 
+export async function previewLlmModels(input: {
+  providerId: string;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  headers?: Record<string, string>;
+}): Promise<{
+  items: Array<{ id: string; ownedBy?: string; created?: number }>;
+  source: "remote" | "fallback";
+  warning?: string;
+}> {
+  return request("/api/v1/llm/models/preview", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function createLlmChatCompletion(input: {
   providerId?: string;
   model?: string;

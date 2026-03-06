@@ -5,6 +5,8 @@ import type {
   ChatCompletionResponse,
   LlmConfigFile,
   LlmModelRecord,
+  LlmModelPreviewRequest,
+  LlmModelPreviewResponse,
   LlmProviderConfig,
   LlmProviderSummary,
   LlmRuntimeConfig,
@@ -291,28 +293,53 @@ export class LlmService {
 
   public async listModels(providerId?: string): Promise<LlmModelRecord[]> {
     const resolved = this.resolveProvider(providerId);
-    this.assertProviderHostAllowed(resolved.provider.baseUrl);
-    const response = await fetch(`${resolved.provider.baseUrl}/models`, {
-      method: "GET",
-      headers: this.buildHeaders(resolved),
-      signal: AbortSignal.timeout(15000),
-      redirect: "manual",
+    return this.fetchModelsForResolvedProvider(resolved);
+  }
+
+  public async previewModels(input: LlmModelPreviewRequest): Promise<LlmModelPreviewResponse> {
+    const existing = this.providers.get(input.providerId);
+    const provider = normalizeProvider({
+      providerId: input.providerId,
+      label: existing?.label ?? input.providerId,
+      baseUrl: input.baseUrl,
+      apiStyle: "openai-chat-completions",
+      defaultModel: existing?.defaultModel ?? defaultModelForProvider(input.providerId),
+      apiKey: input.apiKey,
+      apiKeyEnv: input.apiKeyEnv,
+      headers: input.headers,
     });
+    const resolved: ResolvedProvider = {
+      provider,
+      apiKey: this.resolveApiKey(provider),
+    };
 
-    if (isRedirect(response.status)) {
-      throw new Error(`model listing blocked redirect (${response.status})`);
+    try {
+      const items = await this.fetchModelsForResolvedProvider(resolved);
+      if (items.length > 0) {
+        return {
+          items,
+          source: "remote",
+        };
+      }
+    } catch (error) {
+      const fallbackItems = provider.defaultModel
+        ? [{ id: provider.defaultModel }]
+        : [];
+      if (fallbackItems.length > 0) {
+        return {
+          items: fallbackItems,
+          source: "fallback",
+          warning: (error as Error).message,
+        };
+      }
+      throw error;
     }
 
-    if (!response.ok) {
-      throw new Error(await buildHttpError("model listing", response));
-    }
-
-    const json = (await response.json()) as { data?: Array<Record<string, unknown>> };
-    return (json.data ?? []).map((record) => ({
-      id: String(record.id ?? ""),
-      ownedBy: record.owned_by ? String(record.owned_by) : undefined,
-      created: typeof record.created === "number" ? record.created : undefined,
-    })).filter((record) => Boolean(record.id));
+    return {
+      items: provider.defaultModel ? [{ id: provider.defaultModel }] : [],
+      source: "fallback",
+      warning: "Provider returned no models. Falling back to the recommended default model.",
+    };
   }
 
   public async chatCompletions(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -570,6 +597,31 @@ export class LlmService {
       cachedAt: Date.now(),
     });
   }
+
+  private async fetchModelsForResolvedProvider(resolved: ResolvedProvider): Promise<LlmModelRecord[]> {
+    this.assertProviderHostAllowed(resolved.provider.baseUrl);
+    const response = await fetch(`${resolved.provider.baseUrl}/models`, {
+      method: "GET",
+      headers: this.buildHeaders(resolved),
+      signal: AbortSignal.timeout(15000),
+      redirect: "manual",
+    });
+
+    if (isRedirect(response.status)) {
+      throw new Error(`model listing blocked redirect (${response.status})`);
+    }
+
+    if (!response.ok) {
+      throw new Error(await buildHttpError("model listing", response));
+    }
+
+    const json = (await response.json()) as { data?: Array<Record<string, unknown>> };
+    return (json.data ?? []).map((record) => ({
+      id: String(record.id ?? ""),
+      ownedBy: record.owned_by ? String(record.owned_by) : undefined,
+      created: typeof record.created === "number" ? record.created : undefined,
+    })).filter((record) => Boolean(record.id));
+  }
 }
 
 function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
@@ -786,4 +838,28 @@ function inferProviderCapabilities(provider: LlmProviderConfig): {
     webSearch: hasWebSearch,
     reasoning: hasReasoning,
   };
+}
+
+function defaultModelForProvider(providerId: string): string {
+  switch (providerId.trim().toLowerCase()) {
+    case "openai":
+      return "gpt-4.1-mini";
+    case "anthropic":
+      return "claude-3-7-sonnet-latest";
+    case "google":
+      return "gemini-2.0-flash";
+    case "glm":
+      return "glm-5";
+    case "moonshot":
+      return "kimi-k2.5";
+    case "openrouter":
+      return "openai/gpt-4.1-mini";
+    case "lmstudio":
+    case "localai":
+      return "local-model";
+    case "ollama":
+      return "llama3.1";
+    default:
+      return "gpt-4.1-mini";
+  }
 }
