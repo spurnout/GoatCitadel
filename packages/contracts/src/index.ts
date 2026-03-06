@@ -1,4 +1,5 @@
 export * from "./provider-templates.js";
+export * from "./addons.js";
 export * from "./session.js";
 export * from "./policy.js";
 export * from "./approvals.js";

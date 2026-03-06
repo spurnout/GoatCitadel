@@ -88,4 +88,50 @@ describe("SessionRepository", () => {
     const row = repo.getBySessionId("session-malformed");
     assert.equal(row.routingHints, undefined);
   });
+
+  it("aggregates operator summaries in SQL with active-session counts", () => {
+    const repo = createRepo();
+
+    repo.upsert({
+      sessionId: "session-a",
+      sessionKey: "discord:operator-a:a",
+      kind: "dm",
+      channel: "discord",
+      account: "operator-a",
+      timestamp: "2026-03-05T10:00:00.000Z",
+    });
+    repo.upsert({
+      sessionId: "session-b",
+      sessionKey: "discord:operator-a:b",
+      kind: "dm",
+      channel: "discord",
+      account: "operator-a",
+      timestamp: "2026-03-05T09:50:00.000Z",
+    });
+    repo.upsert({
+      sessionId: "session-c",
+      sessionKey: "discord:operator-b:c",
+      kind: "dm",
+      channel: "discord",
+      account: "operator-b",
+      timestamp: "2026-03-05T09:40:00.000Z",
+    });
+
+    const summaries = repo.listOperatorSummaries("2026-03-05T09:55:00.000Z");
+
+    assert.deepEqual(summaries, [
+      {
+        operatorId: "operator-a",
+        sessionCount: 2,
+        activeSessions: 1,
+        lastActivityAt: "2026-03-05T10:00:00.000Z",
+      },
+      {
+        operatorId: "operator-b",
+        sessionCount: 1,
+        activeSessions: 0,
+        lastActivityAt: "2026-03-05T09:40:00.000Z",
+      },
+    ]);
+  });
 });

@@ -30,6 +30,7 @@ import { MeshPage } from "./pages/MeshPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NpuPage } from "./pages/NpuPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
+import { AddonsPage } from "./pages/AddonsPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
@@ -46,6 +47,7 @@ const OfficePage = lazy(async () => {
 });
 
 type Tab =
+  | "addons"
   | "onboarding"
   | "dashboard"
   | "system"
@@ -72,6 +74,7 @@ type Tab =
   | "npu";
 
 const allTabs: Tab[] = [
+  "addons",
   "onboarding",
   "dashboard",
   "system",
@@ -313,6 +316,9 @@ export function App() {
   );
 
   const content = useMemo(() => {
+    if (tab === "addons") {
+      return <AddonsPage />;
+    }
     if (tab === "onboarding") {
       return <OnboardingPage onCompleted={handleOnboardingCompleted} />;
     }

@@ -1,22 +1,22 @@
 {
-  "generatedAt": "2026-03-06T07:12:27.602Z",
+  "generatedAt": "2026-03-06T12:13:55.503Z",
   "status": "success",
-  "sourceRunId": "4f097e16-c860-4c7c-830c-10b174e25f72",
-  "runStartedAt": "2026-03-06T07:09:39.890Z",
-  "runFinishedAt": "2026-03-06T07:12:27.602Z",
-  "sourceFiles": 272,
-  "coveredFiles": 236,
-  "uncoveredFiles": 36,
-  "fileCoveragePercent": 86.76,
-  "linePercent": 65.79,
-  "branchPercent": 62.51,
+  "sourceRunId": "012ab4ae-6032-4819-bc69-a2a477c9236a",
+  "runStartedAt": "2026-03-06T12:11:48.760Z",
+  "runFinishedAt": "2026-03-06T12:13:55.503Z",
+  "sourceFiles": 276,
+  "coveredFiles": 239,
+  "uncoveredFiles": 37,
+  "fileCoveragePercent": 86.59,
+  "linePercent": 65.49,
+  "branchPercent": 62.3,
   "lineTotals": {
-    "covered": 47561,
-    "total": 72297
+    "covered": 48274,
+    "total": 73713
   },
   "branchTotals": {
-    "covered": 5597,
-    "total": 8954
+    "covered": 5652,
+    "total": 9072
   },
   "effectiveThresholds": {
     "line": 65,
@@ -44,6 +44,7 @@
     "packages/storage/coverage/coverage-final.json"
   ],
   "uncoveredSample": [
+    "packages/contracts/src/addons.ts",
     "packages/contracts/src/admin.ts",
     "packages/contracts/src/approvals.ts",
     "packages/contracts/src/auth.ts",

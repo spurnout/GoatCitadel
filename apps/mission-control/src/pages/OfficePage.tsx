@@ -4,6 +4,7 @@ import {
   lazy,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ErrorInfo,
   type ReactNode,
@@ -35,8 +36,8 @@ import { SelectOrCustom } from "../components/SelectOrCustom";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
 
-const INITIAL_EVENT_LIMIT = 300;
-const MAX_EVENTS = 500;
+const INITIAL_EVENT_LIMIT = 100;
+const MAX_EVENTS = 200;
 const SNAPSHOT_INTERVAL_MS = 20_000;
 const HOT_AGENT_WINDOW_MS = 2 * 60 * 1000;
 const WARM_AGENT_WINDOW_MS = 10 * 60 * 1000;
@@ -184,6 +185,9 @@ export function OfficePage() {
   const [sceneReady, setSceneReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [streamHealthy, setStreamHealthy] = useState(false);
+  const streamHealthyRef = useRef(false);
+  const snapshotResyncNeededRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -225,18 +229,33 @@ export function OfficePage() {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
+      if (streamHealthyRef.current && !snapshotResyncNeededRef.current) {
+        return;
+      }
+      snapshotResyncNeededRef.current = false;
       void loadSnapshot(false);
     }, SNAPSHOT_INTERVAL_MS);
     const onVisible = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        snapshotResyncNeededRef.current = false;
         void loadSnapshot(false);
       }
     };
     document.addEventListener("visibilitychange", onVisible);
 
-    const close = connectEventStream((event) => {
-      setEvents((prev) => sortEvents([event, ...prev]).slice(0, MAX_EVENTS));
-    });
+    const close = connectEventStream(
+      (event) => {
+        setEvents((prev) => sortEvents([event, ...prev]).slice(0, MAX_EVENTS));
+      },
+      (state) => {
+        const healthy = state === "open";
+        streamHealthyRef.current = healthy;
+        setStreamHealthy(healthy);
+        if (!healthy) {
+          snapshotResyncNeededRef.current = true;
+        }
+      },
+    );
 
     return () => {
       active = false;
@@ -595,7 +614,7 @@ export function OfficePage() {
         <article className="office-kpi-card">
           <p className="office-kpi-label">Event pace</p>
           <p className="office-kpi-value">{eventFlow.toFixed(1)}/min</p>
-          <p className="office-kpi-note">{pendingApprovals.length} approvals pending</p>
+          <p className="office-kpi-note">{pendingApprovals.length} approvals pending · stream {streamHealthy ? "live" : "syncing"}</p>
         </article>
       </div>
 

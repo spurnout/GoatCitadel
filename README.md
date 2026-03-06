@@ -15,7 +15,7 @@ GoatCitadel is an operator system for serious AI workflows:
 - explicit tool policy and approval gates
 - Mission Control web UI and a native TUI
 - prompt testing and benchmark workflows
-- MCP, skills, integrations, and workspace guidance
+- MCP, skills, integrations, workspace guidance, and optional add-ons
 - local-first runtime with your data on your machine or infrastructure
 
 ## Who It Is For
@@ -39,7 +39,7 @@ Current strengths:
 
 Still evolving:
 
-- durable execution and replay depth
+- durable execution, replay depth, and richer review-queue workflows
 - richer mobile/companion monitoring
 - deeper team and multi-tenant collaboration features
 
@@ -148,9 +148,9 @@ pnpm coverage:gate
 ### First Run From A Clone
 
 ```bash
-pnpm doctor -- --deep
-pnpm onboarding:tui
 pnpm dev
+pnpm onboarding:tui
+pnpm doctor -- --deep
 ```
 
 ## First Run
@@ -194,9 +194,16 @@ Mission Control default local URLs:
 ### Runtime Expansion
 
 - MCP server registration and policy
-- skill discovery/import with review
+- curated skill discovery/import with review
+- optional add-ons for separate-repo extras like Arena
 - integrations and channel connections
 - TUI operator workflows for local-first users
+
+### Optional Ecosystem
+
+- Add-ons live outside the GoatCitadel app checkout under `~/.GoatCitadel/addons`
+- Arena is planned as the first optional extra and always requires an explicit separate-repo download confirmation
+- MCP and Skills pages now include external discovery directories with trust labels so users can find more ecosystem extensions safely
 
 ## Communication Channels
 
@@ -259,6 +266,24 @@ Break-glass env vars are supported but should stay off in shared/public environm
 - Bankr is not built in by default. See [docs/OPTIONAL_BANKR_SKILL.md](docs/OPTIONAL_BANKR_SKILL.md).
 - Obsidian remains optional and path-guarded. See [docs/OBSIDIAN_OPTIONAL_INTEGRATION.md](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md).
 
+## Optional Add-Ons
+
+- Add-ons are separate from the GoatCitadel app checkout and require explicit install confirmation before any code is downloaded.
+- The current trust model and runtime expectations are documented here:
+  - [Add-ons Trust Policy](docs/ADDONS_TRUST_POLICY.md)
+  - [Arena Integration Contract](docs/ARENA_INTEGRATION_CONTRACT.md)
+
+## Finding More MCP Servers and Skills
+
+- MCP page includes official/community discovery links with review-before-install guidance.
+- Skills page includes curated/community directories and keeps validate-before-install as the only supported install path.
+- Recommended reference docs:
+  - [Official MCP Registry](https://registry.modelcontextprotocol.io/)
+  - [MCP Registry About](https://modelcontextprotocol.io/registry/about)
+  - [Anthropic MCP Security Guidance](https://docs.anthropic.com/s/claude-code-security)
+  - [AgentSkill](https://agentskill.sh/)
+  - [SkillsMP](https://skillsmp.com/)
+
 ## Documentation
 
 - [Install / Setup / Testing](docs/INSTALL_SETUP_TESTING.md)
@@ -269,6 +294,8 @@ Break-glass env vars are supported but should stay off in shared/public environm
 - [Engineering Handbook](docs/ENGINEERING_HANDBOOK.md)
 - [Runtime Guidance](GOATCITADEL.md)
 - [Vision](VISION.md)
+- [Vision Status Matrix](docs/VISION_STATUS_MATRIX.md)
+- [Android Native Spec](docs/ANDROID_NATIVE_SPEC.md)
 
 ## Beta Caveats
 

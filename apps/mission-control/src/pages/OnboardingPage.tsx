@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { providerTemplates } from "@goatcitadel/contracts";
 import {
   bootstrapOnboarding,
@@ -57,6 +57,10 @@ const STEP_TITLES = [
 
 type StepId = 0 | 1 | 2 | 3 | 4;
 
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: string } | null)?.name === "AbortError";
+}
+
 export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {}) {
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
@@ -110,6 +114,10 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     providers: runtimeProviderCatalog,
     reload: reloadProviderCatalog,
   } = useProviderModelCatalog("system");
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const riskDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const riskAbortRef = useRef<AbortController | null>(null);
 
   const providerOptions = useMemo<SelectOption[]>(() => {
     const fromState = runtimeProviderCatalog.map((provider) => ({
@@ -143,87 +151,7 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     return [...new Set(values)].map((value) => ({ value, label: value }));
   }, [providerLabel, state]);
 
-  useEffect(() => {
-    void load();
-  }, []);
-
-  useEffect(() => {
-    if (!runtimeLlmConfig) {
-      return;
-    }
-    setState((current) => current ? {
-      ...current,
-      settings: {
-        ...current.settings,
-        llm: runtimeLlmConfig,
-      },
-    } : current);
-  }, [runtimeLlmConfig]);
-
-  useRefreshSubscription(
-    "system",
-    async (signal) => {
-      const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
-      if (!/\b(onboarding|llm|provider|model|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
-        return;
-      }
-      await load();
-    },
-    {
-      enabled: true,
-      coalesceMs: 900,
-      staleMs: 20000,
-      pollIntervalMs: 20000,
-    },
-  );
-
-  useEffect(() => {
-    void evaluateUiChangeRisk({
-      pageId: "onboarding",
-      changes: [
-        { field: "authMode", from: state?.settings.auth.mode ?? "none", to: authMode },
-        { field: "defaultToolProfile", from: state?.settings.defaultToolProfile ?? "minimal", to: defaultToolProfile },
-        { field: "providerBaseUrl", from: state?.settings.llm.providers.find((p) => p.providerId === activeProviderId)?.baseUrl ?? "", to: providerBaseUrl },
-        { field: "networkAllowlist", from: state?.settings.networkAllowlist.join("\n") ?? "", to: networkAllowlistText },
-      ],
-    })
-      .then((res) => {
-        setChangeReview({
-          overall: res.overall,
-          items: res.items.map((item) => ({
-            field: item.field,
-            level: item.level,
-            hint: item.hint,
-          })),
-        });
-      })
-      .catch(() => {
-        setChangeReview({
-          overall: "warning",
-          items: [{
-            field: "onboarding",
-            level: "warning",
-            hint: "Risk preflight unavailable.",
-          }],
-        });
-      });
-  }, [state, authMode, defaultToolProfile, activeProviderId, providerBaseUrl, networkAllowlistText]);
-
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await fetchOnboardingState();
-      setState(next);
-      hydrateFromState(next);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const hydrateFromState = (next: Awaited<ReturnType<typeof fetchOnboardingState>>) => {
+  const hydrateFromState = useCallback((next: Awaited<ReturnType<typeof fetchOnboardingState>>) => {
     setAuthMode(next.settings.auth.mode);
     setAllowLoopbackBypass(next.settings.auth.allowLoopbackBypass);
     setDefaultToolProfile(next.settings.defaultToolProfile);
@@ -247,58 +175,182 @@ export function OnboardingPage({ onCompleted }: { onCompleted?: () => void } = {
     setMeshStaticPeers(next.settings.mesh.staticPeers.join("\n"));
     setMeshRequireMtls(next.settings.mesh.requireMtls);
     setMeshTailnetEnabled(next.settings.mesh.tailnetEnabled);
-  };
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await fetchOnboardingState();
+      setState(next);
+      hydrateFromState(next);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [hydrateFromState]);
 
   useEffect(() => {
-    let cancelled = false;
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!runtimeLlmConfig) {
+      return;
+    }
+    setState((current) => current ? {
+      ...current,
+      settings: {
+        ...current.settings,
+        llm: runtimeLlmConfig,
+      },
+    } : current);
+  }, [runtimeLlmConfig]);
+
+  useRefreshSubscription(
+    "system",
+    async (signal) => {
+      const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
+      if (!/\b(onboarding|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
+        return;
+      }
+      await load();
+    },
+    {
+      enabled: true,
+      coalesceMs: 900,
+      staleMs: 20000,
+      pollIntervalMs: 20000,
+    },
+  );
+
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    if (riskDebounceRef.current) {
+      clearTimeout(riskDebounceRef.current);
+      riskDebounceRef.current = null;
+    }
+    const changes = [
+      { field: "authMode", from: state.settings.auth.mode ?? "none", to: authMode },
+      { field: "defaultToolProfile", from: state.settings.defaultToolProfile ?? "minimal", to: defaultToolProfile },
+      {
+        field: "providerBaseUrl",
+        from: state.settings.llm.providers.find((p) => p.providerId === activeProviderId)?.baseUrl ?? "",
+        to: providerBaseUrl,
+      },
+      { field: "networkAllowlist", from: state.settings.networkAllowlist.join("\n"), to: networkAllowlistText },
+    ];
+    riskDebounceRef.current = setTimeout(() => {
+      riskAbortRef.current?.abort();
+      const controller = new AbortController();
+      riskAbortRef.current = controller;
+      void evaluateUiChangeRisk(
+        {
+          pageId: "onboarding",
+          changes,
+        },
+        { signal: controller.signal },
+      )
+        .then((res) => {
+          setChangeReview({
+            overall: res.overall,
+            items: res.items.map((item) => ({
+              field: item.field,
+              level: item.level,
+              hint: item.hint,
+            })),
+          });
+        })
+        .catch((err: unknown) => {
+          if (isAbortError(err)) {
+            return;
+          }
+          setChangeReview({
+            overall: "warning",
+            items: [{
+              field: "onboarding",
+              level: "warning",
+              hint: "Risk preflight unavailable.",
+            }],
+          });
+        });
+    }, 400);
+    return () => {
+      if (riskDebounceRef.current) {
+        clearTimeout(riskDebounceRef.current);
+        riskDebounceRef.current = null;
+      }
+      riskAbortRef.current?.abort();
+    };
+  }, [state, authMode, defaultToolProfile, activeProviderId, providerBaseUrl, networkAllowlistText]);
+
+  useEffect(() => {
     const providerId = activeProviderId.trim();
     const baseUrl = providerBaseUrl.trim();
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+    previewAbortRef.current?.abort();
     if (!providerId || !baseUrl) {
       setAvailableModels([]);
       setModelDiscoverySource(null);
       setModelDiscoveryWarning(null);
+      setLoadingModels(false);
       return;
     }
-    setLoadingModels(true);
-    void previewProviderModels({
-      providerId,
-      baseUrl,
-      apiKey: providerApiKey.trim() || undefined,
-      apiKeyEnv: providerApiKeyEnv.trim() || undefined,
-      fallbackModel: providerDefaultModel || activeModel,
-    })
-      .then((result) => {
-        if (cancelled) {
-          return;
-        }
-        setAvailableModels(result.items);
-        setModelDiscoverySource(result.source);
-        setModelDiscoveryWarning(result.warning ?? null);
-        const firstModel = result.items[0];
-        if (firstModel && (!activeModel.trim() || !result.items.includes(activeModel))) {
-          setActiveModel(firstModel);
-        }
-        if (firstModel && (!providerDefaultModel.trim() || !result.items.includes(providerDefaultModel))) {
-          setProviderDefaultModel(firstModel);
-        }
+    previewTimerRef.current = setTimeout(() => {
+      const controller = new AbortController();
+      previewAbortRef.current = controller;
+      setLoadingModels(true);
+      void previewProviderModels({
+        providerId,
+        baseUrl,
+        apiKey: providerApiKey.trim() || undefined,
+        apiKeyEnv: providerApiKeyEnv.trim() || undefined,
+        fallbackModel: providerDefaultModel || activeModel,
+      }, {
+        signal: controller.signal,
       })
-      .catch((err) => {
-        if (cancelled) {
-          return;
-        }
-        setAvailableModels([]);
-        setModelDiscoverySource("fallback");
-        setModelDiscoveryWarning((err as Error).message);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoadingModels(false);
-        }
-      });
+        .then((result) => {
+          setAvailableModels(result.items);
+          setModelDiscoverySource(result.source);
+          setModelDiscoveryWarning(result.warning ?? null);
+          const firstModel = result.items[0];
+          if (firstModel && (!activeModel.trim() || !result.items.includes(activeModel))) {
+            setActiveModel(firstModel);
+          }
+          if (firstModel && (!providerDefaultModel.trim() || !result.items.includes(providerDefaultModel))) {
+            setProviderDefaultModel(firstModel);
+          }
+        })
+        .catch((err: unknown) => {
+          if (isAbortError(err)) {
+            return;
+          }
+          setModelDiscoverySource("fallback");
+          setModelDiscoveryWarning((err as Error).message);
+        })
+        .finally(() => {
+          if (previewAbortRef.current === controller) {
+            previewAbortRef.current = null;
+          }
+          if (!controller.signal.aborted) {
+            setLoadingModels(false);
+          }
+        });
+    }, 600);
     return () => {
-      cancelled = true;
+      if (previewTimerRef.current) {
+        clearTimeout(previewTimerRef.current);
+        previewTimerRef.current = null;
+      }
+      previewAbortRef.current?.abort();
     };
-  }, [activeModel, activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerDefaultModel]);
+  }, [activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl]);
 
   const applyProviderTemplate = (providerId: string) => {
     const existing = runtimeProviderCatalog.find((provider) => provider.providerId === providerId)

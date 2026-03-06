@@ -75,6 +75,7 @@ export const appCopy = {
     notAvailable: "n/a",
   },
   navItems: [
+    { id: "addons", label: "Add-ons (Optional Extras)", code: "ADD" },
     { id: "onboarding", label: "Launch Wizard (Onboarding)", code: "NEW" },
     { id: "dashboard", label: "Summit (Overview)", code: "SUM" },
     { id: "system", label: "Engine (System)", code: "ENG" },
@@ -101,12 +102,13 @@ export const appCopy = {
     { id: "npu", label: "NPU Runtime (Voice/Local AI)", code: "NPU" },
   ] satisfies NavItemCopy[],
   navSections: [
-    { label: "Setup", items: ["onboarding", "settings", "workspaces", "integrations", "tools"] },
+    { label: "Setup", items: ["onboarding", "settings", "workspaces", "integrations", "tools", "addons"] },
     { label: "Operate", items: ["dashboard", "chat", "promptLab", "improvement", "tasks", "agents", "office", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
     { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
   nextStepByTab: {
+    addons: "Install optional extras only after reviewing trust, source, and runtime notes.",
     onboarding: "Finish setup once, then move into Summit or Chat.",
     dashboard: "Start here for a quick health check, then jump where work is blocked.",
     system: "If anything feels slow, check vitals here first.",
@@ -149,6 +151,23 @@ export const pageCopy: Record<PageId, PageCopy> = {
       terms: [
         { term: "Pending approvals", meaning: "Risky actions waiting for your decision." },
         { term: "Active subagents", meaning: "Subagent sessions currently running task work." },
+      ],
+    },
+  },
+  addons: {
+    title: "Add-ons",
+    subtitle: "Optional extras that live outside the GoatCitadel core app checkout.",
+    guide: {
+      what: "Use Add-ons to review, install, update, and supervise optional extras like Arena without mixing them into the core GoatCitadel repo.",
+      when: "Use this when you want something beyond the core agentic/control-plane feature set and you are comfortable reviewing a separate repository first.",
+      actions: [
+        "Review trust and provenance before every install.",
+        "Install the add-on into the dedicated GoatCitadel add-ons root.",
+        "Use readiness checks to confirm whether the add-on is display-ready or only runtime-ready.",
+      ],
+      terms: [
+        { term: "Same owner", meaning: "Configured metadata that says the add-on repository is published by the same owner as GoatCitadel. It is still separate code that you should review." },
+        { term: "Display-ready", meaning: "The add-on exposes a stable web entry path that GoatCitadel can open or embed. Runtime-only add-ons may still install and run without a full UI surface." },
       ],
     },
   },

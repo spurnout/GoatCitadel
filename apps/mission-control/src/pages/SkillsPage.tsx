@@ -468,6 +468,66 @@ export function SkillsPage() {
       </article>
 
       <article className="card">
+        <h3>Where to Get More Skills</h3>
+        <p className="table-subtext">
+          Discovery does not install anything. Use these sources to find candidates, then validate before install.
+          Imported skills always stay disabled until you enable them.
+        </p>
+        <div className="stack-md">
+          {[
+            {
+              label: "AgentSkill",
+              trust: "Curated marketplace",
+              href: "https://agentskill.sh/",
+              note: "Curated installable skills with metadata and learning-focused discovery.",
+            },
+            {
+              label: "AgentSkill Learn",
+              trust: "Curated marketplace",
+              href: "https://agentskill.sh/install",
+              note: "Install-oriented flow for browsing and learning how to bring a skill in safely.",
+            },
+            {
+              label: "SkillsMP",
+              trust: "Cross-agent directory",
+              href: "https://skillsmp.com/",
+              note: "Cross-agent skills catalog. Review quality and provenance before import.",
+            },
+            {
+              label: "Terminal Skills",
+              trust: "Cross-agent directory",
+              href: "https://terminalskills.io/",
+              note: "Additional public skills directory for shell and terminal-focused workflows.",
+            },
+            {
+              label: "Agent Skills Repo",
+              trust: "Community directory",
+              href: "https://agentskillsrepo.com/",
+              note: "Community-maintained index. Treat this as review-before-install.",
+            },
+          ].map((source) => (
+            <div key={source.href} className="prompt-lab-run-summary">
+              <p>
+                <strong>{source.label}</strong> <span className="token-chip">{source.trust}</span>
+              </p>
+              <p className="table-subtext">{source.note}</p>
+              <p>
+                <a href={source.href} target="_blank" rel="noreferrer">
+                  {source.href}
+                </a>
+              </p>
+            </div>
+          ))}
+        </div>
+        <ul>
+          <li><strong>AgentSkill</strong>: curated marketplace and guided install surface.</li>
+          <li><strong>SkillsMP</strong>: broader multi-agent catalog.</li>
+          <li><strong>GitHub</strong>: flexible fallback when curated catalogs do not have the skill you need.</li>
+          <li><strong>local</strong>: local path or zip import for private/internal skills.</li>
+        </ul>
+      </article>
+
+      <article className="card">
         <h3>Activation Policy</h3>
         <div className="controls-row">
           <label htmlFor="skillsThreshold">

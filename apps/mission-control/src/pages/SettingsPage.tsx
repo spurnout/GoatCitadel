@@ -139,6 +139,7 @@ export function SettingsPage() {
   const riskAbortRef = useRef<AbortController | null>(null);
   const providerSecretAbortRef = useRef<AbortController | null>(null);
   const modelPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modelPreviewAbortRef = useRef<AbortController | null>(null);
   const {
     config: runtimeLlmConfig,
     providers: runtimeProviderCatalog,
@@ -237,7 +238,7 @@ export function SettingsPage() {
     "system",
     async (signal) => {
       const haystack = `${signal.reason} ${signal.eventType ?? ""} ${signal.source ?? ""}`.toLowerCase();
-      if (!/\b(llm|provider|model|onboarding|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
+      if (!/\b(onboarding|settings)\b/.test(haystack) && signal.eventType !== "fallback_poll") {
         return;
       }
       load();
@@ -445,7 +446,7 @@ export function SettingsPage() {
     }
   };
 
-  const onLoadModels = async () => {
+  const onLoadModels = async (options: { signal?: AbortSignal } = {}) => {
     try {
       const targetProviderId = (providerId || activeProviderId).trim();
       const targetBaseUrl = providerBaseUrl.trim();
@@ -462,6 +463,8 @@ export function SettingsPage() {
         apiKey: providerApiKey.trim() || undefined,
         apiKeyEnv: providerApiKeyEnv.trim() || undefined,
         fallbackModel: providerDefaultModel || activeModel,
+      }, {
+        signal: options.signal,
       });
       setModels(res.items.map((id) => ({ id })));
       setModelDiscoverySource(res.source);
@@ -474,11 +477,16 @@ export function SettingsPage() {
         setProviderDefaultModel(firstModel);
       }
     } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
       setError((err as Error).message);
       setModelDiscoverySource("fallback");
       setModelDiscoveryWarning((err as Error).message);
     } finally {
-      setLoadingModels(false);
+      if (!options.signal?.aborted) {
+        setLoadingModels(false);
+      }
     }
   };
 
@@ -487,20 +495,29 @@ export function SettingsPage() {
       clearTimeout(modelPreviewTimerRef.current);
       modelPreviewTimerRef.current = null;
     }
+    modelPreviewAbortRef.current?.abort();
     const targetProviderId = (providerId || activeProviderId).trim();
     if (!targetProviderId || !providerBaseUrl.trim()) {
+      setLoadingModels(false);
       return;
     }
     modelPreviewTimerRef.current = setTimeout(() => {
-      void onLoadModels();
-    }, 350);
+      const controller = new AbortController();
+      modelPreviewAbortRef.current = controller;
+      void onLoadModels({ signal: controller.signal }).finally(() => {
+        if (modelPreviewAbortRef.current === controller) {
+          modelPreviewAbortRef.current = null;
+        }
+      });
+    }, 600);
     return () => {
       if (modelPreviewTimerRef.current) {
         clearTimeout(modelPreviewTimerRef.current);
         modelPreviewTimerRef.current = null;
       }
+      modelPreviewAbortRef.current?.abort();
     };
-  }, [activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerDefaultModel, providerId]);
+  }, [activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerId]);
 
   const onTestChat = async () => {
     try {
@@ -1004,7 +1021,7 @@ export function SettingsPage() {
             customPlaceholder="Custom model id"
             customLabel="Custom active model"
           />
-          <button type="button" onClick={onLoadModels}>{loadingModels ? "Loading..." : "Refresh Models"}</button>
+          <button type="button" onClick={() => { void onLoadModels(); }}>{loadingModels ? "Loading..." : "Refresh Models"}</button>
         </div>
         {modelDiscoverySource ? (
           <p className="office-subtitle">

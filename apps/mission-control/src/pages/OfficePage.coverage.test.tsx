@@ -69,7 +69,8 @@ const apiMocks = vi.hoisted(() => ({
       },
     ],
   })),
-  connectEventStream: vi.fn((onEvent: (event: unknown) => void) => {
+  connectEventStream: vi.fn((onEvent: (event: unknown) => void, onStateChange?: (state: string) => void) => {
+    onStateChange?.("open");
     onEvent({
       eventId: "evt-live-1",
       timestamp: new Date().toISOString(),
@@ -281,7 +282,11 @@ describe("OfficePage coverage", () => {
       expect(apiMocks.fetchAgents).toHaveBeenCalled();
       expect(apiMocks.fetchOperators).toHaveBeenCalled();
       expect(apiMocks.fetchApprovals).toHaveBeenCalled();
-      expect(apiMocks.fetchRealtimeEvents).toHaveBeenCalled();
+      expect(apiMocks.fetchAgents).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchOperators).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchApprovals).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchRealtimeEvents).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchRealtimeEvents).toHaveBeenCalledWith(100);
       expect(apiMocks.connectEventStream).toHaveBeenCalled();
     } finally {
       renderer.unmount();

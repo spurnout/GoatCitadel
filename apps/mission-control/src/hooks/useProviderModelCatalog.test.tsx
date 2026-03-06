@@ -1,0 +1,158 @@
+import React from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeSettingsResponse } from "../api/client";
+
+const apiMocks = vi.hoisted(() => ({
+  fetchLlmConfig: vi.fn(),
+  fetchLlmModels: vi.fn(),
+  previewLlmModels: vi.fn(),
+}));
+
+vi.mock("../api/client", () => ({
+  fetchLlmConfig: apiMocks.fetchLlmConfig,
+  fetchLlmModels: apiMocks.fetchLlmModels,
+  previewLlmModels: apiMocks.previewLlmModels,
+}));
+
+vi.mock("./useRefreshSubscription", () => ({
+  useRefreshSubscription: vi.fn(),
+}));
+
+import { useProviderModelCatalog } from "./useProviderModelCatalog";
+
+const baseConfig: RuntimeSettingsResponse["llm"] = {
+  activeProviderId: "openai",
+  activeModel: "gpt-4.1-mini",
+  providers: [
+    {
+      providerId: "openai",
+      label: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      apiStyle: "openai-chat-completions",
+      defaultModel: "gpt-4.1-mini",
+      hasApiKey: false,
+      apiKeySource: "none",
+      hasKeychainSecret: false,
+      apiKeyRef: "OPENAI_API_KEY",
+      capabilities: {
+        vision: true,
+        audio: false,
+        video: false,
+        toolCalling: true,
+        jsonMode: true,
+      },
+    },
+    {
+      providerId: "glm",
+      label: "GLM (Z.AI)",
+      baseUrl: "https://api.z.ai/api/paas/v4",
+      apiStyle: "openai-chat-completions",
+      defaultModel: "glm-5",
+      hasApiKey: true,
+      apiKeySource: "env",
+      hasKeychainSecret: false,
+      apiKeyRef: "GLM_API_KEY",
+      capabilities: {
+        vision: true,
+        audio: false,
+        video: false,
+        toolCalling: true,
+        jsonMode: true,
+      },
+    },
+  ],
+};
+
+interface HarnessValue extends ReturnType<typeof useProviderModelCatalog> {}
+
+function Harness({ onValue }: { onValue: (value: HarnessValue) => void }) {
+  const value = useProviderModelCatalog("system");
+  onValue(value);
+  return null;
+}
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe("useProviderModelCatalog", () => {
+  let renderer: ReactTestRenderer | null = null;
+  let latest: HarnessValue | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    apiMocks.fetchLlmConfig.mockResolvedValue(baseConfig);
+    apiMocks.fetchLlmModels.mockImplementation(async (providerId?: string) => ({
+      items: providerId === "glm"
+        ? [{ id: "glm-5" }, { id: "glm-5-air" }]
+        : [{ id: "gpt-4.1-mini" }, { id: "gpt-4.1" }],
+    }));
+    latest = null;
+  });
+
+  afterEach(() => {
+    renderer?.unmount();
+    renderer = null;
+    vi.useRealTimers();
+  });
+
+  it("loads runtime config without eagerly fetching models for every provider", async () => {
+    await act(async () => {
+      renderer = create(<Harness onValue={(value) => { latest = value; }} />);
+    });
+    await flush();
+
+    expect(apiMocks.fetchLlmConfig).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchLlmModels).not.toHaveBeenCalled();
+    expect(latest?.providers.find((provider) => provider.providerId === "glm")?.models).toEqual(["glm-5"]);
+  });
+
+  it("loads selected provider models lazily and reuses cached results", async () => {
+    await act(async () => {
+      renderer = create(<Harness onValue={(value) => { latest = value; }} />);
+    });
+    await flush();
+
+    await act(async () => {
+      await latest?.loadModelsForProvider("glm");
+    });
+    await flush();
+
+    expect(apiMocks.fetchLlmModels).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchLlmModels).toHaveBeenCalledWith("glm");
+    expect(latest?.providers.find((provider) => provider.providerId === "glm")?.models).toEqual(["glm-5", "glm-5-air"]);
+
+    await act(async () => {
+      await latest?.loadModelsForProvider("glm");
+    });
+
+    expect(apiMocks.fetchLlmModels).toHaveBeenCalledTimes(1);
+    expect(latest?.getCachedModels("glm")).toEqual(["glm-5", "glm-5-air"]);
+  });
+
+  it("caches failed provider lookups briefly to avoid repeated hammering", async () => {
+    apiMocks.fetchLlmModels.mockRejectedValueOnce(new Error("provider offline"));
+
+    await act(async () => {
+      renderer = create(<Harness onValue={(value) => { latest = value; }} />);
+    });
+    await flush();
+
+    await act(async () => {
+      await latest?.loadModelsForProvider("glm");
+    });
+    await flush();
+
+    await act(async () => {
+      await latest?.loadModelsForProvider("glm");
+    });
+
+    expect(apiMocks.fetchLlmModels).toHaveBeenCalledTimes(1);
+    expect(latest?.getCachedModels("glm")).toEqual([]);
+  });
+});

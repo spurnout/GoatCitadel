@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RuntimeSettingsResponse } from "../api/client";
 import { fetchLlmConfig, fetchLlmModels, previewLlmModels } from "../api/client";
 import { useRefreshSubscription } from "./useRefreshSubscription";
+
+const PROVIDER_MODELS_POSITIVE_TTL_MS = 5 * 60 * 1000;
+const PROVIDER_MODELS_NEGATIVE_TTL_MS = 30 * 1000;
 
 export interface ProviderModelCatalogOption {
   providerId: string;
@@ -20,6 +23,11 @@ export interface ProviderModelPreviewResult {
   warning?: string;
 }
 
+interface ProviderModelCacheEntry {
+  items: string[];
+  expiresAt: number;
+}
+
 export function dedupeProviderModels(values: Array<string | undefined | null>): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -34,20 +42,29 @@ export function dedupeProviderModels(values: Array<string | undefined | null>): 
   return out;
 }
 
-async function loadProviderCatalog(): Promise<{
-  config: RuntimeSettingsResponse["llm"];
-  providers: ProviderModelCatalogOption[];
-}> {
-  const config = await fetchLlmConfig();
-  const providers = await Promise.all(config.providers.map(async (provider) => {
-    let remoteModels: string[] = [];
-    try {
-      const response = await fetchLlmModels(provider.providerId);
-      remoteModels = response.items.map((item) => item.id);
-    } catch {
-      // Keep the provider visible even if live discovery fails.
-    }
+function getValidProviderModelCacheEntry(
+  cache: Map<string, ProviderModelCacheEntry>,
+  providerId: string,
+  now: number,
+): ProviderModelCacheEntry | undefined {
+  const cached = cache.get(providerId);
+  if (!cached) {
+    return undefined;
+  }
+  if (cached.expiresAt <= now) {
+    cache.delete(providerId);
+    return undefined;
+  }
+  return cached;
+}
 
+function buildProviderCatalog(
+  config: RuntimeSettingsResponse["llm"],
+  cache: Map<string, ProviderModelCacheEntry>,
+  now: number,
+): ProviderModelCatalogOption[] {
+  return config.providers.map((provider) => {
+    const cached = getValidProviderModelCacheEntry(cache, provider.providerId, now);
     return {
       providerId: provider.providerId,
       label: provider.label,
@@ -59,15 +76,10 @@ async function loadProviderCatalog(): Promise<{
       models: dedupeProviderModels([
         provider.defaultModel,
         provider.providerId === config.activeProviderId ? config.activeModel : undefined,
-        ...remoteModels,
+        ...(cached?.items ?? []),
       ]),
     } satisfies ProviderModelCatalogOption;
-  }));
-
-  return {
-    config,
-    providers,
-  };
+  });
 }
 
 export async function previewProviderModels(input: {
@@ -77,13 +89,15 @@ export async function previewProviderModels(input: {
   apiKeyEnv?: string;
   headers?: Record<string, string>;
   fallbackModel?: string;
-}): Promise<ProviderModelPreviewResult> {
+}, options?: { signal?: AbortSignal }): Promise<ProviderModelPreviewResult> {
   const response = await previewLlmModels({
     providerId: input.providerId,
     baseUrl: input.baseUrl,
     apiKey: input.apiKey,
     apiKeyEnv: input.apiKeyEnv,
     headers: input.headers,
+  }, {
+    signal: options?.signal,
   });
   return {
     items: dedupeProviderModels([
@@ -100,19 +114,87 @@ export function useProviderModelCatalog(refreshTopic: "chat" | "system" = "syste
   const [providers, setProviders] = useState<ProviderModelCatalogOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const configRef = useRef<RuntimeSettingsResponse["llm"] | null>(null);
+  const modelCacheRef = useRef<Map<string, ProviderModelCacheEntry>>(new Map());
+  const inFlightRef = useRef<Map<string, Promise<string[]>>>(new Map());
+
+  const syncProviderState = useCallback((nextConfig?: RuntimeSettingsResponse["llm"] | null) => {
+    const effectiveConfig = nextConfig ?? configRef.current;
+    if (!effectiveConfig) {
+      return;
+    }
+    const now = Date.now();
+    configRef.current = effectiveConfig;
+    setConfig(effectiveConfig);
+    setProviders(buildProviderCatalog(effectiveConfig, modelCacheRef.current, now));
+  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await loadProviderCatalog();
-      setConfig(next.config);
-      setProviders(next.providers);
+      const nextConfig = await fetchLlmConfig();
+      syncProviderState(nextConfig);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
     }
+  }, [syncProviderState]);
+
+  const loadModelsForProvider = useCallback(async (
+    providerId: string,
+    options: { force?: boolean } = {},
+  ): Promise<string[]> => {
+    const normalized = providerId.trim();
+    if (!normalized) {
+      return [];
+    }
+
+    const now = Date.now();
+    const cached = !options.force
+      ? getValidProviderModelCacheEntry(modelCacheRef.current, normalized, now)
+      : undefined;
+    if (cached) {
+      return cached.items;
+    }
+
+    const inFlight = inFlightRef.current.get(normalized);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = (async () => {
+      try {
+        const response = await fetchLlmModels(normalized);
+        const items = dedupeProviderModels(response.items.map((item) => item.id));
+        modelCacheRef.current.set(normalized, {
+          items,
+          expiresAt: Date.now() + PROVIDER_MODELS_POSITIVE_TTL_MS,
+        });
+        return items;
+      } catch {
+        modelCacheRef.current.set(normalized, {
+          items: [],
+          expiresAt: Date.now() + PROVIDER_MODELS_NEGATIVE_TTL_MS,
+        });
+        return [];
+      } finally {
+        inFlightRef.current.delete(normalized);
+        syncProviderState();
+      }
+    })();
+
+    inFlightRef.current.set(normalized, request);
+    return request;
+  }, [syncProviderState]);
+
+  const getCachedModels = useCallback((providerId: string): string[] => {
+    const normalized = providerId.trim();
+    if (!normalized) {
+      return [];
+    }
+    return getValidProviderModelCacheEntry(modelCacheRef.current, normalized, Date.now())?.items ?? [];
   }, []);
 
   useEffect(() => {
@@ -142,5 +224,7 @@ export function useProviderModelCatalog(refreshTopic: "chat" | "system" = "syste
     loading,
     error,
     reload,
+    loadModelsForProvider,
+    getCachedModels,
   };
 }

@@ -1,4 +1,5 @@
 export type TabId =
+  | "addons"
   | "onboarding"
   | "dashboard"
   | "system"

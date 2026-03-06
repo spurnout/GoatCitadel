@@ -115,6 +115,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [secondaryLoading, setSecondaryLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachmentRecord[]>([]);
@@ -143,6 +144,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const {
     config: runtimeLlmConfig,
     providers: runtimeProviderCatalog,
+    loadModelsForProvider,
   } = useProviderModelCatalog("chat");
 
   const loadSidebar = useCallback(async () => {
@@ -168,7 +170,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setSettings((current) => current ? { ...current, llm: runtimeLlmConfig } : current);
   }, [runtimeLlmConfig]);
 
-  const loadSessionState = useCallback(async (
+  const loadSessionCoreState = useCallback(async (
     sessionId: string,
     options: {
       background?: boolean;
@@ -181,32 +183,67 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setMessagesLoading(true);
     }
     try {
-      const [nextMessages, nextBinding, nextPrefs, nextProactiveStatus, nextProactiveRuns, nextMemory] = await Promise.all([
+      const [nextMessages, nextBinding, nextPrefs] = await Promise.all([
         includeMessages ? fetchChatMessages(sessionId, 500) : Promise.resolve(undefined),
         fetchChatSessionBinding(sessionId),
         fetchChatSessionPrefs(sessionId),
-        fetchChatProactiveStatus(sessionId),
-        fetchChatProactiveRuns(sessionId, 30),
-        fetchChatLearnedMemory(sessionId, 80),
       ]);
       if (nextMessages) {
         setMessages(nextMessages.items);
       }
       setBinding(nextBinding.item);
       setPrefs(nextPrefs);
-      setProactiveStatus(nextProactiveStatus.policy);
-      setProactiveRuns(nextProactiveRuns.items);
-      setLearnedMemory(nextMemory.items);
-      setDelegationSuggestion(null);
-      setLatestTrace(null);
-      setCapabilitySuggestions([]);
-      setPendingApproval(null);
     } finally {
       if (!background) {
         setMessagesLoading(false);
       }
     }
   }, []);
+
+  const loadSessionSecondaryState = useCallback(async (
+    sessionId: string,
+    options: {
+      background?: boolean;
+    } = {},
+  ) => {
+    const background = options.background ?? false;
+    if (!background) {
+      setSecondaryLoading(true);
+    }
+    try {
+      const [nextProactiveStatus, nextProactiveRuns, nextMemory] = await Promise.all([
+        fetchChatProactiveStatus(sessionId),
+        fetchChatProactiveRuns(sessionId, 30),
+        fetchChatLearnedMemory(sessionId, 80),
+      ]);
+      setProactiveStatus(nextProactiveStatus.policy);
+      setProactiveRuns(nextProactiveRuns.items);
+      setLearnedMemory(nextMemory.items);
+    } finally {
+      if (!background) {
+        setSecondaryLoading(false);
+      }
+    }
+  }, []);
+
+  const loadSessionState = useCallback(async (
+    sessionId: string,
+    options: {
+      background?: boolean;
+      includeMessages?: boolean;
+      deferSecondary?: boolean;
+    } = {},
+  ) => {
+    const background = options.background ?? false;
+    const includeMessages = options.includeMessages ?? true;
+    const deferSecondary = options.deferSecondary ?? false;
+    await loadSessionCoreState(sessionId, { background, includeMessages });
+    if (deferSecondary) {
+      void loadSessionSecondaryState(sessionId, { background: false }).catch((err: Error) => setError(err.message));
+      return;
+    }
+    await loadSessionSecondaryState(sessionId, { background });
+  }, [loadSessionCoreState, loadSessionSecondaryState]);
 
   const refreshViewState = useCallback(async (
     options: {
@@ -228,17 +265,23 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         await loadSidebar();
       }
       if (selectedSessionId && refreshSession !== "none") {
-        await loadSessionState(selectedSessionId, {
-          background: true,
-          includeMessages: refreshSession === "full",
-        });
+        if (refreshSession === "full") {
+          await loadSessionState(selectedSessionId, {
+            background: true,
+            includeMessages: true,
+          });
+        } else {
+          await loadSessionSecondaryState(selectedSessionId, {
+            background: true,
+          });
+        }
       }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadSessionState, loadSidebar, selectedSessionId]);
+  }, [loadSessionSecondaryState, loadSessionState, loadSidebar, selectedSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,6 +341,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setProactiveStatus(null);
       setProactiveRuns([]);
       setLearnedMemory([]);
+      setSecondaryLoading(false);
       setDelegationSuggestion(null);
       setPendingAttachments([]);
       lastLoadedSessionIdRef.current = null;
@@ -309,7 +353,15 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setPendingApproval(null);
       lastLoadedSessionIdRef.current = selectedSessionId;
     }
-    void loadSessionState(selectedSessionId, { background: false, includeMessages: true }).catch((err: Error) => setError(err.message));
+    setDelegationSuggestion(null);
+    setLatestTrace(null);
+    setCapabilitySuggestions([]);
+    setPendingApproval(null);
+    void loadSessionState(selectedSessionId, {
+      background: false,
+      includeMessages: true,
+      deferSecondary: true,
+    }).catch((err: Error) => setError(err.message));
   }, [loadSessionState, selectedSessionId]);
 
   useEffect(() => {
@@ -379,6 +431,15 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     settings?.llm.activeModel,
     settings?.llm.activeProviderId,
   ]);
+
+  const selectedProviderId = prefs?.providerId ?? runtimeLlmConfig?.activeProviderId ?? settings?.llm.activeProviderId;
+
+  useEffect(() => {
+    if (!selectedProviderId) {
+      return;
+    }
+    void loadModelsForProvider(selectedProviderId);
+  }, [loadModelsForProvider, selectedProviderId]);
 
   const commandSuggestions = useMemo(() => {
     if (!draft.trimStart().startsWith("/")) return [] as CommandCatalogItem[];
@@ -1110,11 +1171,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <ChatModeSwitch value={messageMode} disabled={!selectedSessionId || sending} onChange={(mode) => void handlePrefPatch({ mode })} />
             <ChatModelPicker
               providers={providerOptions}
-              providerId={prefs?.providerId ?? runtimeLlmConfig?.activeProviderId ?? settings?.llm.activeProviderId}
+              providerId={selectedProviderId}
               model={prefs?.model ?? runtimeLlmConfig?.activeModel ?? settings?.llm.activeModel}
               disabled={!selectedSessionId || sending}
               onChangeProvider={(providerId) => {
                 const provider = providerOptions.find((item) => item.providerId === providerId);
+                void loadModelsForProvider(providerId);
                 void handlePrefPatch({ providerId, model: provider?.models[0] });
               }}
               onChangeModel={(model) => void handlePrefPatch({ model })}
@@ -1195,6 +1257,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     <h3>Suggestions inbox</h3>
                     <span className="token-chip">{proactiveRuns.filter((run) => run.status === "suggested").length} suggested</span>
                   </div>
+                  {secondaryLoading && proactiveRuns.length === 0 && capabilitySuggestions.length === 0 && !delegationSuggestion ? (
+                    <CardSkeleton lines={4} />
+                  ) : null}
                   {capabilitySuggestions.length > 0 ? (
                     <div className="chat-v11-suggestion-card">
                       <p><strong>Capability upgrade available:</strong> GoatCitadel found a possible way to add what this request needs, but it still requires your approval.</p>
@@ -1263,6 +1328,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     </button>
                   </div>
                   <p className="chat-v11-muted">Review what GoatCitadel is carrying forward (preferences, goals, constraints, facts, project context).</p>
+                  {secondaryLoading && learnedMemory.length === 0 ? <CardSkeleton lines={5} /> : null}
                   <ul className="chat-v11-memory-list">
                     {learnedMemory.slice(0, 6).map((item) => (
                       <li key={item.itemId}>

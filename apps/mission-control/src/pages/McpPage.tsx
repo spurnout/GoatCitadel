@@ -334,6 +334,54 @@ export function McpPage() {
       </article>
 
       <article className="card">
+        <h3>Where to Find More MCP Servers</h3>
+        <p className="office-subtitle">
+          GoatCitadel does not audit third-party MCP servers for you. Review the command, URL, auth, maintainer, and
+          policy before you enable anything new.
+        </p>
+        <div className="stack-md">
+          {[
+            {
+              label: "Official MCP Registry",
+              trust: "Official / Primary",
+              href: "https://registry.modelcontextprotocol.io/",
+              note: "Use this first for current registry-listed MCP servers.",
+            },
+            {
+              label: "MCP Registry About",
+              trust: "Official / Primary",
+              href: "https://modelcontextprotocol.io/registry/about",
+              note: "Policy context and how the registry is curated.",
+            },
+            {
+              label: "Anthropic MCP Security Guidance",
+              trust: "Official / Primary",
+              href: "https://docs.anthropic.com/s/claude-code-security",
+              note: "Operator guidance for reviewing server trust, auth, and side effects.",
+            },
+            {
+              label: "MCP Directory",
+              trust: "Community Directory",
+              href: "https://mcpdir.dev/",
+              note: "Broader community directory. Treat entries as review-before-install.",
+            },
+          ].map((source) => (
+            <div key={source.href} className="prompt-lab-run-summary">
+              <p>
+                <strong>{source.label}</strong> <span className="token-chip">{source.trust}</span>
+              </p>
+              <p className="office-subtitle">{source.note}</p>
+              <p>
+                <a href={source.href} target="_blank" rel="noreferrer">
+                  {source.href}
+                </a>
+              </p>
+            </div>
+          ))}
+        </div>
+      </article>
+
+      <article className="card">
         <h3>Template Discovery Readiness</h3>
         <p className="office-subtitle">
           Before installing a template, check whether required auth, command, or URL settings are ready.

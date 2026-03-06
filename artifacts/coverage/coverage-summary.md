@@ -1,13 +1,13 @@
 # Coverage Summary
 
-- Generated: 2026-03-06T07:12:27.602Z
+- Generated: 2026-03-06T12:13:55.503Z
 - Status: success
-- Run ID: 4f097e16-c860-4c7c-830c-10b174e25f72
-- Run started: 2026-03-06T07:09:39.890Z
-- Run finished: 2026-03-06T07:12:27.602Z
-- File coverage: 86.76% (236/272)
-- Line coverage: 65.79% (47561/72297)
-- Branch coverage: 62.51% (5597/8954)
+- Run ID: 012ab4ae-6032-4819-bc69-a2a477c9236a
+- Run started: 2026-03-06T12:11:48.760Z
+- Run finished: 2026-03-06T12:13:55.503Z
+- File coverage: 86.59% (239/276)
+- Line coverage: 65.49% (48274/73713)
+- Branch coverage: 62.3% (5652/9072)
 - Effective thresholds: line 65%, branch 45%
 - Threshold source: line=default, branch=default
 
@@ -43,6 +43,7 @@
 - `packages/storage/src/module-load-smoke.test.ts`
 
 ## Uncovered Sample (first 200)
+- `packages/contracts/src/addons.ts`
 - `packages/contracts/src/admin.ts`
 - `packages/contracts/src/approvals.ts`
 - `packages/contracts/src/auth.ts`

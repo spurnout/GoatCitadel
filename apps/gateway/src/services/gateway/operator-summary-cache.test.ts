@@ -1,30 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { OperatorSummary } from "@goatcitadel/contracts";
 import { OperatorSummaryCache } from "./operator-summary-cache.js";
 
 describe("OperatorSummaryCache", () => {
-  const sessions = [
+  const summaries: OperatorSummary[] = [
     {
-      sessionId: "s1",
-      account: "operator-a",
-      lastActivityAt: "2026-03-05T10:00:00.000Z",
-    },
-    {
-      sessionId: "s2",
-      account: "operator-a",
+      operatorId: "operator-a",
+      sessionCount: 2,
+      activeSessions: 1,
       lastActivityAt: "2026-03-05T10:05:00.000Z",
     },
     {
-      sessionId: "s3",
-      account: "operator-b",
+      operatorId: "operator-b",
+      sessionCount: 1,
+      activeSessions: 1,
       lastActivityAt: "2026-03-05T10:02:00.000Z",
     },
-  ] as never[];
+  ];
 
   it("reuses cached summaries within the TTL", () => {
     const cache = new OperatorSummaryCache(10_000);
-    const first = cache.get(sessions, Date.parse("2026-03-05T10:10:00.000Z"));
-    const second = cache.get([], Date.parse("2026-03-05T10:10:05.000Z"));
+    const loader = vi.fn(() => summaries);
+    const first = cache.get(loader, Date.parse("2026-03-05T10:10:00.000Z"));
+    const second = cache.get(() => [], Date.parse("2026-03-05T10:10:05.000Z"));
 
+    expect(loader).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
     expect(second).toHaveLength(2);
     expect(second[0]).toMatchObject({
@@ -35,9 +35,9 @@ describe("OperatorSummaryCache", () => {
 
   it("invalidates cached summaries on demand", () => {
     const cache = new OperatorSummaryCache(10_000);
-    const first = cache.get(sessions, Date.parse("2026-03-05T10:10:00.000Z"));
+    const first = cache.get(() => summaries, Date.parse("2026-03-05T10:10:00.000Z"));
     cache.invalidate();
-    const second = cache.get([sessions[2] as never], Date.parse("2026-03-05T10:10:01.000Z"));
+    const second = cache.get(() => [summaries[1]!], Date.parse("2026-03-05T10:10:01.000Z"));
 
     expect(second).not.toBe(first);
     expect(second).toEqual([

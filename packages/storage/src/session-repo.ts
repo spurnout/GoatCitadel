@@ -1,4 +1,4 @@
-import type { SessionMeta } from "@goatcitadel/contracts";
+import type { OperatorSummary, SessionMeta } from "@goatcitadel/contracts";
 import type { DatabaseSync } from "node:sqlite";
 import { safeJsonParse } from "./safe-json.js";
 
@@ -19,6 +19,13 @@ interface SessionRow {
   token_total: number;
   cost_usd_total: number;
   budget_state: SessionMeta["budgetState"];
+}
+
+interface OperatorSummaryRow {
+  operator_id: string;
+  session_count: number;
+  active_sessions: number;
+  last_activity_at: string | null;
 }
 
 export interface SessionUpsertInput {
@@ -47,6 +54,7 @@ export class SessionRepository {
   private readonly upsertStmt;
   private readonly applyUsageStmt;
   private readonly listStmt;
+  private readonly listOperatorSummariesStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.getByKeyStmt = db.prepare("SELECT * FROM sessions WHERE session_key = ?");
@@ -83,6 +91,16 @@ export class SessionRepository {
       )
       ORDER BY updated_at DESC, session_id DESC
       LIMIT @limit
+    `);
+    this.listOperatorSummariesStmt = db.prepare(`
+      SELECT
+        account AS operator_id,
+        COUNT(*) AS session_count,
+        SUM(CASE WHEN last_activity_at >= @activeSinceIso THEN 1 ELSE 0 END) AS active_sessions,
+        MAX(last_activity_at) AS last_activity_at
+      FROM sessions
+      GROUP BY account
+      ORDER BY MAX(last_activity_at) DESC
     `);
   }
 
@@ -134,6 +152,19 @@ export class SessionRepository {
     }) as unknown as SessionRow[];
 
     return rows.map(mapSessionRow);
+  }
+
+  public listOperatorSummaries(activeSinceIso: string): OperatorSummary[] {
+    const rows = this.listOperatorSummariesStmt.all({
+      activeSinceIso,
+    }) as unknown as OperatorSummaryRow[];
+
+    return rows.map((row) => ({
+      operatorId: row.operator_id,
+      sessionCount: row.session_count,
+      activeSessions: row.active_sessions,
+      lastActivityAt: row.last_activity_at ?? undefined,
+    }));
   }
 }
 

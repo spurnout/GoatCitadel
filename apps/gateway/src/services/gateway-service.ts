@@ -24,6 +24,12 @@ import {
   type SessionAutonomyPrefsRecord,
 } from "@goatcitadel/storage";
 import type {
+  AddonActionResponse,
+  AddonCatalogEntry,
+  AddonInstalledRecord,
+  AddonInstallRequest,
+  AddonStatusRecord,
+  AddonUninstallResponse,
   BankrActionAuditRecord,
   BankrActionPreviewRequest,
   BankrActionPreviewResponse,
@@ -248,6 +254,7 @@ import { ChatAgentOrchestrator, normalizeAgentInputFromSend } from "./chat-agent
 import { ResearchService } from "./research-service.js";
 import { ObsidianVaultService } from "./obsidian-vault-service.js";
 import { SkillImportService } from "./skill-import-service.js";
+import { AddonsService } from "./addons-service.js";
 import { normalizeMemoryForgetCriteria, serializePathWithinRoot } from "./security-utils.js";
 import {
   COST_REPORT_HOURLY_JOB_ID,
@@ -486,6 +493,81 @@ const MCP_SERVER_TEMPLATES: McpServerTemplateRecord[] = [
     },
     enabledByDefault: false,
   },
+  {
+    templateId: "context7",
+    label: "Context7",
+    description: "Up-to-date library and framework documentation search via the official Context7 MCP server.",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@upstash/context7-mcp@latest"],
+    authType: "none",
+    category: "research",
+    trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "n8n",
+    label: "n8n",
+    description: "Connect GoatCitadel to an n8n MCP endpoint for workflow execution and automation handoff.",
+    transport: "sse",
+    url: "https://your-n8n-host/mcp/<server-id>/sse",
+    authType: "token",
+    category: "automation",
+    trustTier: "restricted",
+    costTier: "mixed",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "strict",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "gpt-researcher",
+    label: "GPT Researcher",
+    description: "Structured deep-research MCP server for investigation workflows and source-grounded reports.",
+    transport: "stdio",
+    command: "uvx",
+    args: ["gpt-researcher-mcp"],
+    authType: "none",
+    category: "research",
+    trustTier: "restricted",
+    costTier: "mixed",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "openspec",
+    label: "OpenSpec",
+    description: "MCP bridge for OpenSpec-style spec and analysis workflows.",
+    transport: "stdio",
+    command: "uvx",
+    args: ["openspec-mcp"],
+    authType: "none",
+    category: "development",
+    trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
 ];
 const CORE_CHANNEL_KEYS = new Set([
   "discord",
@@ -680,6 +762,7 @@ export class GatewayService {
   private readonly obsidianVaultService: ObsidianVaultService;
   private readonly skillImportService: SkillImportService;
   private readonly cronAutomationService: CronAutomationService;
+  private readonly addonsService: AddonsService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
@@ -778,6 +861,7 @@ export class GatewayService {
     });
     this.obsidianVaultService = new ObsidianVaultService(this.storage.systemSettings);
     this.skillImportService = new SkillImportService(config.rootDir, this.storage.systemSettings);
+    this.addonsService = new AddonsService(config.rootDir);
     this.cronAutomationService = new CronAutomationService({
       storage: this.storage,
       persistCronJobsConfig: () => this.persistCronJobsConfig(),
@@ -857,6 +941,10 @@ export class GatewayService {
       taskId: payload.taskId,
       deduped: result.deduped,
     });
+
+    if (!result.deduped) {
+      this.operatorSummaryCache.invalidate();
+    }
 
     return result;
   }
@@ -8063,8 +8151,8 @@ export class GatewayService {
   }
 
   public listOperators(): OperatorSummary[] {
-    const sessions = this.storage.sessions.list(10000);
-    return this.operatorSummaryCache.get(sessions);
+    const activeSinceIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    return this.operatorSummaryCache.get(() => this.storage.sessions.listOperatorSummaries(activeSinceIso));
   }
 
   public listCronJobs(): CronJobRecord[] {
@@ -9226,6 +9314,62 @@ export class GatewayService {
 
   public async listSkillSources(query?: string, limit = 25): Promise<SkillSourceListResponse> {
     return this.skillImportService.listSources(query, limit);
+  }
+
+  public listAddonsCatalog(): AddonCatalogEntry[] {
+    return this.addonsService.listCatalog();
+  }
+
+  public async listInstalledAddons(): Promise<AddonInstalledRecord[]> {
+    return this.addonsService.listInstalled();
+  }
+
+  public async getAddonStatus(addonId: string): Promise<AddonStatusRecord> {
+    return this.addonsService.getStatus(addonId);
+  }
+
+  public async installAddon(addonId: string, input: AddonInstallRequest): Promise<AddonActionResponse> {
+    const result = await this.addonsService.install(addonId, input);
+    this.publishRealtime("addon_installed", "system", {
+      addonId,
+      status: result.status.status,
+    });
+    return result;
+  }
+
+  public async updateAddon(addonId: string): Promise<AddonActionResponse> {
+    const result = await this.addonsService.update(addonId);
+    this.publishRealtime("addon_updated", "system", {
+      addonId,
+      status: result.status.status,
+    });
+    return result;
+  }
+
+  public async launchAddon(addonId: string): Promise<AddonActionResponse> {
+    const result = await this.addonsService.launch(addonId);
+    this.publishRealtime("addon_runtime_changed", "system", {
+      addonId,
+      status: result.status.status,
+    });
+    return result;
+  }
+
+  public async stopAddon(addonId: string): Promise<AddonActionResponse> {
+    const result = await this.addonsService.stop(addonId);
+    this.publishRealtime("addon_runtime_changed", "system", {
+      addonId,
+      status: result.status.status,
+    });
+    return result;
+  }
+
+  public async uninstallAddon(addonId: string): Promise<AddonUninstallResponse> {
+    const result = await this.addonsService.uninstall(addonId);
+    this.publishRealtime("addon_uninstalled", "system", {
+      addonId,
+    });
+    return result;
   }
 
   public listSkillImportHistory(limit = 100): SkillImportHistoryRecord[] {

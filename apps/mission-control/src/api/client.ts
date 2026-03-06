@@ -1,4 +1,10 @@
 import type {
+  AddonActionResponse,
+  AddonCatalogEntry,
+  AddonInstalledRecord,
+  AddonInstallRequest,
+  AddonStatusRecord,
+  AddonUninstallResponse,
   AgentProfileArchiveInput,
   AgentProfileCreateInput,
   AgentProfileRecord,
@@ -1633,13 +1639,7 @@ export async function uploadChatAttachment(input: {
   projectId?: string;
   file: File;
 }): Promise<ChatAttachmentRecord> {
-  const bytes = new Uint8Array(await input.file.arrayBuffer());
-  let binary = "";
-  const chunk = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
-  }
-  const bytesBase64 = btoa(binary);
+  const bytesBase64 = await encodeFileBase64(input.file);
   return request<ChatAttachmentRecord>("/api/v1/chat/attachments", {
     method: "POST",
     body: JSON.stringify({
@@ -1654,6 +1654,32 @@ export async function uploadChatAttachment(input: {
 
 export async function fetchChatAttachment(attachmentId: string): Promise<ChatAttachmentRecord> {
   return request<ChatAttachmentRecord>(`/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}`);
+}
+
+async function encodeFileBase64(file: File): Promise<string> {
+  if (typeof FileReader !== "undefined") {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error("Failed to read attachment."));
+      reader.onload = () => {
+        if (typeof reader.result !== "string") {
+          reject(new Error("Failed to encode attachment."));
+          return;
+        }
+        const comma = reader.result.indexOf(",");
+        resolve(comma >= 0 ? reader.result.slice(comma + 1) : reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
 }
 
 export async function downloadChatAttachment(attachmentId: string): Promise<{ blob: Blob; fileName: string; mimeType: string }> {
@@ -2474,6 +2500,52 @@ export async function fetchSettings(): Promise<RuntimeSettingsResponse> {
   return request<RuntimeSettingsResponse>("/api/v1/settings");
 }
 
+export async function fetchAddonsCatalog(): Promise<{ items: AddonCatalogEntry[] }> {
+  return request<{ items: AddonCatalogEntry[] }>("/api/v1/addons/catalog");
+}
+
+export async function fetchInstalledAddons(): Promise<{ items: AddonInstalledRecord[] }> {
+  return request<{ items: AddonInstalledRecord[] }>("/api/v1/addons/installed");
+}
+
+export async function fetchAddonStatus(addonId: string): Promise<AddonStatusRecord> {
+  return request<AddonStatusRecord>(`/api/v1/addons/${encodeURIComponent(addonId)}/status`);
+}
+
+export async function installAddon(addonId: string, input: AddonInstallRequest): Promise<AddonActionResponse> {
+  return request<AddonActionResponse>(`/api/v1/addons/${encodeURIComponent(addonId)}/install`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAddon(addonId: string): Promise<AddonActionResponse> {
+  return request<AddonActionResponse>(`/api/v1/addons/${encodeURIComponent(addonId)}/update`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function launchAddon(addonId: string): Promise<AddonActionResponse> {
+  return request<AddonActionResponse>(`/api/v1/addons/${encodeURIComponent(addonId)}/launch`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopAddon(addonId: string): Promise<AddonActionResponse> {
+  return request<AddonActionResponse>(`/api/v1/addons/${encodeURIComponent(addonId)}/stop`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function uninstallAddon(addonId: string): Promise<AddonUninstallResponse> {
+  return request<AddonUninstallResponse>(`/api/v1/addons/${encodeURIComponent(addonId)}/uninstall`, {
+    method: "DELETE",
+  });
+}
+
 export async function fetchOnboardingState(): Promise<OnboardingState> {
   return request<OnboardingState>("/api/v1/onboarding/state");
 }
@@ -2806,7 +2878,7 @@ export async function previewLlmModels(input: {
   apiKey?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
-}): Promise<{
+}, options?: { signal?: AbortSignal }): Promise<{
   items: Array<{ id: string; ownedBy?: string; created?: number }>;
   source: "remote" | "fallback";
   warning?: string;
@@ -2814,6 +2886,7 @@ export async function previewLlmModels(input: {
   return request("/api/v1/llm/models/preview", {
     method: "POST",
     body: JSON.stringify(input),
+    signal: options?.signal,
   });
 }
 
@@ -3387,3 +3460,4 @@ function buildEventStreamStatus(): EventStreamStatus {
     lastErrorAt,
   };
 }
+

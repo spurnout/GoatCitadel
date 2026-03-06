@@ -34,6 +34,7 @@ import { chatRoutes } from "./routes/chat.js";
 import { adminRoutes } from "./routes/admin.js";
 import { docsRoutes } from "./routes/docs.js";
 import { mcpRoutes } from "./routes/mcp.js";
+import { addonsRoutes } from "./routes/addons.js";
 import { voiceRoutes } from "./routes/voice.js";
 import { mediaRoutes } from "./routes/media.js";
 import { daemonRoutes } from "./routes/daemon.js";
@@ -150,6 +151,7 @@ export async function buildApp() {
   await app.register(improvementRoutes);
   await app.register(workspacesRoutes);
   await app.register(durableRoutes);
+  await app.register(addonsRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
 

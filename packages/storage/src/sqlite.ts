@@ -213,6 +213,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "operational_hot_path_schema",
     up: createOperationalHotPathSchema,
   },
+  {
+    version: 24,
+    name: "sessions_operator_summary_index",
+    up: createSessionsOperatorSummaryIndex,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -238,6 +243,7 @@ function createBaseSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_last_activity_at ON sessions(last_activity_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_account_last_activity_at ON sessions(account, last_activity_at DESC);
 
     CREATE TABLE IF NOT EXISTS inbound_events (
       endpoint TEXT NOT NULL,
@@ -624,6 +630,13 @@ function createMemoryQmdSchema(db: DatabaseSync): void {
       ON memory_qmd_runs(session_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_memory_qmd_runs_run_phase
       ON memory_qmd_runs(run_id, phase_id, created_at DESC);
+  `);
+}
+
+function createSessionsOperatorSummaryIndex(db: DatabaseSync): void {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_account_last_activity_at
+      ON sessions(account, last_activity_at DESC);
   `);
 }
 
