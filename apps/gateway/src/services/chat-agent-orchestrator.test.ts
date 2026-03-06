@@ -335,6 +335,54 @@ describe("ChatAgentOrchestrator", () => {
     expect(result.assistantContent).toContain("Grounded answer");
   });
 
+  it("promotes repeated live-data browser.search calls into browser.navigate during preflight", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+      };
+    }).preflightToolInvocation({
+      toolName: "browser.search",
+      rawArgs: {
+        query: "latest news on Kristi Noem",
+      },
+      userContent: "what's going on with kristi noem lately?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-1",
+          turnId: "turn-1",
+          sessionId: "sess-6",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "latest news on Kristi Noem" },
+          result: {
+            results: [{ title: "Result 1", url: "https://example.com/news/kristi-noem-1", snippet: "snippet 1" }],
+          },
+          startedAt: "2026-03-06T22:30:00.000Z",
+          finishedAt: "2026-03-06T22:30:01.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.toolName).toBe("browser.navigate");
+    expect(preflight.args).toMatchObject({
+      url: "https://example.com/news/kristi-noem-1",
+      maxChars: 6000,
+    });
+  });
+
   it("stops immediately on non-recoverable missing-argument failures", async () => {
     const createChatCompletion = vi
       .fn<() => Promise<ChatCompletionResponse>>()

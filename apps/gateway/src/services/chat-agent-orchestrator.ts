@@ -719,7 +719,7 @@ export class ChatAgentOrchestrator {
       toolRunId,
       turnId: input.turnId,
       sessionId: input.input.sessionId,
-      toolName: input.toolName,
+      toolName: preflight.toolName,
       status: "started",
       args: preflight.args,
       startedAt,
@@ -761,7 +761,7 @@ export class ChatAgentOrchestrator {
 
     try {
       const result = await this.deps.invokeTool({
-        toolName: input.toolName,
+        toolName: preflight.toolName,
         args: preflight.args,
         agentId: "assistant",
         sessionId: input.input.sessionId,
@@ -792,7 +792,7 @@ export class ChatAgentOrchestrator {
       if (result.outcome === "blocked") {
         const writeFallback = await this.tryWriteJailFallback({
           input: input.input,
-          toolName: input.toolName,
+          toolName: preflight.toolName,
           args: preflight.args,
           policyReason: result.policyReason,
         });
@@ -921,17 +921,33 @@ export class ChatAgentOrchestrator {
     localFileIntent?: boolean;
     priorToolRuns?: ChatToolRunRecord[];
   }): {
+    toolName: string;
     args: Record<string, unknown>;
     failureReason?: string;
     blockedReason?: string;
   } {
     const args = { ...input.rawArgs };
+    let effectiveToolName = input.toolName;
+    if (input.toolName === "browser.search") {
+      const promotedUrl = inferBrowserNavigateUrlFromRepeatedSearches(input.userContent, input.priorToolRuns);
+      if (promotedUrl) {
+        effectiveToolName = "browser.navigate";
+        return {
+          toolName: effectiveToolName,
+          args: {
+            url: promotedUrl,
+            maxChars: 6000,
+          },
+        };
+      }
+    }
     if (
       input.toolName === "browser.search"
       && (input.localFileIntent ?? false)
       && !detectExplicitWebLookupIntent(input.userContent)
     ) {
       return {
+        toolName: effectiveToolName,
         args,
         blockedReason: "execution skipped: browser.search was suppressed because the prompt targets local files/project context",
       };
@@ -939,6 +955,7 @@ export class ChatAgentOrchestrator {
 
     if ((input.toolName === "memory.write" || input.toolName === "memory.upsert") && !hasExplicitMemoryConsent(input.userContent)) {
       return {
+        toolName: effectiveToolName,
         args,
         blockedReason: "memory persistence requires explicit user consent; ask before saving long-term memory",
       };
@@ -966,21 +983,23 @@ export class ChatAgentOrchestrator {
           const fallbackQuery = inferMemoryQueryFromPrompt(input.userContent);
           if (fallbackQuery) {
             args.query = fallbackQuery;
-            return { args };
+            return { toolName: effectiveToolName, args };
           }
         }
         return {
+          toolName: effectiveToolName,
           args,
           blockedReason: `execution skipped: ${input.toolName} requires query; unable to infer a safe query from the prompt`,
         };
       }
       return {
+        toolName: effectiveToolName,
         args,
         failureReason: `execution error: ${field} is required`,
       };
     }
 
-    return { args };
+    return { toolName: effectiveToolName, args };
   }
 
   private async tryWriteJailFallback(input: {
@@ -1242,7 +1261,9 @@ function detectTimeIntent(content: string): boolean {
 function detectLiveDataIntent(content: string): boolean {
   const normalized = content.toLowerCase();
   return (
-    /\b(latest|today|current|right now|news|price|weather|time)\b/.test(normalized)
+    /\b(latest|today|current|right now|news|price|weather|time|recent|recently|lately)\b/.test(normalized)
+    || normalized.includes("what's going on with")
+    || normalized.includes("whats going on with")
     || normalized.includes("look online")
     || normalized.includes("search web")
   );
@@ -1272,7 +1293,7 @@ function deriveLiveDataQuery(content: string): string {
   if (clauses.length === 0) {
     return normalized;
   }
-  const keywordRegex = /\b(latest|today|current|right now|news|price|weather|time)\b/i;
+  const keywordRegex = /\b(latest|today|current|right now|news|price|weather|time|recent|recently|lately)\b/i;
   const matching = clauses.filter((clause) => keywordRegex.test(clause));
   const selected = matching.at(-1) ?? clauses.at(-1) ?? normalized;
   return selected.replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "").trim() || normalized;
@@ -1459,6 +1480,27 @@ function inferToolArgValueFromRecentToolRuns(
     return undefined;
   }
   if (toolName !== "browser.navigate" && toolName !== "browser.extract") {
+    return undefined;
+  }
+  return inferRecentBrowserResultUrl(toolRuns);
+}
+
+function inferBrowserNavigateUrlFromRepeatedSearches(
+  userContent: string,
+  toolRuns: ChatToolRunRecord[] | undefined,
+): string | undefined {
+  if (!toolRuns || toolRuns.length === 0 || !detectLiveDataIntent(userContent)) {
+    return undefined;
+  }
+  const executedSearchCount = toolRuns.filter((run) => run.toolName === "browser.search" && run.status === "executed").length;
+  if (executedSearchCount < 1) {
+    return undefined;
+  }
+  const alreadyOpenedContent = toolRuns.some((run) => (
+    (run.toolName === "browser.navigate" || run.toolName === "browser.extract" || run.toolName === "http.get")
+    && run.status === "executed"
+  ));
+  if (alreadyOpenedContent) {
     return undefined;
   }
   return inferRecentBrowserResultUrl(toolRuns);
