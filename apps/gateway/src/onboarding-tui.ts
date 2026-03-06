@@ -24,6 +24,8 @@ const PROVIDER_TEMPLATES: ProviderTemplate[] = [
   { providerId: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4.1-mini" },
   { providerId: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", defaultModel: "claude-3-7-sonnet-latest" },
   { providerId: "google", label: "Google", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", defaultModel: "gemini-2.0-flash" },
+  { providerId: "glm", label: "GLM (Z.AI)", baseUrl: "https://api.z.ai/api/paas/v4", defaultModel: "glm-5" },
+  { providerId: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", defaultModel: "kimi-k2.5" },
   { providerId: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4.1-mini" },
   { providerId: "lmstudio", label: "LM Studio", baseUrl: "http://127.0.0.1:1234/v1", defaultModel: "local-model" },
   { providerId: "ollama", label: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", defaultModel: "llama3.1" },

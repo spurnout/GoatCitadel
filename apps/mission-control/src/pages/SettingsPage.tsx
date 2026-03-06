@@ -126,7 +126,7 @@ const PROVIDER_TEMPLATES: Array<{
   },
   {
     providerId: "glm",
-    label: "GLM (compatible endpoint)",
+    label: "GLM (Z.AI)",
     baseUrl: "https://api.z.ai/api/paas/v4",
     defaultModel: "glm-5",
   },

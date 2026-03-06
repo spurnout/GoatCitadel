@@ -111,7 +111,7 @@ describe("onboarding tui entrypoint coverage", () => {
       "", // gateway url
       "2", // auth mode token
       "token-123", // gateway token
-      "7", // provider template custom
+      "custom", // provider template custom
       "custom-provider",
       "Custom Provider",
       "http://127.0.0.1:1234/v1",

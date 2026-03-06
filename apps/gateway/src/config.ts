@@ -550,7 +550,7 @@ function defaultLlmConfig(): string {
       },
       {
         providerId: "glm",
-        label: "GLM (compatible endpoint)",
+        label: "GLM (Z.AI)",
         baseUrl: "https://api.z.ai/api/paas/v4",
         apiStyle: "openai-chat-completions",
         defaultModel: "glm-5",
