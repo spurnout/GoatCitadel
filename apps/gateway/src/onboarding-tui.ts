@@ -35,6 +35,7 @@ async function run(): Promise<void> {
   try {
     output.write("\nGoatCitadel Onboarding Wizard (TUI)\n");
     output.write("This wizard calls gateway onboarding APIs; no direct file edits are made here.\n\n");
+    output.write("Press Enter to accept any default shown in [brackets].\n\n");
 
     const gatewayBaseUrl = await ask(rl, "Gateway URL", process.env.GOATCITADEL_GATEWAY_URL ?? "http://127.0.0.1:8787");
     const authMode = await askChoice(rl, "Gateway auth mode", ["none", "token", "basic"] as const, "none");

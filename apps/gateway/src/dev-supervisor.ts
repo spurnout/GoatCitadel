@@ -8,7 +8,7 @@ import { loadLocalEnvFile } from "./env-file.js";
 
 loadLocalEnvFile();
 
-const gatewayHost = process.env.GATEWAY_HOST ?? "0.0.0.0";
+const gatewayHost = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const gatewayHealthHost = resolveGatewayHealthHost(gatewayHost);
 const gatewayPort = Number(process.env.GATEWAY_PORT ?? 8787);
 const warnUnauthNonLoopback = resolveWarnUnauthNonLoopback();

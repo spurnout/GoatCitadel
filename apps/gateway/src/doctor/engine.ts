@@ -395,7 +395,7 @@ async function checkAuthHostPosture(
     };
   }
 
-  const host = (process.env.GATEWAY_HOST ?? "0.0.0.0").trim();
+  const host = (process.env.GATEWAY_HOST ?? "127.0.0.1").trim();
   const auth = asRecord(assistantState.value.auth) ?? {};
   const authMode = (context.authMode ?? asString(auth.mode) ?? "none") as "none" | "token" | "basic";
   const token = asRecord(auth.token);
