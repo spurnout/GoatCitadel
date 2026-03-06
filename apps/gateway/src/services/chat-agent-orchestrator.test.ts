@@ -23,6 +23,60 @@ function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalo
         pack: "core",
       };
     }
+    if (toolName === "browser.extract") {
+      return {
+        toolName: "browser.extract",
+        category: "research",
+        riskLevel: "safe",
+        requiresApproval: false,
+        description: "Extract page text",
+        argSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string" },
+          },
+          required: ["url"],
+        },
+        examples: [],
+        pack: "core",
+      };
+    }
+    if (toolName === "http.get") {
+      return {
+        toolName: "http.get",
+        category: "http",
+        riskLevel: "safe",
+        requiresApproval: false,
+        description: "HTTP GET",
+        argSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string" },
+          },
+          required: ["url"],
+        },
+        examples: [],
+        pack: "core",
+      };
+    }
+    if (toolName === "http.post") {
+      return {
+        toolName: "http.post",
+        category: "http",
+        riskLevel: "danger",
+        requiresApproval: true,
+        description: "HTTP POST",
+        argSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string" },
+          },
+          required: ["url"],
+        },
+        examples: [],
+        pack: "core",
+      };
+    }
     if (toolName === "time.now") {
       return {
         toolName: "time.now",
@@ -98,6 +152,56 @@ function navigateToolCallCompletion(args: Record<string, unknown>): ChatCompleti
               type: "function",
               function: {
                 name: "browser_navigate",
+                arguments: JSON.stringify(args),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function httpGetToolCallCompletion(args: Record<string, unknown>): ChatCompletionResponse {
+  return {
+    model: "glm-5",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-http-get-1",
+              type: "function",
+              function: {
+                name: "http_get",
+                arguments: JSON.stringify(args),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+function httpPostToolCallCompletion(args: Record<string, unknown>): ChatCompletionResponse {
+  return {
+    model: "glm-5",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-http-post-1",
+              type: "function",
+              function: {
+                name: "http_post",
                 arguments: JSON.stringify(args),
               },
             },
@@ -349,6 +453,247 @@ describe("ChatAgentOrchestrator", () => {
       toolName: "browser.search",
     }));
     expect(result.assistantContent).toContain("Grounded answer");
+  });
+
+  it("recovers missing http.get url from the most recent visited page", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({}))
+      .mockResolvedValueOnce(navigateToolCallCompletion({}))
+      .mockResolvedValueOnce(httpGetToolCallCompletion({}))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Kristi Noem is in the news again.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-search-http",
+        result: {
+          results: [
+            { title: "Kristi Noem latest news", url: "https://example.com/news/kristi-noem", snippet: "latest coverage" },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-http-1",
+        result: {
+          finalUrl: "https://example.com/news/kristi-noem",
+          title: "Kristi Noem latest news",
+          textSnippet: "first article page",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-http-2",
+        result: {
+          finalUrl: "https://example.com/news/kristi-noem/analysis",
+          title: "Kristi Noem analysis",
+          textSnippet: "second article page",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-http-get",
+        result: {
+          url: "https://example.com/news/kristi-noem/analysis",
+          status: 200,
+          bodySnippet: "analysis body",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.get"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-http-get-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-http-get-1",
+      content: "what's the latest news on Kristi Noem?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "what's the latest news on Kristi Noem?" }],
+    });
+
+    expect(invokeTool).toHaveBeenNthCalledWith(4, expect.objectContaining({
+      toolName: "http.get",
+      args: expect.objectContaining({
+        url: "https://example.com/news/kristi-noem/analysis",
+      }),
+    }));
+    expect(result.assistantContent).toContain("Kristi Noem is in the news again.");
+    expect(result.assistantContent).not.toContain("execution error: url is required");
+  });
+
+  it("uses the most recent visited page before falling back to prior search results for http.get", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.get"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+        failureReason?: string;
+      };
+    }).preflightToolInvocation({
+      toolName: "http.get",
+      rawArgs: {},
+      userContent: "what's the latest news on Kristi Noem?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-http-1",
+          turnId: "turn-http-1",
+          sessionId: "sess-http-2",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "latest news on Kristi Noem" },
+          result: {
+            results: [
+              { title: "Kristi Noem latest news", url: "https://example.com/news/kristi-noem", snippet: "snippet" },
+            ],
+          },
+          startedAt: "2026-03-06T23:10:00.000Z",
+          finishedAt: "2026-03-06T23:10:01.000Z",
+        },
+        {
+          toolRunId: "tool-nav-http-1",
+          turnId: "turn-http-1",
+          sessionId: "sess-http-2",
+          toolName: "browser.navigate",
+          status: "executed",
+          args: { url: "https://example.com/news/kristi-noem" },
+          result: {
+            finalUrl: "https://example.com/news/kristi-noem/live-blog",
+            title: "Kristi Noem live blog",
+            textSnippet: "live updates",
+          },
+          startedAt: "2026-03-06T23:10:02.000Z",
+          finishedAt: "2026-03-06T23:10:03.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.failureReason).toBeUndefined();
+    expect(preflight.args).toMatchObject({
+      url: "https://example.com/news/kristi-noem/live-blog",
+    });
+  });
+
+  it("does not infer recent-run urls for http.post", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.post"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+        failureReason?: string;
+      };
+    }).preflightToolInvocation({
+      toolName: "http.post",
+      rawArgs: {},
+      userContent: "what's the latest news on Kristi Noem?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-post-1",
+          turnId: "turn-post-1",
+          sessionId: "sess-post-1",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "latest news on Kristi Noem" },
+          result: {
+            results: [
+              { title: "Kristi Noem latest news", url: "https://example.com/news/kristi-noem", snippet: "snippet" },
+            ],
+          },
+          startedAt: "2026-03-06T23:11:00.000Z",
+          finishedAt: "2026-03-06T23:11:01.000Z",
+        },
+        {
+          toolRunId: "tool-nav-post-1",
+          turnId: "turn-post-1",
+          sessionId: "sess-post-1",
+          toolName: "browser.navigate",
+          status: "executed",
+          args: { url: "https://example.com/news/kristi-noem" },
+          result: {
+            finalUrl: "https://example.com/news/kristi-noem/live-blog",
+          },
+          startedAt: "2026-03-06T23:11:02.000Z",
+          finishedAt: "2026-03-06T23:11:03.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.failureReason).toBe("execution error: url is required");
+  });
+
+  it("keeps http.get unresolved when no prompt or recent-run url is available", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["http.get"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+        failureReason?: string;
+      };
+    }).preflightToolInvocation({
+      toolName: "http.get",
+      rawArgs: {},
+      userContent: "tell me what's going on with Kristi Noem",
+      priorToolRuns: [],
+    });
+
+    expect(preflight.failureReason).toBe("execution error: url is required");
   });
 
   it("promotes repeated live-data browser.search calls into browser.navigate during preflight", async () => {

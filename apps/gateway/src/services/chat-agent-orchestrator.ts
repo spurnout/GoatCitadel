@@ -1480,11 +1480,11 @@ function inferToolArgValueFromRecentToolRuns(
   if (field !== "url" || !toolRuns || toolRuns.length === 0) {
     return undefined;
   }
-  if (toolName !== "browser.navigate" && toolName !== "browser.extract") {
+  if (toolName !== "browser.navigate" && toolName !== "browser.extract" && toolName !== "http.get") {
     return undefined;
   }
-  return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3)
-    ?? inferRecentBrowserVisitedUrl(toolRuns);
+  return inferRecentBrowserVisitedUrl(toolRuns)
+    ?? selectBestRecentBrowserResultUrl(userContent, toolRuns, 3);
 }
 
 function inferBrowserNavigateUrlFromRepeatedSearches(
