@@ -395,6 +395,7 @@ export function SettingsPage() {
       setError("Confirm critical changes before saving.");
       return;
     }
+    setError(null);
     try {
       const allowlist = networkAllowlistText
         .split("\n")
@@ -417,6 +418,7 @@ export function SettingsPage() {
       setError("Confirm critical changes before saving.");
       return;
     }
+    setError(null);
     try {
       const next = await patchSettings({
         llm: {
@@ -436,6 +438,7 @@ export function SettingsPage() {
       setError("Confirm critical changes before saving.");
       return;
     }
+    setError(null);
     try {
       const next = await patchSettings({
         llm: {
@@ -466,6 +469,7 @@ export function SettingsPage() {
       setError("Enter a provider API key first.");
       return;
     }
+    setError(null);
     try {
       const status = await saveProviderSecret(providerId, trimmed);
       setProviderSecretStatus(status);
@@ -479,6 +483,7 @@ export function SettingsPage() {
   };
 
   const onDeleteProviderKeyFromSecureStore = async () => {
+    setError(null);
     try {
       const status = await deleteProviderSecret(providerId);
       setProviderSecretStatus(status);
@@ -490,7 +495,10 @@ export function SettingsPage() {
     }
   };
 
-  const onLoadModels = async (options: { signal?: AbortSignal } = {}) => {
+  const onLoadModels = async (options: { signal?: AbortSignal; clearError?: boolean } = {}) => {
+    if (options.clearError) {
+      setError(null);
+    }
     try {
       const targetProviderId = (providerId || activeProviderId).trim();
       const targetBaseUrl = providerBaseUrl.trim();
@@ -564,6 +572,7 @@ export function SettingsPage() {
   }, [activeProviderId, providerApiKey, providerApiKeyEnv, providerBaseUrl, providerId]);
 
   const onTestChat = async () => {
+    setError(null);
     try {
       const res = await createLlmChatCompletion({
         providerId: activeProviderId || undefined,
@@ -592,6 +601,7 @@ export function SettingsPage() {
 
   const onStartVoiceTalk = async () => {
     setVoiceBusy(true);
+    setError(null);
     try {
       await startVoiceTalkSession({ mode: voiceTalkMode });
       await refreshVoiceRuntime();
@@ -610,6 +620,7 @@ export function SettingsPage() {
       return;
     }
     setVoiceBusy(true);
+    setError(null);
     try {
       await stopVoiceTalkSession(voiceStatus.talk.activeSessionId);
       await refreshVoiceRuntime();
@@ -625,6 +636,7 @@ export function SettingsPage() {
 
   const onStartWake = async () => {
     setVoiceBusy(true);
+    setError(null);
     try {
       await startVoiceWake();
       await refreshVoiceRuntime();
@@ -640,6 +652,7 @@ export function SettingsPage() {
 
   const onStopWake = async () => {
     setVoiceBusy(true);
+    setError(null);
     try {
       await stopVoiceWake();
       await refreshVoiceRuntime();
@@ -659,6 +672,7 @@ export function SettingsPage() {
       return;
     }
     setVoiceBusy(true);
+    setError(null);
     try {
       const bytesBase64 = await fileToBase64(voiceFile);
       const result = await transcribeVoice({
@@ -696,6 +710,7 @@ export function SettingsPage() {
       setError("Confirm critical changes before saving.");
       return;
     }
+    setError(null);
     try {
       const next = await patchSettings({
         auth: {
@@ -1140,7 +1155,7 @@ export function SettingsPage() {
             customPlaceholder="Custom model id"
             customLabel="Custom active model"
           />
-          <button type="button" onClick={() => { void onLoadModels(); }}>{loadingModels ? "Loading..." : "Refresh Models"}</button>
+          <button type="button" onClick={() => { void onLoadModels({ clearError: true }); }}>{loadingModels ? "Loading..." : "Refresh Models"}</button>
         </div>
         {modelDiscoverySource ? (
           <p className="office-subtitle">

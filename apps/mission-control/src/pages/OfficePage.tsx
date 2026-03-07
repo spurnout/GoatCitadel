@@ -175,7 +175,7 @@ class OfficeCanvasErrorBoundary extends Component<
     if (this.state.hasError) {
       return (
         <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-          <p>Office scene failed to render. Reload the page or reduce motion settings.</p>
+          <p>Office scene failed to render. WebGL may be unavailable or blocked in this browser. Reload the page or reduce motion settings.</p>
         </div>
       );
     }

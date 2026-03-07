@@ -2091,7 +2091,7 @@ pre {
 .chat-v11-thread {
   display: grid;
   gap: 10px;
-  min-height: 620px;
+  min-height: clamp(460px, calc(100vh - 220px), 900px);
 }
 
 .chat-v11-thread.mode-code .chat-v11-message p,
@@ -2106,7 +2106,7 @@ pre {
   display: grid;
   gap: 8px;
   min-height: 260px;
-  max-height: 52vh;
+  max-height: calc(100vh - 340px);
   overflow: auto;
   scroll-behavior: smooth;
 }
@@ -4002,6 +4002,12 @@ body {
   text-align: left;
   padding: 12px 14px;
   border-radius: 14px;
+}
+
+.command-palette-action.active,
+.command-palette-action[aria-selected="true"] {
+  background: rgba(120, 146, 186, 0.12);
+  border-color: rgba(120, 146, 186, 0.28);
 }
 
 .command-palette-go {
@@ -7739,7 +7745,9 @@ body {
   position: sticky;
   top: 108px;
   max-height: calc(100vh - 132px);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
   border: 1px solid rgba(255, 54, 93, 0.18);
   background:
     linear-gradient(180deg, rgba(13, 13, 16, 0.98), rgba(5, 6, 8, 1));
@@ -8136,6 +8144,16 @@ body {
 
 .theme-obsidian-crimson .command-palette-action {
   border-radius: 6px;
+}
+
+.theme-obsidian-crimson .command-palette-action.active,
+.theme-obsidian-crimson .command-palette-action[aria-selected="true"] {
+  background:
+    linear-gradient(180deg, rgba(35, 11, 19, 0.98), rgba(11, 10, 12, 1));
+  border-color: rgba(255, 54, 93, 0.34);
+  box-shadow:
+    0 0 0 1px rgba(255, 24, 71, 0.16),
+    0 0 18px rgba(255, 24, 71, 0.12);
 }
 
 .theme-obsidian-crimson .command-palette-action:hover {

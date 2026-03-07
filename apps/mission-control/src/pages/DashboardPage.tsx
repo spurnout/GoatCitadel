@@ -37,29 +37,62 @@ export function DashboardPage({
   const initialLoadedRef = useRef(false);
 
   const loadDashboard = useCallback(async () => {
-    try {
-      const [dashboard, vitalsRes, cronRes, operatorsRes, memoryRes] = await Promise.all([
-        fetchDashboardState(),
-        fetchSystemVitals(),
-        fetchCronJobs(),
-        fetchOperators(),
-        fetchMemoryFiles(),
-      ]);
-      setState(dashboard);
-      setVitals(vitalsRes);
-      setCron(cronRes);
-      setOperators(operatorsRes);
-      setMemoryFiles(memoryRes.items);
-      setError(null);
-      initialLoadedRef.current = true;
-    } catch (err) {
-      const message = (err as Error).message;
-      if (!initialLoadedRef.current) {
-        setError(message);
-      } else {
-        setError(`Background refresh failed: ${message}`);
-      }
+    const [dashboardResult, vitalsResult, cronResult, operatorsResult, memoryResult] = await Promise.allSettled([
+      fetchDashboardState(),
+      fetchSystemVitals(),
+      fetchCronJobs(),
+      fetchOperators(),
+      fetchMemoryFiles(),
+    ]);
+
+    const dashboardError = dashboardResult.status === "rejected" ? dashboardResult.reason as Error : null;
+    const vitalsError = vitalsResult.status === "rejected" ? vitalsResult.reason as Error : null;
+    const coreMessage = [dashboardError?.message, vitalsError?.message].filter(Boolean).join(" | ");
+
+    if (dashboardResult.status === "fulfilled") {
+      setState(dashboardResult.value);
     }
+    if (vitalsResult.status === "fulfilled") {
+      setVitals(vitalsResult.value);
+    }
+    if (cronResult.status === "fulfilled") {
+      setCron(cronResult.value);
+    } else if (!initialLoadedRef.current) {
+      setCron({ items: [] });
+    }
+    if (operatorsResult.status === "fulfilled") {
+      setOperators(operatorsResult.value);
+    } else if (!initialLoadedRef.current) {
+      setOperators({ items: [] });
+    }
+    if (memoryResult.status === "fulfilled") {
+      setMemoryFiles(memoryResult.value.items);
+    } else if (!initialLoadedRef.current) {
+      setMemoryFiles([]);
+    }
+
+    if (dashboardError || vitalsError) {
+      if (!initialLoadedRef.current) {
+        setError(coreMessage || "Unable to load dashboard.");
+      } else {
+        setError(`Background refresh failed: ${coreMessage || "Unable to refresh dashboard."}`);
+      }
+      return;
+    }
+
+    const supplementaryMessages = [
+      cronResult.status === "rejected" ? "scheduler" : null,
+      operatorsResult.status === "rejected" ? "operators" : null,
+      memoryResult.status === "rejected" ? "memory files" : null,
+    ].filter(Boolean) as string[];
+
+    if (supplementaryMessages.length > 0) {
+      setError(`Background refresh degraded: unable to refresh ${supplementaryMessages.join(", ")}.`);
+    } else {
+      setError(null);
+    }
+
+    initialLoadedRef.current = true;
   }, []);
 
   useEffect(() => {

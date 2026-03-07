@@ -16,9 +16,15 @@ export function NotificationStack({ items, onDismiss }: NotificationStackProps) 
   }
 
   return (
-    <div className="notification-stack" aria-live="polite">
+    <div className="notification-stack">
       {items.map((item) => (
-        <div key={item.id} className={`notification-item ${item.tone}`}>
+        <div
+          key={item.id}
+          className={`notification-item ${item.tone}`}
+          role={item.tone === "error" || item.tone === "warning" ? "alert" : "status"}
+          aria-live={item.tone === "error" || item.tone === "warning" ? "assertive" : "polite"}
+          aria-atomic="true"
+        >
           <div className="notification-copy">
             <p className="notification-tone">{item.tone}</p>
             <p>{item.message}</p>
