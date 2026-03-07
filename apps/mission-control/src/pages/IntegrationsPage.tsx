@@ -22,12 +22,16 @@ import {
   type ObsidianIntegrationStatus,
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { DataToolbar } from "../components/DataToolbar";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { ConfigFormBuilder } from "../components/ConfigFormBuilder";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { HelpHint } from "../components/HelpHint";
+import { StatusChip } from "../components/StatusChip";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { useAction } from "../hooks/useAction";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -524,23 +528,43 @@ export function IntegrationsPage() {
   const selectedDiagnostics = selectedDiagnosticConnectionId
     ? diagnosticsByConnectionId[selectedDiagnosticConnectionId]
     : undefined;
+  const integrationsHeaderActions = (
+    <div className="workflow-summary-strip">
+      <StatusChip tone="live">{connectionSummary.connected} ready</StatusChip>
+      <StatusChip>{connectionSummary.total} configured</StatusChip>
+      <StatusChip>{plugins.length} plugins</StatusChip>
+      {connectionSummary.error > 0 ? <StatusChip tone="critical">{connectionSummary.error} errors</StatusChip> : null}
+      {isRefreshing ? <StatusChip tone="warning">Refreshing</StatusChip> : null}
+    </div>
+  );
 
   return (
-    <section>
-      <h2>{pageCopy.integrations.title}</h2>
-      <p className="office-subtitle">{pageCopy.integrations.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Integrate"
+        title={pageCopy.integrations.title}
+        subtitle={pageCopy.integrations.subtitle}
+        hint="Catalog entries define what you can connect. Save the config, validate risk, then leave only the connections you actually want live."
+        actions={integrationsHeaderActions}
+      />
       <PageGuideCard
+        pageId="integrations"
         what={pageCopy.integrations.guide?.what ?? ""}
         when={pageCopy.integrations.guide?.when ?? ""}
         mostCommonAction={pageCopy.integrations.guide?.mostCommonAction}
         actions={pageCopy.integrations.guide?.actions ?? []}
         terms={pageCopy.integrations.guide?.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing integrations...</p> : null}
 
-      <article className="card">
-        <h3>How Connections Work</h3>
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing integrations...</p> : null}
+      </div>
+
+      <Panel
+        title="How Connections Work"
+        subtitle="Catalog entries define the shape of a connection. Connections store config and only activate when a page or workflow needs them."
+      >
         <ol>
           <li>Pick a catalog entry to define what you are connecting.</li>
           <li>Fill guided fields (recommended), then save the connection.</li>
@@ -556,10 +580,12 @@ export function IntegrationsPage() {
           <span className="token-chip">Errors: {connectionSummary.error}</span>
           <span className="token-chip">Disabled: {connectionSummary.disabled}</span>
         </div>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Obsidian (Optional)</h3>
+      <Panel
+        title="Obsidian (Optional)"
+        subtitle="Only enable this if you want GoatCitadel to read and append markdown in a local Obsidian vault."
+      >
         <p className="office-subtitle">
           Use this only if you want GoatCitadel to read and append markdown notes in your local Obsidian vault.
           Leave disabled if you do not use Obsidian.
@@ -680,37 +706,40 @@ export function IntegrationsPage() {
             </button>
           </div>
         </details>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <div className="controls-row">
-          <label htmlFor="integrationKind">
-            Connection type
-            <HelpHint
-              label="Connection type help"
-              text="Filter catalog entries by integration category. This does not remove existing connections."
-            />
-          </label>
-          <GCSelect
-            id="integrationKind"
-            value={kindFilter}
-            onChange={(value) => {
-              setKindFilter(value as IntegrationKind);
-              setSelectedCatalogId("");
-              setFormSchema(undefined);
-            }}
-            options={KIND_OPTIONS.map((option) => ({
-              value: option.value,
-              label: option.label,
-            }))}
-          />
-        </div>
-        <p className="office-subtitle">
-          {kindFilter === "all"
-            ? "Showing all available catalog entries."
-            : KIND_DESCRIPTIONS[kindFilter]}
-        </p>
-      </article>
+      <Panel
+        title="Catalog Scope"
+        subtitle={kindFilter === "all" ? "Showing all available catalog entries." : KIND_DESCRIPTIONS[kindFilter]}
+      >
+        <DataToolbar
+          primary={(
+            <div className="controls-row">
+              <label htmlFor="integrationKind">
+                Connection type
+                <HelpHint
+                  label="Connection type help"
+                  text="Filter catalog entries by integration category. This does not remove existing connections."
+                />
+              </label>
+              <GCSelect
+                id="integrationKind"
+                value={kindFilter}
+                onChange={(value) => {
+                  setKindFilter(value as IntegrationKind);
+                  setSelectedCatalogId("");
+                  setFormSchema(undefined);
+                }}
+                options={KIND_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                }))}
+              />
+            </div>
+          )}
+          secondary={<StatusChip>{catalog.length} entries</StatusChip>}
+        />
+      </Panel>
 
       <ChangeReviewPanel
         title="Pre-Save Safety Check"
@@ -721,11 +750,10 @@ export function IntegrationsPage() {
         onCriticalConfirmChange={setCriticalConfirmed}
       />
 
-      <article className="card">
-        <h3>Create Connection</h3>
-        <p className="office-subtitle">
-          Start in guided mode. Switch to advanced JSON only if you need unsupported fields.
-        </p>
+      <Panel
+        title="Create Connection"
+        subtitle="Start in guided mode. Switch to advanced JSON only if you need unsupported fields."
+      >
         {isInitialLoading ? <CardSkeleton lines={5} /> : null}
         {!isInitialLoading ? (
           <>
@@ -838,22 +866,26 @@ export function IntegrationsPage() {
             </button>
           </>
         ) : null}
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Configured Connections</h3>
-        <p className="office-subtitle">
-          Search by name, catalog, status, or error text.
-        </p>
-        <div className="controls-row">
-          <label htmlFor="connectionSearch">Filter</label>
-          <input
-            id="connectionSearch"
-            value={connectionSearch}
-            onChange={(event) => setConnectionSearch(event.target.value)}
-            placeholder="Search label, catalog, status, error..."
-          />
-        </div>
+      <Panel
+        title="Configured Connections"
+        subtitle="Search by name, catalog, status, or error text."
+      >
+        <DataToolbar
+          primary={(
+            <div className="controls-row">
+              <label htmlFor="connectionSearch">Filter</label>
+              <input
+                id="connectionSearch"
+                value={connectionSearch}
+                onChange={(event) => setConnectionSearch(event.target.value)}
+                placeholder="Search label, catalog, status, error..."
+              />
+            </div>
+          )}
+          secondary={<StatusChip>{filteredConnections.length} visible</StatusChip>}
+        />
         <table>
           <thead>
             <tr>
@@ -929,9 +961,9 @@ export function IntegrationsPage() {
               }) => (
                 <li key={`${check.key}:${check.message}`}>
                   <strong>{check.key}</strong> [{check.status}] - {check.message}
-                </li>
-              ))}
-            </ul>
+              </li>
+            ))}
+          </ul>
             {selectedDiagnostics.recommendedNextAction ? (
               <p className="office-subtitle">
                 Next step: {selectedDiagnostics.recommendedNextAction}
@@ -939,13 +971,12 @@ export function IntegrationsPage() {
             ) : null}
           </details>
         ) : null}
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Plugin Adapters</h3>
-        <p className="office-subtitle">
-          Optional adapters for services that are not built in yet. Most users can skip this section.
-        </p>
+      <Panel
+        title="Plugin Adapters"
+        subtitle="Optional adapters for services that are not built in yet. Most users can skip this section."
+      >
         <details className="advanced-panel">
           <summary>Install new plugin adapter (advanced)</summary>
           <div className="controls-row" style={{ marginTop: 10 }}>
@@ -999,7 +1030,7 @@ export function IntegrationsPage() {
             ))}
           </tbody>
         </table>
-      </article>
+      </Panel>
 
       <ConfirmModal
         open={Boolean(deleteTarget)}

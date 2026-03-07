@@ -12,9 +12,13 @@ import {
   patchSettings,
   revokeToolGrant,
 } from "../api/client";
+import { DataToolbar } from "../components/DataToolbar";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { HelpHint } from "../components/HelpHint";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { GCCombobox, GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -164,6 +168,14 @@ export function ToolsPage() {
   const canProceedStep2 = toolPattern.trim().length > 0;
   const requiresTtlExpiration = grantType === "ttl";
   const canCreateGrant = canProceedStep1 && canProceedStep2 && (!requiresTtlExpiration || expiresAt.trim().length > 0);
+  const toolsHeaderActions = (
+    <div className="workflow-summary-strip">
+      <StatusChip tone="live">{currentToolProfile}</StatusChip>
+      <StatusChip>{grants.length} grants</StatusChip>
+      <StatusChip>{catalog.length} tools</StatusChip>
+      {isRefreshing ? <StatusChip tone="warning">Refreshing</StatusChip> : null}
+    </div>
+  );
 
   useEffect(() => {
     if (grantAdvanced) {
@@ -500,28 +512,40 @@ export function ToolsPage() {
   );
 
   return (
-    <div>
-      <h2>{pageCopy.tools.title}</h2>
-      <p className="office-subtitle">{pageCopy.tools.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Operate"
+        title={pageCopy.tools.title}
+        subtitle={pageCopy.tools.subtitle}
+        hint="Use profiles, scoped grants, and dry-runs to widen tool access deliberately instead of all at once."
+        actions={toolsHeaderActions}
+      />
 
       <PageGuideCard
+        pageId="tools"
         what={pageCopy.tools.guide?.what ?? ""}
         when={pageCopy.tools.guide?.when ?? ""}
         actions={pageCopy.tools.guide?.actions ?? []}
         terms={pageCopy.tools.guide?.terms}
       />
 
-      {error ? <p className="error">{error}</p> : null}
-      {success ? <p className="status-banner">{success}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing tool access data...</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {success ? <p className="status-banner">{success}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing tool access data...</p> : null}
+      </div>
       {isInitialLoading ? <CardSkeleton lines={8} /> : null}
 
-      <div className="card">
-        <h3>Access Modes</h3>
-        <p className="office-subtitle">
-          One-click profile switching for safe days vs power days.
-          Current profile: <strong>{currentToolProfile}</strong>.
-        </p>
+      <Panel
+        title="Access Modes"
+        subtitle={(
+          <>
+            One-click profile switching for safe days versus power days.
+            {" "}
+            Current profile: <strong>{currentToolProfile}</strong>.
+          </>
+        )}
+      >
         <div className="tool-profile-grid">
           {TOOL_PROFILE_PRESETS.map((preset) => (
             <button
@@ -551,13 +575,13 @@ export function ToolsPage() {
             Simple mode is active. You can still grant access safely with the wizard below.
           </p>
         ) : null}
-      </div>
+      </Panel>
 
       <div className="split-grid">
-        <div className="card">
-          <h3>Create Grant</h3>
-          <p className="office-subtitle">Use this wizard for most cases. Turn on advanced settings only when needed.</p>
-
+        <Panel
+          title="Create Grant"
+          subtitle="Use this wizard for most cases. Turn on advanced settings only when you need wildcard patterns or custom duration."
+        >
           <div className="tools-wizard-steps">
             <button type="button" className={grantWizardStep === 1 ? "active" : ""} onClick={() => onWizardJump(1)}>1. Who</button>
             <button type="button" className={grantWizardStep === 2 ? "active" : ""} onClick={() => onWizardJump(2)}>2. What</button>
@@ -744,11 +768,12 @@ export function ToolsPage() {
               </button>
             )}
           </div>
-        </div>
+        </Panel>
 
-        <div className="card">
-          <h3>Check Access</h3>
-          <p className="office-subtitle">Quickly check whether a tool call would be allowed before you run it.</p>
+        <Panel
+          title="Check Access"
+          subtitle="Confirm whether a tool call would be allowed before you run it."
+        >
           <div className="controls-row">
             <label>
               Tool
@@ -812,13 +837,14 @@ export function ToolsPage() {
               ) : null}
             </div>
           ) : null}
-        </div>
+        </Panel>
       </div>
 
       <div className="split-grid">
-        <div className="card">
-          <h3>Dry-Run Tool</h3>
-          <p className="office-subtitle">Simulate a tool call and inspect the response safely before live execution.</p>
+        <Panel
+          title="Dry-Run Tool"
+          subtitle="Simulate a tool call and inspect the response safely before live execution."
+        >
           <div className="controls-row">
             <label>
               Tool
@@ -884,14 +910,21 @@ export function ToolsPage() {
               <pre>{JSON.stringify(dryRunResult, null, 2)}</pre>
             </div>
           ) : null}
-        </div>
+        </Panel>
 
-        <div className="card">
-          <h3>Active Grants</h3>
-          <div className="controls-row">
-            <label>Filter</label>
-            <input value={grantFilter} onChange={(event) => setGrantFilter(event.target.value)} placeholder="Search tool, scope, decision, created by..." />
-          </div>
+        <Panel
+          title="Active Grants"
+          subtitle="Review, filter, and revoke scoped permissions."
+        >
+          <DataToolbar
+            primary={(
+              <div className="controls-row">
+                <label>Filter</label>
+                <input value={grantFilter} onChange={(event) => setGrantFilter(event.target.value)} placeholder="Search tool, scope, decision, created by..." />
+              </div>
+            )}
+            secondary={<StatusChip>{visibleGrants.length} visible</StatusChip>}
+          />
           <table>
             <thead>
               <tr>
@@ -924,18 +957,26 @@ export function ToolsPage() {
                 <tr>
                   <td colSpan={6}>No grants match your filter.</td>
                 </tr>
-              ) : null}
+                ) : null}
             </tbody>
           </table>
-        </div>
+        </Panel>
       </div>
 
-      <div className={`card ${showTechnicalDetails ? "" : "expert-only"}`}>
-        <h3>Tool Catalog</h3>
-        <div className="controls-row">
-          <label>Filter</label>
-          <input value={catalogFilter} onChange={(event) => setCatalogFilter(event.target.value)} placeholder="Search by tool name, category, or description..." />
-        </div>
+      <Panel
+        title="Tool Catalog"
+        subtitle="Inspect the full tool surface by pack, category, risk, and approval posture."
+        className={showTechnicalDetails ? "" : "expert-only"}
+      >
+        <DataToolbar
+          primary={(
+            <div className="controls-row">
+              <label>Filter</label>
+              <input value={catalogFilter} onChange={(event) => setCatalogFilter(event.target.value)} placeholder="Search by tool name, category, or description..." />
+            </div>
+          )}
+          secondary={<StatusChip>{catalog.length} total</StatusChip>}
+        />
         {(["core", "devops", "knowledge", "comms"] as const).map((pack) => (
           <div key={pack}>
             <h4>{pack.toUpperCase()}</h4>
@@ -968,8 +1009,8 @@ export function ToolsPage() {
             </table>
           </div>
         ))}
-      </div>
-    </div>
+      </Panel>
+    </section>
   );
 }
 

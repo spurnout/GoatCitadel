@@ -17,8 +17,12 @@ import {
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { DataToolbar } from "../components/DataToolbar";
 import { HelpHint } from "../components/HelpHint";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { StatusChip } from "../components/StatusChip";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -200,6 +204,22 @@ export function McpPage() {
     [selectedServerId, servers],
   );
   const selectedDiagnostic = selected ? diagnosticByServerId[selected.serverId] : undefined;
+  const connectedServerCount = useMemo(
+    () => servers.filter((item) => item.status === "connected").length,
+    [servers],
+  );
+  const mcpHeaderActions = useMemo(
+    () => (
+      <div className="workflow-summary-strip">
+        <StatusChip tone="live">{connectedServerCount} connected</StatusChip>
+        <StatusChip>{servers.length} servers</StatusChip>
+        <StatusChip>{templates.length} templates</StatusChip>
+        {selected ? <StatusChip tone={selected.status === "connected" ? "success" : "muted"}>{selected.status}</StatusChip> : null}
+        {isRefreshing ? <StatusChip tone="warning">Refreshing</StatusChip> : null}
+      </div>
+    ),
+    [connectedServerCount, isRefreshing, selected, servers.length, templates.length],
+  );
 
   useEffect(() => {
     if (!selected) {
@@ -269,26 +289,46 @@ export function McpPage() {
 
   if (isInitialLoading) {
     return (
-      <section>
-        <h2>{pageCopy.mcp.title}</h2>
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Integrate"
+          title={pageCopy.mcp.title}
+          subtitle={pageCopy.mcp.subtitle}
+          hint="Register adapters, validate trust policy, then test one tool before broader use."
+          actions={mcpHeaderActions}
+        />
         <CardSkeleton lines={8} />
       </section>
     );
   }
 
   return (
-    <section>
-      <h2>{pageCopy.mcp.title}</h2>
-      <p className="office-subtitle">{pageCopy.mcp.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Integrate"
+        title={pageCopy.mcp.title}
+        subtitle={pageCopy.mcp.subtitle}
+        hint="MCP adapters should stay explicit, policy-bound, and easy to inspect before first live use."
+        actions={mcpHeaderActions}
+      />
       <PageGuideCard
+        pageId="mcp"
         what={pageCopy.mcp.guide?.what ?? ""}
         when={pageCopy.mcp.guide?.when ?? ""}
         mostCommonAction={pageCopy.mcp.guide?.mostCommonAction}
         actions={pageCopy.mcp.guide?.actions ?? []}
         terms={pageCopy.mcp.guide?.terms}
       />
-      <article className="card">
-        <h3>MCP basics (for first-time users)</h3>
+
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing MCP servers...</p> : null}
+      </div>
+
+      <Panel
+        title="MCP basics"
+        subtitle="Start with one disabled template, connect it, then validate trust and policy before first live use."
+      >
         <p className="office-subtitle">
           MCP servers are adapters that let GoatCitadel use outside tools safely. Start disabled, test one server, then expand.
         </p>
@@ -301,12 +341,12 @@ export function McpPage() {
         <p className="office-subtitle">
           If something fails, disconnect and review policy/tool patterns before trying again.
         </p>
-      </article>
-      {error ? <p className="error">{error}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing MCP servers...</p> : null}
+      </Panel>
 
-      <article className="card">
-        <h3>Template Library (Disabled by Default)</h3>
+      <Panel
+        title="Template Library"
+        subtitle="Known MCP templates stay disabled by default until you choose to add them."
+      >
         <p className="office-subtitle">
           Start from a known MCP server template, then connect and customize policy before first use.
         </p>
@@ -331,10 +371,12 @@ export function McpPage() {
           ))}
           {templates.length === 0 ? <p className="office-subtitle">No templates available.</p> : null}
         </div>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Where to Find More MCP Servers</h3>
+      <Panel
+        title="Where to Find More MCP Servers"
+        subtitle="Use official sources first, and treat community listings as review-before-install leads."
+      >
         <p className="office-subtitle">
           GoatCitadel does not audit third-party MCP servers for you. Review the command, URL, auth, maintainer, and
           policy before you enable anything new.
@@ -379,10 +421,12 @@ export function McpPage() {
             </div>
           ))}
         </div>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Template Discovery Readiness</h3>
+      <Panel
+        title="Template Discovery Readiness"
+        subtitle="Check auth, command, and URL prerequisites before you install a template."
+      >
         <p className="office-subtitle">
           Before installing a template, check whether required auth, command, or URL settings are ready.
         </p>
@@ -414,11 +458,13 @@ export function McpPage() {
             </tbody>
           </table>
         )}
-      </article>
+      </Panel>
 
       <div className="split-grid">
-        <article className="card">
-          <h3>Register MCP Server</h3>
+        <Panel
+          title="Register MCP Server"
+          subtitle="Use this for adapters that are not already covered by the template library."
+        >
           <div className="controls-row">
             <label htmlFor="mcpLabel">Label <HelpHint label="Server label help" text="Human-readable name used in server list and logs." /></label>
             <input id="mcpLabel" value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Docs MCP" />
@@ -500,10 +546,12 @@ export function McpPage() {
             </div>
           )}
           <ActionButton label="Add Server" pending={busy} onClick={handleCreateServer} />
-        </article>
+        </Panel>
 
-        <article className="card">
-          <h3>Servers</h3>
+        <Panel
+          title="Servers"
+          subtitle="Select a server to connect it, run health checks, and tune first-use policy."
+        >
           <div className="virtual-list-shell">
             <Virtuoso
               data={servers}
@@ -692,13 +740,15 @@ export function McpPage() {
                   }}
                 />
               </div>
-            </div>
-          ) : null}
-        </article>
+              </div>
+            ) : null}
+        </Panel>
       </div>
 
-      <article className="card">
-        <h3>Tool Catalog</h3>
+      <Panel
+        title="Tool Catalog"
+        subtitle="Inspect exposed tools for the selected server and do low-risk invocation checks."
+      >
         {!selected ? <p className="office-subtitle">Select a server to inspect and invoke tools.</p> : null}
         <div className="virtual-list-shell">
           <Virtuoso
@@ -712,39 +762,45 @@ export function McpPage() {
           />
         </div>
         {selected ? (
-          <div className="controls-row">
-            <input value={toolName} onChange={(event) => setToolName(event.target.value)} placeholder="tool name" />
-            <input value={toolArgs} onChange={(event) => setToolArgs(event.target.value)} placeholder='{"query":"hello"}' />
-            <ActionButton
-              label="Invoke Tool"
-              pending={busy}
-              onClick={async () => {
-                if (!selected || !toolName.trim()) {
-                  return;
-                }
-                setBusy(true);
-                try {
-                  const parsedArgs = toolArgs.trim() ? JSON.parse(toolArgs) as Record<string, unknown> : {};
-                  const response = await invokeMcpTool({
-                    serverId: selected.serverId,
-                    toolName: toolName.trim(),
-                    arguments: parsedArgs,
-                  });
-                  setResult(JSON.stringify(response, null, 2));
-                  setError(null);
-                } catch (err) {
-                  setError((err as Error).message);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            />
-          </div>
+          <DataToolbar
+            primary={(
+              <div className="controls-row">
+                <input value={toolName} onChange={(event) => setToolName(event.target.value)} placeholder="tool name" />
+                <input value={toolArgs} onChange={(event) => setToolArgs(event.target.value)} placeholder='{"query":"hello"}' />
+              </div>
+            )}
+            secondary={(
+              <ActionButton
+                label="Invoke Tool"
+                pending={busy}
+                onClick={async () => {
+                  if (!selected || !toolName.trim()) {
+                    return;
+                  }
+                  setBusy(true);
+                  try {
+                    const parsedArgs = toolArgs.trim() ? JSON.parse(toolArgs) as Record<string, unknown> : {};
+                    const response = await invokeMcpTool({
+                      serverId: selected.serverId,
+                      toolName: toolName.trim(),
+                      arguments: parsedArgs,
+                    });
+                    setResult(JSON.stringify(response, null, 2));
+                    setError(null);
+                  } catch (err) {
+                    setError((err as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            )}
+          />
         ) : null}
         {result ? (
           <pre>{result}</pre>
         ) : null}
-      </article>
+      </Panel>
       <ConfirmModal
         open={Boolean(confirmDeleteServer)}
         title="Delete MCP Server"

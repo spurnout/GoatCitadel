@@ -14,7 +14,11 @@ import {
   fetchSkillActivationPolicies,
   patchSkillActivationPolicies,
 } from "../api/client";
+import { DataToolbar } from "../components/DataToolbar";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { StatusChip } from "../components/StatusChip";
 import { HelpHint } from "../components/HelpHint";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
@@ -275,22 +279,40 @@ export function SkillsPage() {
   }
 
   return (
-    <section>
-      <h2>{pageCopy.skills.title}</h2>
-      <p className="office-subtitle">{pageCopy.skills.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Operate"
+        title={pageCopy.skills.title}
+        subtitle={pageCopy.skills.subtitle}
+        hint="Discover, validate, install, and govern reusable playbook skills without leaving the operator workflow."
+        actions={(
+          <>
+            <StatusChip tone="muted">{filteredSkills.length} visible</StatusChip>
+            <StatusChip tone="default">{sourceItems.length} sources</StatusChip>
+            <StatusChip tone="success">{skills.filter((skill) => skill.state === "enabled").length} enabled</StatusChip>
+            <StatusChip tone="warning">{skills.filter((skill) => skill.state === "sleep").length} sleeping</StatusChip>
+            {isRefreshing ? <StatusChip tone="live">Refreshing</StatusChip> : null}
+          </>
+        )}
+      />
       <PageGuideCard
+        pageId="skills"
         what={pageCopy.skills.guide?.what ?? ""}
         when={pageCopy.skills.guide?.when ?? ""}
         actions={pageCopy.skills.guide?.actions ?? []}
         terms={pageCopy.skills.guide?.terms}
       />
 
-      {error ? <p className="error">{error}</p> : null}
-      {status ? <p className="status-banner">{status}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing skills and activation policy...</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {status ? <p className="status-banner">{status}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing skills and activation policy...</p> : null}
+      </div>
 
-      <article className="card">
-        <h3>What are skills?</h3>
+      <Panel
+        title="What are skills?"
+        subtitle="Reusable instruction packs that teach GoatCitadel how to perform specific jobs and workflows."
+      >
         <p className="table-subtext">
           Skills are reusable instruction packs that teach GoatCitadel how to do specific jobs.
           You can keep a skill off, keep it guarded (sleep), or turn it on.
@@ -305,42 +327,44 @@ export function SkillsPage() {
             Skills are loaded from local <code>SKILL.md</code> folders and evaluated against activation policy and tool governance before use.
           </p>
         ) : null}
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Skill Sources & Import</h3>
-        <p className="table-subtext">
-          Browse marketplace sources (AgentSkill + SkillsMP), then validate before install.
-          Imported skills are always installed in disabled state for safety.
-        </p>
-        <div className="controls-row">
-          <label htmlFor="skillSourceQuery">
-            Search sources
-            <HelpHint label="Search skill sources help" text="Searches curated marketplaces and supported GitHub-backed sources for installable skills related to the capability you need." />
-          </label>
-          <input
-            id="skillSourceQuery"
-            value={sourceQuery}
-            onChange={(event) => setSourceQuery(event.target.value)}
-            placeholder="browser, github, playwright..."
-          />
-          <button type="button" onClick={() => void onLoadSources()} disabled={sourcesLoading}>
-            {sourcesLoading ? "Searching..." : "Search"}
-          </button>
-        </div>
-        {sourceProviders.length > 0 ? (
-          <div className="token-row">
-            {sourceProviders.map((provider) => (
-              <span
-                key={provider.provider}
-                className={`token-chip ${provider.available ? "token-chip-active" : ""}`}
-                title={provider.error || ""}
-              >
-                {provider.providerLabel}: {provider.status}
-              </span>
-            ))}
-          </div>
-        ) : null}
+      <Panel
+        title="Skill Sources & Import"
+        subtitle="Browse curated sources first, validate before install, and keep imported skills disabled until you explicitly enable them."
+      >
+        <DataToolbar
+          primary={(
+            <div className="controls-row">
+              <label htmlFor="skillSourceQuery">
+                Search sources
+                <HelpHint label="Search skill sources help" text="Searches curated marketplaces and supported GitHub-backed sources for installable skills related to the capability you need." />
+              </label>
+              <input
+                id="skillSourceQuery"
+                value={sourceQuery}
+                onChange={(event) => setSourceQuery(event.target.value)}
+                placeholder="browser, github, playwright..."
+              />
+              <button type="button" onClick={() => void onLoadSources()} disabled={sourcesLoading}>
+                {sourcesLoading ? "Searching..." : "Search"}
+              </button>
+            </div>
+          )}
+          secondary={sourceProviders.length > 0 ? (
+            <div className="token-row">
+              {sourceProviders.map((provider) => (
+                <span
+                  key={provider.provider}
+                  className={`token-chip ${provider.available ? "token-chip-active" : ""}`}
+                  title={provider.error || ""}
+                >
+                  {provider.providerLabel}: {provider.status}
+                </span>
+              ))}
+            </div>
+          ) : undefined}
+        />
         <details className="advanced-panel">
           <summary>Marketplace results</summary>
           {sourceItems.length === 0 ? (
@@ -465,14 +489,12 @@ export function SkillsPage() {
             </table>
           )}
         </details>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Where to Get More Skills</h3>
-        <p className="table-subtext">
-          Discovery does not install anything. Use these sources to find candidates, then validate before install.
-          Imported skills always stay disabled until you enable them.
-        </p>
+      <Panel
+        title="Where to Get More Skills"
+        subtitle="Discovery is separate from installation. Use these directories to find candidates, then validate and import deliberately."
+      >
         <div className="stack-md">
           {[
             {
@@ -525,10 +547,12 @@ export function SkillsPage() {
           <li><strong>GitHub</strong>: flexible fallback when curated catalogs do not have the skill you need.</li>
           <li><strong>local</strong>: local path or zip import for private/internal skills.</li>
         </ul>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Activation Policy</h3>
+      <Panel
+        title="Activation Policy"
+        subtitle="Control how guarded skills wake up and when GoatCitadel asks for first-use confirmation."
+      >
         <div className="controls-row">
           <label htmlFor="skillsThreshold">
             Guarded auto threshold
@@ -564,10 +588,13 @@ export function SkillsPage() {
             {savingPolicy ? "Saving..." : "Save policy"}
           </button>
         </div>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>{BANKR_MIGRATION_CARD_TITLE}</h3>
+      <Panel
+        title={BANKR_MIGRATION_CARD_TITLE}
+        subtitle="Bankr support is optional and intentionally off by default."
+        tone="soft"
+      >
         <p className="table-subtext">
           Built-in Bankr support is disabled by default. If you need it, install it as an optional skill pack and keep
           it in <code>disabled</code> or <code>sleep</code> until policy grants are reviewed.
@@ -577,25 +604,35 @@ export function SkillsPage() {
           <li>Starter template: <code>{BANKR_MIGRATION_TEMPLATE_PATH}</code></li>
           <li>Legacy built-in endpoints return migration guidance (`410`) while disabled.</li>
         </ul>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <div className="controls-row">
-          <h3>Skills</h3>
-          <button type="button" onClick={() => void onReload()}>Reload Playbook</button>
-          <label htmlFor="skillsFilter">Filter</label>
-          <GCSelect
-            id="skillsFilter"
-            value={stateFilter}
-            onChange={(value) => setStateFilter(value as "all" | SkillRuntimeState)}
-            options={[
-              { value: "all", label: "all" },
-              { value: "enabled", label: "enabled" },
-              { value: "sleep", label: "sleep" },
-              { value: "disabled", label: "disabled" },
-            ]}
-          />
-        </div>
+      <Panel
+        title="Skills"
+        subtitle="Review installed skills, change runtime state, and attach operator notes without leaving the page."
+      >
+        <DataToolbar
+          primary={(
+            <>
+              <button type="button" onClick={() => void onReload()}>Reload Playbook</button>
+            </>
+          )}
+          secondary={(
+            <div className="controls-row">
+              <label htmlFor="skillsFilter">Filter</label>
+              <GCSelect
+                id="skillsFilter"
+                value={stateFilter}
+                onChange={(value) => setStateFilter(value as "all" | SkillRuntimeState)}
+                options={[
+                  { value: "all", label: "all" },
+                  { value: "enabled", label: "enabled" },
+                  { value: "sleep", label: "sleep" },
+                  { value: "disabled", label: "disabled" },
+                ]}
+              />
+            </div>
+          )}
+        />
 
         <table>
           <thead>
@@ -659,7 +696,7 @@ export function SkillsPage() {
             })}
           </tbody>
         </table>
-      </article>
+      </Panel>
     </section>
   );
 }

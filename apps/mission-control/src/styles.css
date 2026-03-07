@@ -3510,6 +3510,23 @@ body {
   min-height: 38px;
 }
 
+.workflow-page {
+  display: grid;
+  gap: 16px;
+}
+
+.workflow-status-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-summary-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .page-header {
   display: flex;
   align-items: flex-end;
@@ -3764,6 +3781,16 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.workflow-page .data-toolbar .controls-row {
+  margin-bottom: 0;
+}
+
+.workflow-page .data-toolbar input,
+.workflow-page .data-toolbar select,
+.workflow-page .data-toolbar textarea {
+  min-width: 220px;
 }
 
 .side-inspector-drawer {
@@ -4249,6 +4276,10 @@ body {
   .page-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .workflow-summary-strip {
+    align-items: flex-start;
   }
 
   .desktop-only {
