@@ -31,9 +31,12 @@ import type {
   OfficeOperatorModel,
   OperatorPreset,
 } from "../components/OfficeCanvas";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { StatusChip } from "../components/StatusChip";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
 import { GCSelect } from "../components/ui";
@@ -105,6 +108,12 @@ const MOTION_MODE_OPTIONS: Array<{ value: OfficeMotionMode; label: string }> = [
   { value: "balanced", label: "Balanced" },
   { value: "subtle", label: "Subtle" },
   { value: "reduced", label: "Reduced" },
+];
+
+const PRESET_OPTIONS: Array<{ value: OperatorPreset; label: string }> = [
+  { value: "trailblazer", label: "Trailblazer" },
+  { value: "strategist", label: "Strategist" },
+  { value: "nightwatch", label: "Nightwatch" },
 ];
 
 const PRESET_DETAILS: Record<OperatorPreset, {
@@ -471,21 +480,20 @@ export function OfficePage() {
               customLabel="Operator name"
             />
           </div>
+          <FieldHelp>Use a preset name or switch to custom if you want the Goatherder identity to match the current mission theme.</FieldHelp>
           <div className="controls-row">
             <label htmlFor="goatHerderPreset">Style preset</label>
-            <select
+            <GCSelect
               id="goatHerderPreset"
               value={operatorPrefs.preset}
-              onChange={(event) => setOperatorPrefs((prev) => ({
+              onChange={(value) => setOperatorPrefs((prev) => ({
                 ...prev,
-                preset: event.target.value as OperatorPreset,
+                preset: value as OperatorPreset,
               }))}
-            >
-              <option value="trailblazer">Trailblazer</option>
-              <option value="strategist">Strategist</option>
-              <option value="nightwatch">Nightwatch</option>
-            </select>
+              options={PRESET_OPTIONS}
+            />
           </div>
+          <FieldHelp>Presets adjust the Goatherder palette and scene mood without changing the underlying operator data.</FieldHelp>
           <div className="office-preset-grid">
             {(Object.entries(PRESET_DETAILS) as Array<[OperatorPreset, typeof PRESET_DETAILS[OperatorPreset]]>).map(([key, detail]) => (
               <article
@@ -592,6 +600,19 @@ export function OfficePage() {
         title={officeCopy.title}
         subtitle={officeCopy.subtitle}
         hint="Herd HQ stays immersive. Use the dock and inspector to move between visual awareness and operational detail."
+        actions={(
+          <div className="office-page-actions">
+            <StatusChip tone={streamHealthy ? "live" : "warning"}>
+              Stream {streamHealthy ? "live" : "resyncing"}
+            </StatusChip>
+            <StatusChip tone={pendingApprovals.length > 0 ? "warning" : "muted"}>
+              {pendingApprovals.length} approvals
+            </StatusChip>
+            <StatusChip tone={blockedAgents > 0 ? "critical" : "success"}>
+              {blockedAgents} blocked
+            </StatusChip>
+          </div>
+        )}
       />
       <PageGuideCard
         pageId="office"
@@ -625,215 +646,244 @@ export function OfficePage() {
         </article>
       </div>
 
-      <article className="card office-stage-card-v5">
-        <div className="office-stage-head-v5">
-          <div>
-            <h3>Immersive Command Stage</h3>
-            <p className="office-subtitle">
-              Drag to orbit, click the Goatherder or any desk, and watch live collaboration flow.
-            </p>
-          </div>
-          <div className="office-stage-controls">
-            <label htmlFor="officeMotionMode">Motion</label>
-            <GCSelect
-              id="officeMotionMode"
-              value={effectiveMotionMode}
-              disabled={prefersReducedMotion}
-              onChange={(value) => setOperatorPrefs((prev) => ({
-                ...prev,
-                motionMode: value as OfficeMotionMode,
-              }))}
-              options={MOTION_MODE_OPTIONS}
-            />
-            <div className="office-toggle-row">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={operatorPrefs.showCollabOverlay}
-                  onChange={(event) => setOperatorPrefs((prev) => ({
-                    ...prev,
-                    showCollabOverlay: event.target.checked,
-                  }))}
-                />
-                Collaboration Flow
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={operatorPrefs.idleMillingEnabled}
-                  onChange={(event) => setOperatorPrefs((prev) => ({
-                    ...prev,
-                    idleMillingEnabled: event.target.checked,
-                  }))}
-                />
-                Idle Milling
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={operatorPrefs.showInspectorDock}
-                  onChange={(event) => setOperatorPrefs((prev) => ({
-                    ...prev,
-                    showInspectorDock: event.target.checked,
-                  }))}
-                />
-                Show Inspector
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={operatorPrefs.showRailDock}
-                  onChange={(event) => setOperatorPrefs((prev) => ({
-                    ...prev,
-                    showRailDock: event.target.checked,
-                  }))}
-                />
-                Show Rail
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={operatorPrefs.focusMode}
-                  onChange={(event) => setOperatorPrefs((prev) => ({
-                    ...prev,
-                    focusMode: event.target.checked,
-                  }))}
-                />
-                Focus Mode
-              </label>
+      <div className={`office-v5-workspace${operatorPrefs.showInspectorDock || operatorPrefs.showRailDock ? "" : " office-v5-workspace-single"}`}>
+        <Panel
+          className="office-stage-panel"
+          padding="spacious"
+          title="Immersive Command Stage"
+          subtitle="Drag to orbit, click the Goatherder or any desk, and watch live collaboration flow."
+          actions={(
+            <div className="office-stage-statuses">
+              <StatusChip tone={sceneReady ? "success" : "muted"}>{sceneReady ? "Scene ready" : "Scene warming up"}</StatusChip>
+              <StatusChip tone={operatorPrefs.showCollabOverlay ? "live" : "muted"}>
+                {operatorPrefs.showCollabOverlay ? "Flow visible" : "Flow hidden"}
+              </StatusChip>
             </div>
-          </div>
-        </div>
-
-        {officeAgents.length === 0 ? (
-          <p>No agent roles are available yet.</p>
-        ) : (
-          <>
-            <OfficeCanvasErrorBoundary>
-              {sceneReady ? (
-                <Suspense
-                  fallback={(
-                    <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-                      <p>Loading office scene...</p>
-                    </div>
-                  )}
-                >
-                  <OfficeCanvasScene
-                    operator={operatorModel}
-                    agents={officeAgents}
-                    selectedEntityId={selectedEntityId}
-                    onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
-                    assetPack={assetPack}
-                    motionMode={effectiveMotionMode}
-                    showCollabOverlay={operatorPrefs.showCollabOverlay}
-                    idleMillingEnabled={operatorPrefs.idleMillingEnabled}
-                    collaborationEdges={collaborationEdges}
+          )}
+        >
+          <div className="office-stage-toolbar">
+            <div className="office-stage-toolbar-group office-stage-toolbar-motion">
+              <label htmlFor="officeMotionMode">Motion</label>
+              <GCSelect
+                id="officeMotionMode"
+                value={effectiveMotionMode}
+                disabled={prefersReducedMotion}
+                onChange={(value) => setOperatorPrefs((prev) => ({
+                  ...prev,
+                  motionMode: value as OfficeMotionMode,
+                }))}
+                options={MOTION_MODE_OPTIONS}
+              />
+              <FieldHelp>
+                Use reduced or subtle motion for longer monitoring sessions. Reduced-motion system settings take priority.
+              </FieldHelp>
+            </div>
+            <div className="office-stage-toolbar-group office-stage-toolbar-toggles">
+              <div className="office-toggle-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.showCollabOverlay}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      showCollabOverlay: event.target.checked,
+                    }))}
                   />
-                </Suspense>
-              ) : (
-                <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-                  <p>Loading office scene...</p>
-                </div>
-              )}
-            </OfficeCanvasErrorBoundary>
-            <div className="office-desk-list">
-              <button type="button"
-                className={selectedEntityId === "operator" ? "active" : ""}
-                onClick={() => setSelectedEntityId("operator")}
-              >
-                {operatorPrefs.name}
-              </button>
-              {officeAgents.map((agent) => (
-                <button type="button"
-                  key={agent.roleId}
-                  className={selectedEntityId === agent.roleId ? "active" : ""}
-                  onClick={() => setSelectedEntityId(agent.roleId)}
-                >
-                  {agent.name}
-                </button>
-              ))}
+                  Collaboration Flow
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.idleMillingEnabled}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      idleMillingEnabled: event.target.checked,
+                    }))}
+                  />
+                  Idle Milling
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.showInspectorDock}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      showInspectorDock: event.target.checked,
+                    }))}
+                  />
+                  Show Inspector
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.showRailDock}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      showRailDock: event.target.checked,
+                    }))}
+                  />
+                  Show Rail
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.focusMode}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      focusMode: event.target.checked,
+                    }))}
+                  />
+                  Focus Mode
+                </label>
+              </div>
+              <FieldHelp>
+                Inspector keeps entity detail in view. Rail keeps operators, approvals, and the live event stream docked beside the scene.
+              </FieldHelp>
             </div>
-          </>
+          </div>
+
+          {officeAgents.length === 0 ? (
+            <div className="gc-empty-state office-empty-state">
+              <p className="gc-empty-title">No agent roles are available yet.</p>
+              <p className="gc-empty-subtitle">When the herd is configured, desks will appear here and the Office scene will light up.</p>
+            </div>
+          ) : (
+            <>
+              <OfficeCanvasErrorBoundary>
+                {sceneReady ? (
+                  <Suspense
+                    fallback={(
+                      <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                        <p>Loading office scene...</p>
+                      </div>
+                    )}
+                  >
+                    <OfficeCanvasScene
+                      operator={operatorModel}
+                      agents={officeAgents}
+                      selectedEntityId={selectedEntityId}
+                      onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
+                      assetPack={assetPack}
+                      motionMode={effectiveMotionMode}
+                      showCollabOverlay={operatorPrefs.showCollabOverlay}
+                      idleMillingEnabled={operatorPrefs.idleMillingEnabled}
+                      collaborationEdges={collaborationEdges}
+                    />
+                  </Suspense>
+                ) : (
+                  <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                    <p>Loading office scene...</p>
+                  </div>
+                )}
+              </OfficeCanvasErrorBoundary>
+              <FieldHelp className="office-stage-help">
+                Click the Goatherder or any desk to inspect the operator, recent signals, collaboration edges, and risk state without leaving the scene.
+              </FieldHelp>
+              <div className="office-desk-list">
+                <button type="button"
+                  className={selectedEntityId === "operator" ? "active" : ""}
+                  onClick={() => setSelectedEntityId("operator")}
+                >
+                  {operatorPrefs.name}
+                </button>
+                {officeAgents.map((agent) => (
+                  <button type="button"
+                    key={agent.roleId}
+                    className={selectedEntityId === agent.roleId ? "active" : ""}
+                    onClick={() => setSelectedEntityId(agent.roleId)}
+                  >
+                    {agent.name}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </Panel>
+
+        {(operatorPrefs.showInspectorDock || operatorPrefs.showRailDock) ? (
+          <Panel
+            className="office-dock-panel"
+            padding="default"
+            title="Operations Dock"
+            subtitle="Keep inspection, approvals, operators, and live signals beside the command stage."
+            actions={(
+              <div className="office-dock-tabs">
+                {availableDockTabs.map((tab) => (
+                  <button type="button"
+                    key={tab}
+                    className={dockTab === tab ? "active" : ""}
+                    onClick={() => setDockTab(tab)}
+                  >
+                    {tab === "inspector" && "Inspector"}
+                    {tab === "operators" && "Operators"}
+                    {tab === "approvals" && "Approvals"}
+                    {tab === "rail" && "Live Rail"}
+                  </button>
+                ))}
+              </div>
+            )}
+          >
+            <div className="office-dock-body">
+              {dockTab === "inspector" ? renderInspectorPanel() : null}
+
+              {dockTab === "operators" ? (
+                <>
+                  <FieldHelp>Operator view summarizes session pressure and who has been active most recently.</FieldHelp>
+                  <ul className="compact-list">
+                    {operators.map((operator) => (
+                      <li key={operator.operatorId}>
+                        <strong>{operator.operatorId}</strong>
+                        <p>{operator.activeSessions} active / {operator.sessionCount} total sessions</p>
+                        <small>Last activity {formatRelative(operator.lastActivityAt)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+
+              {dockTab === "approvals" ? (
+                <>
+                  <FieldHelp>Pending approvals surface the highest-friction work still waiting on human review.</FieldHelp>
+                  <ul className="compact-list">
+                    {pendingApprovals.length === 0 ? <li>No pending approvals.</li> : pendingApprovals.slice(0, 10).map((approval) => (
+                      <li key={approval.approvalId}>
+                        <strong>{approval.kind}</strong>
+                        <p>{approval.riskLevel} - {approval.status}</p>
+                        <small>{formatRelative(approval.createdAt)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+
+              {dockTab === "rail" ? (
+                <>
+                  <FieldHelp>Live rail is the real-time signal feed. Use it to correlate motion in the scene with gateway and tool activity.</FieldHelp>
+                  <ul className="compact-list">
+                    {sortedEvents.length === 0 ? <li>No live events yet.</li> : sortedEvents.slice(0, 12).map((event) => (
+                      <li key={event.eventId}>
+                        <strong>{event.eventType}</strong>
+                        <p>{summarizeEvent(event)}</p>
+                        <small>{formatClock(event.timestamp)} - {event.source}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
+
+            <footer className="office-collab-legend">
+              <span><b>Beam</b> active collaboration</span>
+              <span><b>Pulse</b> handoff in progress</span>
+              <span><b>Red hold</b> blocked or approval risk</span>
+            </footer>
+          </Panel>
+        ) : (
+          <Panel className="office-dock-panel" tone="soft" title="Operations Dock Hidden" subtitle="The scene is still live, but the side dock is disabled right now.">
+            <FieldHelp>Enable either Inspector or Rail above to restore the side dock and keep entity detail beside the scene.</FieldHelp>
+          </Panel>
         )}
-      </article>
-
-      {(operatorPrefs.showInspectorDock || operatorPrefs.showRailDock) ? (
-        <article className="card office-dock-card">
-          <div className="office-dock-tabs">
-            {availableDockTabs.map((tab) => (
-              <button type="button"
-                key={tab}
-                className={dockTab === tab ? "active" : ""}
-                onClick={() => setDockTab(tab)}
-              >
-                {tab === "inspector" && "Inspector"}
-                {tab === "operators" && "Operators"}
-                {tab === "approvals" && "Approvals"}
-                {tab === "rail" && "Live Rail"}
-              </button>
-            ))}
-          </div>
-
-          <div className="office-dock-body">
-            {dockTab === "inspector" ? renderInspectorPanel() : null}
-
-            {dockTab === "operators" ? (
-              <>
-                <h3>Operators</h3>
-                <ul className="compact-list">
-                  {operators.map((operator) => (
-                    <li key={operator.operatorId}>
-                      <strong>{operator.operatorId}</strong>
-                      <p>{operator.activeSessions} active / {operator.sessionCount} total sessions</p>
-                      <small>Last activity {formatRelative(operator.lastActivityAt)}</small>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-
-            {dockTab === "approvals" ? (
-              <>
-                <h3>Pending Approvals</h3>
-                <ul className="compact-list">
-                  {pendingApprovals.length === 0 ? <li>No pending approvals.</li> : pendingApprovals.slice(0, 10).map((approval) => (
-                    <li key={approval.approvalId}>
-                      <strong>{approval.kind}</strong>
-                      <p>{approval.riskLevel} - {approval.status}</p>
-                      <small>{formatRelative(approval.createdAt)}</small>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-
-            {dockTab === "rail" ? (
-              <>
-                <h3>Live Event Rail</h3>
-                <ul className="compact-list">
-                  {sortedEvents.length === 0 ? <li>No live events yet.</li> : sortedEvents.slice(0, 12).map((event) => (
-                    <li key={event.eventId}>
-                      <strong>{event.eventType}</strong>
-                      <p>{summarizeEvent(event)}</p>
-                      <small>{formatClock(event.timestamp)} - {event.source}</small>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-          </div>
-
-          <footer className="office-collab-legend">
-            <span><b>Beam</b> active collaboration</span>
-            <span><b>Pulse</b> handoff in progress</span>
-            <span><b>Red hold</b> blocked or approval risk</span>
-          </footer>
-        </article>
-      ) : (
-        <article className="card">
-          <p>Inspector and rail docks are hidden. Enable either toggle above to restore office controls.</p>
-        </article>
-      )}
+      </div>
     </section>
   );
 }

@@ -1330,45 +1330,76 @@ pre {
   gap: 12px;
 }
 
+.office-page-actions,
+.office-stage-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.office-v5-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 0.95fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.office-v5-workspace-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .office-focus-mode .office-kpi-grid,
 .office-focus-mode .page-guide-card {
   display: none;
 }
 
-.office-stage-card-v5 {
+.office-stage-panel,
+.office-dock-panel {
+  min-width: 0;
+}
+
+.office-stage-panel {
   overflow: hidden;
 }
 
-.office-stage-head-v5 {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+.office-stage-panel .panel-body,
+.office-dock-panel .panel-body {
+  display: grid;
   gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
 }
 
-.office-stage-controls {
+.office-stage-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.office-stage-toolbar-group {
   display: grid;
   gap: 8px;
-  justify-items: end;
 }
 
-.office-stage-controls > label {
+.office-stage-toolbar-group > label {
   font-size: 0.78rem;
   color: var(--muted);
   letter-spacing: 0.04em;
 }
 
-.office-stage-controls select {
+.office-stage-toolbar-motion .gc-select-trigger {
   min-width: 156px;
+}
+
+.office-stage-toolbar-toggles .field-help,
+.office-stage-toolbar-motion .field-help,
+.office-stage-help {
+  margin: 0;
 }
 
 .office-toggle-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .office-toggle-row label {
@@ -1391,17 +1422,10 @@ pre {
   height: clamp(620px, 72vh, 980px);
 }
 
-.office-dock-card {
-  display: grid;
-  gap: 10px;
-}
-
 .office-dock-tabs {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  border-bottom: 1px solid var(--line-soft);
-  padding-bottom: 8px;
 }
 
 .office-dock-tabs button {
@@ -1410,10 +1434,19 @@ pre {
   font-size: 0.8rem;
 }
 
+.office-dock-panel {
+  position: sticky;
+  top: calc(var(--space-4) + 72px);
+}
+
 .office-dock-body {
   display: grid;
-  gap: 8px;
-  min-height: 240px;
+  gap: 12px;
+  min-height: 320px;
+}
+
+.office-empty-state {
+  margin: 4px 0;
 }
 
 .office-collab-legend {
@@ -1536,16 +1569,16 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .office-stage-head-v5 {
-    flex-direction: column;
+  .office-v5-workspace {
+    grid-template-columns: 1fr;
   }
 
-  .office-stage-controls {
-    justify-items: start;
+  .office-dock-panel {
+    position: static;
   }
 
-  .office-toggle-row {
-    justify-content: flex-start;
+  .office-stage-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .office-kpi-grid {
