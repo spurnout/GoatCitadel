@@ -72,8 +72,14 @@ import { ChatModeSwitch } from "../components/ChatModeSwitch";
 import { ChatModelPicker, type ChatModelProviderOption } from "../components/ChatModelPicker";
 import { ChatTraceCard } from "../components/ChatTraceCard";
 import { CoworkCanvasPanel } from "../components/CoworkCanvasPanel";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
 import { HelpHint } from "../components/HelpHint";
 import { InlineApprovalPrompt } from "../components/InlineApprovalPrompt";
+import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { GCCombobox, GCSelect, GCSwitch } from "../components/ui";
 import { useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -96,6 +102,7 @@ interface CommandCatalogItem {
 interface FinalizedStreamMessageState {
   sessionId: string;
   placeholderId: string;
+  messageId?: string;
   content: string;
 }
 
@@ -111,9 +118,16 @@ export function shouldApplyFetchedMessagesAfterStream(
   if (!finalizedStreamMessage) {
     return true;
   }
-  const currentPlaceholder = currentMessages.find((item) => item.messageId === finalizedStreamMessage.placeholderId);
+  const currentPlaceholder = currentMessages.find((item) => (
+    item.messageId === finalizedStreamMessage.messageId || item.messageId === finalizedStreamMessage.placeholderId
+  ));
   if (!currentPlaceholder) {
     return true;
+  }
+  if (finalizedStreamMessage.messageId) {
+    return fetchedMessages.some((item) => (
+      item.role === "assistant" && item.messageId === finalizedStreamMessage.messageId
+    ));
   }
   const finalizedContent = normalizeComparableAssistantContent(finalizedStreamMessage.content);
   if (!finalizedContent) {
@@ -1045,17 +1059,21 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           }
           if (chunk.type === "message_done") {
             let finalizedContent = chunk.content;
+            let finalizedMessageId = chunk.messageId;
             commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
               ? (() => {
                 const content = chunk.content || item.content;
+                const messageId = chunk.messageId || item.messageId;
                 finalizedContent = content;
-                return { ...item, content };
+                finalizedMessageId = messageId;
+                return { ...item, messageId, content };
               })()
               : item));
             if (placeholderId && finalizedContent?.trim()) {
               finalizedStreamMessageRef.current = {
                 sessionId: session.sessionId,
                 placeholderId,
+                messageId: finalizedMessageId,
                 content: finalizedContent,
               };
             }
@@ -1188,8 +1206,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
   if (loading) {
     return (
-      <section>
-        <h2>{pageCopy.chat.title}</h2>
+      <section className="chat-v11">
+        <PageHeader
+          eyebrow="Work Surface"
+          title={pageCopy.chat.title}
+          subtitle={pageCopy.chat.subtitle}
+          hint="Mission sessions, external writeback sessions, trace visibility, and inline approvals live together here."
+        />
         <CardSkeleton lines={8} />
       </section>
     );
@@ -1197,21 +1220,39 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
   return (
     <section className="chat-v11">
-      <header className="chat-v11-header">
-        <div>
-          <h2>{pageCopy.chat.title}</h2>
-          <p className="office-subtitle">{pageCopy.chat.subtitle}</p>
-        </div>
-        <HelpHint
-          label="Chat workspace help"
-          text="Use slash commands for quick control, switch mode and model from the top bar, and open trace only when you want the details."
-        />
-      </header>
+      <PageHeader
+        eyebrow="Work Surface"
+        title={pageCopy.chat.title}
+        subtitle={pageCopy.chat.subtitle}
+        hint="Start a chat quickly, keep session context visible, and use the inspector when you want trace, suggestions, and learned memory."
+        actions={(
+          <div className="chat-v11-page-actions">
+            <StatusChip tone={selectedSessionId ? "live" : "muted"}>{selectedSessionId ? "Session selected" : "No session"}</StatusChip>
+            {selectedSession ? (
+              <StatusChip tone={selectedSession.scope === "external" ? "warning" : "success"}>
+                {selectedSession.scope === "external" ? "External writeback" : "Mission session"}
+              </StatusChip>
+            ) : null}
+            {latestTrace ? <StatusChip tone="muted">{latestTrace.status}</StatusChip> : null}
+            <HelpHint
+              label="Chat workspace help"
+              text="Use slash commands for quick control, switch mode and model from the toolbar, and keep the inspector open when you want trace, suggestions, or learned memory details."
+            />
+          </div>
+        )}
+      />
+      <PageGuideCard
+        pageId="chat"
+        what={pageCopy.chat.guide?.what ?? ""}
+        when={pageCopy.chat.guide?.when ?? ""}
+        actions={pageCopy.chat.guide?.actions ?? []}
+        terms={pageCopy.chat.guide?.terms}
+      />
       {error ? <p className="error">{error}</p> : null}
       {isRefreshing ? <p className="status-banner">Refreshing chat context...</p> : null}
 
       <div className="chat-v11-shell">
-        <aside className="card chat-v11-left">
+        <aside className="panel panel-soft panel-pad-default chat-v11-left">
           <div className="chat-v11-left-head">
             <ActionButton label="New Chat" pending={sending} onClick={async () => {
               setSending(true);
@@ -1231,6 +1272,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             }} />
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a chat..." />
           </div>
+          <FieldHelp>Mission chats are local GoatCitadel sessions. External chats are routed sessions that can write back only when a binding is configured.</FieldHelp>
           <div className="chat-v11-project-create">
             <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="New project name" />
             <input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="Project path (optional)" />
@@ -1262,7 +1304,11 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <button type="button" className={selectedProjectId === "none" ? "active" : ""} onClick={() => setSelectedProjectId("none")}>Unassigned</button>
           </div>
           <div className="chat-v11-session-groups">
-            <h4>Mission</h4>
+            <div className="chat-v11-rail-section">
+              <div className="chat-v11-rail-title">
+                <h4>Mission</h4>
+                <StatusChip tone="success">{missionSessions.length}</StatusChip>
+              </div>
             <ul>
               {missionSessions.map((session) => (
                 <li key={session.sessionId}>
@@ -1274,7 +1320,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
               ))}
               {missionSessions.length === 0 ? <li className="chat-v11-empty-item">No mission chats match this filter yet.</li> : null}
             </ul>
-            <h4>External</h4>
+            </div>
+            <div className="chat-v11-rail-section">
+            <div className="chat-v11-rail-title">
+              <h4>External</h4>
+              <StatusChip tone="warning">{externalSessions.length}</StatusChip>
+            </div>
             <ul>
               {externalSessions.map((session) => (
                 <li key={session.sessionId}>
@@ -1286,95 +1337,123 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
               ))}
               {externalSessions.length === 0 ? <li className="chat-v11-empty-item">No external chats are connected right now.</li> : null}
             </ul>
+            </div>
           </div>
         </aside>
 
         <div className="chat-v11-main">
-          <div className="card chat-v11-topbar">
-            <ChatModeSwitch value={messageMode} disabled={!selectedSessionId || sending} onChange={(mode) => void handlePrefPatch({ mode })} />
-            <ChatModelPicker
-              providers={providerOptions}
-              providerId={selectedProviderId}
-              model={prefs?.model ?? runtimeLlmConfig?.activeModel ?? settings?.llm.activeModel}
-              disabled={!selectedSessionId || sending}
-              onChangeProvider={(providerId) => {
-                const provider = providerOptions.find((item) => item.providerId === providerId);
-                void loadModelsForProvider(providerId);
-                void handlePrefPatch({ providerId, model: provider?.models[0] });
-              }}
-              onChangeModel={(model) => void handlePrefPatch({ model })}
+          <Panel
+            className="chat-v11-topbar-panel"
+            padding="compact"
+            title="Conversation Controls"
+            subtitle="Adjust mode, model, retrieval, and proactive behavior for the selected session."
+          >
+            <DataToolbar
+              primary={(
+                <>
+                  <ChatModeSwitch value={messageMode} disabled={!selectedSessionId || sending} onChange={(mode) => void handlePrefPatch({ mode })} />
+                  <ChatModelPicker
+                    providers={providerOptions}
+                    providerId={selectedProviderId}
+                    model={prefs?.model ?? runtimeLlmConfig?.activeModel ?? settings?.llm.activeModel}
+                    disabled={!selectedSessionId || sending}
+                    onChangeProvider={(providerId) => {
+                      const provider = providerOptions.find((item) => item.providerId === providerId);
+                      void loadModelsForProvider(providerId);
+                      void handlePrefPatch({ providerId, model: provider?.models[0] });
+                    }}
+                    onChangeModel={(model) => void handlePrefPatch({ model })}
+                  />
+                  <label className="chat-v11-select">Thinking
+                    <GCSelect
+                      value={prefs?.thinkingLevel ?? "standard"}
+                      disabled={!selectedSessionId || sending}
+                      onChange={(value) => void handlePrefPatch({ thinkingLevel: value as "minimal" | "standard" | "extended" })}
+                      options={[
+                        { value: "minimal", label: "Minimal" },
+                        { value: "standard", label: "Standard" },
+                        { value: "extended", label: "Extended" },
+                      ]}
+                    />
+                  </label>
+                  <label className="chat-v11-select">Web
+                    <GCSelect
+                      value={prefs?.webMode ?? "auto"}
+                      disabled={!selectedSessionId || sending}
+                      onChange={(value) => void handlePrefPatch({ webMode: value as "auto" | "off" | "quick" | "deep" })}
+                      options={[
+                        { value: "auto", label: "Auto" },
+                        { value: "off", label: "Off" },
+                        { value: "quick", label: "Quick" },
+                        { value: "deep", label: "Deep" },
+                      ]}
+                    />
+                  </label>
+                </>
+              )}
+              secondary={(
+                <>
+                  <label className="chat-v11-select">Proactive
+                    <GCSelect
+                      value={proactiveStatus?.mode ?? prefs?.proactiveMode ?? "off"}
+                      disabled={!selectedSessionId || sending}
+                      onChange={(value) => void handleProactivePolicyPatch({ proactiveMode: value as "off" | "suggest" | "auto_safe" })}
+                      options={[
+                        { value: "off", label: "Off" },
+                        { value: "suggest", label: "Suggest" },
+                        { value: "auto_safe", label: "Auto-safe" },
+                      ]}
+                    />
+                  </label>
+                  <label className="chat-v11-select">Retrieval
+                    <GCSelect
+                      value={proactiveStatus?.retrievalMode ?? prefs?.retrievalMode ?? "standard"}
+                      disabled={!selectedSessionId || sending}
+                      onChange={(value) => void handleProactivePolicyPatch({ retrievalMode: value as "standard" | "layered" })}
+                      options={[
+                        { value: "standard", label: "Standard" },
+                        { value: "layered", label: "Layered" },
+                      ]}
+                    />
+                  </label>
+                  <label className="chat-v11-select">Reflection
+                    <GCSelect
+                      value={proactiveStatus?.reflectionMode ?? prefs?.reflectionMode ?? "off"}
+                      disabled={!selectedSessionId || sending}
+                      onChange={(value) => void handleProactivePolicyPatch({ reflectionMode: value as "off" | "on" })}
+                      options={[
+                        { value: "off", label: "Off" },
+                        { value: "on", label: "On" },
+                      ]}
+                    />
+                  </label>
+                  <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleSuggestDelegation()}>
+                    Suggest delegation
+                  </button>
+                  <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleTriggerProactive()}>
+                    Run proactive
+                  </button>
+                  <GCSwitch checked={streamEnabled} onCheckedChange={setStreamEnabled} label="Stream" />
+                </>
+              )}
             />
-            <label className="chat-v11-select">Thinking
-              <GCSelect
-                value={prefs?.thinkingLevel ?? "standard"}
-                disabled={!selectedSessionId || sending}
-                onChange={(value) => void handlePrefPatch({ thinkingLevel: value as "minimal" | "standard" | "extended" })}
-                options={[
-                  { value: "minimal", label: "Minimal" },
-                  { value: "standard", label: "Standard" },
-                  { value: "extended", label: "Extended" },
-                ]}
-              />
-            </label>
-            <label className="chat-v11-select">Web
-              <GCSelect
-                value={prefs?.webMode ?? "auto"}
-                disabled={!selectedSessionId || sending}
-                onChange={(value) => void handlePrefPatch({ webMode: value as "auto" | "off" | "quick" | "deep" })}
-                options={[
-                  { value: "auto", label: "Auto" },
-                  { value: "off", label: "Off" },
-                  { value: "quick", label: "Quick" },
-                  { value: "deep", label: "Deep" },
-                ]}
-              />
-            </label>
-            <label className="chat-v11-select">Proactive
-              <GCSelect
-                value={proactiveStatus?.mode ?? prefs?.proactiveMode ?? "off"}
-                disabled={!selectedSessionId || sending}
-                onChange={(value) => void handleProactivePolicyPatch({ proactiveMode: value as "off" | "suggest" | "auto_safe" })}
-                options={[
-                  { value: "off", label: "Off" },
-                  { value: "suggest", label: "Suggest" },
-                  { value: "auto_safe", label: "Auto-safe" },
-                ]}
-              />
-            </label>
-            <label className="chat-v11-select">Retrieval
-              <GCSelect
-                value={proactiveStatus?.retrievalMode ?? prefs?.retrievalMode ?? "standard"}
-                disabled={!selectedSessionId || sending}
-                onChange={(value) => void handleProactivePolicyPatch({ retrievalMode: value as "standard" | "layered" })}
-                options={[
-                  { value: "standard", label: "Standard" },
-                  { value: "layered", label: "Layered" },
-                ]}
-              />
-            </label>
-            <label className="chat-v11-select">Reflection
-              <GCSelect
-                value={proactiveStatus?.reflectionMode ?? prefs?.reflectionMode ?? "off"}
-                disabled={!selectedSessionId || sending}
-                onChange={(value) => void handleProactivePolicyPatch({ reflectionMode: value as "off" | "on" })}
-                options={[
-                  { value: "off", label: "Off" },
-                  { value: "on", label: "On" },
-                ]}
-              />
-            </label>
-            <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleSuggestDelegation()}>
-              Suggest delegation
-            </button>
-            <button type="button" disabled={!selectedSessionId || sending} onClick={() => void handleTriggerProactive()}>
-              Run proactive
-            </button>
-            <GCSwitch checked={streamEnabled} onCheckedChange={setStreamEnabled} label="Stream" />
-          </div>
+            <FieldHelp>Session-level controls save directly to the selected chat. Keep the inspector open when you need trace, suggestions, and learned memory side by side.</FieldHelp>
+          </Panel>
 
           {selectedSession ? (
             <div className="chat-v11-conversation-shell">
               <div className="chat-v11-agentic-row">
+                {latestTrace ? (
+                  <article className="card chat-v11-agentic-card chat-v11-trace-card">
+                    <div className="chat-v11-agentic-head">
+                      <h3>Run trace</h3>
+                      <StatusChip tone={latestTrace.status === "completed" ? "success" : latestTrace.status === "failed" ? "critical" : "warning"}>
+                        {latestTrace.status}
+                      </StatusChip>
+                    </div>
+                    <ChatTraceCard trace={latestTrace} />
+                  </article>
+                ) : null}
                 <article className="card chat-v11-agentic-card">
                   <div className="chat-v11-agentic-head">
                     <h3>Suggestions inbox</h3>
@@ -1586,7 +1665,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                   )}
 
                   {pendingApproval ? <InlineApprovalPrompt approvalId={pendingApproval.approvalId} toolName={pendingApproval.toolName} reason={pendingApproval.reason} pending={approvalPending} onApprove={() => void handleApprovePending()} onDeny={() => void handleDenyPending()} /> : null}
-                  {latestTrace ? <ChatTraceCard trace={latestTrace} /> : null}
 
                   <div className={`chat-v11-composer ${isDragActive ? "drop-active" : ""}`} onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
                     {isDragActive ? <div className="chat-drop-overlay">Drop files to attach</div> : null}

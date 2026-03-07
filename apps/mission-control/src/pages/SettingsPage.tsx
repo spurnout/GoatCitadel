@@ -25,10 +25,13 @@ import {
 } from "../api/client";
 import type { VoiceStatus } from "@goatcitadel/contracts";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { FieldHelp } from "../components/FieldHelp";
 import { HelpHint } from "../components/HelpHint";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { PageHeader } from "../components/PageHeader";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
+import { StatusChip } from "../components/StatusChip";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { previewProviderModels, useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
@@ -86,8 +89,48 @@ const CHAT_PROMPT_PRESETS: Array<{ id: string; label: string; prompt: string }> 
   },
 ];
 
+const SETTINGS_SECTIONS = [
+  {
+    id: "settings-overview",
+    label: "Overview",
+    description: "Environment, defaults, and runtime posture.",
+  },
+  {
+    id: "settings-access",
+    label: "Access",
+    description: "Auth mode, loopback behavior, and credential storage.",
+  },
+  {
+    id: "settings-voice",
+    label: "Voice",
+    description: "Talk mode, wake runtime, and local transcription.",
+  },
+  {
+    id: "settings-runtime",
+    label: "Runtime",
+    description: "Tool profile, budgets, and outbound allowlist.",
+  },
+  {
+    id: "settings-models",
+    label: "Models",
+    description: "Providers, active model selection, and secure keys.",
+  },
+  {
+    id: "settings-tests",
+    label: "Test",
+    description: "Run a direct provider smoke test before wider use.",
+  },
+] as const;
+
 function isAbortError(error: unknown): boolean {
   return (error as { name?: string } | null)?.name === "AbortError";
+}
+
+function scrollToSettingsSection(sectionId: string): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 export function SettingsPage() {
@@ -749,89 +792,140 @@ export function SettingsPage() {
         onCriticalConfirmChange={setCriticalConfirmed}
       />
 
-      <article className="card">
-        <p>Environment: {settings.environment}</p>
-        <p>Workspace: {settings.workspaceDir}</p>
-      </article>
-
-      <article className="card">
-        <h3>Gateway Access Control</h3>
-        <p>Use auth modes for local/online hosting. By default, credentials are session-only and clear when you close the browser.</p>
-        <div className="controls-row">
-          <label htmlFor="authMode">Auth Mode</label>
-          <GCSelect
-            id="authMode"
-            value={authMode}
-            onChange={(value) => setAuthMode(value as "none" | "token" | "basic")}
-            options={[
-              { value: "none", label: "none (local trusted)" },
-              { value: "token", label: "token" },
-              { value: "basic", label: "basic" },
-            ]}
-          />
-        </div>
-        <div className="controls-row">
-          <GCSwitch
-            id="allowLoopbackBypass"
-            checked={allowLoopbackBypass}
-            onCheckedChange={setAllowLoopbackBypass}
-            label="Allow loopback bypass"
-          />
-        </div>
-        {authMode !== "none" ? (
-          <div className="controls-row">
-            <GCSwitch
-              id="authRememberMe"
-              checked={authStorageMode === "persistent"}
-              onCheckedChange={(checked) => setAuthStorageMode(checked ? "persistent" : "session")}
-              label="Remember credentials on this browser (less secure)"
-            />
+      <div className="settings-v2-layout">
+        <aside className="panel panel-soft panel-pad-default settings-v2-nav">
+          <div className="settings-v2-nav-head">
+            <h3>Forge Sections</h3>
+            <FieldHelp>Jump straight to the part of Forge you need. This keeps long configuration work chunked instead of forcing one giant scroll.</FieldHelp>
           </div>
-        ) : null}
-        {authMode === "token" ? (
-          <div className="controls-row">
-            <label htmlFor="authToken">Gateway token</label>
-            <input
-              id="authToken"
-              type="password"
-              value={authToken}
-              onChange={(event) => setAuthToken(event.target.value)}
-            />
+          <div className="settings-v2-nav-list">
+            {SETTINGS_SECTIONS.map((section) => (
+              <button key={section.id} type="button" className="settings-v2-nav-item" onClick={() => scrollToSettingsSection(section.id)}>
+                <strong>{section.label}</strong>
+                <span>{section.description}</span>
+              </button>
+            ))}
           </div>
-        ) : null}
-        {authMode === "basic" ? (
-          <>
-            <div className="controls-row">
-              <label htmlFor="basicUsername">Username</label>
-              <input
-                id="basicUsername"
-                value={basicUsername}
-                onChange={(event) => setBasicUsername(event.target.value)}
-              />
-            </div>
-            <div className="controls-row">
-              <label htmlFor="basicPassword">Password</label>
-              <input
-                id="basicPassword"
-                type="password"
-                value={basicPassword}
-                onChange={(event) => setBasicPassword(event.target.value)}
-              />
-            </div>
-          </>
-        ) : null}
-        <p className="office-subtitle">
-          Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
-        </p>
-        <button type="button" onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
-      </article>
+        </aside>
 
-      <article className="card">
+        <div className="settings-v2-content">
+          <section id="settings-overview" className="settings-v2-section">
+            <Panel
+              title="Current Forge Posture"
+              subtitle="Quick context before you touch access, runtime, or provider settings."
+              tone="soft"
+            >
+              <div className="settings-v2-summary">
+                <StatusChip tone="muted">{settings.environment}</StatusChip>
+                <StatusChip tone={authMode === "none" ? "warning" : "success"}>{authMode === "none" ? "Local-trusted auth" : `${authMode} auth`}</StatusChip>
+                <StatusChip tone="live">{activeProviderId || settings.llm.activeProviderId || "No active provider"}</StatusChip>
+                <StatusChip tone={allowLoopbackBypass ? "warning" : "success"}>{allowLoopbackBypass ? "Loopback bypass on" : "Loopback bypass off"}</StatusChip>
+              </div>
+              <FieldHelp>Environment and workspace values come from the running gateway. Use the section rail to jump directly to access, runtime, providers, or local voice tools.</FieldHelp>
+              <div className="settings-v2-overview-grid">
+                <div>
+                  <strong>Environment</strong>
+                  <p className="office-subtitle">{settings.environment}</p>
+                </div>
+                <div>
+                  <strong>Workspace</strong>
+                  <p className="office-subtitle">{settings.workspaceDir}</p>
+                </div>
+                <div>
+                  <strong>Active provider</strong>
+                  <p className="office-subtitle">{activeProviderId || settings.llm.activeProviderId || "not set"}</p>
+                </div>
+                <div>
+                  <strong>Active model</strong>
+                  <p className="office-subtitle">{activeModel || settings.llm.activeModel || "not set"}</p>
+                </div>
+              </div>
+            </Panel>
+          </section>
+
+          <section id="settings-access" className="settings-v2-section">
+            <article className="card settings-v2-panel">
+              <h3>Gateway Access Control</h3>
+              <p>Use auth modes for local and online hosting. By default, credentials are session-only and clear when you close the browser.</p>
+              <FieldHelp>Keep this section conservative for public or remote installs. Session-only storage is the safer default; persistent storage is a convenience tradeoff.</FieldHelp>
+              <div className="controls-row">
+                <label htmlFor="authMode">Auth Mode</label>
+                <GCSelect
+                  id="authMode"
+                  value={authMode}
+                  onChange={(value) => setAuthMode(value as "none" | "token" | "basic")}
+                  options={[
+                    { value: "none", label: "none (local trusted)" },
+                    { value: "token", label: "token" },
+                    { value: "basic", label: "basic" },
+                  ]}
+                />
+              </div>
+              <div className="controls-row">
+                <GCSwitch
+                  id="allowLoopbackBypass"
+                  checked={allowLoopbackBypass}
+                  onCheckedChange={setAllowLoopbackBypass}
+                  label="Allow loopback bypass"
+                />
+              </div>
+              {authMode !== "none" ? (
+                <div className="controls-row">
+                  <GCSwitch
+                    id="authRememberMe"
+                    checked={authStorageMode === "persistent"}
+                    onCheckedChange={(checked) => setAuthStorageMode(checked ? "persistent" : "session")}
+                    label="Remember credentials on this browser (less secure)"
+                  />
+                </div>
+              ) : null}
+              {authMode === "token" ? (
+                <div className="controls-row">
+                  <label htmlFor="authToken">Gateway token</label>
+                  <input
+                    id="authToken"
+                    type="password"
+                    value={authToken}
+                    onChange={(event) => setAuthToken(event.target.value)}
+                  />
+                </div>
+              ) : null}
+              {authMode === "basic" ? (
+                <>
+                  <div className="controls-row">
+                    <label htmlFor="basicUsername">Username</label>
+                    <input
+                      id="basicUsername"
+                      value={basicUsername}
+                      onChange={(event) => setBasicUsername(event.target.value)}
+                    />
+                  </div>
+                  <div className="controls-row">
+                    <label htmlFor="basicPassword">Password</label>
+                    <input
+                      id="basicPassword"
+                      type="password"
+                      value={basicPassword}
+                      onChange={(event) => setBasicPassword(event.target.value)}
+                    />
+                  </div>
+                </>
+              ) : null}
+              <p className="office-subtitle">
+                Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
+              </p>
+              <button type="button" onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
+            </article>
+          </section>
+
+          <section id="settings-voice" className="settings-v2-section">
+            <article className="card settings-v2-panel">
         <h3>
           Voice Runtime
           <HelpHint label="Voice runtime help" text="Talk Mode and Wake use your local voice runtime. Whisper.cpp is the default offline transcription provider." />
         </h3>
         <p className="office-subtitle">Local-first voice controls with no required cloud API key.</p>
+        <FieldHelp>Voice tools are local-first and best treated like a hardware/runtime surface: inspect state first, then run talk, wake, or transcription tests intentionally.</FieldHelp>
         <div className="voice-status-grid">
           <article className="voice-status-card">
             <h4>Speech To Text</h4>
@@ -919,10 +1013,13 @@ export function SettingsPage() {
         {voiceTranscriptResult ? (
           <pre>{voiceTranscriptResult}</pre>
         ) : null}
-      </article>
+            </article>
+          </section>
 
-      <article className="card">
+          <section id="settings-runtime" className="settings-v2-section">
+            <article className="card settings-v2-panel">
         <h3>Runtime Controls</h3>
+        <FieldHelp>Runtime controls shape how boldly GoatCitadel acts by default. Use the allowlist preset first, then drop into custom mode only when your network or model layout needs it.</FieldHelp>
         <div className="controls-row">
           <label htmlFor="profile">Tool Profile</label>
           <SelectOrCustom
@@ -983,11 +1080,14 @@ export function SettingsPage() {
           />
         </details>
         <button type="button" onClick={onSaveRuntime} disabled={blockSaves}>Save Runtime Controls</button>
-      </article>
+            </article>
+          </section>
 
-      <article className="card">
+          <section id="settings-models" className="settings-v2-section">
+            <article className="card settings-v2-panel">
         <h3>LLM Providers & Models (OpenAI-Compatible)</h3>
         <p>This uses `/v1/chat/completions` only. Legacy `/v1/completions` is intentionally not used.</p>
+        <FieldHelp>Pick an active provider and model first, then use the advanced block only when you need to add or override provider details. Known values should stay in selects; custom entry is the fallback.</FieldHelp>
         <details className="advanced-panel">
           <summary>Local runtime quick setup: LM Studio + Ollama</summary>
           <p className="office-subtitle"><strong>LM Studio:</strong> load at least one model, then start its local server.</p>
@@ -1143,13 +1243,16 @@ export function SettingsPage() {
             <button type="button" onClick={onSaveProvider} disabled={blockSaves}>Save Provider Settings</button>
           </div>
         ) : null}
-      </article>
+            </article>
+          </section>
 
-      <article className="card">
+          <section id="settings-tests" className="settings-v2-section">
+            <article className="card settings-v2-panel">
         <h3>LLM Test (chat/completions)</h3>
         <p className="office-subtitle">
           Test prompts default to direct model behavior without QMD memory context.
         </p>
+        <FieldHelp>Use test prompts to prove the active provider/model path before you rely on it elsewhere. This is the fastest way to confirm a provider is responding correctly.</FieldHelp>
         <div className="controls-row">
           <label htmlFor="chatPromptPreset">Prompt Preset</label>
           <GCSelect
@@ -1189,8 +1292,11 @@ export function SettingsPage() {
           <button type="button" onClick={onTestChat}>Run Test Prompt</button>
         </div>
         {chatResponse ? <pre>{chatResponse}</pre> : null}
-      </article>
-    </section>
+            </article>
+          </section>
+        </div>
+      </div>
+      </section>
   );
 }
 
