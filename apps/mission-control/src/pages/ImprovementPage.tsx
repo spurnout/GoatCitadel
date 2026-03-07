@@ -11,7 +11,11 @@ import {
   runImprovementReplay,
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
+import { FieldHelp } from "../components/FieldHelp";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { StatusChip } from "../components/StatusChip";
 import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -321,46 +325,53 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
   }
 
   return (
-    <section className="improvement-page">
-      <div className="prompt-lab-header">
-        <div>
-          <h2>{pageCopy.improvement.title}</h2>
-          <p className="office-subtitle">{pageCopy.improvement.subtitle}</p>
-        </div>
-        <div className="prompt-lab-actions">
-          <ActionButton
-            label="Run Replay Now"
-            pendingLabel="Running Replay..."
-            onClick={handleRunNow}
-            pending={runningReplay}
-          />
-        </div>
-      </div>
+    <section className="workflow-page improvement-page">
+      <PageHeader
+        eyebrow="Quality"
+        title={pageCopy.improvement.title}
+        subtitle={pageCopy.improvement.subtitle}
+        hint="Use replay runs, weekly scorecards, and low-risk recommendations to inspect what the system got wrong and decide what to tune next."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="muted">{reports.length} weekly reports</StatusChip>
+            <StatusChip tone={selectedRunId ? "success" : "muted"}>{replayRuns.length} replay runs</StatusChip>
+            {activeRunStatus ? <StatusChip tone={activeRunStatus === "completed" ? "success" : activeRunStatus === "failed" ? "critical" : "warning"}>{activeRunStatus}</StatusChip> : null}
+            <ActionButton
+              label="Run Replay Now"
+              pendingLabel="Running Replay..."
+              onClick={handleRunNow}
+              pending={runningReplay}
+            />
+          </div>
+        )}
+      />
 
       <PageGuideCard
+        pageId="improvement"
         what={pageCopy.improvement.guide?.what ?? ""}
         when={pageCopy.improvement.guide?.when ?? ""}
         actions={pageCopy.improvement.guide?.actions ?? []}
       />
 
-      {error ? <p className="error">{error}</p> : null}
-      {success ? <p>{success}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing improvement reports...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
-      ) : null}
-      {lastRunEvent ? (
-        <p className="office-subtitle">
-          {lastRunEvent}
-          {lastRunUpdateAt ? ` Last update: ${new Date(lastRunUpdateAt).toLocaleTimeString()}.` : ""}
-        </p>
-      ) : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {success ? <p className="status-banner">{success}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing improvement reports...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+        ) : null}
+        {lastRunEvent ? (
+          <p className="office-subtitle">
+            {lastRunEvent}
+            {lastRunUpdateAt ? ` Last update: ${new Date(lastRunUpdateAt).toLocaleTimeString()}.` : ""}
+          </p>
+        ) : null}
+        <FieldHelp>
+          Weekly reports explain what regressed, replay runs let you inspect specifics, and replay overrides let you test a change without mutating the baseline run immediately.
+        </FieldHelp>
+      </div>
 
-      <article className="card">
-        <h3>Replay Override + Diff</h3>
-        <p className="office-subtitle">
-          Draft or execute a step-level override to compare outcomes against the original run.
-        </p>
+      <Panel title="Replay Override + Diff" subtitle="Draft or execute a step-level override to compare outcomes against the original run.">
         <div className="controls-row">
           <label htmlFor="overrideStepKey">Step key</label>
           <input
@@ -412,10 +423,9 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
             <p className="office-subtitle">Error changed: {replayDiff.summary.errorChanged ? "yes" : "no"}</p>
           </details>
         ) : null}
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Recent Replay Runs</h3>
+      <Panel title="Recent Replay Runs" subtitle="Latest replay activity, scored volume, and likely-wrong hotspots.">
         <ul className="improvement-simple-list">
           {replayRuns.map((run) => (
             <li key={run.runId}>
@@ -438,11 +448,10 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
           ))}
         </ul>
         {replayRuns.length === 0 ? <p>No replay runs yet.</p> : null}
-      </article>
+      </Panel>
 
       <div className="prompt-lab-grid">
-        <article className="card prompt-lab-tests">
-          <h3>Weekly Reports</h3>
+        <Panel className="prompt-lab-tests" title="Weekly Reports" subtitle="Recent report cards generated from sampled decisions and replay analysis.">
           <ul>
             {reports.map((report) => (
               <li key={report.reportId}>
@@ -463,10 +472,9 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
               </li>
             ))}
           </ul>
-        </article>
+        </Panel>
 
-        <article className="card prompt-lab-detail">
-          <h3>Weekly Scorecard</h3>
+        <Panel className="prompt-lab-detail" title="Weekly Scorecard" subtitle="Summarized quality movement, cluster themes, and week-over-week changes.">
           {!reportDetail ? (
             <p>
               {runDetail?.run.status === "running"
@@ -517,12 +525,11 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
               </details>
             </>
           )}
-        </article>
+        </Panel>
       </div>
 
       <div className="split-grid">
-        <article className="card">
-          <h3>Applied Low-Risk Auto-Tunes</h3>
+        <Panel title="Applied Low-Risk Auto-Tunes" subtitle="Changes already applied from safe queued recommendations.">
           <div className="stack-md">
             {(reportDetail?.appliedAutoTunes ?? []).map((tune) => (
               <div key={tune.tuneId} className="prompt-lab-run-summary">
@@ -540,10 +547,9 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
             ))}
             {(reportDetail?.appliedAutoTunes.length ?? 0) === 0 ? <p>No applied tunes in this report.</p> : null}
           </div>
-        </article>
+        </Panel>
 
-        <article className="card">
-          <h3>Queued Recommendations</h3>
+        <Panel title="Queued Recommendations" subtitle="Suggestions ready for operator review or explicit approval.">
           <div className="stack-md">
             {(reportDetail?.queuedRecommendations ?? []).map((tune) => (
               <div key={tune.tuneId} className="prompt-lab-run-summary">
@@ -562,11 +568,10 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
             ))}
             {(reportDetail?.queuedRecommendations.length ?? 0) === 0 ? <p>No queued recommendations in this report.</p> : null}
           </div>
-        </article>
+        </Panel>
       </div>
 
-      <article className="card">
-        <h3>Top Wrong Decisions (Current Run)</h3>
+      <Panel title="Top Wrong Decisions (Current Run)" subtitle="Highest-confidence issues from the currently selected replay run.">
         {runDetail ? (
           <>
             <p className="office-subtitle">
@@ -584,7 +589,7 @@ export function ImprovementPage({ workspaceId }: { workspaceId?: string }) {
             </ul>
           </>
         ) : <p>No run data available.</p>}
-      </article>
+      </Panel>
     </section>
   );
 }

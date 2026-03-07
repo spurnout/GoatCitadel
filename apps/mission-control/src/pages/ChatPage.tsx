@@ -1444,21 +1444,24 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <div className="chat-v11-conversation-shell">
               <div className="chat-v11-agentic-row">
                 {latestTrace ? (
-                  <article className="card chat-v11-agentic-card chat-v11-trace-card">
-                    <div className="chat-v11-agentic-head">
-                      <h3>Run trace</h3>
+                  <Panel
+                    className="chat-v11-agentic-card chat-v11-trace-card"
+                    title="Run trace"
+                    actions={(
                       <StatusChip tone={latestTrace.status === "completed" ? "success" : latestTrace.status === "failed" ? "critical" : "warning"}>
                         {latestTrace.status}
                       </StatusChip>
-                    </div>
+                    )}
+                  >
                     <ChatTraceCard trace={latestTrace} />
-                  </article>
+                  </Panel>
                 ) : null}
-                <article className="card chat-v11-agentic-card">
-                  <div className="chat-v11-agentic-head">
-                    <h3>Suggestions inbox</h3>
-                    <span className="token-chip">{proactiveRuns.filter((run) => run.status === "suggested").length} suggested</span>
-                  </div>
+                <Panel
+                  className="chat-v11-agentic-card"
+                  title="Suggestions inbox"
+                  subtitle="Review proactive suggestions, capability upgrades, and delegation prompts without losing the active chat context."
+                  actions={<span className="token-chip">{proactiveRuns.filter((run) => run.status === "suggested").length} suggested</span>}
+                >
                   {secondaryLoading && proactiveRuns.length === 0 && capabilitySuggestions.length === 0 && !delegationSuggestion ? (
                     <CardSkeleton lines={4} />
                   ) : null}
@@ -1520,16 +1523,24 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     ))}
                     {proactiveRuns.length === 0 ? <li className="chat-v11-muted">No proactive runs yet for this session.</li> : null}
                   </ul>
-                </article>
+                </Panel>
 
-                <article className="card chat-v11-agentic-card">
-                  <div className="chat-v11-agentic-head">
-                    <h3>Learned memory <HelpHint label="Learned memory help" text="Learned memory stores facts, goals, preferences, and constraints GoatCitadel may reuse in future turns for this session." /></h3>
-                    <button type="button" disabled={sending || !selectedSessionId} onClick={() => void handleRebuildLearnedMemory()}>
-                      Rebuild
-                    </button>
-                  </div>
-                  <p className="chat-v11-muted">Review what GoatCitadel is carrying forward (preferences, goals, constraints, facts, project context).</p>
+                <Panel
+                  className="chat-v11-agentic-card"
+                  title={(
+                    <>
+                      Learned memory <HelpHint label="Learned memory help" text="Learned memory stores facts, goals, preferences, and constraints GoatCitadel may reuse in future turns for this session." />
+                    </>
+                  )}
+                  subtitle="Review what GoatCitadel is carrying forward for future turns in this session."
+                  actions={(
+                    <ActionButton
+                      label="Rebuild"
+                      disabled={sending || !selectedSessionId}
+                      onClick={() => void handleRebuildLearnedMemory()}
+                    />
+                  )}
+                >
                   {secondaryLoading && learnedMemory.length === 0 ? <CardSkeleton lines={5} /> : null}
                   <ul className="chat-v11-memory-list">
                     {learnedMemory.slice(0, 6).map((item) => (
@@ -1561,10 +1572,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     ))}
                     {learnedMemory.length === 0 ? <li className="chat-v11-muted">No learned memory items yet. They appear after completed assistant turns.</li> : null}
                   </ul>
-                </article>
+                </Panel>
               </div>
 
-              <div className="card chat-v11-session-bar">
+              <Panel
+                className="chat-v11-session-bar"
+                title="Session controls"
+                subtitle="Rename, pin, archive, and reassign the current chat without leaving the thread."
+              >
                 <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} placeholder="Session title" />
                 <ActionButton label="Save" pending={sending} onClick={async () => {
                   if (!selectedSession) return;
@@ -1618,11 +1633,15 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                       .map((project) => ({ value: project.projectId, label: project.name })),
                   ]}
                 />
-              </div>
+              </Panel>
 
               {selectedSession.scope === "external" && (!binding || !binding.writable) ? <div className="status-banner warning">This external chat is read-only right now. Set a connection and target before sending replies out.</div> : null}
               {selectedSession.scope === "external" ? (
-                <div className="card chat-v11-external-bind">
+                <Panel
+                  className="chat-v11-external-bind"
+                  title="External connection binding"
+                  subtitle="Bind this session to a writable external channel before trying to send messages out."
+                >
                   <input value={integrationConnectionId} onChange={(event) => setIntegrationConnectionId(event.target.value)} placeholder="Connection ID (example: slack:workspace-a)" />
                   <input value={integrationTarget} onChange={(event) => setIntegrationTarget(event.target.value)} placeholder="Target (example: #ops-room or thread id)" />
                   <ActionButton label="Save binding" pending={sending} onClick={async () => {
@@ -1637,7 +1656,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                       setSending(false);
                     }
                   }} />
-                </div>
+                </Panel>
               ) : null}
 
               <div className={`chat-v11-main-grid ${messageMode === "cowork" ? "with-cowork" : ""}`}>

@@ -15,7 +15,11 @@ import {
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -295,32 +299,53 @@ export function CronPage() {
   }
   if (isInitialLoading || !data) {
     return (
-      <section>
-        <h2>{pageCopy.cron.title}</h2>
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Automation"
+          title={pageCopy.cron.title}
+          subtitle={pageCopy.cron.subtitle}
+          hint="Schedule repeatable work, inspect job health, and resolve review-queue items when automated runs need operator attention."
+        />
         <CardSkeleton lines={8} />
       </section>
     );
   }
 
   return (
-    <section>
-      <h2>{pageCopy.cron.title}</h2>
-      <p className="office-subtitle">{pageCopy.cron.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Automation"
+        title={pageCopy.cron.title}
+        subtitle={pageCopy.cron.subtitle}
+        hint="Use cron for scheduled operational jobs, then handle notable outputs through the review queue instead of chasing them across multiple pages."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="muted">{data.items.length} jobs</StatusChip>
+            <StatusChip tone={reviewQueue.length > 0 ? "warning" : "success"}>{reviewQueue.length} review items</StatusChip>
+            {selectedJob ? <StatusChip tone={selectedJob.enabled ? "success" : "muted"}>{selectedJob.jobId}</StatusChip> : null}
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="cron"
         what={pageCopy.cron.guide?.what ?? ""}
         when={pageCopy.cron.guide?.when ?? ""}
         actions={pageCopy.cron.guide?.actions ?? []}
       />
-      {isRefreshing ? <p className="status-banner">Refreshing cron jobs...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
-      ) : null}
-      {error ? <p className="error">{error}</p> : null}
-      {status ? <p className="status-banner">{status}</p> : null}
+      <div className="workflow-status-stack">
+        {isRefreshing ? <p className="status-banner">Refreshing cron jobs...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+        ) : null}
+        {error ? <p className="error">{error}</p> : null}
+        {status ? <p className="status-banner">{status}</p> : null}
+        <FieldHelp>
+          Keep job definitions stable and use the review queue for human follow-up. The queue is where diffs, retries, and notable background outputs should converge.
+        </FieldHelp>
+      </div>
 
       <div className="split-grid">
-        <article className="card">
-          <h3>{editingJobId ? `Edit Job: ${editingJobId}` : "Create Job"}</h3>
+        <Panel title={editingJobId ? `Edit Job: ${editingJobId}` : "Create Job"} subtitle="Define the job identity, schedule, and whether it should be enabled automatically.">
           <div className="controls-row">
             <label htmlFor="cronJobId">Job ID</label>
             <input
@@ -375,10 +400,9 @@ export function CronPage() {
           <p className="office-subtitle">
             Supported schedule format: <code>M H * * * [Timezone]</code> or <code>M H * * DOW [Timezone]</code>.
           </p>
-        </article>
+        </Panel>
 
-        <article className="card">
-          <h3>Job Details</h3>
+        <Panel title="Job Details" subtitle="Current status for the selected job.">
           {!selectedJobDetail ? (
             <p>Select a job to view details.</p>
           ) : (
@@ -399,14 +423,14 @@ export function CronPage() {
               <dd>{selectedJobDetail.updatedAt ? new Date(selectedJobDetail.updatedAt).toLocaleString() : "-"}</dd>
             </dl>
           )}
-        </article>
+        </Panel>
       </div>
 
-      <article className="card">
-        <div className="card-title-row">
-          <h3>Cron Jobs</h3>
-          <ActionButton label="Refresh" onClick={handleRefresh} disabled={isBusy} />
-        </div>
+      <Panel
+        title="Cron Jobs"
+        subtitle="Current job catalog with edit, pause/start, run-now, and delete actions."
+        actions={<ActionButton label="Refresh" onClick={handleRefresh} disabled={isBusy} />}
+      >
         <table>
           <thead>
             <tr>
@@ -455,13 +479,9 @@ export function CronPage() {
             ))}
           </tbody>
         </table>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Review Queue</h3>
-        <p className="office-subtitle">
-          Flagged or notable cron outputs that need operator review, diff check, or retry.
-        </p>
+      <Panel title="Review Queue" subtitle="Flagged or notable cron outputs that need operator review, diff check, or retry.">
         {reviewQueue.length === 0 ? (
           <p className="office-subtitle">No review items recorded yet.</p>
         ) : (
@@ -507,7 +527,7 @@ export function CronPage() {
             <pre>{JSON.stringify(selectedRunDiff.diff, null, 2)}</pre>
           </details>
         ) : null}
-      </article>
+      </Panel>
     </section>
   );
 }

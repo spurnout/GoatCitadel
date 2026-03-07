@@ -10,8 +10,14 @@ import {
   stopNpuRuntime,
   type RuntimeSettingsResponse,
 } from "../api/client";
+import { ActionButton } from "../components/ActionButton";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
+import { GCSwitch } from "../components/ui";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
 
@@ -199,19 +205,36 @@ export function NpuPage({ settings }: NpuPageProps) {
   const blockConfigSave = changeReview.overall === "critical" && !criticalConfirmed;
 
   return (
-    <section>
-      <h2>{pageCopy.npu.title}</h2>
-      <p className="office-subtitle">{pageCopy.npu.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Local Acceleration"
+        title={pageCopy.npu.title}
+        subtitle={pageCopy.npu.subtitle}
+        hint="Use this page to configure the local NPU sidecar, inspect runtime health, and verify the on-device model catalog."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone={npuEnabled ? "success" : "muted"}>{npuEnabled ? "Enabled" : "Disabled"}</StatusChip>
+            <StatusChip tone={status?.healthy ? "success" : "warning"}>{status?.healthy ? "Healthy" : "Needs attention"}</StatusChip>
+            <StatusChip tone="muted">{models.length} models</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="npu"
         what={pageCopy.npu.guide?.what ?? ""}
         when={pageCopy.npu.guide?.when ?? ""}
         mostCommonAction={pageCopy.npu.guide?.mostCommonAction}
         actions={pageCopy.npu.guide?.actions ?? []}
         terms={pageCopy.npu.guide?.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing NPU status...</p> : null}
-      {busy ? <p className="status-banner">Applying NPU action...</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing NPU status...</p> : null}
+        {busy ? <p className="status-banner">Applying NPU action...</p> : null}
+        <FieldHelp>
+          Most operators only need this page when they intentionally want local on-device inference. Review the risk panel before changing runtime settings.
+        </FieldHelp>
+      </div>
       <ChangeReviewPanel
         title="NPU Configuration Risk"
         overall={changeReview.overall}
@@ -221,54 +244,51 @@ export function NpuPage({ settings }: NpuPageProps) {
         onCriticalConfirmChange={setCriticalConfirmed}
       />
 
-      <article className="card">
-        <h3>Configuration</h3>
+      <Panel title="Configuration" subtitle="Local sidecar settings that control whether the NPU runtime is enabled and how it starts.">
         <div className="controls-row">
-          <label htmlFor="npuEnabled">Enabled</label>
-          <input
-            id="npuEnabled"
-            type="checkbox"
-            checked={npuEnabled}
-            onChange={(event) => setNpuEnabled(event.target.checked)}
-          />
-          <label htmlFor="npuAutoStart">Auto start</label>
-          <input
-            id="npuAutoStart"
-            type="checkbox"
-            checked={autoStart}
-            onChange={(event) => setAutoStart(event.target.checked)}
-          />
+          <GCSwitch id="npuEnabled" checked={npuEnabled} onCheckedChange={setNpuEnabled} label="Enabled" />
+          <GCSwitch id="npuAutoStart" checked={autoStart} onCheckedChange={setAutoStart} label="Auto start" />
         </div>
-        <div className="controls-row">
-          <label htmlFor="npuSidecarUrl">Sidecar URL</label>
+        <label className="field" htmlFor="npuSidecarUrl">
+          Sidecar URL
           <input
             id="npuSidecarUrl"
             value={sidecarUrl}
             onChange={(event) => setSidecarUrl(event.target.value)}
           />
-        </div>
-        <button type="button" onClick={onSaveConfig} disabled={busy || blockConfigSave}>Save NPU Config</button>
-      </article>
+        </label>
+        <FieldHelp>
+          Point this at the local NPU sidecar you expect GoatCitadel to use. Leave it on loopback unless you intentionally run the accelerator on another machine.
+        </FieldHelp>
+        <ActionButton label="Save NPU Config" onClick={() => void onSaveConfig()} disabled={busy || blockConfigSave} />
+      </Panel>
 
-      <article className="card">
-        <h3>Runtime Control</h3>
-        <div className="controls-row">
-          <button type="button" onClick={onStart} disabled={busy}>Start</button>
-          <button type="button" onClick={onStop} disabled={busy}>Stop</button>
-          <button type="button" onClick={onRefresh} disabled={busy}>Refresh</button>
+      <Panel
+        title="Runtime Control"
+        subtitle="Start, stop, and refresh the sidecar while keeping the current runtime status visible."
+        actions={status ? (
+          <div className="workflow-summary-strip">
+            <StatusChip tone={status.processState === "running" ? "success" : "warning"}>{status.processState}</StatusChip>
+            <StatusChip tone="muted">{status.backend}</StatusChip>
+          </div>
+        ) : null}
+      >
+        <div className="row-actions">
+          <ActionButton label="Start" onClick={() => void onStart()} disabled={busy} />
+          <ActionButton label="Stop" onClick={() => void onStop()} disabled={busy} />
+          <ActionButton label="Refresh" onClick={() => void onRefresh()} disabled={busy} />
         </div>
         {settings ? (
-          <p className="office-subtitle">
+          <p className="field-help">
             Config: enabled={String(settings.npu.enabled)}, autoStart={String(settings.npu.autoStart)}, sidecar={settings.npu.sidecarUrl}
           </p>
         ) : null}
-      </article>
+      </Panel>
 
       {isInitialLoading ? <p>Loading NPU state...</p> : null}
 
       {status ? (
-        <article className="card">
-          <h3>Status</h3>
+        <Panel title="Status" subtitle="Current sidecar runtime state, active model, and capability details.">
           <p>Process: {status.processState}</p>
           <p>Desired: {status.desiredState}</p>
           <p>Healthy: {status.healthy ? "yes" : "no"}</p>
@@ -291,11 +311,10 @@ export function NpuPage({ settings }: NpuPageProps) {
               ))}
             </ul>
           ) : null}
-        </article>
+        </Panel>
       ) : null}
 
-      <article className="card">
-        <h3>Models</h3>
+      <Panel title="Models" subtitle="Discovered model catalog exposed by the sidecar.">
         <table>
           <thead>
             <tr>
@@ -328,7 +347,7 @@ export function NpuPage({ settings }: NpuPageProps) {
             ))}
           </tbody>
         </table>
-      </article>
+      </Panel>
     </section>
   );
 }

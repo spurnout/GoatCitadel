@@ -7,10 +7,17 @@ import {
   forgetMemoryItem,
   patchMemoryItem,
 } from "../api/client";
+import { ActionButton } from "../components/ActionButton";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
+import { PageHeader } from "../components/PageHeader";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { Panel } from "../components/Panel";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { HelpHint } from "../components/HelpHint";
+import { StatusChip } from "../components/StatusChip";
 import { SelectOrCustom } from "../components/SelectOrCustom";
+import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
@@ -251,91 +258,122 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
   }, []);
 
   return (
-    <section className="memory-v2">
-      <h2>{pageCopy.memory.title}</h2>
-      <p className="office-subtitle">{pageCopy.memory.subtitle}</p>
+    <section className="workflow-page memory-v2">
+      <PageHeader
+        eyebrow="Knowledge"
+        title={pageCopy.memory.title}
+        subtitle={pageCopy.memory.subtitle}
+        hint="Review what GoatCitadel is storing, where it lives in the workspace, and which learned items are currently allowed to influence future turns."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="muted">{files.length} files</StatusChip>
+            <StatusChip tone="muted">{memoryFilesCount} memory files</StatusChip>
+            <StatusChip tone={memoryItems.length > 0 ? "success" : "muted"}>{memoryItems.length} memory items</StatusChip>
+            {hottestArea ? <StatusChip tone="warning">{hottestArea.area}</StatusChip> : null}
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="memory"
         what={pageCopy.memory.guide?.what ?? ""}
         when={pageCopy.memory.guide?.when ?? ""}
         mostCommonAction={pageCopy.memory.guide?.mostCommonAction}
         actions={pageCopy.memory.guide?.actions ?? []}
         terms={pageCopy.memory.guide?.terms}
       />
-      {isInitialLoading ? <p>Loading memory workspace...</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing memory workspace...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
-      ) : null}
-      {error ? <p className="error">{error}</p> : null}
+      <div className="workflow-status-stack">
+        {isInitialLoading ? <p>Loading memory workspace...</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing memory workspace...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+        ) : null}
+        {error ? <p className="error">{error}</p> : null}
+        <FieldHelp>
+          Use this page to inspect the workspace memory footprint, review distilled context packs, and manage learned memory items when you need explicit operator control.
+        </FieldHelp>
+      </div>
 
       <div className="office-kpi-grid">
-        <article className="office-kpi-card">
-          <p className="office-kpi-label">Workspace files</p>
-          <p className="office-kpi-value">{files.length}</p>
-          <p className="office-kpi-note">Tracked across all areas</p>
-        </article>
-        <article className="office-kpi-card">
-          <p className="office-kpi-label">Workspace size</p>
-          <p className="office-kpi-value">{formatBytes(totalBytes)}</p>
-          <p className="office-kpi-note">Total bytes in indexed files</p>
-        </article>
-        <article className="office-kpi-card">
-          <p className="office-kpi-label">Memory namespace</p>
-          <p className="office-kpi-value">{memoryFilesCount}</p>
-          <p className="office-kpi-note">Files under memory/</p>
-        </article>
-        <article className="office-kpi-card">
-          <p className="office-kpi-label">Hottest area</p>
-          <p className="office-kpi-value">{hottestArea?.area ?? "-"}</p>
-          <p className="office-kpi-note">
+        <Panel className="stat-card" title="Workspace files" subtitle="Tracked across all indexed areas.">
+          <p className="stat-card-value">{files.length}</p>
+          <p className="stat-card-note">Tracked across all areas</p>
+        </Panel>
+        <Panel className="stat-card" title="Workspace size" subtitle="Total indexed file footprint.">
+          <p className="stat-card-value">{formatBytes(totalBytes)}</p>
+          <p className="stat-card-note">Total bytes in indexed files</p>
+        </Panel>
+        <Panel className="stat-card" title="Memory namespace" subtitle="Files currently under memory/.">
+          <p className="stat-card-value">{memoryFilesCount}</p>
+          <p className="stat-card-note">Files under memory/</p>
+        </Panel>
+        <Panel className="stat-card" title="Hottest area" subtitle="Largest top-level area by bytes.">
+          <p className="stat-card-value">{hottestArea?.area ?? "-"}</p>
+          <p className="stat-card-note">
             {hottestArea ? `${formatBytes(hottestArea.totalBytes)} total` : "No files indexed"}
           </p>
-        </article>
-        <article className="office-kpi-card">
+        </Panel>
+        <Panel className="stat-card stat-card-accent" title="QMD Runs (24h)" subtitle={(
+          <>
+            How many query-time memory distillation runs happened in the last 24 hours.
+            <HelpHint label="QMD runs help" text="Generated means GoatCitadel built fresh context; cache hits means it reused a recent pack." />
+          </>
+        )}>
           <p className="office-kpi-label">
-            QMD Runs (24h)
-            <HelpHint label="QMD runs help" text="How many query-time memory distillation runs happened in the last 24 hours. Generated means GoatCitadel built fresh context; cache hits means it reused a recent pack." />
+            QMD activity
           </p>
-          <p className="office-kpi-value">{qmdStats?.totalRuns ?? 0}</p>
-          <p className="office-kpi-note">Generated {qmdStats?.generatedRuns ?? 0} / cache hits {qmdStats?.cacheHitRuns ?? 0}</p>
-        </article>
-        <article className="office-kpi-card">
+          <p className="stat-card-value">{qmdStats?.totalRuns ?? 0}</p>
+          <p className="stat-card-note">Generated {qmdStats?.generatedRuns ?? 0} / cache hits {qmdStats?.cacheHitRuns ?? 0}</p>
+        </Panel>
+        <Panel className="stat-card stat-card-warning" title="QMD Context Impact" subtitle={(
+          <>
+            Whether distilled context reduced or expanded token usage.
+            <HelpHint label="QMD context impact help" text="Negative savings means the distilled result grew instead of shrinking." />
+          </>
+        )}>
           <p className="office-kpi-label">
-            QMD Context Impact
-            <HelpHint label="QMD context impact help" text="Shows whether QMD reduced or expanded the token count compared with the original context payload. Negative savings means the distilled result grew instead of shrinking." />
+            QMD impact
           </p>
-          <p className="office-kpi-value">{qmdStats ? describeQmdImpact(qmdStats) : "-"}</p>
-          <p className="office-kpi-note">
+          <p className="stat-card-value">{qmdStats ? describeQmdImpact(qmdStats) : "-"}</p>
+          <p className="stat-card-note">
             {qmdStats
               ? `Went from ${qmdStats.originalTokenEstimate} tokens to ${qmdStats.distilledTokenEstimate} (${formatTokenDelta(qmdStats.netTokenDelta)}).`
               : "No QMD samples yet"}
           </p>
-        </article>
+        </Panel>
       </div>
 
-      <div className="controls-row">
-        <select
-          value={selectedArea}
-          onChange={(event) => setSelectedArea(event.target.value)}
-        >
-          {areaOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
-        <SelectOrCustom
-          value={search}
-          onChange={setSearch}
-          options={searchOptions}
-          customPlaceholder="Filter by path text"
-          customLabel="Path filter"
+      <Panel
+        title="Workspace Filters"
+        subtitle="Filter the file inventory before drilling into memory-heavy areas."
+        actions={(
+          <div className="data-toolbar-secondary">
+            <StatusChip tone={selectedArea === "all" ? "muted" : "success"}>{selectedArea}</StatusChip>
+            <StatusChip tone="muted">{filtered.length} matches</StatusChip>
+          </div>
+        )}
+      >
+        <DataToolbar
+          primary={(
+            <>
+              <GCSelect
+                value={selectedArea}
+                onChange={(value) => setSelectedArea(value)}
+                options={areaOptions.map((option) => ({ value: option, label: option }))}
+              />
+              <SelectOrCustom
+                value={search}
+                onChange={setSearch}
+                options={searchOptions}
+                customPlaceholder="Filter by path text"
+                customLabel="Path filter"
+              />
+            </>
+          )}
         />
-      </div>
+      </Panel>
 
       <div className="split-grid memory-workspace-grid">
-        <article className="card">
-          <h3>Workspace Areas</h3>
+        <Panel title="Workspace Areas" subtitle="Largest top-level file areas in this workspace.">
           <ul className="compact-list workspace-area-list">
             {areas.map((area) => (
               <li key={area.area}>
@@ -350,10 +388,9 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
               </li>
             ))}
           </ul>
-        </article>
+        </Panel>
 
-        <article className="card">
-          <h3>Files {selectedArea !== "all" ? `(${selectedArea})` : "(all areas)"}</h3>
+        <Panel title={`Files ${selectedArea !== "all" ? `(${selectedArea})` : "(all areas)"}`} subtitle="Preview the indexed file inventory before drilling into memory-specific areas.">
           <table>
             <thead>
               <tr>
@@ -377,11 +414,10 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
           {filtered.length > 300 ? (
             <p className="office-subtitle">Showing first 300 rows of {filtered.length} matching files.</p>
           ) : null}
-        </article>
+        </Panel>
       </div>
 
-      <article className="card">
-        <h3>memory/ Breakdown</h3>
+      <Panel title="memory/ Breakdown" subtitle="Subspaces discovered under memory/ and their relative footprint.">
         <table>
           <thead>
             <tr>
@@ -406,10 +442,9 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
             ))}
           </tbody>
         </table>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>Recent Distilled Context Packs</h3>
+      <Panel title="Recent Distilled Context Packs" subtitle="Recent QMD outputs and their current quality status.">
         <table>
           <thead>
             <tr>
@@ -434,16 +469,14 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
             ))}
           </tbody>
         </table>
-      </article>
+      </Panel>
 
-      <article className="card">
-        <h3>
+      <Panel title={(
+        <>
           Memory Lifecycle Admin
           <HelpHint label="Memory lifecycle admin help" text="This panel lets you inspect, pin, and forget saved memory records directly. It is for operator review, not normal day-to-day chatting." />
-        </h3>
-        <p className="office-subtitle">
-          Manage memory records directly (pin, inspect history, targeted forget). This panel is available when memory lifecycle admin is enabled.
-        </p>
+        </>
+      )} subtitle="Inspect, pin, and forget saved memory records directly when lifecycle admin is enabled.">
         {memoryAdminError ? <p className="error">{memoryAdminError}</p> : null}
         {memoryItems.length === 0 ? (
           <p className="office-subtitle">No memory lifecycle records available.</p>
@@ -471,31 +504,24 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
                       <td>{item.status}{item.pinned ? " • pinned" : ""}</td>
                       <td>{new Date(item.updatedAt).toLocaleString()}</td>
                       <td className="actions">
-                        <button
-                          type="button"
+                        <ActionButton
+                          label="Inspect"
                           onClick={() => {
                             setSelectedMemoryItemId(item.itemId);
                             void loadMemoryHistory(item.itemId);
                           }}
-                        >
-                          Inspect
-                        </button>
-                        <button
-                          type="button"
-                          title="Pin keeps this memory favored. Unpin returns it to normal lifecycle behavior."
+                        />
+                        <ActionButton
+                          label={item.pinned ? "Unpin" : "Pin"}
                           disabled={memoryBusyItemId === item.itemId}
                           onClick={() => void togglePin(item.itemId, item.pinned)}
-                        >
-                          {item.pinned ? "Unpin" : "Pin"}
-                        </button>
-                        <button
-                          type="button"
-                          className="danger"
+                        />
+                        <ActionButton
+                          label="Forget"
+                          danger
                           disabled={item.status === "forgotten" || memoryBusyItemId === item.itemId}
                           onClick={() => setConfirmForgetItem({ itemId: item.itemId, title: item.title })}
-                        >
-                          Forget
-                        </button>
+                        />
                       </td>
                     </tr>
                   ))}
@@ -531,7 +557,7 @@ export function MemoryPage({ workspaceId = "default" }: { workspaceId?: string }
             </div>
           </div>
         )}
-      </article>
+      </Panel>
       <ConfirmModal
         open={Boolean(confirmForgetItem)}
         title="Forget Memory Item"

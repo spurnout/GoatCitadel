@@ -5,7 +5,7 @@ type PanelTone = "default" | "soft" | "accent" | "warning" | "critical";
 type PanelPadding = "default" | "compact" | "spacious";
 
 interface PanelProps {
-  title?: string;
+  title?: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   tone?: PanelTone;

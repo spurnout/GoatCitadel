@@ -8,8 +8,13 @@ import {
   stopDaemon,
   type SystemVitalsResponse,
 } from "../api/client";
+import { ActionButton } from "../components/ActionButton";
+import { FieldHelp } from "../components/FieldHelp";
 import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { pageCopy } from "../content/copy";
 
 export function SystemPage() {
@@ -42,12 +47,34 @@ export function SystemPage() {
       .catch((err: Error) => setError(err.message));
   }, []);
 
+  const daemonStateTone = daemonStatus?.running ? "success" : "warning";
+
   if (error) {
-    return <p className="error">{error}</p>;
+    return (
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Observability"
+          title={pageCopy.system.title}
+          subtitle={pageCopy.system.subtitle}
+          hint="Inspect local runtime health, daemon lifecycle, and recent service events from one place."
+        />
+        <p className="error">{error}</p>
+      </section>
+    );
   }
 
   if (!vitals) {
-    return <p>Loading system vitals...</p>;
+    return (
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Observability"
+          title={pageCopy.system.title}
+          subtitle={pageCopy.system.subtitle}
+          hint="Inspect local runtime health, daemon lifecycle, and recent service events from one place."
+        />
+        <p>Loading system vitals...</p>
+      </section>
+    );
   }
 
   const onDaemonStart = async () => {
@@ -90,40 +117,68 @@ export function SystemPage() {
   };
 
   return (
-    <section>
-      <h2>{pageCopy.system.title}</h2>
-      <p className="office-subtitle">{pageCopy.system.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Observability"
+        title={pageCopy.system.title}
+        subtitle={pageCopy.system.subtitle}
+        hint="Use this surface when you need to confirm local runtime health, restart the daemon, or inspect recent service events."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="muted">{vitals.platform} {vitals.release}</StatusChip>
+            <StatusChip tone={daemonStateTone}>{daemonStatus?.state ?? "unknown"}</StatusChip>
+            <StatusChip tone={daemonStateTone}>{daemonStatus?.running ? "Daemon running" : "Daemon stopped"}</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="system"
         what={pageCopy.system.guide?.what ?? ""}
         when={pageCopy.system.guide?.when ?? ""}
         actions={pageCopy.system.guide?.actions ?? []}
       />
-      <article className="card">
-        <p>Hostname: {vitals.hostname}</p>
-        <p>Platform: {vitals.platform} {vitals.release}</p>
-        <p>Uptime: {Math.round(vitals.uptimeSeconds)}s</p>
-        <p>CPU cores: {vitals.cpuCount}</p>
-        <p>Load avg: {vitals.loadAverage.map((n) => n.toFixed(2)).join(", ")}</p>
-        <p>Memory used: {formatBytes(vitals.memoryUsedBytes)} / {formatBytes(vitals.memoryTotalBytes)}</p>
-        <p>Process RSS: {formatBytes(vitals.processRssBytes)}</p>
-      </article>
-      <article className="card">
-        <h3>
-          Service Manager
-          <HelpHint label="Service manager help" text="Manage the local GoatCitadel daemon lifecycle and inspect recent service events." />
-        </h3>
-        <p className="office-subtitle">
-          State: <strong>{daemonStatus?.state ?? "unknown"}</strong>
-          {" · "}
-          PID: <strong>{daemonStatus?.pid ?? 0}</strong>
-          {" · "}
-          Uptime: <strong>{Math.round(daemonStatus?.uptimeSeconds ?? 0)}s</strong>
-        </p>
-        <div className="actions">
-          <button type="button" onClick={onDaemonStart} disabled={daemonBusy || daemonStatus?.running}>Start</button>
-          <button type="button" onClick={onDaemonStop} disabled={daemonBusy || !daemonStatus?.running}>Stop</button>
-          <button type="button" onClick={onDaemonRestart} disabled={daemonBusy}>Restart</button>
-          <button type="button" onClick={() => void refreshDaemon()} disabled={daemonBusy}>Refresh</button>
+      <div className="workflow-status-stack">
+        <FieldHelp>
+          Use the service manager when you need to restart or inspect the local GoatCitadel daemon. Most operators should not need this surface during normal chat and workflow use.
+        </FieldHelp>
+      </div>
+      <div className="metric-grid">
+        <Panel title="Host Vitals" subtitle="Local machine and process health at a glance." className="stat-card">
+          <p className="stat-card-value">{Math.round(vitals.uptimeSeconds)}s</p>
+          <p className="stat-card-note">Uptime</p>
+          <p className="stat-card-note">Hostname {vitals.hostname} · {vitals.cpuCount} cores</p>
+        </Panel>
+        <Panel title="Load Average" subtitle="Three-sample host load average." className="stat-card">
+          <p className="stat-card-value system-stat-mono">{vitals.loadAverage.map((n) => n.toFixed(2)).join(" / ")}</p>
+          <p className="stat-card-note">1m / 5m / 15m load</p>
+        </Panel>
+        <Panel title="Memory" subtitle="Host and process memory use." className="stat-card">
+          <p className="stat-card-value">{formatBytes(vitals.memoryUsedBytes)}</p>
+          <p className="stat-card-note">of {formatBytes(vitals.memoryTotalBytes)} host memory</p>
+          <p className="stat-card-note">Process RSS {formatBytes(vitals.processRssBytes)}</p>
+        </Panel>
+      </div>
+      <Panel
+        title="Service Manager"
+        subtitle={(
+          <>
+            Manage the local GoatCitadel daemon lifecycle and inspect recent service events.
+            <HelpHint label="Service manager help" text="Use Start, Stop, Restart, and Refresh to control the local daemon process. Refresh only reloads status and recent logs." />
+          </>
+        )}
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone={daemonStateTone}>{daemonStatus?.state ?? "unknown"}</StatusChip>
+            <StatusChip tone="muted">PID {daemonStatus?.pid ?? 0}</StatusChip>
+            <StatusChip tone="muted">{Math.round(daemonStatus?.uptimeSeconds ?? 0)}s uptime</StatusChip>
+          </div>
+        )}
+      >
+        <div className="row-actions">
+          <ActionButton label="Start" onClick={onDaemonStart} disabled={daemonBusy || daemonStatus?.running} />
+          <ActionButton label="Stop" onClick={onDaemonStop} disabled={daemonBusy || !daemonStatus?.running} />
+          <ActionButton label="Restart" onClick={onDaemonRestart} disabled={daemonBusy} />
+          <ActionButton label="Refresh" onClick={() => void refreshDaemon()} disabled={daemonBusy} />
         </div>
         {daemonLogs.length > 0 ? (
           <pre>
@@ -132,7 +187,7 @@ export function SystemPage() {
         ) : (
           <p className="office-subtitle">No daemon log events yet.</p>
         )}
-      </article>
+      </Panel>
     </section>
   );
 }

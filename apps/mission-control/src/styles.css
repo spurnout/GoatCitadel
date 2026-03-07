@@ -3727,6 +3727,12 @@ body {
   line-height: 1.55;
 }
 
+.system-stat-mono {
+  font-family: "Geist Mono", "JetBrains Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 24px;
+}
+
 .inline-help {
   color: var(--muted);
   font-size: 13px;

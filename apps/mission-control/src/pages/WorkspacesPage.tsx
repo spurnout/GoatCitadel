@@ -12,7 +12,12 @@ import {
   type GuidanceDocumentRecord,
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
+import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 
@@ -198,29 +203,50 @@ export function WorkspacesPage(props: {
   }, [docScope, docType, editorContent, load, props.activeWorkspaceId]);
 
   return (
-    <section className="stack-lg">
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Workspace Control"
+        title={pageCopy.workspaces.title}
+        subtitle={pageCopy.workspaces.subtitle}
+        hint="Switch operational context, create workspace overrides, and edit workspace-scoped guidance without losing the current shell state."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="success">{activeWorkspace?.name ?? props.activeWorkspaceId}</StatusChip>
+            <StatusChip tone="muted">{workspaces.length} workspaces</StatusChip>
+            <StatusChip tone={docScope === "workspace" ? "warning" : "muted"}>
+              {docScope === "workspace" ? "Workspace override" : "Global default"}
+            </StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="workspaces"
         what={pageCopy.workspaces.guide?.what ?? ""}
         when={pageCopy.workspaces.guide?.when ?? ""}
         mostCommonAction={pageCopy.workspaces.guide?.mostCommonAction}
         actions={pageCopy.workspaces.guide?.actions ?? []}
         terms={pageCopy.workspaces.guide?.terms}
       />
-      {isInitialLoading ? <p>Loading workspaces...</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing workspace data...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">
-          Live updates degraded, checking workspace data periodically.
-        </p>
-      ) : null}
-      {error ? <p className="status-banner warning">{error}</p> : null}
-      {success ? <p className="status-banner success">{success}</p> : null}
+      <div className="workflow-status-stack">
+        {isInitialLoading ? <p>Loading workspaces...</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing workspace data...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">
+            Live updates degraded, checking workspace data periodically.
+          </p>
+        ) : null}
+        {error ? <p className="status-banner warning">{error}</p> : null}
+        {success ? <p className="status-banner success">{success}</p> : null}
+        <FieldHelp>
+          Use workspaces to separate guidance and operational context. Most users only need a few stable workspaces rather than many narrowly scoped ones.
+        </FieldHelp>
+      </div>
 
-      <article className="card stack-md">
-        <header className="row-between">
-          <h3>Workspace Switcher</h3>
-          <span className="status-chip">Active: {activeWorkspace?.name ?? props.activeWorkspaceId}</span>
-        </header>
+      <Panel
+        title="Workspace Switcher"
+        subtitle="Select the active workspace or create a new one without leaving the current shell."
+        actions={<StatusChip tone="success">Active: {activeWorkspace?.name ?? props.activeWorkspaceId}</StatusChip>}
+      >
         <div className="split-grid">
           <ul className="compact-list">
             {workspaces.map((workspace) => (
@@ -266,36 +292,37 @@ export function WorkspacesPage(props: {
             />
           </div>
         </div>
-      </article>
+      </Panel>
 
-      <article className="card stack-md">
-        <header className="row-between">
-          <h3>Guidance Editor</h3>
-          <span className="office-subtitle">
-            {docScope === "workspace" ? `Workspace override (${props.activeWorkspaceId})` : "Global default"}
-          </span>
-        </header>
+      <Panel
+        title="Guidance Editor"
+        subtitle={docScope === "workspace" ? `Workspace override (${props.activeWorkspaceId})` : "Global default"}
+      >
         <div className="row-actions">
           <label className="field compact">
             Scope
-            <select value={docScope} onChange={(event) => setDocScope(event.target.value as "global" | "workspace")}>
-              <option value="workspace">Workspace</option>
-              <option value="global">Global</option>
-            </select>
+            <GCSelect
+              value={docScope}
+              onChange={(value) => setDocScope(value as "global" | "workspace")}
+              options={[
+                { value: "workspace", label: "Workspace" },
+                { value: "global", label: "Global" },
+              ]}
+            />
           </label>
           <label className="field compact">
             Document
-            <select value={docType} onChange={(event) => setDocType(event.target.value as GuidanceDocType)}>
-              {visibleDocTypes.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
+            <GCSelect
+              value={docType}
+              onChange={(value) => setDocType(value as GuidanceDocType)}
+              options={visibleDocTypes.map((item) => ({ value: item.value, label: item.label }))}
+            />
           </label>
           <ActionButton label={isSaving ? "Saving..." : "Save guidance"} disabled={isSaving || !dirty} onClick={() => void handleSaveGuidance()} />
         </div>
-        <p className="office-subtitle">
+        <FieldHelp>
           File: <code>{selectedDocument?.absolutePath ?? "not created yet"}</code>
-        </p>
+        </FieldHelp>
         <textarea
           value={editorContent}
           onChange={(event) => {
@@ -305,7 +332,7 @@ export function WorkspacesPage(props: {
           rows={20}
           placeholder="Write guidance markdown here..."
         />
-      </article>
+      </Panel>
     </section>
   );
 }

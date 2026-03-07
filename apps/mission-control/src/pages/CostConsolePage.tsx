@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchCostSummary, fetchMemoryQmdStats, runCheaper, type CostSummaryResponse } from "../api/client";
+import { ActionButton } from "../components/ActionButton";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
@@ -87,52 +93,101 @@ export function CostConsolePage() {
   };
 
   if (error) {
-    return <p className="error">{error}</p>;
+    return (
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Economics"
+          title={pageCopy.costs.title}
+          subtitle={pageCopy.costs.subtitle}
+          hint="Track usage coverage, token consumption, QMD impact, and lower-cost recommendations from one operator console."
+        />
+        <p className="error">{error}</p>
+      </section>
+    );
   }
 
   if (isInitialLoading || !data) {
-    return <p>Loading cost data...</p>;
+    return (
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Economics"
+          title={pageCopy.costs.title}
+          subtitle={pageCopy.costs.subtitle}
+          hint="Track usage coverage, token consumption, QMD impact, and lower-cost recommendations from one operator console."
+        />
+        <p>Loading cost data...</p>
+      </section>
+    );
   }
 
   return (
-    <section>
-      <h2>{pageCopy.costs.title}</h2>
-      <p className="office-subtitle">{pageCopy.costs.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Economics"
+        title={pageCopy.costs.title}
+        subtitle={pageCopy.costs.subtitle}
+        hint="Use this page to compare token spend by scope, confirm usage coverage, and inspect whether QMD is actually saving context cost."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="muted">{scope}</StatusChip>
+            <StatusChip tone={qmdSavings?.efficiencyLabel === "reduced" ? "success" : qmdSavings?.efficiencyLabel === "expanded" ? "warning" : "muted"}>
+              {qmdSavings ? describeQmdImpact(qmdSavings) : "No QMD samples"}
+            </StatusChip>
+            <StatusChip tone="muted">{data.items.length} rows</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="costs"
         what={pageCopy.costs.guide?.what ?? ""}
         when={pageCopy.costs.guide?.when ?? ""}
         mostCommonAction={pageCopy.costs.guide?.mostCommonAction}
         actions={pageCopy.costs.guide?.actions ?? []}
       />
-      {isRefreshing ? <p className="status-banner">Refreshing costs...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
-      ) : null}
-      <div className="controls-row">
-        <label htmlFor="scope">Scope</label>
-        <GCSelect
-          id="scope"
-          value={scope}
-          onChange={(value) => setScope(value as CostScope)}
-          options={[
-            { value: "day", label: "day" },
-            { value: "session", label: "session" },
-            { value: "agent", label: "agent" },
-            { value: "task", label: "task" },
-          ]}
-        />
-        <button type="button" onClick={onRunCheaper}>Run Leaner</button>
+      <div className="workflow-status-stack">
+        {isRefreshing ? <p className="status-banner">Refreshing costs...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+        ) : null}
       </div>
+      <Panel
+        title="Cost Controls"
+        subtitle="Switch scope and run a leaner-cost recommendation without leaving the current console."
+        padding="compact"
+      >
+        <DataToolbar
+          primary={(
+            <label className="chat-v11-select" htmlFor="scope">Scope
+              <GCSelect
+                id="scope"
+                value={scope}
+                onChange={(value) => setScope(value as CostScope)}
+                options={[
+                  { value: "day", label: "day" },
+                  { value: "session", label: "session" },
+                  { value: "agent", label: "agent" },
+                  { value: "task", label: "task" },
+                ]}
+              />
+            </label>
+          )}
+          secondary={<ActionButton label="Run Leaner" onClick={() => void onRunCheaper()} />}
+        />
+        <FieldHelp>
+          Scope changes what the summary rows group by. “Run Leaner” asks GoatCitadel for concrete lower-cost actions without changing current provider defaults.
+        </FieldHelp>
+      </Panel>
       {recommendation ? (
-        <ul>
-          {recommendation.map((step) => (
-            <li key={step}>{step}</li>
-          ))}
-        </ul>
+        <Panel title="Leaner Recommendations" subtitle="Current cost-reduction suggestions from the optimization helper." tone="soft">
+          <ul className="improvement-simple-list">
+            {recommendation.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ul>
+        </Panel>
       ) : null}
 
-      <article className="card">
-        <h3>QMD Impact (24h)</h3>
+      <Panel title="QMD Impact (24h)" subtitle="How query-time memory distillation changed the context footprint in the last 24 hours.">
         {qmdSavings ? (
           <>
             <p>
@@ -146,11 +201,10 @@ export function CostConsolePage() {
         ) : (
           <p>No QMD metrics yet.</p>
         )}
-      </article>
+      </Panel>
 
       {data.usageAvailability ? (
-        <article className="card">
-          <h3>Usage Coverage</h3>
+        <Panel title="Usage Coverage" subtitle="How much of the recent agent activity reported provider usage metadata.">
           <p>
             Tracked events: {data.usageAvailability.trackedEvents}
             {" | "}
@@ -165,31 +219,33 @@ export function CostConsolePage() {
           ) : (
             <p className="office-subtitle">All recent assistant events reported usage successfully.</p>
           )}
-        </article>
+        </Panel>
       ) : null}
 
-      <table>
-        <thead>
-          <tr>
-            <th>Scope Key</th>
-            <th>Token Input</th>
-            <th>Token Output</th>
-            <th>Total Tokens</th>
-            <th>Cost (USD)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.items.map((item) => (
-            <tr key={item.key}>
-              <td>{item.key}</td>
-              <td>{item.tokenInput}</td>
-              <td>{item.tokenOutput}</td>
-              <td>{item.tokenTotal}</td>
-              <td>{item.costUsd.toFixed(4)}</td>
+      <Panel title="Cost Rows" subtitle="Grouped usage totals for the selected scope.">
+        <table>
+          <thead>
+            <tr>
+              <th>Scope Key</th>
+              <th>Token Input</th>
+              <th>Token Output</th>
+              <th>Total Tokens</th>
+              <th>Cost (USD)</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.items.map((item) => (
+              <tr key={item.key}>
+                <td>{item.key}</td>
+                <td>{item.tokenInput}</td>
+                <td>{item.tokenOutput}</td>
+                <td>{item.tokenTotal}</td>
+                <td>{item.costUsd.toFixed(4)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
     </section>
   );
 }
