@@ -202,6 +202,7 @@ button.danger {
   position: sticky;
   top: 8px;
   z-index: 5;
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -1641,11 +1642,13 @@ pre {
   padding: 10px 12px;
   margin-bottom: 12px;
   font-weight: 600;
+  background: rgba(18, 18, 24, 0.94);
   background: color-mix(in srgb, var(--panel) 78%, #fff 22%);
 }
 
 .status-banner.warning {
   border-color: #4bbdff;
+  background: rgba(26, 40, 58, 0.94);
   background: color-mix(in srgb, #4bbdff 18%, var(--panel) 82%);
   color: #fff3df;
 }
@@ -2990,6 +2993,7 @@ pre {
   position: fixed;
   inset: 0;
   background: rgba(4, 8, 14, 0.7);
+  -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
   z-index: 100;
 }
@@ -3414,6 +3418,7 @@ body {
   background: rgba(11, 15, 23, 0.86);
   border: 1px solid rgba(120, 146, 186, 0.24);
   border-radius: 18px;
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   box-shadow: var(--shadow-sm);
 }
@@ -4611,6 +4616,7 @@ body::before {
     rgba(11, 14, 22, 0.88);
   border: 1px solid rgba(120, 146, 186, 0.16);
   border-radius: 22px;
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
   backdrop-filter: blur(14px) saturate(150%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -4734,6 +4740,7 @@ body::before {
 .gc-select-content,
 .gc-combobox-content,
 .modal-card {
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
   backdrop-filter: blur(14px) saturate(150%);
 }
 
@@ -4940,6 +4947,7 @@ input[type="number"] {
 
 .modal-backdrop {
   background: rgba(4, 7, 12, 0.72);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
   backdrop-filter: blur(10px) saturate(150%);
 }
 
@@ -5316,6 +5324,7 @@ body {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     0 16px 40px rgba(0, 0, 0, 0.34);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
   backdrop-filter: blur(12px) saturate(130%);
 }
 
@@ -5948,6 +5957,7 @@ body {
     0 0 0 1px rgba(255, 54, 93, 0.1),
     0 0 28px rgba(255, 54, 93, 0.12),
     0 22px 60px rgba(0, 0, 0, 0.46);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
   backdrop-filter: blur(16px) saturate(140%);
 }
 
@@ -6384,6 +6394,7 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     0 16px 38px rgba(0, 0, 0, 0.38),
     0 0 0 1px rgba(255, 24, 71, 0.05);
+  -webkit-backdrop-filter: blur(12px) saturate(132%);
   backdrop-filter: blur(12px) saturate(132%);
 }
 
@@ -7160,6 +7171,7 @@ body {
 
 /* Final command-deck visual identity override */
 .layout-shell.theme-obsidian-crimson {
+  grid-template-columns: 272px minmax(0, 1fr);
   --gc-bg-app: #050507;
   --gc-bg-shell: #08090c;
   --gc-bg-sidebar: #09090d;
@@ -7404,6 +7416,8 @@ body {
   border: 1px solid rgba(255, 54, 93, 0.16);
   background:
     linear-gradient(180deg, rgba(16, 12, 16, 0.94), rgba(8, 8, 11, 0.98));
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     0 20px 46px rgba(0, 0, 0, 0.28);
@@ -7814,7 +7828,7 @@ body {
 .theme-obsidian-crimson .chat-v11-thread {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
-  min-height: calc(100vh - 260px);
+  min-height: clamp(460px, calc(100vh - 220px), 900px);
   border: 1px solid rgba(255, 54, 93, 0.18);
   background:
     radial-gradient(circle at top right, rgba(255, 24, 71, 0.08), transparent 20%),
@@ -7874,6 +7888,7 @@ body {
   border-top: 1px solid rgba(255, 54, 93, 0.16);
   background:
     linear-gradient(180deg, rgba(8, 9, 10, 0.9), rgba(5, 5, 7, 0.99));
+  -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
 }
 
@@ -8095,6 +8110,7 @@ body {
   border: 1px solid rgba(255, 54, 93, 0.24);
   background:
     linear-gradient(180deg, rgba(10, 10, 14, 0.68), rgba(6, 7, 10, 0.92));
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
   backdrop-filter: blur(16px) saturate(160%);
   box-shadow:
     0 0 0 1px rgba(255, 24, 71, 0.12),
@@ -8159,6 +8175,37 @@ body {
   }
 }
 
+@media (max-width: 1360px) {
+  .theme-obsidian-crimson.layout-shell {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+
+  .theme-obsidian-crimson .sidebar {
+    width: 248px;
+    padding: 14px 10px;
+  }
+
+  .theme-obsidian-crimson .sidebar-nav button {
+    min-height: 54px;
+    padding: 12px 14px 12px 16px;
+  }
+
+  .theme-obsidian-crimson .chat-v11-shell {
+    grid-template-columns: 248px minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .theme-obsidian-crimson .shell-topbar,
+  .theme-obsidian-crimson .page-header,
+  .theme-obsidian-crimson .dashboard-page,
+  .theme-obsidian-crimson .workflow-page,
+  .theme-obsidian-crimson .chat-v11,
+  .theme-obsidian-crimson .office-v5 {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+}
+
 @media (max-width: 1540px) {
   .theme-obsidian-crimson .shell-topbar {
     grid-template-columns: minmax(0, 1fr);
@@ -8177,9 +8224,21 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .theme-obsidian-crimson .chat-v11-main-grid.with-cowork {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .theme-obsidian-crimson .chat-v11-inspector-lane {
     position: static;
     order: 2;
+  }
+
+  .theme-obsidian-crimson .chat-v11-thread {
+    min-height: clamp(420px, calc(100vh - 250px), 760px);
+  }
+
+  .theme-obsidian-crimson .chat-v11-composer {
+    position: static;
   }
 
   .theme-obsidian-crimson .office-v5-workspace {
@@ -8199,6 +8258,14 @@ body {
   .theme-obsidian-crimson .chat-v11-left {
     position: static;
     max-height: none;
+  }
+
+  .theme-obsidian-crimson .chat-v11-thread {
+    min-height: clamp(380px, calc(100vh - 230px), 680px);
+  }
+
+  .theme-obsidian-crimson .chat-v11-composer textarea {
+    min-height: 96px;
   }
 }
 

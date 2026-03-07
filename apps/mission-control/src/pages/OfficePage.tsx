@@ -168,7 +168,7 @@ class OfficeCanvasErrorBoundary extends Component<
   }
 
   public override componentDidCatch(_error: Error, _errorInfo: ErrorInfo): void {
-    // Keep the page interactive while isolating WebGL failures.
+    // Keep the page interactive while isolating degraded WebGL or canvas render failures.
   }
 
   public override render(): ReactNode {
