@@ -1,10 +1,13 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 export type UiExperienceMode = "simple" | "advanced";
+export type UiDensity = "comfortable" | "default" | "compact";
 
 interface UiPreferencesValue {
   mode: UiExperienceMode;
   setMode: (mode: UiExperienceMode) => void;
+  density: UiDensity;
+  setDensity: (density: UiDensity) => void;
   showTechnicalDetails: boolean;
   setShowTechnicalDetails: (enabled: boolean) => void;
   activeWorkspaceId: string;
@@ -12,12 +15,15 @@ interface UiPreferencesValue {
 }
 
 const MODE_KEY = "goatcitadel.ui.mode.v1";
+const DENSITY_KEY = "goatcitadel.ui.density.v1";
 const DETAILS_KEY = "goatcitadel.ui.technical_details.v1";
 const WORKSPACE_KEY = "goatcitadel.ui.workspace_id.v1";
 
 const UiPreferencesContext = createContext<UiPreferencesValue>({
   mode: "simple",
   setMode: () => {},
+  density: "default",
+  setDensity: () => {},
   showTechnicalDetails: false,
   setShowTechnicalDetails: () => {},
   activeWorkspaceId: "default",
@@ -26,6 +32,7 @@ const UiPreferencesContext = createContext<UiPreferencesValue>({
 
 export function UiPreferencesProvider(props: { children: ReactNode }) {
   const [mode, setModeState] = useState<UiExperienceMode>(() => readModeFromStorage());
+  const [density, setDensityState] = useState<UiDensity>(() => readDensityFromStorage());
   const [showTechnicalDetails, setShowTechnicalDetailsState] = useState<boolean>(() => readDetailsFromStorage());
   const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string>(() => readWorkspaceIdFromStorage());
 
@@ -39,6 +46,11 @@ export function UiPreferencesProvider(props: { children: ReactNode }) {
         setShowTechnicalDetailsState(nextShowDetails);
         writeStorage(DETAILS_KEY, String(nextShowDetails));
       },
+      density,
+      setDensity: (nextDensity) => {
+        setDensityState(nextDensity);
+        writeStorage(DENSITY_KEY, nextDensity);
+      },
       showTechnicalDetails,
       setShowTechnicalDetails: (enabled) => {
         setShowTechnicalDetailsState(enabled);
@@ -51,7 +63,7 @@ export function UiPreferencesProvider(props: { children: ReactNode }) {
         writeStorage(WORKSPACE_KEY, normalized);
       },
     }),
-    [mode, showTechnicalDetails, activeWorkspaceId],
+    [mode, density, showTechnicalDetails, activeWorkspaceId],
   );
 
   return (
@@ -86,6 +98,17 @@ function readDetailsFromStorage(): boolean {
   }
   const mode = readModeFromStorage();
   return mode === "advanced";
+}
+
+function readDensityFromStorage(): UiDensity {
+  if (typeof window === "undefined") {
+    return "default";
+  }
+  const raw = window.localStorage.getItem(DENSITY_KEY);
+  if (raw === "comfortable" || raw === "compact") {
+    return raw;
+  }
+  return "default";
 }
 
 function writeStorage(key: string, value: string): void {

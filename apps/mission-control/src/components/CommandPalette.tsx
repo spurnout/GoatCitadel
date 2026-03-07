@@ -41,26 +41,37 @@ export function CommandPalette({ open, onClose, items }: CommandPaletteProps) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal-card command-palette" onClick={(event) => event.stopPropagation()}>
-        <h3>{appCopy.quickActionsButton.replace(" (Ctrl/Cmd+K)", "")}</h3>
-        <input
-          autoFocus
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={globalCopy.commandPalette.placeholder}
-        />
-        <ul className="compact-list">
+        <header className="command-palette-head">
+          <div>
+            <p className="command-palette-kicker">Command Center</p>
+            <h3>{appCopy.quickActionsButton.replace(" (Ctrl/Cmd+K)", "")}</h3>
+          </div>
+          <p className="command-palette-hint">Esc to close</p>
+        </header>
+        <div className="command-palette-search">
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={globalCopy.commandPalette.placeholder}
+          />
+          <span className="command-palette-shortcut">Ctrl/Cmd + K</span>
+        </div>
+        <ul className="command-palette-list">
           {filtered.length === 0 ? (
-            <li>No matching actions.</li>
+            <li className="command-palette-empty">No matching actions.</li>
           ) : filtered.map((item) => (
-            <li key={item.id}>
+            <li key={item.id} className="command-palette-item">
               <button
                 type="button"
+                className="command-palette-action"
                 onClick={() => {
                   item.run();
                   onClose();
                 }}
               >
-                {item.label}
+                <span>{item.label}</span>
+                <span className="command-palette-go">↵</span>
               </button>
             </li>
           ))}

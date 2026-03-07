@@ -36,6 +36,8 @@ import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
 import { NotificationStack, type NotificationItem } from "./components/NotificationStack";
 import { ClockBadge } from "./components/ClockBadge";
+import { ShellActionGroup } from "./components/ShellActionGroup";
+import { StatusChip } from "./components/StatusChip";
 import { appCopy } from "./content/copy";
 import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
 import { useUiPreferences } from "./state/ui-preferences";
@@ -173,6 +175,8 @@ export function App() {
   const {
     mode: uiMode,
     setMode: setUiMode,
+    density,
+    setDensity,
     showTechnicalDetails,
     setShowTechnicalDetails,
     activeWorkspaceId,
@@ -305,14 +309,51 @@ export function App() {
   const navById = useMemo(() => new Map(navItems.map((item) => [item.id, item])), []);
   const activeNav = navById.get(tab);
   const commandItems = useMemo(
-    () =>
-      navItems.map((item) => ({
+    () => [
+      ...navItems.map((item) => ({
         id: `tab:${item.id}`,
         label: `Go to ${item.label}`,
         keywords: [item.id, item.code],
         run: () => setTab(item.id),
       })),
-    [],
+      {
+        id: "mode:simple",
+        label: "Switch to Simple experience",
+        keywords: ["simple", "guided", "experience"],
+        run: () => setUiMode("simple"),
+      },
+      {
+        id: "mode:advanced",
+        label: "Switch to Advanced experience",
+        keywords: ["advanced", "full controls", "experience"],
+        run: () => setUiMode("advanced"),
+      },
+      {
+        id: "density:compact",
+        label: "Use Compact density",
+        keywords: ["compact", "density", "layout"],
+        run: () => setDensity("compact"),
+      },
+      {
+        id: "density:default",
+        label: "Use Default density",
+        keywords: ["default", "density", "layout"],
+        run: () => setDensity("default"),
+      },
+      {
+        id: "density:comfortable",
+        label: "Use Comfortable density",
+        keywords: ["comfortable", "density", "layout"],
+        run: () => setDensity("comfortable"),
+      },
+      {
+        id: "details:toggle",
+        label: showTechnicalDetails ? "Hide technical details" : "Show technical details",
+        keywords: ["technical", "details", "debug"],
+        run: () => setShowTechnicalDetails(!showTechnicalDetails),
+      },
+    ],
+    [setDensity, setShowTechnicalDetails, setUiMode, showTechnicalDetails],
   );
 
   const content = useMemo(() => {
@@ -402,7 +443,8 @@ export function App() {
 
   return (
     <div
-      className={`layout-shell ui-mode-${uiMode}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      className={`layout-shell ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      data-density={density}
     >
       <aside className="sidebar">
         <div className="sidebar-brand">
@@ -426,11 +468,15 @@ export function App() {
             <p className="sidebar-subtitle">{appCopy.brandSubtitle}</p>
           </div>
         </div>
-        <button type="button" onClick={() => setPaletteOpen(true)}>{appCopy.quickActionsButton}</button>
-        <nav>
+        <button type="button" className="sidebar-command-trigger" onClick={() => setPaletteOpen(true)}>
+          {appCopy.quickActionsButton}
+        </button>
+        <nav className="sidebar-nav">
           {navSections.map((section) => (
             <div key={section.label} className="sidebar-section">
-              <h4>{section.label}</h4>
+              <div className="sidebar-section-head">
+                <p>{section.label}</p>
+              </div>
               {section.items.map((tabId) => {
                 const item = navById.get(tabId);
                 if (!item) {
@@ -451,77 +497,113 @@ export function App() {
           ))}
         </nav>
         <footer className="sidebar-footer">
-          <p className={`stream-pill ${streamStatus.state}`}>
-            {appCopy.sidebar.stream} {streamStatus.state}
-          </p>
-          <p>{appCopy.sidebar.stream}: {streamState}</p>
-          <p>
-            {appCopy.sidebar.onboarding}: {
-              onboardingComplete === null
-                ? appCopy.sidebar.unknown
-                : onboardingComplete
-                  ? appCopy.sidebar.complete
-                  : appCopy.sidebar.required
-            }
-          </p>
-          <p>{appCopy.sidebar.reconnects}: {streamStatus.reconnectAttempts}</p>
-          <p>
-            {appCopy.sidebar.lastEvent}: {
-              streamStatus.lastEventAt
-                ? new Date(streamStatus.lastEventAt).toLocaleTimeString()
-                : appCopy.sidebar.notAvailable
-            }
-          </p>
-          <p>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</p>
-          <ClockBadge />
+          <div className="sidebar-footer-grid">
+            <div className="sidebar-footer-item">
+              <span className="sidebar-footer-label">{appCopy.sidebar.stream}</span>
+              <StatusChip tone={streamStatus.state === "open" ? "live" : streamStatus.state === "error" ? "critical" : "warning"}>
+                {streamState}
+              </StatusChip>
+            </div>
+            <div className="sidebar-footer-item">
+              <span className="sidebar-footer-label">{appCopy.sidebar.onboarding}</span>
+              <span className="sidebar-footer-value">
+                {onboardingComplete === null
+                  ? appCopy.sidebar.unknown
+                  : onboardingComplete
+                    ? appCopy.sidebar.complete
+                    : appCopy.sidebar.required}
+              </span>
+            </div>
+            <div className="sidebar-footer-item">
+              <span className="sidebar-footer-label">{appCopy.sidebar.reconnects}</span>
+              <span className="sidebar-footer-value">{streamStatus.reconnectAttempts}</span>
+            </div>
+            <div className="sidebar-footer-item">
+              <span className="sidebar-footer-label">{appCopy.sidebar.lastEvent}</span>
+              <span className="sidebar-footer-value">
+                {streamStatus.lastEventAt
+                  ? new Date(streamStatus.lastEventAt).toLocaleTimeString()
+                  : appCopy.sidebar.notAvailable}
+              </span>
+            </div>
+          </div>
+          <div className="sidebar-footer-meta">
+            <span>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</span>
+            <ClockBadge />
+          </div>
         </footer>
       </aside>
-      <main className="content">
-        <header className="app-topbar card">
-          <div>
-            <h3>{activeNav?.label ?? "Mission Control"}</h3>
+      <main className="content shell-content">
+        <header className="app-topbar shell-topbar">
+          <div className="shell-topbar-copy">
+            <div className="shell-topbar-title-row">
+              <p className="shell-topbar-kicker">{activeNav?.code ?? "GC"}</p>
+              <h3>{activeNav?.label ?? "Mission Control"}</h3>
+            </div>
             <p className="office-subtitle">{nextStepByTab[tab]}</p>
           </div>
           <div className="app-topbar-actions">
-            <div className="ui-experience-switch">
-              <span>Experience</span>
-              <button
-                type="button"
-                className={uiMode === "simple" ? "active" : ""}
-                onClick={() => setUiMode("simple")}
-              >
-                Simple
-              </button>
-              <button
-                type="button"
-                className={uiMode === "advanced" ? "active" : ""}
-                onClick={() => setUiMode("advanced")}
-              >
-                Advanced
-              </button>
-            </div>
-            <span className="ui-experience-note">
-              {uiMode === "simple" ? "Guided defaults" : "Full controls"}
-            </span>
-            <label className="ui-technical-toggle">
-              <GCSwitch
-                checked={showTechnicalDetails}
-                onCheckedChange={setShowTechnicalDetails}
-                label="Technical details"
-              />
-            </label>
-            <label className="ui-technical-toggle">
-              Workspace
-              <GCSelect
-                value={activeWorkspaceId}
-                onChange={setActiveWorkspaceId}
-                options={[...workspaceOptions, { workspaceId: activeWorkspaceId, name: activeWorkspaceId }]
-                  .filter((item, index, arr) => arr.findIndex((other) => other.workspaceId === item.workspaceId) === index)
-                  .map((item) => ({ value: item.workspaceId, label: item.name }))}
-              />
-            </label>
+            <ShellActionGroup className="shell-toggle-group">
+              <span className="shell-action-label">Experience</span>
+              <div className="ui-experience-switch">
+                <button
+                  type="button"
+                  className={uiMode === "simple" ? "active" : ""}
+                  onClick={() => setUiMode("simple")}
+                >
+                  Simple
+                </button>
+                <button
+                  type="button"
+                  className={uiMode === "advanced" ? "active" : ""}
+                  onClick={() => setUiMode("advanced")}
+                >
+                  Advanced
+                </button>
+              </div>
+              <span className="ui-experience-note">
+                {uiMode === "simple" ? "Guided defaults" : "Full controls"}
+              </span>
+            </ShellActionGroup>
+            <ShellActionGroup className="shell-toggle-group">
+              <span className="shell-action-label">Density</span>
+              <div className="ui-experience-switch ui-density-switch">
+                <button type="button" className={density === "comfortable" ? "active" : ""} onClick={() => setDensity("comfortable")}>
+                  Comfortable
+                </button>
+                <button type="button" className={density === "default" ? "active" : ""} onClick={() => setDensity("default")}>
+                  Default
+                </button>
+                <button type="button" className={density === "compact" ? "active" : ""} onClick={() => setDensity("compact")}>
+                  Compact
+                </button>
+              </div>
+            </ShellActionGroup>
+            <ShellActionGroup>
+              <label className="ui-technical-toggle">
+                <GCSwitch
+                  checked={showTechnicalDetails}
+                  onCheckedChange={setShowTechnicalDetails}
+                  label="Technical details"
+                />
+              </label>
+              <label className="ui-technical-toggle shell-workspace-picker">
+                <span className="shell-action-label">Workspace</span>
+                <GCSelect
+                  value={activeWorkspaceId}
+                  onChange={setActiveWorkspaceId}
+                  options={[...workspaceOptions, { workspaceId: activeWorkspaceId, name: activeWorkspaceId }]
+                    .filter((item, index, arr) => arr.findIndex((other) => other.workspaceId === item.workspaceId) === index)
+                    .map((item) => ({ value: item.workspaceId, label: item.name }))}
+                />
+              </label>
+            </ShellActionGroup>
             <GlobalFreshnessPill streamState={streamState} streamStatus={streamStatus} />
-            <button type="button" onClick={() => setPaletteOpen(true)}>Quick Actions</button>
+            <button type="button" className="shell-quick-action" onClick={() => setPaletteOpen(true)}>Quick Actions</button>
+            <HelpHint
+              label="Current tab guidance"
+              text={nextStepByTab[tab]}
+            />
           </div>
         </header>
         {streamState === "error" || streamState === "closed" ? (
@@ -529,11 +611,6 @@ export function App() {
             {appCopy.streamBanner.replace("{state}", streamState)}
           </div>
         ) : null}
-        <article className="card content-next-step">
-          <h3>{appCopy.nextStepTitle}</h3>
-          <p className="office-subtitle">{nextStepByTab[tab]}</p>
-          <HelpHint label="Next step help" text="This hint is contextual to the current tab and keeps page headers compact." />
-        </article>
         {content}
       </main>
       <CommandPalette

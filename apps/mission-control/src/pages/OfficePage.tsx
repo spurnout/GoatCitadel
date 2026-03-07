@@ -32,9 +32,11 @@ import type {
   OperatorPreset,
 } from "../components/OfficeCanvas";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
+import { GCSelect } from "../components/ui";
 
 const INITIAL_EVENT_LIMIT = 100;
 const MAX_EVENTS = 200;
@@ -577,7 +579,7 @@ export function OfficePage() {
   if (loading) {
     return (
       <section className="office-v5">
-        <h2>{officeCopy.title}</h2>
+        <PageHeader eyebrow="Office" title={officeCopy.title} subtitle={officeCopy.subtitle} />
         <CardSkeleton lines={10} />
       </section>
     );
@@ -585,9 +587,14 @@ export function OfficePage() {
 
   return (
     <section className={`office-v5 ${operatorPrefs.focusMode ? "office-focus-mode" : ""}`}>
-      <h2>{officeCopy.title}</h2>
-      <p className="office-subtitle">{officeCopy.subtitle}</p>
+      <PageHeader
+        eyebrow="Office"
+        title={officeCopy.title}
+        subtitle={officeCopy.subtitle}
+        hint="Herd HQ stays immersive. Use the dock and inspector to move between visual awareness and operational detail."
+      />
       <PageGuideCard
+        pageId="office"
         what={officeGuide.what}
         when={officeGuide.when}
         actions={officeGuide.actions}
@@ -628,19 +635,16 @@ export function OfficePage() {
           </div>
           <div className="office-stage-controls">
             <label htmlFor="officeMotionMode">Motion</label>
-            <select
+            <GCSelect
               id="officeMotionMode"
               value={effectiveMotionMode}
               disabled={prefersReducedMotion}
-              onChange={(event) => setOperatorPrefs((prev) => ({
+              onChange={(value) => setOperatorPrefs((prev) => ({
                 ...prev,
-                motionMode: event.target.value as OfficeMotionMode,
+                motionMode: value as OfficeMotionMode,
               }))}
-            >
-              {MOTION_MODE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              options={MOTION_MODE_OPTIONS}
+            />
             <div className="office-toggle-row">
               <label>
                 <input

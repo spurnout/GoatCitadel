@@ -27,6 +27,7 @@ import type { VoiceStatus } from "@goatcitadel/contracts";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { HelpHint } from "../components/HelpHint";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
 import { SelectOrCustom, type SelectOption } from "../components/SelectOrCustom";
 import { GCSelect, GCSwitch } from "../components/ui";
 import { pageCopy } from "../content/copy";
@@ -725,9 +726,14 @@ export function SettingsPage() {
 
   return (
     <section>
-      <h2>{pageCopy.settings.title}</h2>
-      <p className="office-subtitle">{pageCopy.settings.subtitle}</p>
+      <PageHeader
+        eyebrow="Configuration"
+        title={pageCopy.settings.title}
+        subtitle={pageCopy.settings.subtitle}
+        hint="Use Forge to tune providers, safety defaults, and runtime behavior without leaving Mission Control."
+      />
       <PageGuideCard
+        pageId="settings"
         what={pageCopy.settings.guide?.what ?? ""}
         when={pageCopy.settings.guide?.when ?? ""}
         actions={pageCopy.settings.guide?.actions ?? []}
