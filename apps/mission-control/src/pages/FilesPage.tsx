@@ -11,7 +11,12 @@ import {
 } from "../api/client";
 import { ChangeBadge, type UiRiskLevel } from "../components/ChangeBadge";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
+import { StatusChip } from "../components/StatusChip";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { SmartPathInput } from "../components/SmartPathInput";
 import { pageCopy } from "../content/copy";
@@ -271,22 +276,42 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
   const autoPathEdited = Boolean(autoPopulatedPath && autoPopulatedPath !== uploadPath);
 
   return (
-    <section>
-      <h2>{pageCopy.files.title}</h2>
-      <p className="office-subtitle">{pageCopy.files.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Workspace Trails"
+        title={pageCopy.files.title}
+        subtitle={pageCopy.files.subtitle}
+        hint="Trail files keep reports, notes, generated artifacts, and uploaded workspace content in one inspectable surface."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="live">{filteredFiles.length} visible files</StatusChip>
+            <StatusChip>{templates.length} templates</StatusChip>
+            {isRefreshing ? <StatusChip tone="warning">Refreshing</StatusChip> : null}
+            {isFallbackRefreshing ? <StatusChip tone="warning">Polling fallback</StatusChip> : null}
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="files"
         what={pageCopy.files.guide?.what ?? ""}
         when={pageCopy.files.guide?.when ?? ""}
         actions={pageCopy.files.guide?.actions ?? []}
         terms={pageCopy.files.guide?.terms}
       />
-      {isInitialLoading ? <p>Loading workspace trails...</p> : null}
-      {isRefreshing ? <p className="status-banner">Refreshing trail files...</p> : null}
-      {isFallbackRefreshing ? (
-        <p className="status-banner warning">Live updates degraded, checking periodically.</p>
-      ) : null}
-      <article className="card">
-        <h3>How To Use Trail Files</h3>
+      <div className="workflow-status-stack">
+        {isInitialLoading ? <p>Loading workspace trails...</p> : null}
+        {isRefreshing ? <p className="status-banner">Refreshing trail files...</p> : null}
+        {isFallbackRefreshing ? (
+          <p className="status-banner warning">Live updates degraded, checking periodically.</p>
+        ) : null}
+        {error ? <p className="error">{error}</p> : null}
+        {info ? <p className="office-subtitle">{info}</p> : null}
+      </div>
+      <Panel
+        title="How To Use Trail Files"
+        subtitle="Use the directory, preview, and save path helpers together so you write into the right workspace location without guessing."
+        tone="soft"
+      >
         <ol className="files-howto-list">
           <li>Find the file in <strong>Workspace Trails</strong> or filter by folder/path text.</li>
           <li>Click a file once to preview it. Image files render as images, not text.</li>
@@ -297,16 +322,12 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
         <p className="office-subtitle">
           Tip: keep reports in <code>artifacts/</code>, notes in <code>notes/</code>, and avoid saving outside approved workspace paths.
         </p>
-      </article>
+      </Panel>
 
-      {error ? <p className="error">{error}</p> : null}
-      {info ? <p className="office-subtitle">{info}</p> : null}
-
-      <article className="card">
-        <h3>Create Example Artifact</h3>
-        <p className="office-subtitle">
-          Start with a template if you are not sure where to begin.
-        </p>
+      <Panel
+        title="Create Example Artifact"
+        subtitle="Start with a template when you want a known-good file structure before you edit or upload content."
+      >
         <div className="actions">
           {templates.map((template) => (
             <button type="button" key={template.templateId} onClick={() => void onCreateTemplate(template.templateId)}>
@@ -314,20 +335,24 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
             </button>
           ))}
         </div>
-      </article>
+      </Panel>
 
-      <div className="controls-row">
-        <SelectOrCustom
-          value={search}
-          onChange={setSearch}
-          options={searchOptions}
-          customPlaceholder="Filter files by path text"
-          customLabel="File filter"
-        />
-      </div>
+      <DataToolbar
+        primary={(
+          <SelectOrCustom
+            value={search}
+            onChange={setSearch}
+            options={searchOptions}
+            customPlaceholder="Filter files by path text"
+            customLabel="File filter"
+          />
+        )}
+      />
       <div className="split-grid">
-        <article className="card">
-          <h3>Workspace Trails</h3>
+        <Panel
+          title="Workspace Trails"
+          subtitle="Filter by path, then inspect the exact file before editing or reusing its location."
+        >
           <div className="virtual-list-shell">
             <Virtuoso
               data={filteredFiles}
@@ -346,9 +371,11 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
               )}
             />
           </div>
-        </article>
-        <article className="card">
-          <h3>Trail Preview</h3>
+        </Panel>
+        <Panel
+          title="Trail Preview"
+          subtitle="Preview text and image files here, then prefill the save path or load editable content into the save editor."
+        >
           <p>{selectedPath || "No file selected"}</p>
           {selectedMeta ? (
             <p className="office-subtitle">
@@ -390,11 +417,13 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
           ) : (
             <p className="office-subtitle">Select a file to preview.</p>
           )}
-        </article>
+        </Panel>
       </div>
 
-      <article className="card">
-        <h3>Save / Upload File</h3>
+      <Panel
+        title="Save / Upload File"
+        subtitle="Use the path helper and change review before writing. Known workspace paths should be preferred over ad hoc custom targets."
+      >
         <SmartPathInput
           label="Save path"
           value={uploadPath}
@@ -404,6 +433,7 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
           placeholder="Custom workspace path"
           helpText="Pick a suggested path or use custom mode for advanced locations."
         />
+        <FieldHelp>Trail writing stays safest when you start from an existing file, a template, or a known workspace directory such as notes, docs, memory, or artifacts.</FieldHelp>
         <div className="actions">
           <button type="button" onClick={() => void onSaveFile()}>Save File</button>
         </div>
@@ -431,7 +461,7 @@ export function FilesPage({ workspaceId = "default" }: { workspaceId?: string })
           overall={pathRisk.overall}
           items={pathRisk.items}
         />
-      </article>
+      </Panel>
     </section>
   );
 }

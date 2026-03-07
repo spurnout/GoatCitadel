@@ -8,9 +8,13 @@ import {
   type SessionTimelineItem,
   type SessionsResponse,
 } from "../api/client";
+import { DataToolbar } from "../components/DataToolbar";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { StatusChip } from "../components/StatusChip";
 import { TableSkeleton } from "../components/TableSkeleton";
 import { GCSelect } from "../components/ui";
 import { pageCopy } from "../content/copy";
@@ -117,24 +121,44 @@ export function SessionsPage() {
 
   if (!data) {
     return (
-      <section>
-        <h2>{pageCopy.sessions.title}</h2>
+      <section className="workflow-page">
+        <PageHeader
+          eyebrow="Runtime"
+          title={pageCopy.sessions.title}
+          subtitle={pageCopy.sessions.subtitle}
+        />
         <CardSkeleton lines={5} />
       </section>
     );
   }
 
   return (
-    <section>
-      <h2>{pageCopy.sessions.title}</h2>
-      <p className="office-subtitle">{pageCopy.sessions.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Runtime"
+        title={pageCopy.sessions.title}
+        subtitle={pageCopy.sessions.subtitle}
+        hint="Inspect active and historical session health, cost, and transcript flow without leaving Mission Control."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="live">{filtered.length} visible</StatusChip>
+            <StatusChip tone={filtered.some((session) => session.health === "blocked") ? "warning" : "muted"}>
+              {filtered.filter((session) => session.health === "blocked").length} blocked
+            </StatusChip>
+            <StatusChip>${totalCost.toFixed(4)} visible cost</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="sessions"
         what={pageCopy.sessions.guide?.what ?? ""}
         when={pageCopy.sessions.guide?.when ?? ""}
         actions={pageCopy.sessions.guide?.actions ?? []}
         terms={pageCopy.sessions.guide?.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+      </div>
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
@@ -159,32 +183,40 @@ export function SessionsPage() {
         </article>
       </div>
 
-      <div className="controls-row">
-        <SelectOrCustom
-          value={search}
-          onChange={setSearch}
-          options={searchOptions}
-          customPlaceholder="Search session key or id"
-          customLabel="Search query"
-        />
-        <GCSelect
-          value={healthFilter}
-          onChange={(value) => setHealthFilter(value as "all" | "healthy" | "degraded" | "blocked")}
-          options={[
-            { value: "all", label: "all health states" },
-            { value: "healthy", label: "healthy" },
-            { value: "degraded", label: "degraded" },
-            { value: "blocked", label: "blocked" },
-          ]}
-        />
-        <button type="button" onClick={() => setViewMode((current) => (current === "split" ? "table" : "split"))}>
-          {viewMode === "split" ? "Switch to table view" : "Switch to split view"}
-        </button>
-      </div>
+      <DataToolbar
+        primary={(
+          <>
+            <SelectOrCustom
+              value={search}
+              onChange={setSearch}
+              options={searchOptions}
+              customPlaceholder="Search session key or id"
+              customLabel="Search query"
+            />
+            <GCSelect
+              value={healthFilter}
+              onChange={(value) => setHealthFilter(value as "all" | "healthy" | "degraded" | "blocked")}
+              options={[
+                { value: "all", label: "all health states" },
+                { value: "healthy", label: "healthy" },
+                { value: "degraded", label: "degraded" },
+                { value: "blocked", label: "blocked" },
+              ]}
+            />
+          </>
+        )}
+        secondary={(
+          <button type="button" onClick={() => setViewMode((current) => (current === "split" ? "table" : "split"))}>
+            {viewMode === "split" ? "Switch to table view" : "Switch to split view"}
+          </button>
+        )}
+      />
 
       {viewMode === "table" ? (
-        <article className="card">
-          <h3>Sessions Table</h3>
+        <Panel
+          title="Sessions Table"
+          subtitle="Use the table when you want a compact scan of session health, recency, and spend."
+        >
           {detailsLoading ? <TableSkeleton rows={6} cols={5} /> : (
             <div className="virtual-table-shell">
               <TableVirtuoso
@@ -210,11 +242,13 @@ export function SessionsPage() {
               />
             </div>
           )}
-        </article>
+        </Panel>
       ) : (
         <div className="split-grid">
-          <article className="card">
-            <h3>Run List</h3>
+          <Panel
+            title="Session List"
+            subtitle="Pick a session from the rail to inspect transcript health and recent events."
+          >
             <div className="virtual-list-shell">
               <Virtuoso
                 data={filtered}
@@ -234,10 +268,12 @@ export function SessionsPage() {
                 )}
               />
             </div>
-          </article>
+          </Panel>
 
-          <article className="card">
-            <h3>Run Detail</h3>
+          <Panel
+            title="Session Detail"
+            subtitle="The selected session shows its identity, last message, event count, and recent timeline."
+          >
             {!selected ? <p className="office-subtitle">Select a session to inspect details.</p> : null}
             {detailsLoading ? <CardSkeleton lines={7} /> : null}
             {selected && !detailsLoading ? (
@@ -268,7 +304,7 @@ export function SessionsPage() {
                 )}
               </>
             ) : null}
-          </article>
+          </Panel>
         </div>
       )}
     </section>

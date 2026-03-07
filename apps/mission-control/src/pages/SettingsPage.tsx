@@ -844,9 +844,11 @@ export function SettingsPage() {
           </section>
 
           <section id="settings-access" className="settings-v2-section">
-            <article className="card settings-v2-panel">
-              <h3>Gateway Access Control</h3>
-              <p>Use auth modes for local and online hosting. By default, credentials are session-only and clear when you close the browser.</p>
+            <Panel
+              className="settings-v2-panel"
+              title="Gateway Access Control"
+              subtitle="Use auth modes for local and online hosting. By default, credentials stay session-only and clear when you close the browser."
+            >
               <FieldHelp>Keep this section conservative for public or remote installs. Session-only storage is the safer default; persistent storage is a convenience tradeoff.</FieldHelp>
               <div className="controls-row">
                 <label htmlFor="authMode">Auth Mode</label>
@@ -915,16 +917,21 @@ export function SettingsPage() {
                 Server status: token configured: {settings.auth.tokenConfigured ? "yes" : "no"} | basic configured: {settings.auth.basicConfigured ? "yes" : "no"}
               </p>
               <button type="button" onClick={onSaveAuth} disabled={blockSaves}>Save Access Control</button>
-            </article>
+            </Panel>
           </section>
 
           <section id="settings-voice" className="settings-v2-section">
-            <article className="card settings-v2-panel">
-        <h3>
-          Voice Runtime
-          <HelpHint label="Voice runtime help" text="Talk Mode and Wake use your local voice runtime. Whisper.cpp is the default offline transcription provider." />
-        </h3>
-        <p className="office-subtitle">Local-first voice controls with no required cloud API key.</p>
+            <Panel
+              className="settings-v2-panel"
+              title="Voice Runtime"
+              subtitle={(
+                <>
+                  Local-first voice controls with no required cloud API key.
+                  {" "}
+                  <HelpHint label="Voice runtime help" text="Talk Mode and Wake use your local voice runtime. Whisper.cpp is the default offline transcription provider." />
+                </>
+              )}
+            >
         <FieldHelp>Voice tools are local-first and best treated like a hardware/runtime surface: inspect state first, then run talk, wake, or transcription tests intentionally.</FieldHelp>
         <div className="voice-status-grid">
           <article className="voice-status-card">
@@ -1013,12 +1020,15 @@ export function SettingsPage() {
         {voiceTranscriptResult ? (
           <pre>{voiceTranscriptResult}</pre>
         ) : null}
-            </article>
+            </Panel>
           </section>
 
           <section id="settings-runtime" className="settings-v2-section">
-            <article className="card settings-v2-panel">
-        <h3>Runtime Controls</h3>
+            <Panel
+              className="settings-v2-panel"
+              title="Runtime Controls"
+              subtitle="Tune how boldly GoatCitadel acts by default before you change providers, tools, or outbound access."
+            >
         <FieldHelp>Runtime controls shape how boldly GoatCitadel acts by default. Use the allowlist preset first, then drop into custom mode only when your network or model layout needs it.</FieldHelp>
         <div className="controls-row">
           <label htmlFor="profile">Tool Profile</label>
@@ -1080,13 +1090,15 @@ export function SettingsPage() {
           />
         </details>
         <button type="button" onClick={onSaveRuntime} disabled={blockSaves}>Save Runtime Controls</button>
-            </article>
+            </Panel>
           </section>
 
           <section id="settings-models" className="settings-v2-section">
-            <article className="card settings-v2-panel">
-        <h3>LLM Providers & Models (OpenAI-Compatible)</h3>
-        <p>This uses `/v1/chat/completions` only. Legacy `/v1/completions` is intentionally not used.</p>
+            <Panel
+              className="settings-v2-panel"
+              title="LLM Providers & Models (OpenAI-Compatible)"
+              subtitle="This uses /v1/chat/completions only. Legacy /v1/completions is intentionally not used."
+            >
         <FieldHelp>Pick an active provider and model first, then use the advanced block only when you need to add or override provider details. Known values should stay in selects; custom entry is the fallback.</FieldHelp>
         <details className="advanced-panel">
           <summary>Local runtime quick setup: LM Studio + Ollama</summary>
@@ -1243,15 +1255,15 @@ export function SettingsPage() {
             <button type="button" onClick={onSaveProvider} disabled={blockSaves}>Save Provider Settings</button>
           </div>
         ) : null}
-            </article>
+            </Panel>
           </section>
 
           <section id="settings-tests" className="settings-v2-section">
-            <article className="card settings-v2-panel">
-        <h3>LLM Test (chat/completions)</h3>
-        <p className="office-subtitle">
-          Test prompts default to direct model behavior without QMD memory context.
-        </p>
+            <Panel
+              className="settings-v2-panel"
+              title="LLM Test (chat/completions)"
+              subtitle="Test prompts default to direct model behavior without QMD memory context."
+            >
         <FieldHelp>Use test prompts to prove the active provider/model path before you rely on it elsewhere. This is the fastest way to confirm a provider is responding correctly.</FieldHelp>
         <div className="controls-row">
           <label htmlFor="chatPromptPreset">Prompt Preset</label>
@@ -1292,7 +1304,7 @@ export function SettingsPage() {
           <button type="button" onClick={onTestChat}>Run Test Prompt</button>
         </div>
         {chatResponse ? <pre>{chatResponse}</pre> : null}
-            </article>
+            </Panel>
           </section>
         </div>
       </div>

@@ -10,9 +10,15 @@ import {
   type AgentsResponse,
 } from "../api/client";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
+import { PageHeader } from "../components/PageHeader";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { StatusChip } from "../components/StatusChip";
+import { GCSelect } from "../components/ui";
 import { buildAgentDirectory, BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
 import { useAction } from "../hooks/useAction";
 import { globalCopy, pageCopy } from "../content/copy";
@@ -331,18 +337,31 @@ export function AgentsPage() {
   };
 
   return (
-    <section className="agents-v2">
-      <h2>{pageCopy.agents.title}</h2>
-      <p className="office-subtitle">{pageCopy.agents.subtitle}</p>
+    <section className="workflow-page agents-v2">
+      <PageHeader
+        eyebrow="Crew"
+        title={pageCopy.agents.title}
+        subtitle={pageCopy.agents.subtitle}
+        hint="Use Herd HQ to manage built-in and custom goat profiles, adjust role posture, and keep assignment-ready agents easy to inspect."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="live">{agentsResponse.items.filter((item) => item.lifecycleStatus === "active").length} active</StatusChip>
+            <StatusChip>{agentsResponse.items.length} visible</StatusChip>
+            <StatusChip tone="muted">{agentsResponse.items.filter((item) => item.isBuiltin).length} built-in</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="agents"
         what={pageCopy.agents.guide?.what ?? ""}
         when={pageCopy.agents.guide?.when ?? ""}
         actions={pageCopy.agents.guide?.actions ?? []}
         terms={pageCopy.agents.guide?.terms}
       />
-
-      {error ? <p className="error">{error}</p> : null}
-      {info ? <p className="office-subtitle">{info}</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {info ? <p className="office-subtitle">{info}</p> : null}
+      </div>
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
@@ -367,23 +386,34 @@ export function AgentsPage() {
         </article>
       </div>
 
-      <div className="controls-row">
-        <label htmlFor="agentView">View</label>
-        <select
-          id="agentView"
-          value={view}
-          onChange={(event) => setView(event.target.value as AgentView)}
-        >
-          <option value="active">Active</option>
-          <option value="archived">Archived</option>
-          <option value="all">All</option>
-        </select>
-        <button type="button" onClick={onNew}>Create Custom Agent</button>
-        {creating ? <button type="button" onClick={onCancelNew}>{globalCopy.common.cancel}</button> : null}
-      </div>
+      <DataToolbar
+        primary={(
+          <>
+            <GCSelect
+              id="agentView"
+              value={view}
+              onChange={(value) => setView(value as AgentView)}
+              options={[
+                { value: "active", label: "Active" },
+                { value: "archived", label: "Archived" },
+                { value: "all", label: "All" },
+              ]}
+            />
+          </>
+        )}
+        secondary={(
+          <>
+            <button type="button" onClick={onNew}>Create Custom Agent</button>
+            {creating ? <button type="button" onClick={onCancelNew}>{globalCopy.common.cancel}</button> : null}
+          </>
+        )}
+      />
 
       <div className="split-grid">
-        <div>
+        <Panel
+          title="Role Directory"
+          subtitle="Pick an agent profile from the directory to inspect lifecycle, runtime posture, and active session load."
+        >
           <table>
             <thead>
               <tr>
@@ -420,12 +450,19 @@ export function AgentsPage() {
                 ))}
             </tbody>
           </table>
-        </div>
+        </Panel>
 
-        <article className="card">
-          <h3>{creating ? "Create Custom Agent" : selected ? `Edit ${selected.name}` : "Select an agent"}</h3>
+        <Panel
+          title={creating ? "Create Custom Agent" : selected ? `Edit ${selected.name}` : "Select an agent"}
+          subtitle={creating
+            ? "Custom roles let you tailor GoatCitadel’s roster without changing built-in defaults."
+            : "Use the editor to adjust titles, summaries, specialties, and lifecycle posture."}
+        >
           {creating || selected ? (
             <>
+              <FieldHelp>
+                Built-in roles stay protected. Custom roles are safe to create, archive, restore, and permanently delete from here.
+              </FieldHelp>
               <div className="controls-row">
                 <label htmlFor="agentRoleId">Role ID</label>
                 {creating ? (
@@ -563,7 +600,7 @@ export function AgentsPage() {
           ) : (
             <p>Select a goat profile from the table or create a new custom role.</p>
           )}
-        </article>
+        </Panel>
       </div>
       <ConfirmModal
         open={Boolean(confirmAction)}

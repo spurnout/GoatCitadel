@@ -23,9 +23,14 @@ import {
   type TaskRecord,
   type TaskSubagentSession,
 } from "../api/client";
+import { DataToolbar } from "../components/DataToolbar";
+import { FieldHelp } from "../components/FieldHelp";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { SelectOrCustom } from "../components/SelectOrCustom";
 import { ConfirmModal } from "../components/ConfirmModal";
+import { StatusChip } from "../components/StatusChip";
 import { TableSkeleton } from "../components/TableSkeleton";
 import { GCSelect } from "../components/ui";
 import { BUILTIN_AGENT_ROSTER } from "../data/agent-roster";
@@ -486,47 +491,64 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
   }, [agentProfiles, subagents]);
 
   return (
-    <section>
-      <h2>{pageCopy.tasks.title}</h2>
-      <p className="office-subtitle">{pageCopy.tasks.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Execution"
+        title={pageCopy.tasks.title}
+        subtitle={pageCopy.tasks.subtitle}
+        hint="Trailboard keeps queue state, durable recovery, deliverables, and linked subagent sessions together so work does not fragment across tabs."
+        actions={(
+          <div className="workflow-summary-strip">
+            <StatusChip tone="live">{tasks.length} visible tasks</StatusChip>
+            <StatusChip tone="warning">{tasks.filter((task) => task.status === "blocked").length} blocked</StatusChip>
+            <StatusChip tone="muted">{tasks.filter((task) => task.deletedAt).length} trashed</StatusChip>
+          </div>
+        )}
+      />
       <PageGuideCard
+        pageId="tasks"
         what={pageCopy.tasks.guide?.what ?? ""}
         when={pageCopy.tasks.guide?.when ?? ""}
         actions={pageCopy.tasks.guide?.actions ?? []}
         terms={pageCopy.tasks.guide?.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
-      {info ? <p className="office-subtitle">{info}</p> : null}
-
-      <div className="controls-row">
-        <label htmlFor="taskView">View</label>
-        <GCSelect
-          id="taskView"
-          value={viewFilter}
-          onChange={(value) => setViewFilter(value as "active" | "trash" | "all")}
-          options={[
-            { value: "active", label: "Active" },
-            { value: "trash", label: "Trash" },
-            { value: "all", label: "All" },
-          ]}
-        />
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+        {info ? <p className="office-subtitle">{info}</p> : null}
       </div>
 
-      <div className="controls-row">
-        <SelectOrCustom
-          value={createTitle}
-          onChange={setCreateTitle}
-          options={TASK_TITLE_OPTIONS}
-          customPlaceholder="Custom task title"
-          customLabel="Task title"
-          autoSelectFirstOption
-        />
-        <button type="button" onClick={onCreateTask} disabled={!canCreateTask}>Create Task</button>
-      </div>
+      <DataToolbar
+        primary={(
+          <>
+            <GCSelect
+              id="taskView"
+              value={viewFilter}
+              onChange={(value) => setViewFilter(value as "active" | "trash" | "all")}
+              options={[
+                { value: "active", label: "Active" },
+                { value: "trash", label: "Trash" },
+                { value: "all", label: "All" },
+              ]}
+            />
+            <SelectOrCustom
+              value={createTitle}
+              onChange={setCreateTitle}
+              options={TASK_TITLE_OPTIONS}
+              customPlaceholder="Custom task title"
+              customLabel="Task title"
+              autoSelectFirstOption
+            />
+          </>
+        )}
+        secondary={<button type="button" onClick={onCreateTask} disabled={!canCreateTask}>Create Task</button>}
+      />
 
       {loadingTasks ? <TableSkeleton rows={6} cols={5} /> : null}
       <div className="split-grid">
-        <div>
+        <Panel
+          title="Task Queue"
+          subtitle="Move between active, trash, and full views before drilling into the selected task."
+        >
           <table>
             <thead>
               <tr>
@@ -569,13 +591,15 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
               ))}
             </tbody>
           </table>
-        </div>
+        </Panel>
 
         <div>
           {!selectedTask ? <p>Select a task to inspect details.</p> : null}
           {selectedTask ? (
-            <article className="card">
-              <h3>{selectedTask.title}</h3>
+            <Panel
+              title={selectedTask.title}
+              subtitle={selectedTask.description || "No description yet."}
+            >
               <p>{selectedTask.description || "No description yet."}</p>
               {selectedTask.deletedAt ? (
                 <p className="office-subtitle">
@@ -602,6 +626,7 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
               <p className="office-subtitle">
                 Use this when a long-running workflow is paused or waiting. Resume continues from the exact checkpoint.
               </p>
+              <FieldHelp>Load the durable run before resuming or waking it so you can see the blocked step and the last checkpoint state first.</FieldHelp>
               <div className="controls-row">
                 <label htmlFor="taskDurableRunId">Run ID</label>
                 <input
@@ -674,6 +699,7 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
 
               <h4>Activities</h4>
               {loadingDetails ? <p className="office-subtitle">Refreshing task details...</p> : null}
+              <FieldHelp>Activities are the lightweight human-readable log of task progress, blockers, and status changes.</FieldHelp>
               <div className="controls-row">
                 <SelectOrCustom
                   value={activityMessage}
@@ -697,6 +723,7 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
               {activities.length === 0 ? <p className="office-subtitle">No activities yet.</p> : null}
 
               <h4>Deliverables</h4>
+              <FieldHelp>Attach the concrete outputs of the task here so review and handoff stay connected to the work item.</FieldHelp>
               <div className="controls-row">
                 <SelectOrCustom
                   value={deliverableTitle}
@@ -727,6 +754,7 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
               {deliverables.length === 0 ? <p className="office-subtitle">No deliverables yet.</p> : null}
 
               <h4>Goat Subagent Sessions</h4>
+              <FieldHelp>Link subagent sessions when the task is being worked through one or more delegated agent conversations.</FieldHelp>
               <div className="controls-row">
                 <SelectOrCustom
                   value={subagentSessionId}
@@ -787,7 +815,7 @@ export function TasksPage({ workspaceId = "default" }: { workspaceId?: string })
                 ))}
               </ul>
               {subagents.length === 0 ? <p className="office-subtitle">No subagent sessions linked yet.</p> : null}
-            </article>
+            </Panel>
           ) : null}
         </div>
       </div>

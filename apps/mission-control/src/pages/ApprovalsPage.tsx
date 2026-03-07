@@ -9,9 +9,12 @@ import {
   type ApprovalReplayResponse,
   type ApprovalsResponse,
 } from "../api/client";
+import { PageHeader } from "../components/PageHeader";
+import { Panel } from "../components/Panel";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { StatusChip } from "../components/StatusChip";
 import { useAction } from "../hooks/useAction";
 import { pageCopy } from "../content/copy";
 
@@ -163,18 +166,41 @@ export function ApprovalsPage() {
     return <CardSkeleton lines={7} />;
   }
 
+  const approvalsHeaderActions = (
+    <div className="workflow-summary-strip">
+      <StatusChip tone={data.items.length > 0 ? "warning" : "success"}>{data.items.length} pending</StatusChip>
+      <StatusChip tone="muted">{Object.keys(replayById).length} replay trails loaded</StatusChip>
+    </div>
+  );
+
   return (
-    <section>
-      <h2>{pageCopy.approvals.title}</h2>
-      <p className="office-subtitle">{pageCopy.approvals.subtitle}</p>
+    <section className="workflow-page">
+      <PageHeader
+        eyebrow="Governance"
+        title={pageCopy.approvals.title}
+        subtitle={pageCopy.approvals.subtitle}
+        hint="Each approval keeps the action preview, explainer context, replay trail, and checkpoint resume path in one place."
+        actions={approvalsHeaderActions}
+      />
       <PageGuideCard
+        pageId="approvals"
         what={pageCopy.approvals.guide?.what ?? ""}
         when={pageCopy.approvals.guide?.when ?? ""}
         actions={pageCopy.approvals.guide?.actions ?? []}
         terms={pageCopy.approvals.guide?.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
-      {data.items.length === 0 ? <p>No pending approvals right now.</p> : null}
+      <div className="workflow-status-stack">
+        {error ? <p className="error">{error}</p> : null}
+      </div>
+      {data.items.length === 0 ? (
+        <Panel
+          title="No Pending Approvals"
+          subtitle="When risky actions require a human decision, they appear here with replay context and durable resume controls."
+          tone="soft"
+        >
+          <p className="office-subtitle">Nothing is waiting for review right now.</p>
+        </Panel>
+      ) : null}
       {data.items.map((approval) => {
         const replay = replayById[approval.approvalId];
         const durable = durableByApprovalId[approval.approvalId];
@@ -198,24 +224,28 @@ export function ApprovalsPage() {
                 : "#c4885b";
 
         return (
-          <article key={approval.approvalId} className="card">
-            <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <h3>{approval.kind}</h3>
-              <small>{approval.riskLevel}</small>
-            </header>
-            <p style={{ marginTop: 0 }}>
-              <span
-                style={{
-                  border: `1px solid ${explanationColor}`,
-                  color: explanationColor,
-                  borderRadius: 999,
-                  padding: "2px 8px",
-                  fontSize: 12,
-                }}
-              >
-                {explanationLabel}
-              </span>
-            </p>
+          <Panel
+            key={approval.approvalId}
+            title={approval.kind}
+            subtitle={(
+              <div className="workflow-summary-strip">
+                <StatusChip tone={approval.riskLevel === "nuclear" ? "critical" : approval.riskLevel === "danger" ? "warning" : "muted"}>
+                  {approval.riskLevel} risk
+                </StatusChip>
+                <StatusChip className="approvals-explanation-chip" tone={
+                  approval.explanationStatus === "pending"
+                    ? "warning"
+                    : approval.explanationStatus === "completed"
+                      ? "success"
+                      : approval.explanationStatus === "failed"
+                        ? "critical"
+                        : "muted"
+                }>
+                  {explanationLabel}
+                </StatusChip>
+              </div>
+            )}
+          >
 
             {approval.explanation ? (
               <div className="replay-box">
@@ -295,7 +325,7 @@ export function ApprovalsPage() {
                 <p className="office-subtitle">No checkpoint details loaded yet.</p>
               )}
             </div>
-          </article>
+          </Panel>
         );
       })}
       <ConfirmModal
