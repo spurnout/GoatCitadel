@@ -774,6 +774,7 @@ export function SettingsPage() {
         title={pageCopy.settings.title}
         subtitle={pageCopy.settings.subtitle}
         hint="Use Forge to tune providers, safety defaults, and runtime behavior without leaving Mission Control."
+        className="page-header-command settings-header"
       />
       <PageGuideCard
         pageId="settings"

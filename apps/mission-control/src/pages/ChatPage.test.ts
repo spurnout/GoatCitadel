@@ -22,7 +22,7 @@ describe("shouldApplyFetchedMessagesAfterStream", () => {
   it("rejects stale fetched messages that would wipe a finalized streamed assistant reply", () => {
     const current = [
       makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
-      makeMessage("stream-1", "assistant", "Latest news summary"),
+      makeMessage("assistant-1", "assistant", "Latest news summary"),
     ];
     const fetched = [
       makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
@@ -31,14 +31,33 @@ describe("shouldApplyFetchedMessagesAfterStream", () => {
     expect(shouldApplyFetchedMessagesAfterStream(current, fetched, {
       sessionId: "sess-1",
       placeholderId: "stream-1",
+      messageId: "assistant-1",
       content: "Latest news summary",
     })).toBe(false);
   });
 
-  it("accepts fetched messages once the persisted assistant reply matches the finalized streamed reply", () => {
+  it("rejects fetched messages with matching content but the wrong assistant message id", () => {
     const current = [
       makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
-      makeMessage("stream-1", "assistant", "Latest news summary"),
+      makeMessage("assistant-1", "assistant", "Latest news summary"),
+    ];
+    const fetched = [
+      makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
+      makeMessage("assistant-older", "assistant", "Latest   news   summary"),
+    ];
+
+    expect(shouldApplyFetchedMessagesAfterStream(current, fetched, {
+      sessionId: "sess-1",
+      placeholderId: "stream-1",
+      messageId: "assistant-1",
+      content: "Latest news summary",
+    })).toBe(false);
+  });
+
+  it("accepts fetched messages once the persisted assistant reply matches the finalized streamed message id", () => {
+    const current = [
+      makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
+      makeMessage("assistant-1", "assistant", "Latest news summary"),
     ];
     const fetched = [
       makeMessage("user-1", "user", "what's going on with Kristi Noem lately?"),
@@ -48,6 +67,7 @@ describe("shouldApplyFetchedMessagesAfterStream", () => {
     expect(shouldApplyFetchedMessagesAfterStream(current, fetched, {
       sessionId: "sess-1",
       placeholderId: "stream-1",
+      messageId: "assistant-1",
       content: "Latest news summary",
     })).toBe(true);
   });

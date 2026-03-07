@@ -587,7 +587,7 @@ export function OfficePage() {
   if (loading) {
     return (
       <section className="office-v5">
-        <PageHeader eyebrow="Office" title={officeCopy.title} subtitle={officeCopy.subtitle} />
+        <PageHeader eyebrow="Office" title={officeCopy.title} subtitle={officeCopy.subtitle} className="page-header-citadel" />
         <CardSkeleton lines={10} />
       </section>
     );
@@ -600,6 +600,7 @@ export function OfficePage() {
         title={officeCopy.title}
         subtitle={officeCopy.subtitle}
         hint="Herd HQ stays immersive. Use the dock and inspector to move between visual awareness and operational detail."
+        className="page-header-citadel"
         actions={(
           <div className="office-page-actions">
             <StatusChip tone={streamHealthy ? "live" : "warning"}>

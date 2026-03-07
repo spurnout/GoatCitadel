@@ -315,6 +315,59 @@ describe("browser tools coverage sweep", () => {
     ]);
   });
 
+  it("filters obvious search-page chrome links before returning browser search results", async () => {
+    const config = createConfig(tempRoot);
+    mocked.launch.mockResolvedValueOnce(createSearchPlaywrightStub(() => [
+      {
+        href: "https://accounts.google.com/signin",
+        title: "Sign in",
+        snippet: "",
+      },
+      {
+        href: "https://policies.google.com/privacy",
+        title: "Privacy",
+        snippet: "",
+      },
+      {
+        href: "https://www.bbc.com/news/articles/cx2xexample",
+        title: "Kristi Noem latest news",
+        snippet: "Coverage summary",
+      },
+    ]) as never);
+
+    const response = await executeBrowserTool(
+      "browser.search",
+      { query: "Kristi Noem latest news", engine: "google", limit: 3 },
+      config,
+    );
+
+    expect(response.results).toEqual([
+      {
+        title: "Kristi Noem latest news",
+        url: "https://www.bbc.com/news/articles/cx2xexample",
+        snippet: "Coverage summary",
+      },
+    ]);
+  });
+
+  it("fails when every search engine returns no usable results", async () => {
+    const config = createConfig(tempRoot);
+    globalThis.fetch = vi.fn(async () => new Response(
+      "<html><body><p>No usable results</p></body></html>",
+      {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      },
+    )) as unknown as typeof fetch;
+    mocked.launch.mockResolvedValue(createSearchPlaywrightStub(() => []) as never);
+
+    await expect(executeBrowserTool(
+      "browser.search",
+      { query: "Kristi Noem latest news", limit: 2 },
+      config,
+    )).rejects.toThrow(/browser\.search failed/i);
+  });
+
   it("uses HTML fetch fallback for navigate and extract when playwright runtime is unavailable", async () => {
     const config = createConfig(tempRoot);
     globalThis.fetch = vi.fn(async () => new Response(

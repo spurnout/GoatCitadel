@@ -6876,7 +6876,7 @@ export class GatewayService {
     }
 
     if (finalText.trim()) {
-      const assistantEventId = randomUUID();
+      const assistantEventId = assistantMessageId;
       await this.ingestEvent(randomUUID(), {
         eventId: assistantEventId,
         route,

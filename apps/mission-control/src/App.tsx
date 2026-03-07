@@ -443,7 +443,7 @@ export function App() {
 
   return (
     <div
-      className={`layout-shell ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      className={`layout-shell theme-obsidian-crimson ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
       data-density={density}
     >
       <aside className="sidebar">
@@ -527,25 +527,10 @@ export function App() {
               </span>
             </div>
           </div>
-          <div className="sidebar-footer-meta">
-            <span>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</span>
-            <ClockBadge />
-          </div>
-        </footer>
-      </aside>
-      <main className="content shell-content">
-        <header className="app-topbar shell-topbar">
-          <div className="shell-topbar-copy">
-            <div className="shell-topbar-title-row">
-              <p className="shell-topbar-kicker">{activeNav?.code ?? "GC"}</p>
-              <h3>{activeNav?.label ?? "Mission Control"}</h3>
-            </div>
-            <p className="office-subtitle">{nextStepByTab[tab]}</p>
-          </div>
-          <div className="app-topbar-actions">
-            <ShellActionGroup className="shell-toggle-group">
-              <span className="shell-action-label">Experience</span>
-              <div className="ui-experience-switch">
+          <div className="sidebar-systems">
+            <div className="sidebar-system-block">
+              <span className="sidebar-footer-label">Experience</span>
+              <div className="ui-experience-switch sidebar-experience-switch">
                 <button
                   type="button"
                   className={uiMode === "simple" ? "active" : ""}
@@ -561,49 +546,77 @@ export function App() {
                   Advanced
                 </button>
               </div>
-              <span className="ui-experience-note">
+              <span className="sidebar-footer-value sidebar-system-note">
                 {uiMode === "simple" ? "Guided defaults" : "Full controls"}
               </span>
-            </ShellActionGroup>
-            <ShellActionGroup className="shell-toggle-group">
-              <span className="shell-action-label">Density</span>
-              <div className="ui-experience-switch ui-density-switch">
-                <button type="button" className={density === "comfortable" ? "active" : ""} onClick={() => setDensity("comfortable")}>
-                  Comfortable
-                </button>
-                <button type="button" className={density === "default" ? "active" : ""} onClick={() => setDensity("default")}>
-                  Default
-                </button>
-                <button type="button" className={density === "compact" ? "active" : ""} onClick={() => setDensity("compact")}>
-                  Compact
-                </button>
-              </div>
-            </ShellActionGroup>
-            <ShellActionGroup>
-              <label className="ui-technical-toggle">
+            </div>
+            <div className="sidebar-system-block">
+              <span className="sidebar-footer-label">Citadel systems</span>
+              <label className="ui-technical-toggle sidebar-technical-toggle">
                 <GCSwitch
                   checked={showTechnicalDetails}
                   onCheckedChange={setShowTechnicalDetails}
                   label="Technical details"
                 />
               </label>
-              <label className="ui-technical-toggle shell-workspace-picker">
-                <span className="shell-action-label">Workspace</span>
-                <GCSelect
-                  value={activeWorkspaceId}
-                  onChange={setActiveWorkspaceId}
-                  options={[...workspaceOptions, { workspaceId: activeWorkspaceId, name: activeWorkspaceId }]
-                    .filter((item, index, arr) => arr.findIndex((other) => other.workspaceId === item.workspaceId) === index)
-                    .map((item) => ({ value: item.workspaceId, label: item.name }))}
-                />
-              </label>
-            </ShellActionGroup>
-            <GlobalFreshnessPill streamState={streamState} streamStatus={streamStatus} />
-            <button type="button" className="shell-quick-action" onClick={() => setPaletteOpen(true)}>Quick Actions</button>
-            <HelpHint
-              label="Current tab guidance"
-              text={nextStepByTab[tab]}
-            />
+            </div>
+          </div>
+          <div className="sidebar-footer-meta">
+            <span>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</span>
+            <ClockBadge />
+          </div>
+        </footer>
+      </aside>
+      <main className="content shell-content">
+        <header className="app-topbar shell-topbar">
+          <div className="shell-topbar-copy">
+            <div className="shell-topbar-title-row">
+              <p className="shell-topbar-kicker">Citadel systems</p>
+              <h3>Command Deck</h3>
+            </div>
+            <p className="office-subtitle shell-topbar-subtitle">
+              <strong>{activeNav?.label ?? "Mission Control"}</strong>
+            </p>
+          </div>
+          <div className="app-topbar-actions">
+            <div className="shell-topbar-actions-left">
+              <button type="button" className="shell-quick-action shell-command-trigger-topbar" onClick={() => setPaletteOpen(true)}>
+                Command Palette
+              </button>
+              <GlobalFreshnessPill streamState={streamState} streamStatus={streamStatus} />
+            </div>
+            <div className="shell-topbar-actions-right">
+              <ShellActionGroup className="shell-toggle-group">
+                <span className="shell-action-label">Density</span>
+                <div className="ui-experience-switch ui-density-switch">
+                  <button type="button" className={density === "comfortable" ? "active" : ""} onClick={() => setDensity("comfortable")}>
+                    Comfortable
+                  </button>
+                  <button type="button" className={density === "default" ? "active" : ""} onClick={() => setDensity("default")}>
+                    Default
+                  </button>
+                  <button type="button" className={density === "compact" ? "active" : ""} onClick={() => setDensity("compact")}>
+                    Compact
+                  </button>
+                </div>
+              </ShellActionGroup>
+              <ShellActionGroup>
+                <label className="ui-technical-toggle shell-workspace-picker">
+                  <span className="shell-action-label">Workspace</span>
+                  <GCSelect
+                    value={activeWorkspaceId}
+                    onChange={setActiveWorkspaceId}
+                    options={[...workspaceOptions, { workspaceId: activeWorkspaceId, name: activeWorkspaceId }]
+                      .filter((item, index, arr) => arr.findIndex((other) => other.workspaceId === item.workspaceId) === index)
+                      .map((item) => ({ value: item.workspaceId, label: item.name }))}
+                  />
+                </label>
+              </ShellActionGroup>
+              <HelpHint
+                label="Command deck guidance"
+                text={nextStepByTab[tab]}
+              />
+            </div>
           </div>
         </header>
         {streamState === "error" || streamState === "closed" ? (

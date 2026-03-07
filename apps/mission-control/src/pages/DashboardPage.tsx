@@ -145,6 +145,7 @@ export function DashboardPage({
         title={pageCopy.dashboard.title}
         subtitle={pageCopy.dashboard.subtitle}
         hint="Start here when you need a fast read on health, workload, and what needs operator attention next."
+        className="page-header-command dashboard-header"
         actions={
           <DataToolbar
             primary={

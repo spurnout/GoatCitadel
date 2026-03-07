@@ -61,7 +61,6 @@ async function executeBrowserSearch(
   const limit = clampInteger(args.limit ?? args.maxResults, 5, 1, 25);
   const attemptedEngines: string[] = [];
   const failures: string[] = [];
-  let lastEmptySnapshot: Record<string, unknown> | undefined;
 
   for (const engine of resolveSearchEngineCandidates(requestedEngine)) {
     attemptedEngines.push(engine);
@@ -77,7 +76,29 @@ async function executeBrowserSearch(
           const rawResults = await page.evaluate((maxItems: number) => {
             const out: Array<{ href: string; title: string; snippet: string }> = [];
             const seen = new Set<string>();
-            const anchors = Array.from(document.querySelectorAll("a[href]"));
+            const searchRootSelectors = [
+              "main",
+              "[role='main']",
+              "#b_results",
+              "#links",
+              "#search",
+              ".results",
+              ".results_links",
+            ];
+            const scopedAnchors: HTMLAnchorElement[] = [];
+            for (const selector of searchRootSelectors) {
+              const root = document.querySelector(selector);
+              if (!root) {
+                continue;
+              }
+              const anchors = Array.from(root.querySelectorAll("a[href]")) as HTMLAnchorElement[];
+              if (anchors.length > 0) {
+                scopedAnchors.push(...anchors);
+              }
+            }
+            const anchors = scopedAnchors.length > 0
+              ? scopedAnchors
+              : Array.from(document.querySelectorAll("a[href]")) as HTMLAnchorElement[];
             for (const anchor of anchors) {
               if (out.length >= maxItems) {
                 break;
@@ -104,9 +125,10 @@ async function executeBrowserSearch(
               seen.add(href);
             }
             return out;
-          }, Math.max(limit * 12, 40));
+          }, Math.max(limit * 20, 80));
           const finalUrl = page.url();
-          const results = normalizeBrowserSearchResults(rawResults, finalUrl, limit);
+          const filteredResults = filterLikelySearchResultCandidates(rawResults, finalUrl);
+          const results = normalizeBrowserSearchResults(filteredResults, finalUrl, limit);
 
           return {
             requestedEngine,
@@ -126,12 +148,6 @@ async function executeBrowserSearch(
         };
       }
 
-      lastEmptySnapshot = {
-        ...snapshot,
-        action: "search",
-        attemptedEngines: [...attemptedEngines],
-        fallbackUsed: false,
-      };
       failures.push(`${engine}: no usable results from browser page`);
     } catch (playwrightError) {
       failures.push(`${engine}: ${(playwrightError as Error).message}`);
@@ -151,28 +167,10 @@ async function executeBrowserSearch(
           fallbackReason: failures.at(-1),
         };
       }
-      lastEmptySnapshot = {
-        ...fallback,
-        action: "search",
-        requestedEngine,
-        engine,
-        query,
-        attemptedEngines: [...attemptedEngines],
-        fallbackUsed: true,
-        fallbackReason: failures.at(-1),
-      };
       failures.push(`${engine}: fallback returned no usable results`);
     } catch (fallbackError) {
       failures.push(`${engine}: ${(fallbackError as Error).message}`);
     }
-  }
-
-  if (lastEmptySnapshot) {
-    return {
-      ...lastEmptySnapshot,
-      warning: "Search engines returned no usable results",
-      searchFailures: failures,
-    };
   }
 
   throw new Error(`browser.search failed: ${failures.join(" | ")}`);
@@ -1007,6 +1005,80 @@ function normalizeBrowserSearchResults(
     }
   }
   return out;
+}
+
+const SEARCH_PAGE_CHROME_TITLE_PATTERNS = [
+  /^(sign in|log in|login)$/i,
+  /^(privacy|privacy policy)$/i,
+  /^(terms|terms of service|terms of use)$/i,
+  /^(settings|preferences)$/i,
+  /^(feedback|help|support)$/i,
+  /^(advertising|about|all regions)$/i,
+];
+
+const SEARCH_PAGE_CHROME_HOST_PATTERNS = [
+  /^accounts\.google\.com$/i,
+  /^support\.google\.com$/i,
+  /^policies\.google\.com$/i,
+  /^duckduckgo\.com$/i,
+  /^www\.duckduckgo\.com$/i,
+  /^lite\.duckduckgo\.com$/i,
+  /^bing\.com$/i,
+  /^www\.bing\.com$/i,
+  /^help\.bing\.com$/i,
+  /^search\.yahoo\.com$/i,
+  /^www\.search\.yahoo\.com$/i,
+];
+
+const SEARCH_RESULT_PORTAL_HOST_PATTERNS = [
+  /^google\./i,
+  /^www\.google\./i,
+  /^bing\.com$/i,
+  /^www\.bing\.com$/i,
+  /^duckduckgo\.com$/i,
+  /^www\.duckduckgo\.com$/i,
+  /^lite\.duckduckgo\.com$/i,
+  /^search\.yahoo\.com$/i,
+  /^www\.search\.yahoo\.com$/i,
+];
+
+const SEARCH_PAGE_CHROME_PATH_PATTERNS = [
+  /^\/(preferences|settings|account|accounts|privacy|terms|policies|support|help)(\/|$)/i,
+  /^\/search(\/|$)/i,
+];
+
+function filterLikelySearchResultCandidates(
+  rawResults: Array<{ href: string; title: string; snippet: string }>,
+  baseUrl: string,
+): Array<{ href: string; title: string; snippet: string }> {
+  return rawResults.filter((raw) => {
+    const title = raw.title.replace(/\s+/g, " ").trim();
+    if (!title || SEARCH_PAGE_CHROME_TITLE_PATTERNS.some((pattern) => pattern.test(title))) {
+      return false;
+    }
+    const resolvedUrl = normalizeSearchResultUrl(raw.href, baseUrl);
+    if (!resolvedUrl) {
+      return false;
+    }
+    try {
+      const parsed = new URL(resolvedUrl);
+      const hostname = parsed.hostname.toLowerCase();
+      const pathname = parsed.pathname.toLowerCase();
+      if (SEARCH_PAGE_CHROME_HOST_PATTERNS.some((pattern) => pattern.test(hostname))) {
+        return false;
+      }
+      if (SEARCH_PAGE_CHROME_PATH_PATTERNS.some((pattern) => pattern.test(pathname))) {
+        return false;
+      }
+      const snippet = raw.snippet.replace(/\s+/g, " ").trim();
+      if (!snippet && title.split(/\s+/).length <= 2 && SEARCH_RESULT_PORTAL_HOST_PATTERNS.some((pattern) => pattern.test(hostname))) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function normalizeSearchResultUrl(href: string, baseUrl: string): string | undefined {

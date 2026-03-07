@@ -10,17 +10,19 @@ interface PageGuideCardProps {
   actions: string[];
   terms?: Array<{ term: string; meaning: string }>;
   compact?: boolean;
+  defaultExpanded?: boolean;
+  preferenceVersion?: string;
 }
 
 export function PageGuideCard(props: PageGuideCardProps) {
   const { mode } = useUiPreferences();
   const compact = props.compact ?? true;
-  const storageKey = props.pageId ? `goatcitadel.page_guide.${props.pageId}.v2` : null;
-  const [expanded, setExpanded] = useState(() => readExpandedPreference(storageKey, mode));
+  const storageKey = props.pageId ? `goatcitadel.page_guide.${props.pageId}.${props.preferenceVersion ?? "v2"}` : null;
+  const [expanded, setExpanded] = useState(() => readExpandedPreference(storageKey, mode, props.defaultExpanded));
 
   useEffect(() => {
-    setExpanded(readExpandedPreference(storageKey, mode));
-  }, [mode, storageKey]);
+    setExpanded(readExpandedPreference(storageKey, mode, props.defaultExpanded));
+  }, [mode, props.defaultExpanded, storageKey]);
 
   useEffect(() => {
     if (!storageKey || typeof window === "undefined") {
@@ -79,9 +81,13 @@ export function PageGuideCard(props: PageGuideCardProps) {
   );
 }
 
-function readExpandedPreference(storageKey: string | null, mode: "simple" | "advanced"): boolean {
+function readExpandedPreference(
+  storageKey: string | null,
+  mode: "simple" | "advanced",
+  defaultExpanded?: boolean,
+): boolean {
   if (typeof window === "undefined") {
-    return mode === "simple";
+    return defaultExpanded ?? mode === "simple";
   }
   if (storageKey) {
     const raw = window.localStorage.getItem(storageKey);
@@ -91,6 +97,9 @@ function readExpandedPreference(storageKey: string | null, mode: "simple" | "adv
     if (raw === "collapsed") {
       return false;
     }
+  }
+  if (typeof defaultExpanded === "boolean") {
+    return defaultExpanded;
   }
   return mode === "simple";
 }
