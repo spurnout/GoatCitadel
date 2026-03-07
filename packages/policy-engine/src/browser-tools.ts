@@ -57,72 +57,125 @@ async function executeBrowserSearch(
   config: ToolPolicyConfig,
 ): Promise<Record<string, unknown>> {
   const query = asNonEmptyString(args.query, "query");
-  const engine = asString(args.engine)?.toLowerCase() ?? "duckduckgo";
+  const requestedEngine = normalizeSearchEngine(asString(args.engine)) ?? "auto";
   const limit = clampInteger(args.limit ?? args.maxResults, 5, 1, 25);
-  const searchUrl = buildSearchUrl(engine, query);
-  try {
-    const snapshot = await withBrowserPage(
-      searchUrl,
-      args,
-      config,
-      async (page) => {
-        await page.waitForLoadState("domcontentloaded");
-        const results = await page.evaluate((maxItems: number) => {
-          const out: Array<{ title: string; url: string; snippet: string }> = [];
-          const seen = new Set<string>();
-          const anchors = Array.from(document.querySelectorAll("a[href]"));
-          for (const anchor of anchors) {
-            if (out.length >= maxItems) {
-              break;
-            }
-            const href = anchor.getAttribute("href") ?? "";
-            if (!href.startsWith("http://") && !href.startsWith("https://")) {
-              continue;
-            }
-            if (seen.has(href)) {
-              continue;
-            }
-            const title = (anchor.textContent ?? "").replace(/\s+/g, " ").trim();
-            if (!title) {
-              continue;
-            }
-            const containerText = (anchor.closest("article, li, div")?.textContent ?? "")
-              .replace(/\s+/g, " ")
-              .trim();
-            out.push({
-              title: title.slice(0, 240),
-              url: href,
-              snippet: containerText.slice(0, 420),
-            });
-            seen.add(href);
-          }
-          return out;
-        }, limit);
+  const attemptedEngines: string[] = [];
+  const failures: string[] = [];
+  let lastEmptySnapshot: Record<string, unknown> | undefined;
 
+  for (const engine of resolveSearchEngineCandidates(requestedEngine)) {
+    attemptedEngines.push(engine);
+    const searchUrl = buildSearchUrl(engine, query);
+    try {
+      const snapshot = await withBrowserPage(
+        searchUrl,
+        args,
+        config,
+        async (page) => {
+          await page.waitForLoadState("domcontentloaded");
+          await page.waitForTimeout(400);
+          const rawResults = await page.evaluate((maxItems: number) => {
+            const out: Array<{ href: string; title: string; snippet: string }> = [];
+            const seen = new Set<string>();
+            const anchors = Array.from(document.querySelectorAll("a[href]"));
+            for (const anchor of anchors) {
+              if (out.length >= maxItems) {
+                break;
+              }
+              const href = anchor.getAttribute("href") ?? "";
+              if (!href || href.startsWith("#") || href.toLowerCase().startsWith("javascript:")) {
+                continue;
+              }
+              if (seen.has(href)) {
+                continue;
+              }
+              const title = (anchor.textContent ?? "").replace(/\s+/g, " ").trim();
+              if (!title) {
+                continue;
+              }
+              const containerText = (anchor.closest("article, li, div")?.textContent ?? "")
+                .replace(/\s+/g, " ")
+                .trim();
+              out.push({
+                href: href.slice(0, 1200),
+                title: title.slice(0, 240),
+                snippet: containerText.slice(0, 420),
+              });
+              seen.add(href);
+            }
+            return out;
+          }, Math.max(limit * 12, 40));
+          const finalUrl = page.url();
+          const results = normalizeBrowserSearchResults(rawResults, finalUrl, limit);
+
+          return {
+            requestedEngine,
+            engine,
+            query,
+            results,
+          };
+        },
+      );
+
+      if ((snapshot.results as Array<unknown> | undefined)?.length) {
         return {
+          ...snapshot,
+          action: "search",
+          attemptedEngines,
+          fallbackUsed: false,
+        };
+      }
+
+      lastEmptySnapshot = {
+        ...snapshot,
+        action: "search",
+        attemptedEngines: [...attemptedEngines],
+        fallbackUsed: false,
+      };
+      failures.push(`${engine}: no usable results from browser page`);
+    } catch (playwrightError) {
+      failures.push(`${engine}: ${(playwrightError as Error).message}`);
+    }
+
+    try {
+      const fallback = await executeBrowserSearchFallback(query, limit, config, engine);
+      if (fallback.results.length > 0) {
+        return {
+          ...fallback,
+          action: "search",
+          requestedEngine,
           engine,
           query,
-          results,
+          attemptedEngines,
+          fallbackUsed: true,
+          fallbackReason: failures.at(-1),
         };
-      },
-    );
+      }
+      lastEmptySnapshot = {
+        ...fallback,
+        action: "search",
+        requestedEngine,
+        engine,
+        query,
+        attemptedEngines: [...attemptedEngines],
+        fallbackUsed: true,
+        fallbackReason: failures.at(-1),
+      };
+      failures.push(`${engine}: fallback returned no usable results`);
+    } catch (fallbackError) {
+      failures.push(`${engine}: ${(fallbackError as Error).message}`);
+    }
+  }
 
+  if (lastEmptySnapshot) {
     return {
-      ...snapshot,
-      action: "search",
-      fallbackUsed: false,
-    };
-  } catch (playwrightError) {
-    const fallback = await executeBrowserSearchFallback(query, limit, config);
-    return {
-      ...fallback,
-      action: "search",
-      engine,
-      query,
-      fallbackUsed: true,
-      fallbackReason: (playwrightError as Error).message,
+      ...lastEmptySnapshot,
+      warning: "Search engines returned no usable results",
+      searchFailures: failures,
     };
   }
+
+  throw new Error(`browser.search failed: ${failures.join(" | ")}`);
 }
 
 async function executeBrowserNavigate(
@@ -718,6 +771,29 @@ function buildSearchUrl(engine: string, query: string): string {
   return `https://lite.duckduckgo.com/lite/?q=${encoded}`;
 }
 
+function normalizeSearchEngine(engine: string | undefined): "auto" | "duckduckgo" | "bing" | "google" | undefined {
+  if (!engine) {
+    return undefined;
+  }
+  if (engine === "auto" || engine === "duckduckgo" || engine === "bing" || engine === "google") {
+    return engine;
+  }
+  return undefined;
+}
+
+function resolveSearchEngineCandidates(engine: "auto" | "duckduckgo" | "bing" | "google"): Array<"duckduckgo" | "bing" | "google"> {
+  if (engine === "google") {
+    return ["google", "bing", "duckduckgo"];
+  }
+  if (engine === "bing") {
+    return ["bing", "duckduckgo", "google"];
+  }
+  if (engine === "duckduckgo") {
+    return ["duckduckgo", "bing", "google"];
+  }
+  return ["duckduckgo", "bing", "google"];
+}
+
 function parseWaitUntil(input: unknown): "load" | "domcontentloaded" | "networkidle" {
   const value = asString(input)?.toLowerCase();
   if (value === "load" || value === "networkidle" || value === "domcontentloaded") {
@@ -788,15 +864,16 @@ async function executeBrowserSearchFallback(
   query: string,
   limit: number,
   config: ToolPolicyConfig,
+  engine: string,
 ): Promise<{
   finalUrl: string;
   results: Array<{ title: string; url: string; snippet: string }>;
 }> {
-  const url = buildSearchUrl("duckduckgo", query);
+  const url = buildSearchUrl(engine, query);
   const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
   return {
     finalUrl: page.finalUrl,
-    results: parseSearchResults(page.html, limit),
+    results: parseSearchResults(page.html, limit, page.finalUrl),
   };
 }
 
@@ -872,6 +949,7 @@ async function fetchTextAllowlisted(
 function parseSearchResults(
   html: string,
   limit: number,
+  baseUrl: string,
 ): Array<{ title: string; url: string; snippet: string }> {
   const out: Array<{ title: string; url: string; snippet: string }> = [];
   const seen = new Set<string>();
@@ -880,7 +958,7 @@ function parseSearchResults(
   let match: RegExpExecArray | null;
   while ((match = anchorPattern.exec(html)) !== null && out.length < limit) {
     const rawHref = decodeHtmlEntities(match[1] ?? "").trim();
-    const resolvedUrl = normalizeSearchResultUrl(rawHref);
+    const resolvedUrl = normalizeSearchResultUrl(rawHref, baseUrl);
     if (!resolvedUrl || seen.has(resolvedUrl)) {
       continue;
     }
@@ -902,33 +980,105 @@ function parseSearchResults(
   return out;
 }
 
-function normalizeSearchResultUrl(href: string): string | undefined {
+function normalizeBrowserSearchResults(
+  rawResults: Array<{ href: string; title: string; snippet: string }>,
+  baseUrl: string,
+  limit: number,
+): Array<{ title: string; url: string; snippet: string }> {
+  const out: Array<{ title: string; url: string; snippet: string }> = [];
+  const seen = new Set<string>();
+  for (const raw of rawResults) {
+    const resolvedUrl = normalizeSearchResultUrl(raw.href, baseUrl);
+    if (!resolvedUrl || seen.has(resolvedUrl)) {
+      continue;
+    }
+    const title = raw.title.replace(/\s+/g, " ").trim();
+    if (!title) {
+      continue;
+    }
+    out.push({
+      title: title.slice(0, 240),
+      url: resolvedUrl,
+      snippet: raw.snippet.replace(/\s+/g, " ").trim().slice(0, 420),
+    });
+    seen.add(resolvedUrl);
+    if (out.length >= limit) {
+      break;
+    }
+  }
+  return out;
+}
+
+function normalizeSearchResultUrl(href: string, baseUrl: string): string | undefined {
   if (!href) {
     return undefined;
   }
-  if (href.startsWith("http://") || href.startsWith("https://")) {
-    return href;
+  let parsed: URL;
+  try {
+    parsed = new URL(href, baseUrl);
+  } catch {
+    return undefined;
   }
-  if (href.startsWith("//")) {
-    return `https:${href}`;
+  const host = parsed.hostname.toLowerCase();
+
+  if (host === "duckduckgo.com" || host === "www.duckduckgo.com" || host === "lite.duckduckgo.com") {
+    const target = parsed.searchParams.get("uddg");
+    return normalizeExternalResultTarget(target);
   }
-  if (href.startsWith("/l/?")) {
-    try {
-      const parsed = new URL(`https://duckduckgo.com${href}`);
-      const target = parsed.searchParams.get("uddg");
-      if (!target) {
-        return undefined;
-      }
-      const decoded = decodeURIComponent(target);
-      if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
-        return decoded;
-      }
-      return undefined;
-    } catch {
+
+  if (host === "www.google.com" || host === "google.com") {
+    if (parsed.pathname === "/url") {
+      return normalizeExternalResultTarget(parsed.searchParams.get("q") ?? parsed.searchParams.get("url"));
+    }
+    if (parsed.pathname.startsWith("/search") || parsed.pathname.startsWith("/httpservice/")) {
       return undefined;
     }
   }
-  return undefined;
+
+  if (host === "www.bing.com" || host === "bing.com") {
+    if (parsed.pathname.startsWith("/ck/")) {
+      return normalizeExternalResultTarget(decodeBingRedirectUrl(parsed.searchParams.get("u")));
+    }
+    if (parsed.pathname === "/" || parsed.pathname.startsWith("/search")) {
+      return undefined;
+    }
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return undefined;
+  }
+  return parsed.toString();
+}
+
+function normalizeExternalResultTarget(target: string | null | undefined): string | undefined {
+  if (!target) {
+    return undefined;
+  }
+  try {
+    const decoded = decodeURIComponent(target);
+    if (!decoded.startsWith("http://") && !decoded.startsWith("https://")) {
+      return undefined;
+    }
+    return decoded;
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeBingRedirectUrl(value: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const raw = value.startsWith("a1") ? value.slice(2) : value;
+  try {
+    const decoded = Buffer.from(raw, "base64").toString("utf8").trim();
+    if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+      return decoded;
+    }
+  } catch {
+    return undefined;
+  }
+  return normalizeExternalResultTarget(value);
 }
 
 function extractSnippetNear(html: string, index: number, maxChars: number): string {

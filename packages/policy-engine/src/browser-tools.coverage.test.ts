@@ -65,7 +65,7 @@ function createPlaywrightStub() {
       for (let i = 0; i < Number(maxItems); i += 1) {
         out.push({
           title: `Result ${i + 1}`,
-          url: `https://example.com/${i + 1}`,
+          href: `https://example.com/${i + 1}`,
           snippet: `Snippet ${i + 1}`,
         });
       }
@@ -91,6 +91,31 @@ function createPlaywrightStub() {
         children: [{ name: "Current conditions clear skies" }],
       }),
     },
+  };
+  const context = {
+    newPage: async () => page,
+  };
+  const browser = {
+    newContext: async () => context,
+    close: async () => undefined,
+  };
+  return browser;
+}
+
+function createSearchPlaywrightStub(
+  resolveResults: (url: string) => Array<{ href: string; title: string; snippet: string }>,
+) {
+  let currentUrl = "https://example.com/start";
+  const page = {
+    goto: async (url: string) => {
+      currentUrl = url;
+      return { status: () => 200 };
+    },
+    waitForLoadState: async () => undefined,
+    waitForTimeout: async () => undefined,
+    title: async () => `Search results for ${currentUrl}`,
+    url: () => currentUrl,
+    evaluate: async (_fn: unknown, _maxItems: number) => resolveResults(currentUrl),
   };
   const context = {
     newPage: async () => page,
@@ -216,6 +241,78 @@ describe("browser tools coverage sweep", () => {
     expect(response.fallbackUsed).toBe(true);
     expect(Array.isArray(response.results)).toBe(true);
     expect((response.results as Array<unknown>).length).toBeGreaterThan(0);
+  });
+
+  it("normalizes DuckDuckGo redirect-style search results when playwright is available", async () => {
+    const config = createConfig(tempRoot);
+    mocked.launch.mockResolvedValueOnce(createSearchPlaywrightStub(() => [
+      {
+        href: "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle-a",
+        title: "Article A",
+        snippet: "Snippet A",
+      },
+      {
+        href: "/l/?uddg=https%3A%2F%2Fexample.com%2Farticle-b",
+        title: "Article B",
+        snippet: "Snippet B",
+      },
+    ]) as never);
+
+    const response = await executeBrowserTool(
+      "browser.search",
+      { query: "Kristi Noem latest news", engine: "duckduckgo", limit: 2 },
+      config,
+    );
+
+    expect(response.fallbackUsed).toBe(false);
+    expect(response.engine).toBe("duckduckgo");
+    expect(response.results).toEqual([
+      { title: "Article A", url: "https://example.com/article-a", snippet: "Snippet A" },
+      { title: "Article B", url: "https://example.com/article-b", snippet: "Snippet B" },
+    ]);
+  });
+
+  it("falls back from empty DuckDuckGo results to Bing and decodes Bing redirect targets", async () => {
+    const config = createConfig(tempRoot);
+    globalThis.fetch = vi.fn(async () => new Response(
+      "<html><body><p>No usable results</p></body></html>",
+      {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      },
+    )) as unknown as typeof fetch;
+    mocked.launch.mockResolvedValue(createSearchPlaywrightStub((url) => {
+      if (url.includes("lite.duckduckgo.com")) {
+        return [];
+      }
+      if (url.includes("bing.com")) {
+        return [
+          {
+            href: "https://www.bing.com/ck/a?!&u=a1aHR0cHM6Ly93d3cuYmJjLmNvbS9uZXdzL2xpdmUvY2pkOXk0azU1ODN0",
+            title: "BBC result",
+            snippet: "BBC snippet",
+          },
+        ];
+      }
+      return [];
+    }) as never);
+
+    const response = await executeBrowserTool(
+      "browser.search",
+      { query: "Kristi Noem latest news", limit: 2 },
+      config,
+    );
+
+    expect(response.engine).toBe("bing");
+    expect(response.attemptedEngines).toEqual(["duckduckgo", "bing"]);
+    expect(response.fallbackUsed).toBe(false);
+    expect(response.results).toEqual([
+      {
+        title: "BBC result",
+        url: "https://www.bbc.com/news/live/cjd9y4k5583t",
+        snippet: "BBC snippet",
+      },
+    ]);
   });
 
   it("uses HTML fetch fallback for navigate and extract when playwright runtime is unavailable", async () => {
