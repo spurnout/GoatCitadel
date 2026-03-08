@@ -186,7 +186,7 @@ if [[ -n "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
 fi
 if [[ "${SKIP_VOICE}" != "1" ]]; then
   echo "Installing managed local voice runtime (${VOICE_MODEL})..."
-  if ! pnpm --dir "${APP_DIR}" --filter "@goatcitadel/gateway" run voice:runtime -- install --model "${VOICE_MODEL}"; then
+  if ! pnpm --dir "${APP_DIR}" --filter "@goatcitadel/gateway" run voice:runtime install --model "${VOICE_MODEL}"; then
     echo "Managed voice runtime install failed. Core GoatCitadel install is complete. Repair later with 'goatcitadel voice install'." >&2
   fi
 fi

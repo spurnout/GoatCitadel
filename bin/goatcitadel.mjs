@@ -79,7 +79,7 @@ async function main() {
     return;
   }
   if (command === "voice") {
-    runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", "--", ...rest]);
+    runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", ...rest]);
     return;
   }
   if (command === "admin") {
@@ -146,7 +146,6 @@ function installOrUpdate() {
         "@goatcitadel/gateway",
         "run",
         "voice:runtime",
-        "--",
         "install",
         "--model",
         installArgs.voiceModel,

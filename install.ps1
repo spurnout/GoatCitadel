@@ -193,7 +193,7 @@ if ($null -ne $preservedManagedConfig) {
 if (-not $SkipVoice) {
   Write-Host "Installing managed local voice runtime ($VoiceModel)..."
   try {
-    Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", "--", "install", "--model", $VoiceModel) -FailureMessage "Failed to install managed voice runtime"
+    Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", "install", "--model", $VoiceModel) -FailureMessage "Failed to install managed voice runtime"
   } catch {
     Write-Warning "Managed voice runtime install failed. Core GoatCitadel install is complete. Repair later with '$BinDir\goatcitadel.cmd voice install'."
   }
