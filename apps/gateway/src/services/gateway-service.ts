@@ -760,6 +760,13 @@ interface ResolvedRuntimeGuidance {
   truncated: boolean;
 }
 
+class ChatTurnWriteConflictError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "ChatTurnWriteConflictError";
+  }
+}
+
 export class GatewayService {
   private readonly storage: Storage;
   private readonly eventIngestService: EventIngestService;
@@ -781,6 +788,7 @@ export class GatewayService {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
   private readonly chatMessageProjectionBackfillAttempted = new Set<string>();
+  private readonly activeChatTurnWrites = new Map<string, string>();
   private readonly operatorSummaryCache = new OperatorSummaryCache(15_000);
   private readonly onboardingMarkerPath: string;
   private proactiveScheduler?: NodeJS.Timeout;
@@ -6819,6 +6827,78 @@ export class GatewayService {
     };
   }
 
+  private acquireChatTurnWriteLease(sessionId: string, operation: string): string {
+    const existing = this.activeChatTurnWrites.get(sessionId);
+    if (existing) {
+      throw new ChatTurnWriteConflictError(
+        `A chat turn write is already in progress for session ${sessionId}. Wait for the current ${existing} to finish and retry.`,
+      );
+    }
+    const leaseToken = `${operation}:${randomUUID()}`;
+    this.activeChatTurnWrites.set(sessionId, operation);
+    return leaseToken;
+  }
+
+  private releaseChatTurnWriteLease(sessionId: string, leaseToken: string): void {
+    const expectedOperation = leaseToken.split(":", 1)[0];
+    if (this.activeChatTurnWrites.get(sessionId) === expectedOperation) {
+      this.activeChatTurnWrites.delete(sessionId);
+    }
+  }
+
+  private async withChatTurnWriteLease<T>(
+    sessionId: string,
+    operation: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const leaseToken = this.acquireChatTurnWriteLease(sessionId, operation);
+    try {
+      return await work();
+    } finally {
+      this.releaseChatTurnWriteLease(sessionId, leaseToken);
+    }
+  }
+
+  private async *withChatTurnWriteLeaseStream(
+    sessionId: string,
+    operation: string,
+    work: () => AsyncGenerator<ChatStreamChunk>,
+  ): AsyncGenerator<ChatStreamChunk> {
+    const leaseToken = this.acquireChatTurnWriteLease(sessionId, operation);
+    try {
+      yield* work();
+    } finally {
+      this.releaseChatTurnWriteLease(sessionId, leaseToken);
+    }
+  }
+
+  private updateActiveLeafOrThrow(
+    sessionId: string,
+    expectedActiveLeafTurnId: string | undefined,
+    nextActiveLeafTurnId: string,
+    now = new Date().toISOString(),
+  ): void {
+    const updated = this.storage.chatSessionBranchState.setActiveLeafIfCurrent(
+      sessionId,
+      expectedActiveLeafTurnId,
+      nextActiveLeafTurnId,
+      now,
+    );
+    if (updated) {
+      return;
+    }
+    const current = this.storage.chatSessionBranchState.get(sessionId)?.activeLeafTurnId;
+    console.warn("[goatcitadel] chat turn branch-state conflict", {
+      sessionId,
+      expectedActiveLeafTurnId,
+      nextActiveLeafTurnId,
+      currentActiveLeafTurnId: current,
+    });
+    throw new ChatTurnWriteConflictError(
+      `Chat branch state changed while writing session ${sessionId}. Refresh the session and retry.`,
+    );
+  }
+
   private async prepareAgentChatTurn(
     sessionId: string,
     input: ChatSendMessageRequest,
@@ -7077,7 +7157,7 @@ export class GatewayService {
     }
 
     if (approvalRequired) {
-      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       this.publishRealtime("chat_thread_updated", "chat", {
         type: threadEventType,
         sessionId,
@@ -7187,13 +7267,13 @@ export class GatewayService {
           capabilityUpgradeSuggestions,
         };
       }
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       yield {
         type: "trace_update",
         sessionId,
         turnId,
         trace: hydratedTrace,
       };
-      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
       this.publishRealtime("chat_thread_updated", "chat", {
         type: threadEventType,
         sessionId,
@@ -7222,38 +7302,44 @@ export class GatewayService {
     sessionId: string,
     input: ChatSendMessageRequest,
   ): Promise<ChatSendMessageResponse> {
-    const prepared = await this.prepareAgentChatTurn(sessionId, input, {
-      branchKind: "append",
-    });
-    const binding = this.storage.chatSessionBindings.get(sessionId)
-      ?? this.storage.chatSessionBindings.upsert({
-        sessionId,
-        workspaceId: prepared.workspaceId,
-        transport: "llm",
-        writable: true,
+    return this.withChatTurnWriteLease(sessionId, "agent-send", async () => {
+      const prepared = await this.prepareAgentChatTurn(sessionId, input, {
+        branchKind: "append",
       });
-    if (binding.transport !== "llm") {
-      return this.sendChatMessage(sessionId, input);
-    }
-    let turnId = prepared.turnId;
-    let turnResult = await this.chatAgentOrchestrator.run({
-      sessionId,
-      turnId,
-      userMessageId: prepared.userEventId,
-      parentTurnId: prepared.parentTurnId,
-      branchKind: prepared.branchKind,
-      sourceTurnId: prepared.sourceTurnId,
-      content: prepared.content,
-      mode: prepared.normalized.mode ?? prepared.prefs.mode,
-      providerId: input.providerId ?? prepared.prefs.providerId,
-      model: input.model ?? prepared.prefs.model,
-      webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
-      memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
-      thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
-      toolAutonomy: prepared.effectiveToolAutonomy,
-      historyMessages: prepared.history,
-      outputMessageId: prepared.assistantMessageId,
-    });
+      const binding = this.storage.chatSessionBindings.get(sessionId)
+        ?? this.storage.chatSessionBindings.upsert({
+          sessionId,
+          workspaceId: prepared.workspaceId,
+          transport: "llm",
+          writable: true,
+        });
+      if (binding.transport !== "llm") {
+        return this.sendPreparedIntegrationChatTurn(
+          sessionId,
+          prepared,
+          binding,
+          "chat_thread_turn_appended",
+        );
+      }
+      let turnId = prepared.turnId;
+      let turnResult = await this.chatAgentOrchestrator.run({
+        sessionId,
+        turnId,
+        userMessageId: prepared.userEventId,
+        parentTurnId: prepared.parentTurnId,
+        branchKind: prepared.branchKind,
+        sourceTurnId: prepared.sourceTurnId,
+        content: prepared.content,
+        mode: prepared.normalized.mode ?? prepared.prefs.mode,
+        providerId: input.providerId ?? prepared.prefs.providerId,
+        model: input.model ?? prepared.prefs.model,
+        webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+        memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+        thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+        toolAutonomy: prepared.effectiveToolAutonomy,
+        historyMessages: prepared.history,
+        outputMessageId: prepared.assistantMessageId,
+      });
     let reflectionTrace: ChatTurnTraceRecord["reflection"] = {
       attempted: false,
       attemptCount: 0,
@@ -7342,7 +7428,7 @@ export class GatewayService {
         },
         citations: turnResult.turnTrace.citations,
       });
-      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       this.publishRealtime("chat_thread_updated", "chat", {
         type: "chat_thread_turn_appended",
         sessionId,
@@ -7441,7 +7527,7 @@ export class GatewayService {
       role: "assistant",
       sourceRef: assistantEventId,
     });
-    this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+    this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
     this.publishRealtime("chat_thread_updated", "chat", {
       type: "chat_thread_turn_appended",
       sessionId,
@@ -7467,16 +7553,38 @@ export class GatewayService {
       citations: hydratedTrace.citations,
       routing: hydratedTrace.routing,
     };
+    });
   }
 
   public async *agentSendChatMessageStream(
     sessionId: string,
     input: ChatSendMessageRequest,
   ): AsyncGenerator<ChatStreamChunk> {
-    const prepared = await this.prepareAgentChatTurn(sessionId, input, {
-      branchKind: "append",
+    yield* this.withChatTurnWriteLeaseStream(sessionId, "agent-send/stream", () => {
+      const self = this;
+      return (async function* (): AsyncGenerator<ChatStreamChunk> {
+        const prepared = await self.prepareAgentChatTurn(sessionId, input, {
+          branchKind: "append",
+        });
+        const binding = self.storage.chatSessionBindings.get(sessionId)
+          ?? self.storage.chatSessionBindings.upsert({
+            sessionId,
+            workspaceId: prepared.workspaceId,
+            transport: "llm",
+            writable: true,
+          });
+        if (binding.transport !== "llm") {
+          yield* self.streamPreparedIntegrationChatTurn(
+            sessionId,
+            prepared,
+            binding,
+            "chat_thread_turn_appended",
+          );
+          return;
+        }
+        yield* self.streamPreparedAgentChatTurn(sessionId, input, prepared, "chat_thread_turn_appended");
+      })();
     });
-    yield* this.streamPreparedAgentChatTurn(sessionId, input, prepared, "chat_thread_turn_appended");
   }
 
   public async retryChatTurn(
@@ -7484,31 +7592,43 @@ export class GatewayService {
     turnId: string,
     overrides: Partial<ChatSendMessageRequest> = {},
   ): Promise<ChatSendMessageResponse> {
-    const current = await this.requireChatTurnContext(sessionId, turnId);
-    const request: ChatSendMessageRequest = {
-      content: current.userMessage.content,
-      attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
-      providerId: overrides.providerId,
-      model: overrides.model,
-      useMemory: overrides.useMemory,
-      mode: overrides.mode,
-      webMode: overrides.webMode,
-      memoryMode: overrides.memoryMode,
-      thinkingLevel: overrides.thinkingLevel,
-      commandText: overrides.commandText,
-      prefsOverride: overrides.prefsOverride,
-    };
-    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
-      branchKind: "retry",
-      sourceTurnId: turnId,
-      parentTurnId: current.trace.parentTurnId,
-      existingUserMessage: current.userMessage,
-      ingestUserMessage: false,
+    return this.withChatTurnWriteLease(sessionId, "retry-turn", async () => {
+      const current = await this.requireChatTurnContext(sessionId, turnId);
+      const request: ChatSendMessageRequest = {
+        content: current.userMessage.content,
+        attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
+        providerId: overrides.providerId,
+        model: overrides.model,
+        useMemory: overrides.useMemory,
+        mode: overrides.mode,
+        webMode: overrides.webMode,
+        memoryMode: overrides.memoryMode,
+        thinkingLevel: overrides.thinkingLevel,
+        commandText: overrides.commandText,
+        prefsOverride: overrides.prefsOverride,
+      };
+      const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+        branchKind: "retry",
+        sourceTurnId: turnId,
+        parentTurnId: current.trace.parentTurnId,
+        existingUserMessage: current.userMessage,
+        ingestUserMessage: false,
+      });
+      const binding = this.storage.chatSessionBindings.get(sessionId)
+        ?? this.storage.chatSessionBindings.upsert({
+          sessionId,
+          workspaceId: prepared.workspaceId,
+          transport: "llm",
+          writable: true,
+        });
+      if (binding.transport !== "llm") {
+        return this.sendPreparedIntegrationChatTurn(sessionId, prepared, binding, "chat_thread_turn_retried");
+      }
+      for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried")) {
+        // consume stream for non-stream callers so branch behavior stays aligned
+      }
+      return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
     });
-    for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried")) {
-      // consume stream for non-stream callers so branch behavior stays aligned
-    }
-    return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
   }
 
   public async *retryChatTurnStream(
@@ -7516,28 +7636,44 @@ export class GatewayService {
     turnId: string,
     overrides: Partial<ChatSendMessageRequest> = {},
   ): AsyncGenerator<ChatStreamChunk> {
-    const current = await this.requireChatTurnContext(sessionId, turnId);
-    const request: ChatSendMessageRequest = {
-      content: current.userMessage.content,
-      attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
-      providerId: overrides.providerId,
-      model: overrides.model,
-      useMemory: overrides.useMemory,
-      mode: overrides.mode,
-      webMode: overrides.webMode,
-      memoryMode: overrides.memoryMode,
-      thinkingLevel: overrides.thinkingLevel,
-      commandText: overrides.commandText,
-      prefsOverride: overrides.prefsOverride,
-    };
-    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
-      branchKind: "retry",
-      sourceTurnId: turnId,
-      parentTurnId: current.trace.parentTurnId,
-      existingUserMessage: current.userMessage,
-      ingestUserMessage: false,
+    yield* this.withChatTurnWriteLeaseStream(sessionId, "retry-turn/stream", () => {
+      const self = this;
+      return (async function* (): AsyncGenerator<ChatStreamChunk> {
+        const current = await self.requireChatTurnContext(sessionId, turnId);
+        const request: ChatSendMessageRequest = {
+          content: current.userMessage.content,
+          attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
+          providerId: overrides.providerId,
+          model: overrides.model,
+          useMemory: overrides.useMemory,
+          mode: overrides.mode,
+          webMode: overrides.webMode,
+          memoryMode: overrides.memoryMode,
+          thinkingLevel: overrides.thinkingLevel,
+          commandText: overrides.commandText,
+          prefsOverride: overrides.prefsOverride,
+        };
+        const prepared = await self.prepareAgentChatTurn(sessionId, request, {
+          branchKind: "retry",
+          sourceTurnId: turnId,
+          parentTurnId: current.trace.parentTurnId,
+          existingUserMessage: current.userMessage,
+          ingestUserMessage: false,
+        });
+        const binding = self.storage.chatSessionBindings.get(sessionId)
+          ?? self.storage.chatSessionBindings.upsert({
+            sessionId,
+            workspaceId: prepared.workspaceId,
+            transport: "llm",
+            writable: true,
+          });
+        if (binding.transport !== "llm") {
+          yield* self.streamPreparedIntegrationChatTurn(sessionId, prepared, binding, "chat_thread_turn_retried");
+          return;
+        }
+        yield* self.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried");
+      })();
     });
-    yield* this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried");
   }
 
   public async editChatTurn(
@@ -7545,20 +7681,32 @@ export class GatewayService {
     turnId: string,
     input: ChatSendMessageRequest,
   ): Promise<ChatSendMessageResponse> {
-    const current = await this.requireChatTurnContext(sessionId, turnId);
-    const request: ChatSendMessageRequest = {
-      ...input,
-      attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
-    };
-    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
-      branchKind: "edit",
-      sourceTurnId: turnId,
-      parentTurnId: current.trace.parentTurnId,
+    return this.withChatTurnWriteLease(sessionId, "edit-turn", async () => {
+      const current = await this.requireChatTurnContext(sessionId, turnId);
+      const request: ChatSendMessageRequest = {
+        ...input,
+        attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
+      };
+      const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+        branchKind: "edit",
+        sourceTurnId: turnId,
+        parentTurnId: current.trace.parentTurnId,
+      });
+      const binding = this.storage.chatSessionBindings.get(sessionId)
+        ?? this.storage.chatSessionBindings.upsert({
+          sessionId,
+          workspaceId: prepared.workspaceId,
+          transport: "llm",
+          writable: true,
+        });
+      if (binding.transport !== "llm") {
+        return this.sendPreparedIntegrationChatTurn(sessionId, prepared, binding, "chat_thread_turn_edited");
+      }
+      for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited")) {
+        // consume stream for non-stream callers so branch behavior stays aligned
+      }
+      return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
     });
-    for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited")) {
-      // consume stream for non-stream callers so branch behavior stays aligned
-    }
-    return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
   }
 
   public async *editChatTurnStream(
@@ -7566,17 +7714,33 @@ export class GatewayService {
     turnId: string,
     input: ChatSendMessageRequest,
   ): AsyncGenerator<ChatStreamChunk> {
-    const current = await this.requireChatTurnContext(sessionId, turnId);
-    const request: ChatSendMessageRequest = {
-      ...input,
-      attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
-    };
-    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
-      branchKind: "edit",
-      sourceTurnId: turnId,
-      parentTurnId: current.trace.parentTurnId,
+    yield* this.withChatTurnWriteLeaseStream(sessionId, "edit-turn/stream", () => {
+      const self = this;
+      return (async function* (): AsyncGenerator<ChatStreamChunk> {
+        const current = await self.requireChatTurnContext(sessionId, turnId);
+        const request: ChatSendMessageRequest = {
+          ...input,
+          attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
+        };
+        const prepared = await self.prepareAgentChatTurn(sessionId, request, {
+          branchKind: "edit",
+          sourceTurnId: turnId,
+          parentTurnId: current.trace.parentTurnId,
+        });
+        const binding = self.storage.chatSessionBindings.get(sessionId)
+          ?? self.storage.chatSessionBindings.upsert({
+            sessionId,
+            workspaceId: prepared.workspaceId,
+            transport: "llm",
+            writable: true,
+          });
+        if (binding.transport !== "llm") {
+          yield* self.streamPreparedIntegrationChatTurn(sessionId, prepared, binding, "chat_thread_turn_edited");
+          return;
+        }
+        yield* self.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited");
+      })();
     });
-    yield* this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited");
   }
 
   private async collectCapabilityUpgradeSuggestions(input: {
@@ -7605,103 +7769,51 @@ export class GatewayService {
     });
   }
 
-  public async sendChatMessage(
+  private async sendPreparedIntegrationChatTurn(
     sessionId: string,
-    input: {
-      content: string;
-      parts?: ChatInputPart[];
-      providerId?: string;
-      model?: string;
-      useMemory?: boolean;
-      attachments?: string[];
-    },
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    binding: ChatSessionBindingRecord,
+    threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
   ): Promise<ChatSendMessageResponse> {
-    const session = this.getSession(sessionId);
-    const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
-    const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
-    assertChatSessionActive(sessionId, sessionMeta.lifecycleStatus);
-    const content = input.content.trim();
-    if (!content) {
-      throw new Error("content is required");
-    }
-    this.maybeAutoTitleChatSession(sessionId, content);
-
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
-    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
-    const route = this.routeFromSession(session);
-    const userEventId = randomUUID();
-    const userPayload = {
-      eventId: userEventId,
-      route,
-      actor: {
-        type: "user" as const,
-        id: "operator",
-      },
-      message: {
-        role: "user" as const,
-        content,
-        parts: inputParts,
-        attachments: attachments.map((item) => ({
-          attachmentId: item.attachmentId,
-          fileName: item.fileName,
-          mimeType: item.mimeType,
-          sizeBytes: item.sizeBytes,
-        })),
-      },
-    };
-    await this.ingestEvent(randomUUID(), userPayload);
-
-    const userMessage: ChatMessageRecord = {
-      messageId: userEventId,
+    const startedAt = new Date().toISOString();
+    this.storage.chatTurnTraces.create({
+      turnId: prepared.turnId,
       sessionId,
-      role: "user",
-      actorType: "user",
-      actorId: "operator",
-      content,
-      timestamp: new Date().toISOString(),
-      attachments: attachments.map((item) => ({
-        attachmentId: item.attachmentId,
-        fileName: item.fileName,
-        mimeType: item.mimeType,
-        sizeBytes: item.sizeBytes,
-      })),
-    };
+      userMessageId: prepared.userEventId,
+      parentTurnId: prepared.parentTurnId,
+      branchKind: prepared.branchKind,
+      sourceTurnId: prepared.sourceTurnId,
+      status: "running",
+      mode: prepared.normalized.mode ?? prepared.prefs.mode,
+      webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+      memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+      thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+      effectiveToolAutonomy: prepared.effectiveToolAutonomy,
+      routing: {},
+      startedAt,
+    });
 
-    const binding = this.storage.chatSessionBindings.get(sessionId)
-      ?? (session.channel === "mission"
-        ? this.storage.chatSessionBindings.upsert({
-          sessionId,
-          workspaceId,
-          transport: "llm",
-          writable: true,
-        })
-        : undefined);
-
-    if (!binding) {
-      throw new Error("External sessions require writeback binding before send");
-    }
-    if (!binding.writable) {
-      throw new Error("Session binding is not writable");
-    }
-
-    if (binding.transport === "integration") {
+    try {
       if (!binding.connectionId || !binding.target) {
         throw new Error("Integration binding is missing connectionId or target");
+      }
+      if (!binding.writable) {
+        throw new Error("Session binding is not writable");
       }
       const delivery = await this.commsSend({
         connectionId: binding.connectionId,
         target: binding.target,
-        message: content,
+        message: prepared.content,
         sessionId,
         agentId: "operator",
       });
       const assistantContent = typeof delivery === "object"
         ? `Delivered via integration ${binding.connectionId} to ${binding.target}.`
         : "Delivered via integration.";
-      const assistantEventId = randomUUID();
+      const assistantMessageId = prepared.assistantMessageId;
       await this.ingestEvent(randomUUID(), {
-        eventId: assistantEventId,
-        route,
+        eventId: assistantMessageId,
+        route: prepared.route,
         actor: {
           type: "system",
           id: "integration",
@@ -7712,7 +7824,7 @@ export class GatewayService {
         },
       });
       const assistantMessage: ChatMessageRecord = {
-        messageId: assistantEventId,
+        messageId: assistantMessageId,
         sessionId,
         role: "assistant",
         actorType: "system",
@@ -7720,150 +7832,121 @@ export class GatewayService {
         content: assistantContent,
         timestamp: new Date().toISOString(),
       };
-      this.publishRealtime("chat_message", "chat", {
+      const trace = this.storage.chatTurnTraces.patch(prepared.turnId, {
+        assistantMessageId,
+        status: "completed",
+        finishedAt: new Date().toISOString(),
+        retrieval: prepared.retrievalTrace,
+        reflection: {
+          attempted: false,
+          attemptCount: 0,
+          outcome: "not_needed",
+        },
+        proactive: {
+          runId: prepared.autonomy.lastProactiveRunId,
+          mode: prepared.autonomy.proactiveMode,
+        },
+        guidance: {
+          workspaceId: prepared.workspaceId,
+          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+          truncated: prepared.resolvedGuidance.truncated,
+        },
+        citations: [],
+      });
+      const hydratedTrace: ChatTurnTraceRecord = {
+        ...trace,
+        toolRuns: [],
+        citations: [],
+      };
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, prepared.turnId);
+      this.publishRealtime("chat_thread_updated", "chat", {
+        type: threadEventType,
         sessionId,
-        role: "assistant",
-        preview: assistantContent.slice(0, 160),
+        turnId: prepared.turnId,
+        activeLeafTurnId: prepared.turnId,
       });
       return {
         sessionId,
-        userMessage,
+        userMessage: prepared.userMessage,
         assistantMessage,
         transport: "integration",
+        turnId: prepared.turnId,
+        trace: hydratedTrace,
+        citations: [],
+        routing: hydratedTrace.routing,
       };
+    } catch (error) {
+      this.storage.chatTurnTraces.patch(prepared.turnId, {
+        status: "failed",
+        finishedAt: new Date().toISOString(),
+        retrieval: prepared.retrievalTrace,
+        reflection: {
+          attempted: false,
+          attemptCount: 0,
+          outcome: "not_needed",
+        },
+        proactive: {
+          runId: prepared.autonomy.lastProactiveRunId,
+          mode: prepared.autonomy.proactiveMode,
+        },
+        guidance: {
+          workspaceId: prepared.workspaceId,
+          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+          truncated: prepared.resolvedGuidance.truncated,
+        },
+        citations: [],
+      });
+      throw error;
     }
-
-    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
-      providerId: input.providerId,
-      model: input.model,
-    });
-    const response = await this.createChatCompletion({
-      providerId: input.providerId,
-      model: input.model,
-      messages: history,
-      memory: {
-        enabled: input.useMemory ?? true,
-        mode: input.useMemory === false ? "off" : "qmd",
-        sessionId,
-      },
-      stream: false,
-    });
-    const assistantContent = extractAssistantContent(response);
-    const usage = parseUsageFromChatResponse(response);
-    const assistantEventId = randomUUID();
-    await this.ingestEvent(randomUUID(), {
-      eventId: assistantEventId,
-      route,
-      actor: {
-        type: "agent",
-        id: "assistant",
-      },
-      message: {
-        role: "assistant",
-        content: assistantContent,
-      },
-      usage,
-    });
-    const assistantMessage: ChatMessageRecord = {
-      messageId: assistantEventId,
-      sessionId,
-      role: "assistant",
-      actorType: "agent",
-      actorId: "assistant",
-      content: assistantContent,
-      timestamp: new Date().toISOString(),
-      tokenInput: usage.inputTokens,
-      tokenOutput: usage.outputTokens,
-      costUsd: usage.costUsd,
-    };
-    this.publishRealtime("chat_message", "chat", {
-      sessionId,
-      role: "assistant",
-      preview: assistantContent.slice(0, 160),
-      model: response.model,
-    });
-    return {
-      sessionId,
-      userMessage,
-      assistantMessage,
-      transport: "llm",
-      model: response.model ? String(response.model) : undefined,
-    };
   }
 
-  public async *sendChatMessageStream(
+  private async *streamPreparedIntegrationChatTurn(
     sessionId: string,
-    input: {
-      content: string;
-      parts?: ChatInputPart[];
-      providerId?: string;
-      model?: string;
-      useMemory?: boolean;
-      attachments?: string[];
-    },
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    binding: ChatSessionBindingRecord,
+    threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
   ): AsyncGenerator<ChatStreamChunk> {
-    const streamTurnId = `legacy-${randomUUID()}`;
-    const startedMessageId = `msg_${randomUUID()}`;
     yield {
       type: "message_start",
       sessionId,
-      turnId: streamTurnId,
-      messageId: startedMessageId,
-      branchKind: "append",
+      turnId: prepared.turnId,
+      messageId: prepared.assistantMessageId,
+      parentTurnId: prepared.parentTurnId,
+      branchKind: prepared.branchKind,
+      sourceTurnId: prepared.sourceTurnId,
     };
-    try {
-      const response = await this.sendChatMessage(sessionId, input);
-      const assistant = response.assistantMessage;
-      const messageId = assistant?.messageId ?? startedMessageId;
-      const content = assistant?.content ?? "";
-      const chunks = splitIntoChunks(content, 120);
-      for (const delta of chunks) {
-        yield {
-          type: "delta",
-          sessionId,
-          turnId: streamTurnId,
-          messageId,
-          delta,
-        };
-      }
+    const response = await this.sendPreparedIntegrationChatTurn(sessionId, prepared, binding, threadEventType);
+    const content = response.assistantMessage?.content ?? "";
+    for (const delta of splitIntoChunks(content, 120)) {
       yield {
-        type: "usage",
+        type: "delta",
         sessionId,
-        turnId: streamTurnId,
-        messageId,
-        usage: {
-          inputTokens: assistant?.tokenInput,
-          outputTokens: assistant?.tokenOutput,
-          costUsd: assistant?.costUsd,
-        },
-      };
-      yield {
-        type: "message_done",
-        sessionId,
-        turnId: streamTurnId,
-        messageId,
-        content,
-      };
-      yield {
-        type: "done",
-        sessionId,
-        turnId: streamTurnId,
-        messageId,
-      };
-    } catch (error) {
-      yield {
-        type: "error",
-        sessionId,
-        turnId: streamTurnId,
-        error: (error as Error).message,
-      };
-      yield {
-        type: "done",
-        sessionId,
-        turnId: streamTurnId,
-        messageId: startedMessageId,
+        turnId: prepared.turnId,
+        messageId: prepared.assistantMessageId,
+        delta,
       };
     }
+    yield {
+      type: "message_done",
+      sessionId,
+      turnId: prepared.turnId,
+      messageId: prepared.assistantMessageId,
+      content,
+    };
+    yield {
+      type: "trace_update",
+      sessionId,
+      turnId: prepared.turnId,
+      trace: response.trace!,
+    };
+    yield {
+      type: "done",
+      sessionId,
+      turnId: prepared.turnId,
+      messageId: prepared.assistantMessageId,
+    };
   }
 
   public async uploadChatAttachment(input: {
@@ -12797,9 +12880,11 @@ export class GatewayService {
   }
 
   private listHydratedChatTurnTraces(sessionId: string, limit = 200): ChatTurnTraceRecord[] {
-    return this.storage.chatTurnTraces.listBySession(sessionId, limit).map((trace) => ({
+    const traces = this.storage.chatTurnTraces.listBySession(sessionId, limit);
+    const toolRunsByTurnId = this.storage.chatToolRuns.listByTurnIds(traces.map((trace) => trace.turnId));
+    return traces.map((trace) => ({
       ...trace,
-      toolRuns: this.storage.chatToolRuns.listByTurn(trace.turnId),
+      toolRuns: toolRunsByTurnId.get(trace.turnId) ?? [],
       citations: trace.citations ?? [],
       capabilityUpgradeSuggestions: trace.capabilityUpgradeSuggestions,
     }));
@@ -12826,8 +12911,20 @@ export class GatewayService {
     if (!newest) {
       return undefined;
     }
-    this.storage.chatSessionBranchState.setActiveLeaf(sessionId, newest.turnId, newest.finishedAt ?? newest.startedAt);
-    return newest.turnId;
+    const newestLeafTurnId = resolveNewestLeafTurnId(
+      newest.turnId,
+      new Map(traces.map((trace) => [trace.turnId, {
+        turnId: trace.turnId,
+        startedAtMs: Date.parse(trace.startedAt) || 0,
+      }])),
+      this.buildChatTurnChildrenMap(traces),
+    );
+    this.storage.chatSessionBranchState.setActiveLeaf(
+      sessionId,
+      newestLeafTurnId,
+      newest.finishedAt ?? newest.startedAt,
+    );
+    return newestLeafTurnId;
   }
 
   private buildChatTurnChildrenMap(traces: ChatTurnTraceRecord[]): Map<string, string[]> {

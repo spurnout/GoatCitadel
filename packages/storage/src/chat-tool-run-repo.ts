@@ -42,6 +42,7 @@ export class ChatToolRunRepository {
   private readonly insertStmt;
   private readonly listByTurnStmt;
   private readonly listBySessionStmt;
+  private readonly listByTurnIdsStmtCache = new Map<number, ReturnType<DatabaseSync["prepare"]>>();
   private readonly patchStmt;
 
   public constructor(private readonly db: DatabaseSync) {
@@ -127,6 +128,55 @@ export class ChatToolRunRepository {
       limit: Math.max(1, Math.min(limit, 2000)),
     }) as unknown as ChatToolRunRow[];
     return rows.map(mapRow);
+  }
+
+  public listByTurnIds(turnIds: string[]): Map<string, ChatToolRunRecord[]> {
+    const uniqueTurnIds = [...new Set(turnIds.map((item) => item.trim()).filter(Boolean))];
+    const grouped = new Map<string, ChatToolRunRecord[]>();
+    if (uniqueTurnIds.length === 0) {
+      return grouped;
+    }
+
+    for (let index = 0; index < uniqueTurnIds.length; index += 400) {
+      const batch = uniqueTurnIds.slice(index, index + 400);
+      const stmt = this.getListByTurnIdsStmt(batch.length);
+      const rows = stmt.all(...batch) as unknown as ChatToolRunRow[];
+      for (const row of rows) {
+        const record = mapRow(row);
+        const current = grouped.get(record.turnId) ?? [];
+        current.push(record);
+        grouped.set(record.turnId, current);
+      }
+    }
+
+    for (const records of grouped.values()) {
+      records.sort((left, right) => {
+        const leftStarted = Date.parse(left.startedAt) || 0;
+        const rightStarted = Date.parse(right.startedAt) || 0;
+        if (leftStarted !== rightStarted) {
+          return leftStarted - rightStarted;
+        }
+        return left.toolRunId.localeCompare(right.toolRunId);
+      });
+    }
+
+    return grouped;
+  }
+
+  private getListByTurnIdsStmt(size: number) {
+    const cached = this.listByTurnIdsStmtCache.get(size);
+    if (cached) {
+      return cached;
+    }
+    const placeholders = new Array(size).fill("?").join(", ");
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM chat_tool_runs
+      WHERE turn_id IN (${placeholders})
+      ORDER BY started_at ASC, tool_run_id ASC
+    `);
+    this.listByTurnIdsStmtCache.set(size, stmt);
+    return stmt;
   }
 }
 

@@ -18,10 +18,10 @@ describe("cors-origin-guard", () => {
     expect(isTailnetDevOrigin("http://bld:8787", new Set(["bld"]))).toBe(false);
   });
 
-  it("derives default short-host allowlist safely", () => {
+  it("does not trust short hostnames without explicit allowlisting", () => {
     const hosts = resolveTailnetShortHostAllowlist({
       GATEWAY_HOST: "0.0.0.0",
     });
-    expect(hosts.has("bld")).toBe(true);
+    expect(hosts.has("bld")).toBe(false);
   });
 });

@@ -59,10 +59,12 @@ function buildOpenApiSpec(): Record<string, unknown> {
       },
       "/api/v1/chat/sessions/{sessionId}/messages": {
         get: { summary: "List chat messages", responses: { "200": { description: "Message list" } } },
-        post: { summary: "Send chat message", responses: { "200": { description: "Message sent" } } },
       },
-      "/api/v1/chat/sessions/{sessionId}/messages/stream": {
-        post: { summary: "Send chat message with streamed response", responses: { "200": { description: "SSE chunk stream" } } },
+      "/api/v1/chat/sessions/{sessionId}/agent-send": {
+        post: { summary: "Send chat message through the branch-aware agent path", responses: { "200": { description: "Message sent" } } },
+      },
+      "/api/v1/chat/sessions/{sessionId}/agent-send/stream": {
+        post: { summary: "Send chat message with streamed branch-aware response", responses: { "200": { description: "SSE chunk stream" } } },
       },
       "/api/v1/chat/attachments": {
         post: { summary: "Upload chat attachment", responses: { "201": { description: "Attachment uploaded" } } },

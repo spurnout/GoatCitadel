@@ -133,11 +133,15 @@ goatcitadel update
 ```bash
 git clone https://github.com/spurnout/GoatCitadel.git
 cd GoatCitadel
+git lfs install
+git lfs pull
 corepack enable
 corepack prepare pnpm@10.29.3 --activate
 pnpm install --frozen-lockfile
 pnpm config:sync
 ```
+
+If you are not touching Office source assets, the repo is still usable without `git lfs pull`, but `assets/source/office/` now keeps large source binaries in Git LFS and should be pulled before provenance or asset-editing work.
 
 ### Manual path commands
 

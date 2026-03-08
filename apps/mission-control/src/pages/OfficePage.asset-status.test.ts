@@ -102,4 +102,19 @@ describe("OfficePage asset status helpers", () => {
       goatModelLabel: "Procedural Goat",
     });
   });
+
+  it("returns the same procedural fallback descriptor when the manifest returns 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/assets/office/asset-manifest.json")) {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(null, { status: 404 });
+    }) as unknown as typeof fetch);
+
+    await expect(loadOfficeAssetPack()).resolves.toEqual({
+      goatModelVariant: "procedural",
+      goatModelLabel: "Procedural Goat",
+    });
+  });
 });

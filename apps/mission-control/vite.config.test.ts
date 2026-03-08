@@ -4,7 +4,8 @@ import { resolveViteAllowedHosts } from "./vite.config";
 describe("resolveViteAllowedHosts", () => {
   it("returns safe defaults when env is not set", () => {
     const hosts = resolveViteAllowedHosts({});
-    expect(hosts).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", "bld", ".ts.net"]));
+    expect(hosts).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", ".ts.net"]));
+    expect(hosts).not.toContain("bld");
   });
 
   it("merges env allowlist entries with defaults", () => {

@@ -192,7 +192,7 @@ export class TuiApiClient {
       thinkingLevel?: "minimal" | "standard" | "extended";
     },
   ): Promise<Record<string, unknown>> {
-    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    return this.request(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send`, {
       method: "POST",
       body: JSON.stringify(input),
     }, true);
@@ -211,9 +211,7 @@ export class TuiApiClient {
       agentMode?: boolean;
     },
   ): AsyncGenerator<Record<string, unknown>> {
-    const route = input.agentMode
-      ? `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`
-      : `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
+    const route = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`;
     const body = { ...input };
     delete (body as { agentMode?: boolean }).agentMode;
     for await (const event of this.requestStream(route, {

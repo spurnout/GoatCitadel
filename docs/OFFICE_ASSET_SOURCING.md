@@ -87,5 +87,7 @@ Search order:
 1. Prefer `.glb` where possible.
 2. Prefer embedded textures or a minimal texture set.
 3. Record source URL, author, license URL, attribution text, and download date before commit.
-4. Keep raw zips and extracted source files under `assets/source/`, not `public/`.
-5. Do not ship anything with unclear or unverifiable provenance.
+4. Keep shipped runtime assets under `apps/mission-control/public/assets/office/`.
+5. Keep extracted source binaries under `assets/source/office/` and track large binary source files with Git LFS.
+6. Keep ad-hoc download caches under `assets/source/office/_downloads/`; that folder is intentionally ignored and should not be committed.
+7. Do not ship anything with unclear or unverifiable provenance.

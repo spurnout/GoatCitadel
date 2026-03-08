@@ -24,6 +24,7 @@ describe("OfficeCanvasErrorBoundary", () => {
         );
       });
 
+      expect(consoleError).toHaveBeenCalled();
       expect(renderer.root.findAllByType("p")[0]?.children.join("")).toContain("Changing motion settings or goat asset inputs will retry the scene.");
 
       await act(async () => {

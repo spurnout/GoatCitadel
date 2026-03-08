@@ -454,7 +454,7 @@ export function App() {
 
   return (
     <div
-      className={`layout-shell theme-signal-noir theme-obsidian-crimson ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      className={`layout-shell theme-signal-noir ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
       data-density={density}
     >
       <aside className="sidebar">

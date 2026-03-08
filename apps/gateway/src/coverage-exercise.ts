@@ -293,17 +293,17 @@ async function exerciseRoutes(app: FastifyInstance, chat: ChatSeed): Promise<Exe
   await requestNotServerError(app, "GET", `/api/v1/sessions/${encodeURIComponent(chat.sessionId)}`);
   await requestNotServerError(app, "GET", `/api/v1/sessions/${encodeURIComponent(chat.sessionId)}/summary`);
   await requestNotServerError(app, "GET", `/api/v1/sessions/${encodeURIComponent(chat.sessionId)}/timeline?limit=20`);
-  await requestNotServerError(app, "POST", `/api/v1/chat/sessions/${encodeURIComponent(chat.sessionId)}/messages`, {
-    content: "coverage hello",
-    mode: "chat",
-    webMode: "off",
-    memoryMode: "auto",
-    thinkingLevel: "minimal",
-  });
   await requestNotServerError(app, "POST", `/api/v1/chat/sessions/${encodeURIComponent(chat.sessionId)}/agent-send`, {
-    content: "coverage delegate",
-    mode: "cowork",
-    webMode: "off",
+      content: "coverage hello",
+      mode: "chat",
+      webMode: "off",
+      memoryMode: "auto",
+      thinkingLevel: "minimal",
+    });
+  await requestNotServerError(app, "POST", `/api/v1/chat/sessions/${encodeURIComponent(chat.sessionId)}/agent-send`, {
+      content: "coverage delegate",
+      mode: "cowork",
+      webMode: "off",
     memoryMode: "auto",
     thinkingLevel: "minimal",
   });

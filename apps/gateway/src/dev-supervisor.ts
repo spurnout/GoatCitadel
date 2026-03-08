@@ -5,6 +5,12 @@ import process from "node:process";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadLocalEnvFile } from "./env-file.js";
+import {
+  isLoopbackHost,
+  resolveAllowUnauthNetwork,
+  resolveWarnUnauthNonLoopback,
+  shouldWarnUnauthNonLoopbackBind,
+} from "./startup-guard.js";
 
 loadLocalEnvFile();
 
@@ -52,7 +58,7 @@ async function main(): Promise<void> {
   console.log(
     `[gateway-supervisor] restart budget: max ${restartMaxFailures} failures per ${restartWindowMs}ms`,
   );
-  if (warnUnauthNonLoopback && shouldWarnUnauthNonLoopbackBind(gatewayHost)) {
+  if (warnUnauthNonLoopback && shouldWarnUnauthNonLoopbackBind(gatewayHost, readSupervisorAuthConfig())) {
     console.warn(
       "[gateway-supervisor] warning: non-loopback bind without explicit auth env detected. "
       + "Consider GOATCITADEL_AUTH_TOKEN or GOATCITADEL_AUTH_MODE=basic for safer remote access.",
@@ -397,24 +403,12 @@ function resolveGatewayHealthHost(host: string): string {
   return host;
 }
 
-function resolveWarnUnauthNonLoopback(): boolean {
-  const raw = process.env.GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK?.trim().toLowerCase();
-  if (!raw) {
-    return true;
-  }
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function resolveAllowUnauthNetwork(): boolean {
-  const raw = process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK?.trim().toLowerCase();
-  if (!raw) {
-    return false;
-  }
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
 function assertGatewayBindIsSafeForDev(host: string): void {
-  if (isLoopbackHost(host) || resolveAllowUnauthNetwork() || !shouldWarnUnauthNonLoopbackBind(host)) {
+  if (
+    isLoopbackHost(host)
+    || resolveAllowUnauthNetwork()
+    || !shouldWarnUnauthNonLoopbackBind(host, readSupervisorAuthConfig())
+  ) {
     return;
   }
   throw new Error(
@@ -424,32 +418,19 @@ function assertGatewayBindIsSafeForDev(host: string): void {
   );
 }
 
-function shouldWarnUnauthNonLoopbackBind(bindHost: string): boolean {
-  if (isLoopbackHost(bindHost)) {
-    return false;
-  }
-  const mode = process.env.GOATCITADEL_AUTH_MODE?.trim().toLowerCase() ?? "none";
-  if (mode === "none") {
-    return true;
-  }
-  if (mode === "token") {
-    return !process.env.GOATCITADEL_AUTH_TOKEN?.trim();
-  }
-  if (mode === "basic") {
-    return !(process.env.GOATCITADEL_AUTH_BASIC_USERNAME?.trim() && process.env.GOATCITADEL_AUTH_BASIC_PASSWORD?.trim());
-  }
-  return true;
-}
-
-function isLoopbackHost(value: string): boolean {
-  const host = value.trim().toLowerCase();
-  if (!host) {
-    return false;
-  }
-  return host === "127.0.0.1"
-    || host === "localhost"
-    || host === "::1"
-    || host === "[::1]";
+function readSupervisorAuthConfig() {
+  return {
+    mode: (process.env.GOATCITADEL_AUTH_MODE?.trim().toLowerCase() ?? "none") as "none" | "token" | "basic",
+    allowLoopbackBypass: true,
+    token: {
+      value: process.env.GOATCITADEL_AUTH_TOKEN?.trim(),
+      queryParam: "access_token",
+    },
+    basic: {
+      username: process.env.GOATCITADEL_AUTH_BASIC_USERNAME?.trim(),
+      password: process.env.GOATCITADEL_AUTH_BASIC_PASSWORD?.trim(),
+    },
+  };
 }
 
 main().catch((error) => {

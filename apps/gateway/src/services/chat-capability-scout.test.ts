@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatTurnTraceRecord,
   McpServerTemplateRecord,
@@ -62,6 +62,10 @@ function createTrace(status: ChatTurnTraceRecord["status"] = "completed"): ChatT
 }
 
 describe("scoutCapabilityUpgradeSuggestions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("suggests enabling a matching installed skill before import suggestions", async () => {
     const suggestions = await scoutCapabilityUpgradeSuggestions({
       content: "Send an email to my teammate with Gmail",
@@ -202,5 +206,49 @@ describe("scoutCapabilityUpgradeSuggestions", () => {
     });
 
     expect(suggestions).toEqual([]);
+  });
+
+  it("logs discovery failures without breaking the chat turn", async () => {
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const suggestions = await scoutCapabilityUpgradeSuggestions({
+      content: "Connect GitHub issues and repository metadata to the chat",
+      assistantText: "I don't have that tool installed yet.",
+      sessionId: "session-1",
+      trace: createTrace(),
+      deps: {
+        listToolCatalog: createToolCatalog,
+        evaluateToolAccess: vi.fn(() => ({
+          toolName: "browser.search",
+          allowed: true,
+          matchedGrantId: undefined,
+          reasonCodes: [],
+          requiresApproval: false,
+          riskLevel: "safe" as const,
+        })),
+        listSkills: vi.fn(() => []),
+        resolveSkillActivation: vi.fn(() => ({ suppressed: [] })),
+        listSkillSources: vi.fn(async (): Promise<SkillSourceListResponse> => {
+          throw new Error("skill-source-unavailable");
+        }),
+        listMcpTemplates: vi.fn((): Array<McpServerTemplateRecord & { installed: boolean }> => []),
+        listMcpTemplateDiscovery: vi.fn((): McpTemplateDiscoveryResult[] => {
+          throw new Error("mcp-discovery-unavailable");
+        }),
+      },
+    });
+
+    expect(suggestions).toEqual([]);
+    expect(consoleWarn).toHaveBeenCalledTimes(2);
+    expect(consoleWarn).toHaveBeenNthCalledWith(
+      1,
+      "[chat-capability-scout] skill source discovery failed",
+      expect.any(Error),
+    );
+    expect(consoleWarn).toHaveBeenNthCalledWith(
+      2,
+      "[chat-capability-scout] mcp template discovery failed",
+      expect.any(Error),
+    );
   });
 });

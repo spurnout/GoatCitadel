@@ -118,6 +118,13 @@ interface CommandCatalogItem {
   description: string;
 }
 
+interface ActiveChatStreamState {
+  sessionId: string;
+  streamToken: string;
+  controller: AbortController;
+  turnId?: string;
+}
+
 interface CommandSuggestionItem {
   key: string;
   command: string;
@@ -284,7 +291,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [thread, setThread] = useState<ChatThreadResponse | null>(null);
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessagesResponse["items"]>([]);
   const [prefs, setPrefs] = useState<ChatSessionPrefsRecord | null>(null);
   const [binding, setBinding] = useState<ChatSessionBindingRecord | null>(null);
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
@@ -340,6 +346,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const finalizedStreamMessageRef = useRef<FinalizedStreamMessageState | null>(null);
   const streamReconcileTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendingRef = useRef(false);
+  const prefsRef = useRef<ChatSessionPrefsRecord | null>(null);
+  const threadRef = useRef<ChatThreadResponse | null>(null);
+  const activeStreamRef = useRef<ActiveChatStreamState | null>(null);
+  const executeOutboundItemRef = useRef<(item: OutboundQueueItem) => Promise<void>>(async () => undefined);
   const {
     config: runtimeLlmConfig,
     providers: runtimeProviderCatalog,
@@ -378,17 +388,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setSettings((current) => current ? { ...current, llm: runtimeLlmConfig } : current);
   }, [runtimeLlmConfig]);
 
-  const commitMessageUpdate = useCallback((
-    updater: ChatMessagesResponse["items"] | ((current: ChatMessagesResponse["items"]) => ChatMessagesResponse["items"]),
-  ) => {
-    messageMutationVersionRef.current += 1;
-    if (typeof updater === "function") {
-      setMessages((current) => updater(current));
-      return;
-    }
-    setMessages(updater);
-  }, []);
-
   const pushLocalNotice = useCallback((
     content: string,
     tone: ChatThreadNotice["tone"] = "neutral",
@@ -404,7 +403,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const commitThreadUpdate = useCallback((
     updater: ChatThreadResponse | null | ((current: ChatThreadResponse | null) => ChatThreadResponse | null),
   ) => {
-    setThread((current) => typeof updater === "function" ? updater(current) : updater);
+    setThread((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      if (next !== current) {
+        messageMutationVersionRef.current += 1;
+      }
+      return next;
+    });
   }, []);
 
   const applyFetchedThread = useCallback((
@@ -417,6 +422,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     const items = flattenThreadMessages(nextThread);
     if (!shouldApplyFetchedMessagesAfterStream(latestMessagesRef.current, items, finalizedStreamMessageRef.current)) {
       return false;
+    }
+    const activeStream = activeStreamRef.current;
+    if (activeStream?.sessionId === nextThread.sessionId && activeStream.turnId) {
+      const includesActiveTurn = nextThread.turns.some((turn) => turn.turnId === activeStream.turnId);
+      if (!includesActiveTurn) {
+        return false;
+      }
     }
     if (finalizedStreamMessageRef.current) {
       finalizedStreamMessageRef.current = null;
@@ -607,7 +619,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
   useEffect(() => {
     if (!selectedSessionId) {
-      commitMessageUpdate([]);
+      abortActiveChatStream(activeStreamRef.current);
+      activeStreamRef.current = null;
       setThread(null);
       setSelectedTurnId(null);
       setPrefs(null);
@@ -628,6 +641,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       return;
     }
     if (lastLoadedSessionIdRef.current !== selectedSessionId) {
+      abortActiveChatStream(activeStreamRef.current);
+      activeStreamRef.current = null;
       setPendingAttachments([]);
       setThread(null);
       setSelectedTurnId(null);
@@ -657,8 +672,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   }, [selectedSessionId]);
 
   useEffect(() => {
-    latestMessagesRef.current = messages;
-  }, [messages]);
+    prefsRef.current = prefs;
+  }, [prefs]);
+
+  useEffect(() => {
+    threadRef.current = thread;
+  }, [thread]);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -667,6 +686,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   useEffect(() => {
     sendingRef.current = sending;
   }, [sending]);
+
+  const messages = useMemo(() => flattenThreadMessages(thread), [thread]);
+
+  useEffect(() => {
+    latestMessagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -699,6 +724,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   );
 
   useEffect(() => () => {
+    abortActiveChatStream(activeStreamRef.current);
+    activeStreamRef.current = null;
     if (streamReconcileTimeoutRef.current) {
       clearTimeout(streamReconcileTimeoutRef.current);
       streamReconcileTimeoutRef.current = null;
@@ -716,9 +743,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   );
 
   useEffect(() => {
-    const nextMessages = flattenThreadMessages(thread);
-    latestMessagesRef.current = nextMessages;
-    commitMessageUpdate(nextMessages);
     setSelectedTurnId((current) => {
       if (!thread?.turns.length) {
         return null;
@@ -728,7 +752,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
       return thread.selectedTurnId ?? thread.activeLeafTurnId ?? thread.turns.at(-1)?.turnId ?? null;
     });
-  }, [commitMessageUpdate, thread]);
+  }, [thread]);
 
   useEffect(() => {
     setRenameTitle(selectedSession?.title ?? "");
@@ -1284,6 +1308,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     const trimmedContent = item.content.trim();
     const attachmentsSnapshot = item.attachments;
     const attachmentIds = attachmentsSnapshot.map((entry) => entry.attachmentId);
+    const currentPrefs = prefsRef.current;
     const localAttachments = attachmentsSnapshot.map((entry) => ({
       attachmentId: entry.attachmentId,
       fileName: entry.fileName,
@@ -1302,7 +1327,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
 
       const targetTurn = item.targetTurnId
-        ? (thread?.turns.find((turn) => turn.turnId === item.targetTurnId) ?? null)
+        ? (threadRef.current?.turns.find((turn) => turn.turnId === item.targetTurnId) ?? null)
         : null;
       if ((item.action === "edit" || item.action === "retry") && !targetTurn) {
         throw new Error("The selected branch turn is no longer available.");
@@ -1320,14 +1345,33 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           attachments: localAttachments.length > 0 ? localAttachments : undefined,
         };
       if (streamEnabled) {
+        const streamToken = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const controller = new AbortController();
+        const activeStream: ActiveChatStreamState = {
+          sessionId: session.sessionId,
+          streamToken,
+          controller,
+        };
+        activeStreamRef.current = activeStream;
         const streamSeed: PendingStreamTurnSeed = {
           userMessage: effectiveUserMessage,
-          parentTurnId: item.action === "send" ? thread?.activeLeafTurnId : targetTurn?.parentTurnId,
+          parentTurnId: item.action === "send" ? threadRef.current?.activeLeafTurnId : targetTurn?.parentTurnId,
           branchKind: item.action === "send" ? "append" : item.action === "edit" ? "edit" : "retry",
           sourceTurnId: item.action === "send" ? undefined : item.targetTurnId,
           mode: item.action,
         };
         const onChunk = (chunk: ChatStreamChunk) => {
+          const liveStream = activeStreamRef.current;
+          if (
+            liveStream?.streamToken !== streamToken
+            || liveStream.sessionId !== session!.sessionId
+            || selectedSessionIdRef.current !== session!.sessionId
+          ) {
+            return;
+          }
+          if (chunk.type === "message_start") {
+            liveStream.turnId = chunk.turnId;
+          }
           if (chunk.type === "message_done") {
             finalizedStreamMessageRef.current = {
               sessionId: session!.sessionId,
@@ -1336,8 +1380,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
               content: chunk.content,
             };
           }
-          if (chunk.type === "trace_update") {
-            setCapabilitySuggestions(chunk.trace.capabilityUpgradeSuggestions ?? []);
+          if (chunk.type === "trace_update" && chunk.trace.capabilityUpgradeSuggestions !== undefined) {
+            setCapabilitySuggestions(chunk.trace.capabilityUpgradeSuggestions);
           }
           if (chunk.type === "capability_upgrade_suggestion") {
             setCapabilitySuggestions(chunk.capabilityUpgradeSuggestions ?? []);
@@ -1355,75 +1399,81 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           if (!isThreadMutatingStreamChunk(chunk)) {
             return;
           }
-          commitThreadUpdate((current) => updateThreadFromStreamChunk(current, chunk, streamSeed, session!.sessionId, prefs));
+          commitThreadUpdate((current) => updateThreadFromStreamChunk(
+            current,
+            chunk,
+            streamSeed,
+            session!.sessionId,
+            prefsRef.current,
+          ));
         };
         if (item.action === "retry" && item.targetTurnId) {
           await streamRetryChatTurn(session.sessionId, item.targetTurnId, {
-            providerId: prefs?.providerId,
-            model: prefs?.model,
-            mode: prefs?.mode,
-            webMode: prefs?.webMode,
-            memoryMode: prefs?.memoryMode,
-            thinkingLevel: prefs?.thinkingLevel,
-          }, onChunk);
+            providerId: currentPrefs?.providerId,
+            model: currentPrefs?.model,
+            mode: currentPrefs?.mode,
+            webMode: currentPrefs?.webMode,
+            memoryMode: currentPrefs?.memoryMode,
+            thinkingLevel: currentPrefs?.thinkingLevel,
+          }, onChunk, { signal: controller.signal });
         } else if (item.action === "edit" && item.targetTurnId) {
           await streamEditChatTurn(session.sessionId, item.targetTurnId, {
             content: trimmedContent,
             attachments: attachmentIds,
-            useMemory: (prefs?.memoryMode ?? "auto") !== "off",
-            mode: prefs?.mode ?? "chat",
-            providerId: prefs?.providerId,
-            model: prefs?.model,
-            webMode: prefs?.webMode ?? "auto",
-            memoryMode: prefs?.memoryMode ?? "auto",
-            thinkingLevel: prefs?.thinkingLevel ?? "standard",
-          }, onChunk);
+            useMemory: (currentPrefs?.memoryMode ?? "auto") !== "off",
+            mode: currentPrefs?.mode ?? "chat",
+            providerId: currentPrefs?.providerId,
+            model: currentPrefs?.model,
+            webMode: currentPrefs?.webMode ?? "auto",
+            memoryMode: currentPrefs?.memoryMode ?? "auto",
+            thinkingLevel: currentPrefs?.thinkingLevel ?? "standard",
+          }, onChunk, { signal: controller.signal });
         } else {
           await streamAgentChatMessage(session.sessionId, {
             content: trimmedContent,
             attachments: attachmentIds,
-            useMemory: (prefs?.memoryMode ?? "auto") !== "off",
-            mode: prefs?.mode ?? "chat",
-            providerId: prefs?.providerId,
-            model: prefs?.model,
-            webMode: prefs?.webMode ?? "auto",
-            memoryMode: prefs?.memoryMode ?? "auto",
-            thinkingLevel: prefs?.thinkingLevel ?? "standard",
-          }, onChunk);
+            useMemory: (currentPrefs?.memoryMode ?? "auto") !== "off",
+            mode: currentPrefs?.mode ?? "chat",
+            providerId: currentPrefs?.providerId,
+            model: currentPrefs?.model,
+            webMode: currentPrefs?.webMode ?? "auto",
+            memoryMode: currentPrefs?.memoryMode ?? "auto",
+            thinkingLevel: currentPrefs?.thinkingLevel ?? "standard",
+          }, onChunk, { signal: controller.signal });
         }
         scheduleStreamMessageReconciliation(session.sessionId);
       } else {
         const sent = item.action === "retry" && item.targetTurnId
           ? await retryChatTurn(session.sessionId, item.targetTurnId, {
-            providerId: prefs?.providerId,
-            model: prefs?.model,
-            mode: prefs?.mode,
-            webMode: prefs?.webMode,
-            memoryMode: prefs?.memoryMode,
-            thinkingLevel: prefs?.thinkingLevel,
+            providerId: currentPrefs?.providerId,
+            model: currentPrefs?.model,
+            mode: currentPrefs?.mode,
+            webMode: currentPrefs?.webMode,
+            memoryMode: currentPrefs?.memoryMode,
+            thinkingLevel: currentPrefs?.thinkingLevel,
           })
           : item.action === "edit" && item.targetTurnId
             ? await editChatTurn(session.sessionId, item.targetTurnId, {
               content: trimmedContent,
               attachments: attachmentIds,
-              useMemory: (prefs?.memoryMode ?? "auto") !== "off",
-              mode: prefs?.mode ?? "chat",
-              providerId: prefs?.providerId,
-              model: prefs?.model,
-              webMode: prefs?.webMode ?? "auto",
-              memoryMode: prefs?.memoryMode ?? "auto",
-              thinkingLevel: prefs?.thinkingLevel ?? "standard",
+              useMemory: (currentPrefs?.memoryMode ?? "auto") !== "off",
+              mode: currentPrefs?.mode ?? "chat",
+              providerId: currentPrefs?.providerId,
+              model: currentPrefs?.model,
+              webMode: currentPrefs?.webMode ?? "auto",
+              memoryMode: currentPrefs?.memoryMode ?? "auto",
+              thinkingLevel: currentPrefs?.thinkingLevel ?? "standard",
             })
             : await sendAgentChatMessage(session.sessionId, {
               content: trimmedContent,
               attachments: attachmentIds,
-              useMemory: (prefs?.memoryMode ?? "auto") !== "off",
-              mode: prefs?.mode ?? "chat",
-              providerId: prefs?.providerId,
-              model: prefs?.model,
-              webMode: prefs?.webMode ?? "auto",
-              memoryMode: prefs?.memoryMode ?? "auto",
-              thinkingLevel: prefs?.thinkingLevel ?? "standard",
+              useMemory: (currentPrefs?.memoryMode ?? "auto") !== "off",
+              mode: currentPrefs?.mode ?? "chat",
+              providerId: currentPrefs?.providerId,
+              model: currentPrefs?.model,
+              webMode: currentPrefs?.webMode ?? "auto",
+              memoryMode: currentPrefs?.memoryMode ?? "auto",
+              thinkingLevel: currentPrefs?.thinkingLevel ?? "standard",
             });
         if (sent.trace) {
           setCapabilitySuggestions(sent.trace.capabilityUpgradeSuggestions ?? []);
@@ -1436,6 +1486,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setEditingTurnId(null);
       await loadSidebar();
     } catch (err) {
+      if (isAbortError(err)) {
+        return;
+      }
       if (session) {
         void loadSessionCoreState(session.sessionId, {
           background: true,
@@ -1451,6 +1504,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
       setError((err as Error).message);
     } finally {
+      const activeStream = activeStreamRef.current;
+      if (session && activeStream?.sessionId === session.sessionId) {
+        activeStreamRef.current = null;
+      }
       finishOutboundExecution();
     }
   }, [
@@ -1460,11 +1517,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     handleCommandExecution,
     loadSessionCoreState,
     loadSidebar,
-    prefs,
     scheduleStreamMessageReconciliation,
     streamEnabled,
-    thread,
   ]);
+
+  useEffect(() => {
+    executeOutboundItemRef.current = executeOutboundItem;
+  }, [executeOutboundItem]);
 
   const handleSend = useCallback(async () => {
     const content = draft.trim();
@@ -1550,8 +1609,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       return;
     }
     setQueuedOutbound((current) => current.filter((item) => item.id !== nextItem.id));
-    void executeOutboundItem(nextItem);
-  }, [executeOutboundItem, queuedOutbound, sending, tryBeginOutboundExecution]);
+    void executeOutboundItemRef.current(nextItem);
+  }, [queuedOutbound, sending, tryBeginOutboundExecution]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (commandSuggestions.length > 0) {
@@ -2230,4 +2289,20 @@ function deriveCoworkItems(
       });
   }
   return items.slice(0, 5);
+}
+
+function abortActiveChatStream(stream: ActiveChatStreamState | null): void {
+  if (!stream || stream.controller.signal.aborted) {
+    return;
+  }
+  stream.controller.abort();
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : typeof error === "object"
+      && error !== null
+      && "name" in error
+      && (error as { name?: string }).name === "AbortError";
 }

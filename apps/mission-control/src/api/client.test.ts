@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearGatewayAuthState,
   getGatewayAuthStorageMode,
@@ -6,6 +6,7 @@ import {
   persistGatewayAuthState,
   readStoredGatewayAuthState,
   setGatewayAuthStorageMode,
+  streamAgentChatMessage,
 } from "./client";
 
 function createMemoryStorage(): Storage {
@@ -118,5 +119,49 @@ describe("isTrustedGatewayHost", () => {
     expect(migrated).toMatchObject({ token: "legacy-token" });
     expect(window.sessionStorage.getItem("goatcitadel.gateway.auth")).toContain("legacy-token");
     expect(window.localStorage.getItem("goatcitadel.gateway.auth")).toBeNull();
+  });
+
+  it("treats aborted SSE chat streams as silent cancellation", async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({
+              type: "message_start",
+              sessionId: "sess-1",
+              turnId: "turn-1",
+              messageId: "assistant-1",
+              branchKind: "append",
+            })}\n\n`,
+          ));
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+
+    const controller = new AbortController();
+    const chunks: Array<{ type: string }> = [];
+
+    await expect(streamAgentChatMessage(
+      "sess-1",
+      { content: "coverage" },
+      (chunk) => {
+        chunks.push({ type: chunk.type });
+        controller.abort();
+      },
+      { signal: controller.signal },
+    )).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chunks).toEqual([{ type: "message_start" }]);
   });
 });

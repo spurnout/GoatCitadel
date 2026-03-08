@@ -48,13 +48,6 @@ export function resolveTailnetShortHostAllowlist(env: Record<string, string | un
   if (bindHost && /^[a-z0-9-]+$/iu.test(bindHost) && !bindHost.includes(".")) {
     out.add(bindHost);
   }
-  if (
-    !fromEnv.length
-    && (!bindHost || bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "[::]")
-  ) {
-    // Preserve existing local workflow without broad single-label trust.
-    out.add("bld");
-  }
   return out;
 }
 

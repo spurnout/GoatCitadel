@@ -21,8 +21,11 @@ export class OfficeCanvasErrorBoundary extends Component<
     return { hasError: true };
   }
 
-  public override componentDidCatch(_error: Error, _errorInfo: ErrorInfo): void {
-    // Keep the page interactive while isolating degraded WebGL or canvas render failures.
+  public override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error("[OfficeCanvasErrorBoundary] render failed", {
+      error,
+      componentStack: errorInfo.componentStack,
+    });
   }
 
   public override componentDidUpdate(prevProps: OfficeCanvasErrorBoundaryProps): void {

@@ -23,7 +23,7 @@
   },
   "scripts": {
     "dev": "tsx src/dev-supervisor.ts",
-    "dev:watch": "tsx watch src/main.ts",
+    "dev:watch": "tsx src/dev-supervisor.ts",
     "dev:supervisor": "tsx src/dev-supervisor.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -226,19 +226,35 @@ function updateTurnFromStreamChunk(
         },
       };
     case "trace_update":
-      return {
-        ...turn,
-        trace: chunk.trace,
-        toolRuns: chunk.trace.toolRuns,
-        citations: chunk.trace.citations,
-        assistantMessage: turn.assistantMessage ? {
-          ...turn.assistantMessage,
-          messageId: chunk.trace.assistantMessageId ?? turn.assistantMessage.messageId,
-        } : turn.assistantMessage,
-      };
+      return applyTraceUpdate(turn, chunk.trace);
     default:
       return turn;
   }
+}
+
+function applyTraceUpdate(
+  turn: ChatThreadTurnRecord,
+  trace: ChatThreadTurnRecord["trace"],
+): ChatThreadTurnRecord {
+  const mergedTrace: ChatThreadTurnRecord["trace"] = {
+    ...turn.trace,
+    ...trace,
+    assistantMessageId: trace.assistantMessageId ?? turn.trace.assistantMessageId,
+    capabilityUpgradeSuggestions: trace.capabilityUpgradeSuggestions ?? turn.trace.capabilityUpgradeSuggestions,
+    toolRuns: trace.toolRuns ?? turn.trace.toolRuns,
+    citations: trace.citations ?? turn.trace.citations,
+    routing: trace.routing ?? turn.trace.routing,
+  };
+  return {
+    ...turn,
+    trace: mergedTrace,
+    toolRuns: mergedTrace.toolRuns,
+    citations: mergedTrace.citations,
+    assistantMessage: turn.assistantMessage ? {
+      ...turn.assistantMessage,
+      messageId: mergedTrace.assistantMessageId ?? turn.assistantMessage.messageId,
+    } : turn.assistantMessage,
+  };
 }
 
 function appendOrReplaceToolRun(

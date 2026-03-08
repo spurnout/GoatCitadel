@@ -55,20 +55,20 @@ describe("chat routes additional coverage", () => {
     expect(createChatSession).toHaveBeenCalledWith({ title: "Fresh chat" });
   });
 
-  it("streams chat message chunks over SSE", async () => {
-    const sendChatMessageStream = vi.fn(async function* () {
+  it("streams branch-aware chat message chunks over SSE", async () => {
+    const agentSendChatMessageStream = vi.fn(async function* () {
       yield { type: "delta", value: "Hello" };
       yield { type: "done" };
     });
     app = Fastify();
     app.decorate("gateway", {
-      sendChatMessageStream,
+      agentSendChatMessageStream,
     } as never);
     await app.register(chatRoutes);
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/chat/sessions/sess-1/messages/stream",
+      url: "/api/v1/chat/sessions/sess-1/agent-send/stream",
       payload: {
         content: "Hello",
       },
@@ -77,22 +77,22 @@ describe("chat routes additional coverage", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/event-stream");
     expect(response.body).toContain("\"type\":\"delta\"");
-    expect(sendChatMessageStream).toHaveBeenCalledWith("sess-1", expect.objectContaining({ content: "Hello" }));
+    expect(agentSendChatMessageStream).toHaveBeenCalledWith("sess-1", expect.objectContaining({ content: "Hello" }));
   });
 
   it("emits an error chunk without a fabricated done chunk when SSE streaming fails", async () => {
-    const sendChatMessageStream = vi.fn(async function* () {
+    const agentSendChatMessageStream = vi.fn(async function* () {
       throw new Error("stream exploded");
     });
     app = Fastify();
     app.decorate("gateway", {
-      sendChatMessageStream,
+      agentSendChatMessageStream,
     } as never);
     await app.register(chatRoutes);
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/chat/sessions/sess-1/messages/stream",
+      url: "/api/v1/chat/sessions/sess-1/agent-send/stream",
       payload: {
         content: "Hello",
       },
@@ -101,6 +101,25 @@ describe("chat routes additional coverage", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("\"type\":\"error\"");
     expect(response.body).not.toContain("\"type\":\"done\"");
+  });
+
+  it("rejects removed legacy chat write routes", async () => {
+    app = Fastify();
+    app.decorate("gateway", {} as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/messages",
+      payload: {
+        content: "Hello",
+      },
+    });
+
+    expect(response.statusCode).toBe(410);
+    expect(response.json()).toMatchObject({
+      error: expect.stringContaining("/agent-send"),
+    });
   });
 
   it("wires thread routes and planning-mode prefs through the gateway", async () => {
@@ -169,5 +188,28 @@ describe("chat routes additional coverage", () => {
     });
     expect(prefsResponse.statusCode).toBe(200);
     expect(updateChatSessionPrefs).toHaveBeenCalledWith("sess-1", { planningMode: "advisory" });
+  });
+
+  it("returns 409 for branch-write conflicts on agent send", async () => {
+    const agentSendChatMessage = vi.fn(async () => {
+      const error = new Error("chat turn conflict");
+      error.name = "ChatTurnWriteConflictError";
+      throw error;
+    });
+    app = Fastify();
+    app.decorate("gateway", {
+      agentSendChatMessage,
+    } as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/agent-send",
+      payload: {
+        content: "Hello",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
   });
 });

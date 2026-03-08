@@ -15,6 +15,8 @@ interface ChatSessionBranchStateRow {
 export class ChatSessionBranchStateRepository {
   private readonly getStmt;
   private readonly upsertStmt;
+  private readonly compareAndSetStmt;
+  private readonly insertIfMissingStmt;
 
   public constructor(private readonly db: DatabaseSync) {
     this.getStmt = db.prepare(`
@@ -28,6 +30,23 @@ export class ChatSessionBranchStateRepository {
       ON CONFLICT(session_id) DO UPDATE SET
         active_leaf_turn_id = excluded.active_leaf_turn_id,
         updated_at = excluded.updated_at
+    `);
+    this.compareAndSetStmt = db.prepare(`
+      UPDATE chat_session_branch_state
+      SET
+        active_leaf_turn_id = @nextActiveLeafTurnId,
+        updated_at = @updatedAt
+      WHERE session_id = @sessionId
+        AND active_leaf_turn_id = @expectedActiveLeafTurnId
+    `);
+    this.insertIfMissingStmt = db.prepare(`
+      INSERT INTO chat_session_branch_state (session_id, active_leaf_turn_id, updated_at)
+      SELECT @sessionId, @nextActiveLeafTurnId, @updatedAt
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM chat_session_branch_state
+        WHERE session_id = @sessionId
+      )
     `);
   }
 
@@ -51,6 +70,30 @@ export class ChatSessionBranchStateRepository {
       throw new Error(`chat session branch state row missing for session ${sessionId}`);
     }
     return mapRow(row);
+  }
+
+  public setActiveLeafIfCurrent(
+    sessionId: string,
+    expectedActiveLeafTurnId: string | undefined,
+    nextActiveLeafTurnId: string,
+    now = new Date().toISOString(),
+  ): boolean {
+    if (!expectedActiveLeafTurnId) {
+      const result = this.insertIfMissingStmt.run({
+        sessionId,
+        nextActiveLeafTurnId,
+        updatedAt: now,
+      }) as { changes?: number };
+      return (result.changes ?? 0) > 0;
+    }
+
+    const result = this.compareAndSetStmt.run({
+      sessionId,
+      expectedActiveLeafTurnId,
+      nextActiveLeafTurnId,
+      updatedAt: now,
+    }) as { changes?: number };
+    return (result.changes ?? 0) > 0;
   }
 }
 

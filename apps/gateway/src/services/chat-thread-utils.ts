@@ -116,11 +116,13 @@ export function buildChatThreadResponse(input: {
 export function buildSelectedPathTurnIds(
   turnsById: Map<string, { turnId: string; parentTurnId?: string }>,
   activeLeafTurnId: string,
+  options: { maxDepth?: number } = {},
 ): string[] {
+  const maxDepth = options.maxDepth ?? 2048;
   const ordered: string[] = [];
   let currentTurnId: string | undefined = activeLeafTurnId;
   const seen = new Set<string>();
-  while (currentTurnId && !seen.has(currentTurnId)) {
+  while (currentTurnId && !seen.has(currentTurnId) && ordered.length < maxDepth) {
     seen.add(currentTurnId);
     ordered.push(currentTurnId);
     currentTurnId = turnsById.get(currentTurnId)?.parentTurnId;

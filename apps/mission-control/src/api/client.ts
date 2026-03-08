@@ -145,7 +145,7 @@ export type { ObsidianIntegrationConfig, ObsidianIntegrationStatus };
 
 const DEFAULT_GATEWAY_HOST = "127.0.0.1";
 const DEFAULT_GATEWAY_PORT = 8787;
-const DEFAULT_GATEWAY_HOST_ALLOWLIST = ["bld"];
+const DEFAULT_GATEWAY_HOST_ALLOWLIST: string[] = [];
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? inferDefaultGatewayBaseUrl();
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 const AUTH_STORAGE_MODE_KEY = "goatcitadel.gateway.auth.storageMode";
@@ -1009,13 +1009,6 @@ export async function fetchChatThread(sessionId: string): Promise<ChatThreadResp
   return request<ChatThreadResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/thread`);
 }
 
-export async function sendChatMessage(sessionId: string, input: ChatSendMessageRequest): Promise<ChatSendMessageResponse> {
-  return request<ChatSendMessageResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
 export async function sendAgentChatMessage(sessionId: string, input: ChatSendMessageRequest): Promise<ChatSendMessageResponse> {
   return request<ChatSendMessageResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send`, {
     method: "POST",
@@ -1023,36 +1016,16 @@ export async function sendAgentChatMessage(sessionId: string, input: ChatSendMes
   });
 }
 
-export async function streamChatMessage(
-  sessionId: string,
-  input: ChatSendMessageRequest,
-  onChunk: (chunk: ChatStreamChunk) => void,
-): Promise<void> {
-  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`);
-  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": crypto.randomUUID(),
-      ...authHeaders,
-    },
-    body: JSON.stringify(input),
-  });
-  if (!response.ok || !response.body) {
-    const text = await response.text();
-    throw new Error(`API error ${response.status}: ${text}`);
-  }
-  await consumeSseResponse(response.body, onChunk);
-}
-
 export async function streamAgentChatMessage(
   sessionId: string,
   input: ChatSendMessageRequest,
   onChunk: (chunk: ChatStreamChunk) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`);
   const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`, {
     method: "POST",
+    signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
@@ -1064,7 +1037,7 @@ export async function streamAgentChatMessage(
     const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
-  await consumeSseResponse(response.body, onChunk);
+  await consumeSseResponse(response.body, onChunk, options.signal);
 }
 
 export async function selectChatBranchTurn(sessionId: string, turnId: string): Promise<ChatThreadResponse> {
@@ -1096,11 +1069,13 @@ export async function streamRetryChatTurn(
   turnId: string,
   input: Partial<ChatSendMessageRequest>,
   onChunk: (chunk: ChatStreamChunk) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry/stream`;
   const authHeaders = readGatewayAuthHeaders(path);
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
+    signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
@@ -1112,7 +1087,7 @@ export async function streamRetryChatTurn(
     const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
-  await consumeSseResponse(response.body, onChunk);
+  await consumeSseResponse(response.body, onChunk, options.signal);
 }
 
 export async function editChatTurn(
@@ -1134,11 +1109,13 @@ export async function streamEditChatTurn(
   turnId: string,
   input: ChatSendMessageRequest,
   onChunk: (chunk: ChatStreamChunk) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/edit/stream`;
   const authHeaders = readGatewayAuthHeaders(path);
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
+    signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
@@ -1150,7 +1127,7 @@ export async function streamEditChatTurn(
     const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
-  await consumeSseResponse(response.body, onChunk);
+  await consumeSseResponse(response.body, onChunk, options.signal);
 }
 
 export async function fetchChatSessionPrefs(sessionId: string): Promise<ChatSessionPrefsRecord> {
@@ -1850,46 +1827,78 @@ export async function restoreBackup(filePath: string, confirm = false): Promise<
 async function consumeSseResponse(
   body: ReadableStream<Uint8Array>,
   onChunk: (chunk: ChatStreamChunk) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let streamError: string | null = null;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
+  try {
     while (true) {
-      const separatorIndex = buffer.indexOf("\n\n");
-      if (separatorIndex < 0) {
+      if (signal?.aborted) {
+        throw createAbortError();
+      }
+      const { value, done } = await reader.read();
+      if (done) {
         break;
       }
-      const rawEvent = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      const dataLines = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
-      if (dataLines.length === 0) {
-        continue;
-      }
-      const dataText = dataLines.join("\n");
-      try {
-        const parsed = JSON.parse(dataText) as ChatStreamChunk;
-        onChunk(parsed);
-        if (parsed.type === "error") {
-          streamError = parsed.error || "Streaming request failed.";
+      buffer += decoder.decode(value, { stream: true });
+      while (true) {
+        const separatorIndex = buffer.indexOf("\n\n");
+        if (separatorIndex < 0) {
+          break;
         }
-      } catch {
-        // ignore parse noise
+        const rawEvent = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        const dataLines = rawEvent
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim());
+        if (dataLines.length === 0) {
+          continue;
+        }
+        const dataText = dataLines.join("\n");
+        try {
+          const parsed = JSON.parse(dataText) as ChatStreamChunk;
+          onChunk(parsed);
+          if (parsed.type === "error") {
+            streamError = parsed.error || "Streaming request failed.";
+          }
+        } catch {
+          // ignore parse noise
+        }
       }
     }
+  } catch (error) {
+    if (isAbortError(error)) {
+      return;
+    }
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
   if (streamError) {
     throw new Error(streamError);
   }
+}
+
+function createAbortError(): Error {
+  try {
+    return new DOMException("The operation was aborted.", "AbortError");
+  } catch {
+    const error = new Error("The operation was aborted.");
+    error.name = "AbortError";
+    return error;
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : typeof error === "object"
+      && error !== null
+      && "name" in error
+      && (error as { name?: string }).name === "AbortError";
 }
 
 export async function fetchApprovals(status = "pending"): Promise<ApprovalsResponse> {

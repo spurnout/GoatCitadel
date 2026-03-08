@@ -8,7 +8,7 @@ This folder tracks the source provenance for the shipped Mission Control operato
 - Source page: https://quaternius.itch.io/universal-base-characters
 - Author: Quaternius
 - License: CC0
-- Downloaded archive: `assets/source/office/_downloads/quaternius_universal-base-characters-standard.zip`
+- Upstream archive is not tracked in git. Re-download from the source page above if the original pack is needed again.
 
 ## Selected Runtime Source
 
@@ -31,5 +31,5 @@ This folder tracks the source provenance for the shipped Mission Control operato
 ## Notes
 
 - The current shipped operator uses a body-only male base character from the Quaternius pack for the central Goatherder station.
-- The extracted `Universal Base Characters[Standard]` directory is retained here as raw source reference.
+- The retained `runtime-source-male` subset is the canonical source reference for the shipped runtime model.
 - Future polish passes can swap the operator variant or merge additional accessories, but the current runtime path is considered production-safe and policy-compliant.

@@ -384,6 +384,15 @@ async function streamSseReply(
   reply.hijack();
 }
 
+function isChatTurnWriteConflictError(error: unknown): boolean {
+  return error instanceof Error && error.name === "ChatTurnWriteConflictError";
+}
+
+function sendChatWriteError(reply: FastifyReply, error: unknown) {
+  const message = error instanceof Error ? error.message : "Chat write failed";
+  return reply.code(isChatTurnWriteConflictError(error) ? 409 : 400).send({ error: message });
+}
+
 export const chatRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/chat/projects", async (request, reply) => {
     const parsed = projectViewSchema.safeParse(request.query);
@@ -662,12 +671,9 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
         },
       });
     }
-    try {
-      const sent = await fastify.gateway.sendChatMessage(params.data.sessionId, body.data);
-      return reply.send(sent);
-    } catch (error) {
-      return reply.code(400).send({ error: (error as Error).message });
-    }
+    return reply.code(410).send({
+      error: "POST /messages has been removed. Use /api/v1/chat/sessions/:sessionId/agent-send instead.",
+    });
   });
 
   fastify.post("/api/v1/chat/sessions/:sessionId/agent-send", async (request, reply) => {
@@ -685,7 +691,7 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       const sent = await fastify.gateway.agentSendChatMessage(params.data.sessionId, body.data);
       return reply.send(sent);
     } catch (error) {
-      return reply.code(400).send({ error: (error as Error).message });
+      return sendChatWriteError(reply, error);
     }
   });
 
@@ -701,8 +707,9 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    return streamSseReply(reply, params.data.sessionId, () =>
-      fastify.gateway.sendChatMessageStream(params.data.sessionId, body.data));
+    return reply.code(410).send({
+      error: "POST /messages/stream has been removed. Use /api/v1/chat/sessions/:sessionId/agent-send/stream instead.",
+    });
   });
 
   fastify.post("/api/v1/chat/sessions/:sessionId/agent-send/stream", async (request, reply) => {
@@ -747,7 +754,7 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       return reply.send(await fastify.gateway.retryChatTurn(params.data.sessionId, params.data.turnId, body.data));
     } catch (error) {
-      return reply.code(400).send({ error: (error as Error).message });
+      return sendChatWriteError(reply, error);
     }
   });
 
@@ -780,7 +787,7 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       return reply.send(await fastify.gateway.editChatTurn(params.data.sessionId, params.data.turnId, body.data));
     } catch (error) {
-      return reply.code(400).send({ error: (error as Error).message });
+      return sendChatWriteError(reply, error);
     }
   });
 

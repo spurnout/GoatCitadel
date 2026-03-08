@@ -1,13 +1,3 @@
-# Blender MTL File: 'AllModules_Unreal.blend'
-# Material Count: 1
-
-newmtl M_Decal_White
-Ns 250.000000
-Ka 1.000000 1.000000 1.000000
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.450000
-d 1.000000
-illum 2
-map_Kd C:\\Users\\Usuario\\Desktop\\Work\\Blender\\_FreeModels\\_Unfinished\\Sci Fi Trimmed\\Blends\\T_Decals.png
+version https://git-lfs.github.com/spec/v1
+oid sha256:6af6e6db0d2c3df3761176c7218892f1a1ed96401b6bf7193f2e6f5bad5537ef
+size 367

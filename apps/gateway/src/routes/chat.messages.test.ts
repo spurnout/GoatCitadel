@@ -47,30 +47,8 @@ describe("chat message routes", () => {
     });
   });
 
-  it("sends chat message on happy path", async () => {
-    const sendChatMessage = vi.fn(async () => ({
-      sessionId: "sess-1",
-      userMessage: {
-        messageId: "u1",
-        sessionId: "sess-1",
-        role: "user",
-        actorType: "user",
-        actorId: "operator",
-        content: "Hello",
-        timestamp: "2026-03-05T01:00:00.000Z",
-      },
-      assistantMessage: {
-        messageId: "a1",
-        sessionId: "sess-1",
-        role: "assistant",
-        actorType: "agent",
-        actorId: "assistant",
-        content: "Hi",
-        timestamp: "2026-03-05T01:00:01.000Z",
-      },
-      transport: "llm",
-      model: "glm-5",
-    }));
+  it("returns migration guidance for the removed POST /messages write path", async () => {
+    const sendChatMessage = vi.fn();
     app = Fastify();
     app.decorate("gateway", {
       sendChatMessage,
@@ -84,11 +62,10 @@ describe("chat message routes", () => {
         content: "Hello",
       },
     });
-    expect(response.statusCode).toBe(200);
-    expect(sendChatMessage).toHaveBeenCalledWith("sess-1", expect.objectContaining({ content: "Hello" }));
+    expect(response.statusCode).toBe(410);
+    expect(sendChatMessage).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
-      sessionId: "sess-1",
-      transport: "llm",
+      error: expect.stringContaining("POST /messages has been removed"),
     });
   });
 

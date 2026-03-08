@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "::1", "bld", ".ts.net"];
+const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "::1", ".ts.net"];
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveViteAllowedHosts(env: Record<string, string | undefined> = process.env): string[] {

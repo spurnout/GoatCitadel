@@ -251,6 +251,43 @@ describe("chat-thread-reducer", () => {
     expect(withCitation?.turns[0]?.citations).toHaveLength(1);
     expect(withSuggestion?.turns[0]?.trace.capabilityUpgradeSuggestions).toHaveLength(1);
     expect(withTrace?.turns[0]?.trace.status).toBe("completed");
+    expect(withTrace?.turns[0]?.trace.capabilityUpgradeSuggestions).toHaveLength(1);
+  });
+
+  it("preserves prior capability suggestions when trace updates omit them", () => {
+    const current = makeThread({
+      turns: [makeTurn({
+        trace: makeTrace({
+          capabilityUpgradeSuggestions: [{
+            kind: "existing_but_disabled",
+            title: "Enable web",
+            summary: "Enable web tools",
+            reason: "Search needed",
+            recommendedAction: "switch_tool_profile",
+            requiresUserApproval: true,
+          }],
+        }),
+      })],
+    });
+
+    const next = updateThreadFromStreamChunk(
+      current,
+      {
+        type: "trace_update",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        trace: makeTrace({
+          status: "completed",
+          capabilityUpgradeSuggestions: undefined,
+        }),
+      },
+      null,
+      "sess-1",
+      null,
+    );
+
+    expect(next?.turns[0]?.trace.status).toBe("completed");
+    expect(next?.turns[0]?.trace.capabilityUpgradeSuggestions).toHaveLength(1);
   });
 
   it("returns the same object for no-op or irrelevant chunks", () => {

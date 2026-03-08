@@ -453,7 +453,7 @@ function buildPayload(pathname: string, method: string): unknown {
   if (pathname.includes("/sessions/") && pathname.includes("/timeline")) {
     return { items: [] };
   }
-  if (pathname.includes("/chat/sessions") && pathname.endsWith("/messages") && method === "POST") {
+  if (pathname.includes("/chat/sessions") && pathname.endsWith("/agent-send") && method === "POST") {
     return { messageId: "msg-1", output: "ok" };
   }
   if (pathname.includes("/chat/catalog/commands")) {

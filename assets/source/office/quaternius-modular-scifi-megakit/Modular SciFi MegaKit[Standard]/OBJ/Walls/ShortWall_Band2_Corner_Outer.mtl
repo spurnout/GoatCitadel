@@ -1,24 +1,3 @@
-# Blender MTL File: 'AllModules_Unreal.blend'
-# Material Count: 2
-
-newmtl MI_Trim_02
-Ns 250.000000
-Ka 1.000000 1.000000 1.000000
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.450000
-d 1.000000
-illum 2
-map_Kd C:\\Users\\Usuario\\Desktop\\Work\\Blender\\_FreeModels\\_Unfinished\\Sci Fi Trimmed\\Blends\\T_Trim_02_BaseColor_Red.png
-
-newmtl M_Decal_White
-Ns 250.000000
-Ka 1.000000 1.000000 1.000000
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.450000
-d 1.000000
-illum 2
-map_Kd C:\\Users\\Usuario\\Desktop\\Work\\Blender\\_FreeModels\\_Unfinished\\Sci Fi Trimmed\\Blends\\T_Decals.png
+version https://git-lfs.github.com/spec/v1
+oid sha256:f5edfa2919291a596a39e95a9ab71eba26d8afe3a1a654d5e45ca10a2430774a
+size 680

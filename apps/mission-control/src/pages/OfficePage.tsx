@@ -1689,17 +1689,21 @@ export async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
   let manifest: {
     models?: AssetManifestModel[];
   };
+  const proceduralFallback: OfficeAssetPack = {
+    goatModelVariant: "procedural",
+    goatModelLabel: "Procedural Goat",
+  };
 
   try {
     const response = await fetch("/assets/office/asset-manifest.json");
     if (!response.ok) {
-      return {};
+      return proceduralFallback;
     }
     manifest = await response.json() as {
       models?: AssetManifestModel[];
     };
   } catch {
-    return { goatModelVariant: "procedural", goatModelLabel: "Procedural Goat" };
+    return proceduralFallback;
   }
 
   const includedModels = new Map<string, AssetManifestModel>();

@@ -49,4 +49,27 @@ describe("SessionAutonomyPrefsRepository", () => {
     assert.equal(map.get("sess-2")?.proactiveMode, "suggest");
     assert.equal(map.has("sess-3"), false);
   });
+
+  it("round-trips proactive budget, retrieval mode, and reflection mode", () => {
+    const repo = createRepo();
+    const prefs = repo.patch("sess-1", {
+      proactiveMode: "auto_safe",
+      maxActionsPerHour: 12,
+      maxActionsPerTurn: 5,
+      cooldownSeconds: 180,
+      retrievalMode: "layered",
+      reflectionMode: "on",
+    });
+
+    assert.equal(prefs.proactiveMode, "auto_safe");
+    assert.equal(prefs.maxActionsPerHour, 12);
+    assert.equal(prefs.maxActionsPerTurn, 5);
+    assert.equal(prefs.cooldownSeconds, 180);
+    assert.equal(prefs.retrievalMode, "layered");
+    assert.equal(prefs.reflectionMode, "on");
+
+    const reloaded = repo.get("sess-1");
+    assert.equal(reloaded?.retrievalMode, "layered");
+    assert.equal(reloaded?.reflectionMode, "on");
+  });
 });

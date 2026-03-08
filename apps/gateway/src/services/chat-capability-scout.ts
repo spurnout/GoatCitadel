@@ -41,6 +41,10 @@ interface RankedSuggestion {
   suggestion: ChatCapabilityUpgradeSuggestion;
 }
 
+function logScoutFailure(stage: string, error: unknown): void {
+  console.warn(`[chat-capability-scout] ${stage} failed`, error);
+}
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "be", "can", "do", "for", "from", "get", "give", "have", "i",
   "if", "in", "is", "it", "make", "me", "my", "of", "on", "or", "please", "show", "something",
@@ -152,8 +156,8 @@ export async function scoutCapabilityUpgradeSuggestions(
           },
         });
       }
-    } catch {
-      // Ignore discovery failures here; chat should not fail because recommendation lookup is unavailable.
+    } catch (error) {
+      logScoutFailure("skill source discovery", error);
     }
   }
 
@@ -188,8 +192,8 @@ export async function scoutCapabilityUpgradeSuggestions(
         },
       });
     }
-  } catch {
-    // Discovery is feature-gated in some installs.
+  } catch (error) {
+    logScoutFailure("mcp template discovery", error);
   }
 
   const deduped = new Map<string, RankedSuggestion>();

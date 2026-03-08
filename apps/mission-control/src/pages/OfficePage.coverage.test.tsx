@@ -1,29 +1,47 @@
 import React from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   fetchAgents: vi.fn(async () => ({
     items: [
       {
-        sessionId: "agent-session-1",
+        agentId: "agent-1",
         roleId: "architect",
         status: "active",
-        currentTask: "Design pass",
-        owner: "goatherder",
-        mode: "assist",
-        title: "Architect",
+        name: "Architect",
+        title: "Systems Architect",
         summary: "Design and planning agent",
+        specialties: ["Architecture", "Planning"],
+        defaultTools: ["browser.search"],
+        aliases: ["architect"],
+        isBuiltin: true,
+        editable: false,
+        lifecycleStatus: "active",
+        sessionCount: 1,
+        activeSessions: 1,
+        lastUpdatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       },
       {
-        sessionId: "agent-session-2",
+        agentId: "agent-2",
         roleId: "qa",
-        status: "ready",
-        currentTask: "Regression checks",
-        owner: "goatherder",
-        mode: "assist",
-        title: "QA",
+        status: "idle",
+        name: "QA",
+        title: "Verification Lead",
         summary: "Quality verification agent",
+        specialties: ["Testing", "Regression"],
+        defaultTools: ["shell.exec"],
+        aliases: ["qa"],
+        isBuiltin: true,
+        editable: false,
+        lifecycleStatus: "active",
+        sessionCount: 1,
+        activeSessions: 0,
+        lastUpdatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       },
     ],
   })),
@@ -31,7 +49,9 @@ const apiMocks = vi.hoisted(() => ({
     items: [
       {
         operatorId: "operator-1",
-        name: "GoatHerder",
+        sessionCount: 2,
+        activeSessions: 1,
+        lastActivityAt: new Date().toISOString(),
       },
     ],
   })),
@@ -39,8 +59,9 @@ const apiMocks = vi.hoisted(() => ({
     items: [
       {
         approvalId: "approval-1",
+        kind: "tool.invoke",
+        riskLevel: "high",
         status: "pending",
-        reason: "Tool access",
         createdAt: new Date().toISOString(),
       },
     ],
@@ -49,21 +70,26 @@ const apiMocks = vi.hoisted(() => ({
     items: [
       {
         eventId: "evt-1",
+        eventType: "activity_logged",
+        source: "chat",
         timestamp: new Date().toISOString(),
-        topic: "chat",
-        type: "message_done",
         payload: {
-          roleId: "architect",
-          summary: "Drafted plan.",
+          activity: {
+            agentId: "architect",
+            message: "Drafted plan.",
+          },
+          taskId: "task-1",
+          sessionId: "agent-session-1",
         },
       },
       {
         eventId: "evt-2",
+        eventType: "approval_created",
+        source: "approval",
         timestamp: new Date().toISOString(),
-        topic: "approval",
-        type: "approval_required",
         payload: {
-          roleId: "qa",
+          kind: "tool.invoke",
+          riskLevel: "high",
           approvalId: "approval-1",
         },
       },
@@ -73,10 +99,17 @@ const apiMocks = vi.hoisted(() => ({
     onStateChange?.("open");
     onEvent({
       eventId: "evt-live-1",
+      eventType: "activity_logged",
+      source: "chat",
       timestamp: new Date().toISOString(),
-      topic: "chat",
-      type: "trace_update",
-      payload: { roleId: "architect", note: "live update" },
+      payload: {
+        activity: {
+          agentId: "architect",
+          message: "live update",
+        },
+        taskId: "task-1",
+        sessionId: "agent-session-1",
+      },
     });
     return () => undefined;
   }),
@@ -246,29 +279,42 @@ async function flush(): Promise<void> {
   });
 }
 
-async function pokeInteractions(renderer: ReactTestRenderer): Promise<void> {
-  let root: ReactTestRenderer["root"];
-  try {
-    root = renderer.root;
-  } catch {
-    return;
+function collectText(node: ReactTestRendererJSON | ReactTestRendererJSON[] | string | null): string {
+  if (node == null) {
+    return "";
   }
-  for (const node of root.findAll((candidate) => typeof candidate.props.onClick === "function").slice(0, 20)) {
-    await act(async () => {
-      node.props.onClick({
-        preventDefault: () => undefined,
-        stopPropagation: () => undefined,
-      });
+  if (typeof node === "string") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((child) => collectText(child)).join(" ");
+  }
+  const children = node.children ?? [];
+  return children.map((child) => collectText(child as ReactTestRendererJSON | string | null)).join(" ");
+}
+
+function rendererText(renderer: ReactTestRenderer): string {
+  return collectText(renderer.toJSON());
+}
+
+async function clickNode(node: { props: { onClick?: (event: unknown) => void } }): Promise<void> {
+  await act(async () => {
+    node.props.onClick?.({
+      preventDefault: () => undefined,
+      stopPropagation: () => undefined,
     });
-  }
-  for (const node of root.findAll((candidate) => typeof candidate.props.onChange === "function").slice(0, 12)) {
-    await act(async () => {
-      node.props.onChange({
-        target: { value: "coverage" },
-        currentTarget: { value: "coverage" },
-      });
-    });
-  }
+  });
+}
+
+function findButtonByText(renderer: ReactTestRenderer, label: string) {
+  return renderer.root.find((candidate) => {
+    if (candidate.type !== "button") {
+      return false;
+    }
+    return collectText(candidate.props.children as ReactTestRendererJSON | ReactTestRendererJSON[] | string | null)
+      .replace(/\s+/g, " ")
+      .trim() === label;
+  });
 }
 
 describe("OfficePage coverage", () => {
@@ -291,7 +337,21 @@ describe("OfficePage coverage", () => {
         );
       });
       await flush();
-      await pokeInteractions(renderer);
+
+      const architectButton = findButtonByText(renderer, "Architect");
+      await clickNode(architectButton);
+      await flush();
+
+      expect(rendererText(renderer)).toContain("Architect");
+      expect(rendererText(renderer)).toContain("Design and planning agent");
+
+      const approvalsTab = findButtonByText(renderer, "Approvals");
+      await clickNode(approvalsTab);
+      await flush();
+
+      expect(rendererText(renderer)).toContain("tool.invoke");
+      expect(rendererText(renderer)).toContain("pending");
+
       await act(async () => {
         vi.advanceTimersByTime(25_000);
       });
