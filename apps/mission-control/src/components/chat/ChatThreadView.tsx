@@ -1,3 +1,6 @@
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   ChatCapabilityUpgradeSuggestion,
   ChatThreadResponse,
@@ -34,6 +37,31 @@ function renderSuggestionSummary(suggestions: ChatCapabilityUpgradeSuggestion[] 
     return null;
   }
   return suggestions.slice(0, 2).map((item) => item.title).join(" · ");
+}
+
+function ChatMarkdown({ content }: { content: string }) {
+  return (
+    <div className="chat-v11-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, onClick, ...props }) => (
+            <a
+              {...props}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                event.stopPropagation();
+                onClick?.(event);
+              }}
+            />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function ChatBranchSwitcher({
@@ -158,18 +186,39 @@ function ChatTurnCard({
   onRetryTurn: (turnId: string) => void;
   onEditTurn: (turnId: string) => void;
 }) {
+  function handleSurfaceKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelect(turn.turnId);
+    }
+  }
+
   return (
     <li className={`chat-v11-turn-card${selected ? " selected" : ""}`}>
-      <button type="button" className="chat-v11-turn-surface" onClick={() => onSelect(turn.turnId)}>
+      <div
+        aria-pressed={selected}
+        className="chat-v11-turn-surface"
+        onClick={() => onSelect(turn.turnId)}
+        onKeyDown={handleSurfaceKeyDown}
+        role="button"
+        tabIndex={0}
+      >
         <div className="chat-v11-turn-bubble user">
           <p className="chat-v11-message-meta"><strong>You</strong> · {formatActorTimestamp(turn.userMessage.timestamp)}</p>
           <p>{turn.userMessage.content}</p>
         </div>
         <div className="chat-v11-turn-bubble assistant">
           <p className="chat-v11-message-meta"><strong>GoatCitadel</strong> · {turn.assistantMessage ? formatActorTimestamp(turn.assistantMessage.timestamp) : "Running"}</p>
-          <p>{turn.assistantMessage?.content || (turn.trace.status === "running" ? "Working..." : "No assistant output yet.")}</p>
+          {turn.assistantMessage ? (
+            <ChatMarkdown content={turn.assistantMessage.content} />
+          ) : (
+            <p>{turn.trace.status === "running" ? "Working..." : "No assistant output yet."}</p>
+          )}
         </div>
-      </button>
+      </div>
       <ChatTurnRunStrip turn={turn} />
       <ChatTurnDetails
         turn={turn}

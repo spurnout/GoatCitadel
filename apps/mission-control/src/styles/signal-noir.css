@@ -1016,6 +1016,39 @@
   border-color: rgba(255, 154, 69, 0.14);
 }
 
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h1,
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h2,
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h3,
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h4,
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h5,
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown h6 {
+  color: color-mix(in srgb, var(--snr-cyan) 56%, white 44%);
+  font-family: "Rajdhani", "IBM Plex Sans", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown a {
+  color: color-mix(in srgb, var(--snr-cyan) 78%, white 22%);
+}
+
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown blockquote {
+  color: var(--snr-text-muted);
+  border-left-color: rgba(84, 221, 255, 0.24);
+}
+
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown pre {
+  border: 1px solid rgba(92, 198, 223, 0.12);
+  background:
+    linear-gradient(180deg, rgba(5, 10, 16, 0.98), rgba(3, 6, 10, 1));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+:is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-markdown :not(pre) > code {
+  border: 1px solid rgba(92, 198, 223, 0.12);
+  background: rgba(8, 15, 24, 0.9);
+  color: #bfeeff;
+}
+
 :is(.theme-signal-noir, .theme-obsidian-crimson) .chat-v11-turn-strip {
   padding: 0 14px 14px;
   color: var(--snr-text-muted);
