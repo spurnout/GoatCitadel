@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 const defaultRepoUrl = process.env.GOATCITADEL_REPO_URL || "https://github.com/spurnout/GoatCitadel.git";
 const preferredBaseDir = path.join(os.homedir(), ".GoatCitadel");
 const legacyBaseDir = path.join(os.homedir(), ".goatcitadel");
-const pnpmVersion = "10.29.3";
+const pnpmVersion = "10.31.0";
 const workspaceBootstrapBuildPackages = [
   "@goatcitadel/contracts",
 ];

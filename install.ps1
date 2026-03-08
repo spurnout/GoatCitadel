@@ -129,7 +129,7 @@ if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 
 $AppDir = Join-Path $BaseDir "app"
 $BinDir = Join-Path $BaseDir "bin"
-$PnpmVersion = "10.29.3"
+$PnpmVersion = "10.31.0"
 $WorkspaceBootstrapBuildPackages = @(
   "@goatcitadel/contracts"
 )
