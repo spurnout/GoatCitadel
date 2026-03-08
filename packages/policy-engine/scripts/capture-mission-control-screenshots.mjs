@@ -25,7 +25,14 @@ const screenshotTargets = [
   { tab: "files", file: "files.png", title: "Files" },
   { tab: "memory", file: "memory.png", title: "Memory" },
   { tab: "agents", file: "agents.png", title: "Agents" },
-  { tab: "office", file: "office.png", title: "Office" },
+  {
+    tab: "office",
+    file: "office.png",
+    title: "Office",
+    waitForSelector: ".office-webgl-stage-v5 canvas",
+    screenshotSelector: ".office-stage-panel",
+    settleMs: 6500,
+  },
   { tab: "activity", file: "activity.png", title: "Activity" },
   { tab: "cron", file: "cron.png", title: "Scheduler" },
   { tab: "sessions", file: "sessions.png", title: "Sessions" },
@@ -401,16 +408,29 @@ async function captureScreenshots(activeWorkspaceId) {
     for (const target of screenshotTargets) {
       const targetUrl = `${uiUrl}/?tab=${encodeURIComponent(target.tab)}`;
       await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(target.tab === "office" ? 5000 : 1800);
+      await page.waitForTimeout(target.settleMs ?? (target.tab === "office" ? 5000 : 1800));
+      if (target.waitForSelector) {
+        await page.waitForSelector(target.waitForSelector, {
+          state: "visible",
+          timeout: 20_000,
+        });
+        await page.waitForTimeout(750);
+      }
       if (target.scrollY) {
         await page.evaluate((scrollY) => window.scrollTo(0, scrollY), target.scrollY);
         await page.waitForTimeout(500);
       } else {
         await page.evaluate(() => window.scrollTo(0, 0));
       }
-      await page.screenshot({
-        path: path.join(outputDir, target.file),
-      });
+      if (target.screenshotSelector) {
+        await page.locator(target.screenshotSelector).screenshot({
+          path: path.join(outputDir, target.file),
+        });
+      } else {
+        await page.screenshot({
+          path: path.join(outputDir, target.file),
+        });
+      }
     }
     await context.close();
   } finally {

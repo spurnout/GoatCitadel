@@ -16,6 +16,8 @@ export interface ChatThreadNotice {
   timestamp: string;
 }
 
+const VIRTUALIZED_THREAD_THRESHOLD = 48;
+
 function formatTone(tone: ChatThreadNotice["tone"]): "neutral" | "warning" | "critical" | "success" {
   return tone;
 }
@@ -247,6 +249,22 @@ function ChatTurnCard({
   );
 }
 
+function ChatThreadNotices({ notices }: { notices: ChatThreadNotice[] }) {
+  if (notices.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="chat-v11-thread-notices">
+      {notices.map((notice) => (
+        <li key={notice.id} className={`tone-${formatTone(notice.tone)}`}>
+          <p className="chat-v11-message-meta"><strong>Notice</strong> · {formatActorTimestamp(notice.timestamp)}</p>
+          <p>{notice.content}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ChatThreadView({
   loading,
   thread,
@@ -285,37 +303,45 @@ export function ChatThreadView({
 
   return (
     <div className="chat-v11-thread-view">
-      <Virtuoso
-        className="chat-v11-thread-virtuoso"
-        data={thread.turns}
-        computeItemKey={(_index, turn) => turn.turnId}
-        followOutput={followOutput ? "auto" : false}
-        atBottomStateChange={onBottomStateChange}
-        itemContent={(_index, turn) => (
-          <ChatTurnCard
-            turn={turn}
-            selected={selectedTurnId === turn.turnId}
-            onSelect={onSelectTurn}
-            onSwitchBranch={onSwitchBranch}
-            onRetryTurn={onRetryTurn}
-            onEditTurn={onEditTurn}
-          />
-        )}
-        components={{
-          Footer: notices.length > 0
-            ? () => (
-              <ul className="chat-v11-thread-notices">
-                {notices.map((notice) => (
-                  <li key={notice.id} className={`tone-${formatTone(notice.tone)}`}>
-                    <p className="chat-v11-message-meta"><strong>Notice</strong> · {formatActorTimestamp(notice.timestamp)}</p>
-                    <p>{notice.content}</p>
-                  </li>
-                ))}
-              </ul>
-            )
-            : undefined,
-        }}
-      />
+      {thread.turns.length < VIRTUALIZED_THREAD_THRESHOLD ? (
+        <div className="chat-v11-thread-list">
+          {thread.turns.map((turn) => (
+            <ChatTurnCard
+              key={turn.turnId}
+              turn={turn}
+              selected={selectedTurnId === turn.turnId}
+              onSelect={onSelectTurn}
+              onSwitchBranch={onSwitchBranch}
+              onRetryTurn={onRetryTurn}
+              onEditTurn={onEditTurn}
+            />
+          ))}
+          <ChatThreadNotices notices={notices} />
+        </div>
+      ) : (
+        <Virtuoso
+          className="chat-v11-thread-virtuoso"
+          data={thread.turns}
+          computeItemKey={(_index, turn) => turn.turnId}
+          followOutput={followOutput ? "auto" : false}
+          atBottomStateChange={onBottomStateChange}
+          itemContent={(_index, turn) => (
+            <ChatTurnCard
+              turn={turn}
+              selected={selectedTurnId === turn.turnId}
+              onSelect={onSelectTurn}
+              onSwitchBranch={onSwitchBranch}
+              onRetryTurn={onRetryTurn}
+              onEditTurn={onEditTurn}
+            />
+          )}
+          components={{
+            Footer: notices.length > 0
+              ? () => <ChatThreadNotices notices={notices} />
+              : undefined,
+          }}
+        />
+      )}
     </div>
   );
 }

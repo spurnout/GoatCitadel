@@ -1,79 +1,254 @@
 # GoatCitadel
 
 > [!IMPORTANT]
-> GoatCitadel is currently a public beta. The install paths and core validation gates are ready for external testing, but you should still expect fast iteration before 1.0.
+> GoatCitadel is in public beta. The installer path, Mission Control surface, and core validation gates are ready for external testing, but the product is still evolving quickly toward 1.0.
 
 Current release line: `0.6.0-beta.2`
 
-GoatCitadel is the local-first command deck for serious AI operations: chat, approvals, traces, prompt testing, runtime visibility, integrations, and expansion surfaces in one operator-first system.
+GoatCitadel is a local-first AI operations platform for people who want more than a chat box. It gives you an operator-grade command deck for running, inspecting, approving, testing, and extending AI workflows across web, terminal, tools, and external systems without hiding the runtime from you.
 
 ![GoatCitadel Mission Control](docs/screenshots/mission-control/dashboard.png)
 
-## What GoatCitadel Is
+## Why GoatCitadel
 
-GoatCitadel is built for people who want AI systems they can actually run, inspect, and trust day to day:
+Most AI products optimize for "send prompt, receive answer." GoatCitadel optimizes for operating real AI systems:
 
-- Mission Control for live oversight, fast triage, and operator guidance
-- agentic chat with session context, project organization, and tool orchestration
-- Gatehouse approvals and policy controls before risky work runs
-- Prompt Lab for regression checks, score review, and provider comparison
-- Herd HQ for visual live awareness of sub-agents, workload, and event pace
-- MCP, Skills, integrations, workspace guidance, and optional add-ons
-- local-first runtime with your data on your machine or infrastructure
+- **Operator-first, not chat-box-first.** Mission Control, approvals, traces, sessions, cost visibility, and system health are part of the main product.
+- **Local-first by default.** Your runtime, data paths, guardrails, and optional local model paths stay explicit.
+- **Inspectable and interruptible.** You can review traces, check event flow, inspect sessions, and stop treating AI behavior like a black box.
+- **Built for guarded automation.** Policy, approvals, tool grants, and deny-wins behavior are first-class instead of bolted on later.
+- **Expandable without pretending trust does not matter.** MCP, Skills, integrations, add-ons, and optional local runtimes are surfaced with trust posture and review boundaries.
 
-## Who It Is For
+## What You Can Do With It
 
-- builders running local or self-hosted AI workflows
-- operators who need auditability, approvals, and explicit control
-- technical users who want a TUI as well as a browser command surface
-- teams proving out guarded automation before wider rollout
+GoatCitadel is designed for the whole operating loop, not just prompting:
 
-## Why It Feels Different
+- run everyday conversations, research, cowork, and coding flows from one chat workspace
+- keep humans in the loop with Gatehouse approvals before risky actions run
+- observe live system behavior through Summit, Pulse, Sessions, System, Costs, and Herd HQ
+- test prompts, compare providers, and track quality drift in Prompt Lab
+- organize work by projects, workspaces, files, memory, tasks, and guidance
+- connect tools and external systems through MCP, Skills, integrations, and optional add-ons
+- run local voice transcription, local model backends, and multi-device mesh workflows when needed
 
-- operator-first instead of chat-box-first
-- local-first by default, with clear runtime boundaries
-- traces, approvals, and policy built into the main workflow
-- benchmark and prompt testing in the same product as daily operations
-- extensibility through MCP, Skills, integrations, and optional add-ons without hiding the risk surface
+## At A Glance
 
-## Public Beta Scope
+| Surface | Purpose | Why it matters |
+| --- | --- | --- |
+| **Command Deck / Summit** | High-level operational overview | Fast triage of approvals, sessions, work queues, and runtime state |
+| **Chat Workspace** | Daily conversation surface | Unified chat, cowork, code, files, projects, orchestration, and tool-aware traces |
+| **Gatehouse** | Human approval queue | Keep risky actions reviewable before they execute |
+| **Herd HQ** | Live office-style observability | Visual awareness of active goats, zones, flow, and event pace |
+| **Prompt Lab** | Prompt and model testing | Catch weak replies, regressions, and score drift before daily use |
+| **Runs / Pulse / System / Costs** | Runtime inspection | See what happened, what is happening, and what it costs |
+| **Skills / MCP / Integrations / Add-ons** | Extensibility layer | Expand the stack without pretending every extension should be trusted by default |
 
-GoatCitadel is share-ready for public beta testing, not general availability.
+## Mode Behavior
 
-Current strengths:
+| Mode | Default feel | Best for | What makes it different |
+| --- | --- | --- | --- |
+| **Chat** | Simple and low-friction | Everyday questions, quick research, task framing | Hidden or summarized orchestration, clean conversation flow |
+| **Cowork** | Explicitly collaborative | Planning, delegation, subtasking, review loops | More visible orchestration and agent teamwork |
+| **Code** | Specialized for software work | Repo inspection, patch planning, implementation, review, QA | Coding-specific orchestration patterns instead of generic multi-agent noise |
 
-- installable from GitHub with home-folder launcher setup
-- strict validation gates and coverage gate in place
-- installer-first docs plus manual/developer path
-- web Mission Control plus terminal workflows
-- Command Deck, Chat Workspace, Gatehouse, and Herd HQ ready for daily operator use
-- Discord and Slack are viable first external channels
+## Mission Control Surface Tour
 
-Still evolving:
+### Command Deck / Summit
 
-- durable execution, replay depth, and richer review-queue workflows
-- richer mobile/companion monitoring
-- deeper team and multi-tenant collaboration features
+Summit is the operational front door:
 
-Advanced surfaces currently present but disabled by default in the standard beta config:
+- live system posture for approvals, tasks, sessions, health, and activity
+- fast navigation into the surfaces that need attention next
+- a top-level command-deck shell that stays useful even when the app grows
 
-- durable kernel
-- replay overrides
-- memory lifecycle admin
-- connector diagnostics
-- cron review queue
-- replay regression
+### Chat Workspace
 
-Current default-on advanced guardrail:
+Chat Workspace is the everyday control surface for real AI work:
 
-- computer-use guardrails
+- mission sessions and external sessions in one place
+- `Chat`, `Cowork`, and `Code` modes with different behavior and orchestration posture
+- file attachments, session organization, project binding, writeback binding, and learned memory
+- tool-aware traces, approval prompts, delegation suggestions, and orchestration summaries
+- markdown rendering, branch-aware turns, and richer run details for long-lived threads
 
-## Quick Install
+### Gatehouse
 
-Default installer location is your home directory under `~/.GoatCitadel` with launchers in `~/.GoatCitadel/bin`.
-The installer also provisions a local `pnpm` shim in that same bin directory, so GoatCitadel commands do not depend on a separate global pnpm installation after setup.
+Gatehouse is where risky actions stop being invisible:
 
-### Windows (recommended)
+- approval-first posture for tools and other guarded actions
+- review context before you approve or deny
+- replay and checkpoint context where available
+- clean separation between safe automation and operator consent
+
+### Herd HQ
+
+Herd HQ is GoatCitadel's visual operations room:
+
+- live floor view of the Goatherder and active goat stations
+- office zones for command, build, research, security, and operations
+- collaboration overlays, alert states, and event pace visible at a glance
+- inspector and dock views that let you move between atmosphere and concrete detail
+
+### Prompt Lab
+
+Prompt Lab is where you stop guessing:
+
+- import prompt packs from markdown
+- run one test, next test, or batch runs
+- compare providers and models on the same prompt surface
+- separate execution failures from quality failures
+- track scores, regressions, and weak answers before shipping changes
+
+### The Rest Of The Deck
+
+Mission Control also includes the surrounding surfaces that make GoatCitadel feel complete:
+
+- **Trailboard** for tasks, deliverables, and subagent session linkage
+- **Runs** for session inspection and spend visibility
+- **Pulse** for live event streams
+- **System** for daemon and runtime health
+- **Forge** for auth, providers, budgets, voice runtime, mesh, and defaults
+- **Files**, **Memory**, **Costs**, **Integrations**, **MCP Servers**, **Playbook**, **Workspaces**, and more
+
+## Core Capabilities
+
+### Operator-First Chat, Cowork, and Code
+
+GoatCitadel is not just "chat with tabs":
+
+- run daily assistant interactions in normal chat mode
+- switch to **Cowork** for deeper delegation, review loops, and explicit collaboration
+- switch to **Code** for repo-aware implementation, review, QA, and validation flows
+- keep one shared backend intelligence layer while changing the policy and visibility by mode
+- use advanced session controls instead of reconfiguring the whole app for every thread
+
+### Traces, Reviews, and Runtime Visibility
+
+GoatCitadel keeps the runtime visible:
+
+- tool traces, run summaries, and per-turn execution details
+- live event stream and session health views
+- surfaced fallback, review, delegation, and orchestration behavior where it matters
+- explicit insight into what happened instead of "trust the assistant"
+
+### Guardrails, Policy, and Approvals
+
+Safety is part of the product loop:
+
+- deny-wins policy resolution
+- scoped tool grants and approval posture
+- path and network boundaries
+- human-in-the-loop approval workflow for risky actions
+- explicit break-glass env vars when you intentionally want a weaker safety posture
+
+### Workspaces, Guidance, Memory, and Files
+
+GoatCitadel supports longer-lived operational context:
+
+- workspaces for project and context separation
+- global guidance and workspace overrides
+- memory surfaces for reusable knowledge and lifecycle inspection
+- local file workflows and path-aware interaction surfaces
+- project/session grouping so the product scales beyond throwaway threads
+
+### Prompt Lab and Quality Management
+
+Prompt quality is a first-class concern:
+
+- curated prompt packs
+- scoring and pass/fail thresholds
+- regression visibility
+- provider/model comparison
+- separate quality review from raw runtime completion
+
+### Multi-Provider and Mode-Aware Intelligence
+
+GoatCitadel includes orchestration foundations that go beyond "one model for everything":
+
+- multi-provider routing foundations across `Chat`, `Cowork`, and `Code`
+- role-aware and mode-aware behavior
+- summarized orchestration in simple chat flows
+- more explicit orchestration in Cowork
+- coding-specific orchestration patterns in Code rather than generic swarm behavior
+
+### Skills, MCP, Integrations, and Add-Ons
+
+GoatCitadel expands outward without hiding trust boundaries:
+
+- **Playbook / Skills** for reusable skills with enabled, sleep, or disabled posture
+- **MCP Servers** for local or remote tool gateways with trust tiers and redaction policy
+- **Integrations** for external services and channels
+- **Add-ons** for optional separate-repo extras like Arena
+- discovery surfaces for MCP and skills sources with review-before-install posture
+
+### Local Voice Runtime
+
+Voice is local-first too:
+
+- managed local whisper.cpp runtime is installed by default unless you opt out
+- model catalog and selection live in the product instead of requiring raw repo hacks
+- models live under `~/.GoatCitadel/tools/voice/`, not in the repository
+- browser-recorded audio formats are normalized locally before transcription
+
+### Mesh and Multi-Device Operation
+
+GoatCitadel is not limited to one machine forever:
+
+- mesh support for multi-node status and coordination
+- node identity and session ownership visibility
+- LAN and tailnet-oriented posture depending on your setup
+- explicit control instead of pretending distributed behavior is "magic"
+
+### Optional Local And External Model Providers
+
+The provider layer is intentionally extensible:
+
+- remote providers like OpenAI, Anthropic, Z.AI, Moonshot, and others
+- optional local-model paths such as LM Studio and Ollama
+- local NPU sidecar support when you want acceleration or sidecar-backed inference
+- provider configuration stays explicit in Forge and onboarding
+
+## Screenshots
+
+Mission Control is a full operator surface, not a single-pane chat demo. The gallery below is curated for the README; the full screenshot set stays in [docs/screenshots/mission-control](docs/screenshots/mission-control).
+
+### First Launch And Orientation
+
+| Onboarding | Command Deck |
+| --- | --- |
+| ![Onboarding](docs/screenshots/mission-control/onboarding.png) | ![Command Deck](docs/screenshots/mission-control/dashboard.png) |
+
+### Run The Work
+
+| Chat Workspace | Prompt Lab |
+| --- | --- |
+| ![Chat Workspace](docs/screenshots/mission-control/chat.png) | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
+
+### Keep Humans In The Loop
+
+| Gatehouse | Herd HQ |
+| --- | --- |
+| ![Gatehouse Approvals](docs/screenshots/mission-control/approvals.png) | ![Herd HQ Office](docs/screenshots/mission-control/office.png) |
+
+### Expand The Stack
+
+| Skills | Integrations |
+| --- | --- |
+| ![Skills](docs/screenshots/mission-control/skills.png) | ![Integrations](docs/screenshots/mission-control/integrations.png) |
+
+### Wire The Platform
+
+| MCP Servers | Workspaces |
+| --- | --- |
+| ![MCP Servers](docs/screenshots/mission-control/mcp.png) | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
+
+Additional current views in the full gallery include Agents, Sessions, Activity, Costs, Files, Memory, Settings, System, Mesh, and NPU Runtime.
+
+## Install
+
+Default installer location is your home directory under `~/.GoatCitadel`, with launchers in `~/.GoatCitadel/bin`.
+
+### Windows
 
 Safer download-and-run flow:
 
@@ -143,23 +318,22 @@ goat onboard
 goat doctor --deep
 ```
 
-PowerShell note:
+PowerShell notes:
 
 - use `goatcitadel` or `goat`
 - onboarding uses the live gateway API, so start with `goat up`
-- do not use `gc` in PowerShell because it is the built-in alias for `Get-Content`
+- do not use `gc` in PowerShell because it maps to `Get-Content`
 - if `goatcitadel` is not found immediately after install, open a new PowerShell window
-- immediate fallback: `& "$HOME\\.GoatCitadel\\bin\\goatcitadel.cmd" onboard`
 
-### Update An Existing Install
+## Update
 
 ```bash
 goatcitadel update
 ```
 
-## Manual Install / Dev Install
+## Manual / Developer Install
 
-Use this path if you want the raw repo, contributor workflow, or a clean install-from-source validation.
+Use this path if you want a raw clone, a contributor workflow, or a clean install-from-source validation:
 
 ```bash
 git clone https://github.com/spurnout/GoatCitadel.git
@@ -170,9 +344,9 @@ pnpm install --frozen-lockfile
 pnpm config:sync
 ```
 
-The default code clone keeps the shipped Office runtime assets in-repo, but the full Office source provenance bundle is now published separately. See [docs/office-source-manifest.json](/f:/code/personal-ai/docs/office-source-manifest.json) and the release attachments if you need to reproduce or edit the original Office source kits.
+The default code clone keeps the shipped Office runtime assets in-repo, but the full Office source provenance bundle is published separately. See [docs/office-source-manifest.json](docs/office-source-manifest.json) and the related release bundle if you need to reproduce or edit the original Office source kits.
 
-If you want browser research/automation from a raw source clone, install Playwright Chromium once:
+If you want browser research or automation from a raw source clone, install Playwright Chromium once:
 
 ```bash
 pnpm --filter @goatcitadel/policy-engine exec playwright install chromium
@@ -198,212 +372,128 @@ pnpm onboarding:tui
 pnpm doctor -- --deep
 ```
 
-## First Run
+## Optional Ecosystem
 
-1. Start GoatCitadel with `goat up` or `pnpm dev`.
-2. Complete onboarding in the TUI or Mission Control.
-3. Run `goat doctor --deep` or `pnpm doctor -- --deep` after the runtime is available.
-4. Set at least one provider/model in Settings.
-5. Open Dashboard and Chat first.
-6. Keep approvals on for anything risky or externally connected.
+GoatCitadel is designed to stay useful on its own and grow outward when you want more reach.
 
-Mission Control default local URLs:
+### MCP Servers
 
-- UI: `http://localhost:5173`
-- Gateway: `http://127.0.0.1:8787`
+Use MCP when you want explicit tool gateways instead of one-off glue:
 
-## Key Capabilities
+- connect local or remote MCP servers
+- keep trust tiers, redaction posture, and review boundaries visible
+- add template-backed servers without pretending every connector is equally safe
+- keep external capability expansion inspectable from Mission Control
 
-### Mission Control
+### Skills
 
-- Command Deck for system triage and quick action routing
-- Herd HQ for live visual awareness of sub-agents and stream activity
-- Gatehouse for high-signal approval review with replay context
-- page-level guidance that teaches the surface while you use it
+Skills turn repeated workflows into reusable operator tools:
 
-### Chat + Operator Control
+- bundled skills ship with the product
+- workspace skills let you tune behavior to a specific project or domain
+- enabled, sleep, and disabled states let you keep the surface available without always firing it
+- good fits include coding workflows, automation design, review checklists, and domain-specific operator playbooks
 
-- chat, cowork, and code modes
-- tool-aware traces and approval handling
-- workspace-aware guidance injection
-- session and project organization
-- browser-first control with terminal workflows still first-class
+### Integrations
 
-### Prompt Lab
+GoatCitadel can connect to the systems around your work:
 
-- import markdown prompt packs
-- run single, next, or full test passes
-- benchmark providers/models
-- export reports for regression tracking
+- communication channels and external services
+- connector diagnostics and runtime visibility
+- explicit status instead of hidden background assumptions
 
-### Safety + Policy
+### Add-ons
 
-- deny-wins policy resolution
-- scoped tool grants
-- risky action approvals
-- path and network guardrails
-- break-glass env vars documented explicitly
+Add-ons are optional separate-repo extras, not hidden core dependencies:
 
-### Runtime Expansion
+- install, start, stop, update, and remove them from Mission Control
+- keep trust posture explicit
+- launch supported extras externally instead of pretending everything belongs inside one shell
+- current example: **Arena**, an optional AI gladiator sidecar app with its own local surface
 
-- MCP server registration and policy
-- curated skill discovery/import with review
-- optional add-ons for separate-repo extras like Arena
-- integrations and channel connections
-- TUI operator workflows for local-first users
+### Local Voice Runtime
 
-### Beta-Ready Workflow
+Voice is now a managed part of the product:
 
-- guided onboarding for first-time setup
-- quick actions and command palette for fast navigation
-- explicit settings, provider configuration, and safety posture
-- local runtime visibility instead of black-box "trust us" automation
+- installer-managed local whisper.cpp runtime
+- downloadable model catalog instead of repo-committed models
+- local audio normalization before transcription
+- managed from Settings or the launcher, not by hand-editing prompt hacks
 
-### Optional Ecosystem
+### Mesh And Multi-Device
 
-- Add-ons live outside the GoatCitadel app checkout under `~/.GoatCitadel/addons`
-- Arena is the first optional extra and always requires an explicit separate-repo download confirmation
-- Arena launches as a separate local app from the Add-ons page and opens at `http://127.0.0.1:3099/` when running
-- MCP and Skills pages now include external discovery directories with trust labels so users can find more ecosystem extensions safely
+GoatCitadel can extend beyond one machine when you need it:
 
-## Communication Channels
+- node identity and mesh posture are visible
+- LAN and tailnet-oriented setups are supported
+- multi-device operation stays explicit and operator-controlled
 
-Current recommended order:
+### Local And Remote Models
 
-1. `channel.tui` for advanced local operators
-2. `channel.webchat` for browser-first local workflows
-3. `channel.discord` for first external beta rollout
-4. `channel.slack` after Discord sandbox validation
+The provider layer supports both hosted and local paths:
 
-Beginner walkthroughs live here:
+- remote providers for high-capability general use
+- optional local runtimes when privacy, latency, or cost posture matters
+- provider configuration, budgets, and defaults remain visible in Forge
 
-- [Communication Channel Setup Guide](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
+## Security And Guardrails
 
-## Screenshots
+GoatCitadel is built for real operator control, not just convenience.
 
-Mission Control is designed as a full operator surface, not a single conversation pane. These captures were refreshed from the current build.
+- **Deny wins.** Policy boundaries are authoritative.
+- **Approvals stay first-class.** Risky actions can stop in Gatehouse before they execute.
+- **Tool access is scoped.** Grants, trust, and path/network posture are explicit.
+- **Visibility beats magic.** Traces, reviews, and runtime state are part of normal use.
+- **Extensions are not silently trusted.** Skills, MCP servers, integrations, and add-ons are surfaced with trust posture instead of being treated as invisible background plumbing.
 
-### First Launch And Orientation
-
-| Onboarding | Command Deck |
-|---|---|
-| ![Onboarding](docs/screenshots/mission-control/onboarding.png) | ![Command Deck](docs/screenshots/mission-control/dashboard.png) |
-
-### Run The Work
-
-| Chat Workspace | Prompt Lab |
-|---|---|
-| ![Chat Workspace](docs/screenshots/mission-control/chat.png) | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
-
-### Keep Humans In The Loop
-
-| Gatehouse (Approvals) | Herd HQ (Office) |
-|---|---|
-| ![Gatehouse Approvals](docs/screenshots/mission-control/approvals.png) | ![Herd HQ Office](docs/screenshots/mission-control/office.png) |
-
-### Expand The Stack
-
-| Skills | Integrations |
-|---|---|
-| ![Skills](docs/screenshots/mission-control/skills.png) | ![Integrations](docs/screenshots/mission-control/integrations.png) |
-
-### Wire The Platform
-
-| MCP Servers | Workspaces |
-|---|---|
-| ![MCP Servers](docs/screenshots/mission-control/mcp.png) | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
-
-Full gallery: [docs/screenshots/mission-control](docs/screenshots/mission-control)
-
-Additional current views in the gallery include Agents, Sessions, Tool Access, Tasks, Activity, Costs, Files, Memory, Settings, and System.
-
-Refresh screenshots locally:
-
-```bash
-pnpm screenshots:capture
-```
-
-Windows wrapper:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/capture-mission-control-screenshots.ps1
-```
-
-## Security Snapshot
-
-- deny-wins policy semantics
-- approval-first posture for risky actions
-- fail-closed remote bind/auth guard
-- loopback-only approval creation by default
-- path-jail enforcement for workspace and backup paths
-- session-default auth storage in Mission Control
-
-Break-glass env vars are supported but should stay off in shared/public environments:
-
-- `GOATCITADEL_ALLOW_UNAUTH_NETWORK=1`
-- `GOATCITADEL_ALLOW_REMOTE_APPROVAL_CREATE=1`
-- `GOATCITADEL_WARN_UNAUTH_NON_LOOPBACK=false`
-
-## Optional Integrations
-
-- Bankr is not built in by default. See [docs/OPTIONAL_BANKR_SKILL.md](docs/OPTIONAL_BANKR_SKILL.md).
-- Obsidian remains optional and path-guarded. See [docs/OBSIDIAN_OPTIONAL_INTEGRATION.md](docs/OBSIDIAN_OPTIONAL_INTEGRATION.md).
-
-## Optional Add-Ons
-
-- Add-ons are separate from the GoatCitadel app checkout and require explicit install confirmation before any code is downloaded.
-- Arena is currently display-ready through an external local URL rather than an embedded GoatCitadel surface.
-- The current trust model and runtime expectations are documented here:
-  - [Add-ons Trust Policy](docs/ADDONS_TRUST_POLICY.md)
-  - [Arena Integration Contract](docs/ARENA_INTEGRATION_CONTRACT.md)
-
-## Local Voice Runtime
-
-- GoatCitadel installs a managed local whisper.cpp runtime by default unless you pass `--skip-voice`.
-- The default starter model is `base.en`.
-- Models are downloaded into `~/.GoatCitadel/tools/voice/` and are not kept in the repo.
-- You can manage install, repair, and model selection from Forge > Voice Runtime or from the launcher:
-  - `goatcitadel voice status`
-  - `goatcitadel voice models`
-  - `goatcitadel voice install --model small.en`
-  - `goatcitadel voice select base.en`
-
-## Finding More MCP Servers and Skills
-
-- MCP page includes official/community discovery links with review-before-install guidance.
-- Skills page includes curated/community directories and keeps validate-before-install as the only supported install path.
-- Recommended reference docs:
-  - [Official MCP Registry](https://registry.modelcontextprotocol.io/)
-  - [MCP Registry About](https://modelcontextprotocol.io/registry/about)
-  - [Anthropic MCP Security Guidance](https://docs.anthropic.com/s/claude-code-security)
-  - [AgentSkill](https://agentskill.sh/)
-  - [SkillsMP](https://skillsmp.com/)
+> [!NOTE]
+> GoatCitadel is local-first, but local-first does not mean consequence-free. Review your provider settings, tool grants, approval posture, and extension trust before using it on work you actually care about.
 
 ## Documentation
 
-- [Install / Setup / Testing](docs/INSTALL_SETUP_TESTING.md)
-- [Public Share Checklist](docs/PUBLIC_SHARE_CHECKLIST.md)
-- [Communication Channel Setup Guide](docs/COMMUNICATION_CHANNEL_SETUP_GUIDE.md)
-- [Security Policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Engineering Handbook](docs/ENGINEERING_HANDBOOK.md)
-- [Runtime Guidance](GOATCITADEL.md)
-- [Vision](VISION.md)
-- [Vision Status Matrix](docs/VISION_STATUS_MATRIX.md)
-- [Android Native Spec](docs/ANDROID_NATIVE_SPEC.md)
+Start here for deeper detail:
 
-## Beta Caveats
+- [Install, setup, and testing](docs/INSTALL_SETUP_TESTING.md)
+- [Engineering handbook](docs/ENGINEERING_HANDBOOK.md)
+- [Arena integration contract](docs/ARENA_INTEGRATION_CONTRACT.md)
+- [Office asset sourcing manifest](docs/office-source-manifest.json)
+- [Public share checklist](docs/PUBLIC_SHARE_CHECKLIST.md)
+- [Manual Mission Control test guide](docs/testing/MISSION_CONTROL_MANUAL_TEST_GUIDE.md)
 
-GoatCitadel is ready for public beta testing when the validation gates are green, but you should still treat this as fast-moving software.
+## Beta Scope
 
-The safe operating stance is:
+GoatCitadel is already strong enough for serious testing, but it is still a fast-moving beta.
 
-- test from a clean install path
-- use token auth for anything beyond loopback
-- keep break-glass env vars off
-- use sandbox channels first before wider rollout
-- record install or onboarding friction as product bugs, not user error
+### Ready now
+
+- installer-first setup
+- Mission Control shell and major surfaces
+- operator approvals and runtime visibility
+- prompt testing and evaluation loops
+- local voice runtime management
+- optional add-on and ecosystem expansion
+- Cowork/Code orchestration foundations
+
+### Still evolving
+
+- deeper orchestration behavior and tuning
+- broader ecosystem hardening
+- more polished multi-device workflows
+- continued performance work, UI refinement, and install smoothing on weaker machines
+
+### What to expect
+
+- releases move quickly
+- interfaces can sharpen between beta cuts
+- local-first install and operator control remain stable design priorities even when individual surfaces evolve
 
 ## Local-First Promise
 
-GoatCitadel is built so you can run high-leverage AI workflows on infrastructure you control, with transparent execution, explicit safety boundaries, and a real operator surface instead of a black box.
+GoatCitadel is meant to keep the important parts close to you:
+
+- your runtime stays explicit
+- your tools and approvals stay visible
+- your local paths, files, and policy posture remain part of the product model
+- your extensions do not get to pretend trust is automatic
+
+That is the point of the product: not just to answer prompts, but to give you a command deck for operating AI systems like they are real systems.

@@ -1603,6 +1603,11 @@ pre {
   text-underline-offset: 0.16em;
 }
 
+.chat-v11-thread-list {
+  display: grid;
+  gap: 12px;
+}
+
 .chat-v11-empty-thread {
   background: rgba(123, 214, 255, 0.04);
 }
