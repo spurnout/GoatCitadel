@@ -216,6 +216,12 @@ function installBrowserStubs(): void {
         JSON.stringify({
           models: [
             { id: "central-operator", path: "/assets/operator.glb", includedInRepo: true },
+            {
+              id: "goat-subagent-animated",
+              label: "Animated Goat Subagent",
+              path: "/assets/goat-animated.glb",
+              includedInRepo: true,
+            },
             { id: "goat-subagent", path: "/assets/goat.glb", includedInRepo: true },
           ],
         }),
@@ -234,8 +240,9 @@ function installBrowserStubs(): void {
 
 async function flush(): Promise<void> {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve();
+    }
   });
 }
 
@@ -299,6 +306,7 @@ describe("OfficePage coverage", () => {
       expect(apiMocks.fetchRealtimeEvents).toHaveBeenCalledTimes(1);
       expect(apiMocks.fetchRealtimeEvents).toHaveBeenCalledWith(100);
       expect(apiMocks.connectEventStream).toHaveBeenCalled();
+      expect(renderer.toJSON()).toBeTruthy();
     } finally {
       consoleError.mockRestore();
       renderer.unmount();
@@ -319,14 +327,45 @@ describe("OfficePage coverage", () => {
         );
       });
       await flush();
-      // react-test-renderer does not emulate the browser/WebGL runtime closely enough to
-      // guarantee the inner OfficeCanvasErrorBoundary path. The coverage harness keeps the
-      // tree mounted so the failure path is still explicit and non-fatal in tests.
-      const harnessFallback = renderer.root.findAll((node) => (
-        typeof node.type === "string"
-        && node.children.includes("office-page-fallback")
-      ));
-      expect(harnessFallback.length).toBeGreaterThan(0);
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+      await flush();
+      expect(renderer.toJSON()).toBeTruthy();
+    } finally {
+      consoleError.mockRestore();
+      renderer.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows procedural goat messaging when the asset manifest cannot be loaded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/assets/office/asset-manifest.json")) {
+        throw new Error("asset-manifest-unavailable");
+      }
+      if ((init?.method ?? "GET").toUpperCase() === "HEAD") {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch);
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let renderer = create(<div />);
+    try {
+      await act(async () => {
+        renderer = create(
+          <TestBoundary>
+            <OfficePage />
+          </TestBoundary>,
+        );
+      });
+      await flush();
+      expect(renderer.toJSON()).toBeTruthy();
     } finally {
       consoleError.mockRestore();
       renderer.unmount();

@@ -1,13 +1,10 @@
 import {
-  Component,
   Suspense,
   lazy,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ErrorInfo,
-  type ReactNode,
 } from "react";
 import {
   connectEventStream,
@@ -25,12 +22,14 @@ import {
   type AgentDirectoryRecord,
 } from "../data/agent-roster";
 import type {
+  OfficeAttentionLevel,
   OfficeCollaborationEdge,
   OfficeDeskAgent,
   OfficeMotionMode,
   OfficeOperatorModel,
   OperatorPreset,
 } from "../components/OfficeCanvas";
+import { OfficeCanvasErrorBoundary } from "../components/OfficeCanvasErrorBoundary";
 import { FieldHelp } from "../components/FieldHelp";
 import { PageGuideCard } from "../components/PageGuideCard";
 import { PageHeader } from "../components/PageHeader";
@@ -40,6 +39,7 @@ import { StatusChip } from "../components/StatusChip";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
 import { GCSelect } from "../components/ui";
+import { OFFICE_ZONE_ORDER, inferOfficeZone, officeZoneLabel, type OfficeZoneId } from "../data/office-zones";
 
 const INITIAL_EVENT_LIMIT = 100;
 const MAX_EVENTS = 200;
@@ -70,6 +70,21 @@ interface OfficeAgentModel extends AgentDirectoryRecord {
   eventTrail: RealtimeEvent[];
   activityState: OfficeDeskAgent["activityState"];
   collabPeers: string[];
+  zoneId: OfficeZoneId;
+  zoneLabel: string;
+  attentionLevel: OfficeAttentionLevel;
+  behaviorDirective: string;
+}
+
+interface OfficeZoneTelemetry {
+  zoneId: OfficeZoneId;
+  label: string;
+  totalAgents: number;
+  activeAgents: number;
+  linkedAgents: number;
+  alertAgents: number;
+  focus: string;
+  attentionLevel: OfficeAttentionLevel;
 }
 
 interface OperatorPreferences {
@@ -84,9 +99,11 @@ interface OperatorPreferences {
   focusMode: boolean;
 }
 
-interface OfficeAssetPack {
+export interface OfficeAssetPack {
   operatorModelPath?: string;
   goatModelPath?: string;
+  goatModelVariant?: "animated" | "fallback" | "procedural";
+  goatModelLabel?: string;
 }
 
 type SelectedEntityId = "operator" | string;
@@ -146,42 +163,6 @@ const OfficeCanvasScene = lazy(async () => {
   const module = await import("../components/OfficeCanvas");
   return { default: module.OfficeCanvas };
 });
-
-interface OfficeCanvasErrorBoundaryProps {
-  children: ReactNode;
-}
-
-interface OfficeCanvasErrorBoundaryState {
-  hasError: boolean;
-}
-
-class OfficeCanvasErrorBoundary extends Component<
-  OfficeCanvasErrorBoundaryProps,
-  OfficeCanvasErrorBoundaryState
-> {
-  public override state: OfficeCanvasErrorBoundaryState = {
-    hasError: false,
-  };
-
-  public static getDerivedStateFromError(): OfficeCanvasErrorBoundaryState {
-    return { hasError: true };
-  }
-
-  public override componentDidCatch(_error: Error, _errorInfo: ErrorInfo): void {
-    // Keep the page interactive while isolating degraded WebGL or canvas render failures.
-  }
-
-  public override render(): ReactNode {
-    if (this.state.hasError) {
-      return (
-        <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-          <p>Office scene failed to render. WebGL may be unavailable or blocked in this browser. Reload the page or reduce motion settings.</p>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 export function OfficePage() {
   const [directory, setDirectory] = useState<AgentDirectoryRecord[]>([]);
@@ -305,7 +286,12 @@ export function OfficePage() {
 
   const sortedEvents = useMemo(() => sortEvents(events), [events]);
   const officeAgents = useMemo(() => deriveOfficeAgents(directory, sortedEvents), [directory, sortedEvents]);
+  const officeAgentNamesByRole = useMemo(
+    () => new Map(officeAgents.map((agent) => [agent.roleId, agent.name])),
+    [officeAgents],
+  );
   const collaborationEdges = useMemo(() => deriveCollaborationEdges(officeAgents), [officeAgents]);
+  const zoneTelemetry = useMemo(() => deriveZoneTelemetry(officeAgents), [officeAgents]);
   const selectedAgent = useMemo(
     () => officeAgents.find((agent) => agent.roleId === selectedEntityId),
     [officeAgents, selectedEntityId],
@@ -358,6 +344,14 @@ export function OfficePage() {
     () => officeAgents.filter((agent) => agent.risk === "blocked" || agent.risk === "error").length,
     [officeAgents],
   );
+  const priorityAgents = useMemo(
+    () => officeAgents.filter((agent) => agent.attentionLevel === "priority").length,
+    [officeAgents],
+  );
+  const watchAgents = useMemo(
+    () => officeAgents.filter((agent) => agent.attentionLevel === "watch").length,
+    [officeAgents],
+  );
 
   const operatorActivityState: OfficeOperatorModel["activityState"] = useMemo(() => {
     if (activeAgents >= 3 || pendingApprovals.length > 0 || eventFlow >= 2.2) {
@@ -367,6 +361,15 @@ export function OfficePage() {
   }, [activeAgents, eventFlow, pendingApprovals.length]);
 
   const effectiveMotionMode: OfficeMotionMode = prefersReducedMotion ? "reduced" : operatorPrefs.motionMode;
+  const goatAssetStatus = useMemo(() => describeGoatAssetStatus(assetPack), [assetPack]);
+  const sceneResetKey = useMemo(
+    () => [
+      effectiveMotionMode,
+      assetPack.goatModelPath ?? "procedural",
+      assetPack.goatModelVariant ?? "procedural",
+    ].join("::"),
+    [assetPack.goatModelPath, assetPack.goatModelVariant, effectiveMotionMode],
+  );
 
   const operatorModel: OfficeOperatorModel = useMemo(() => ({
     operatorId: "operator",
@@ -423,6 +426,13 @@ export function OfficePage() {
     return tabs;
   }, [operatorPrefs.showInspectorDock, operatorPrefs.showRailDock]);
 
+  const handleEntitySelect = (entityId: SelectedEntityId) => {
+    setSelectedEntityId(entityId);
+    if (operatorPrefs.showInspectorDock) {
+      setDockTab("inspector");
+    }
+  };
+
   const renderInspectorPanel = () => {
     if (selectedEntityId === "operator") {
       return (
@@ -431,7 +441,7 @@ export function OfficePage() {
             <div className="office-avatar office-avatar-hot">GH</div>
             <div>
               <h3>{operatorPrefs.name}</h3>
-              <p className="office-agent-id">GoatHerder - Central Herd Operator</p>
+              <p className="office-agent-id">GoatHerder - Central Herd Operator - Command Hub</p>
             </div>
             <span className="office-pill office-pill-active">{operatorModel.activityState.replace("_", " ")}</span>
           </header>
@@ -456,7 +466,29 @@ export function OfficePage() {
               <dt>Event pace</dt>
               <dd>{eventFlow.toFixed(1)}/min</dd>
             </div>
+            <div>
+              <dt>Primary zone</dt>
+              <dd>Command Hub</dd>
+            </div>
           </dl>
+
+          <h4>Zone Pressure</h4>
+          <div className="office-zone-grid office-zone-grid-compact">
+            {zoneTelemetry.map((zone) => (
+              <article key={zone.zoneId} className={`office-zone-card office-zone-card-${zone.attentionLevel}`}>
+                <div className="office-zone-card-head">
+                  <p className="office-zone-card-label">{zone.label}</p>
+                  <span className={`office-pill ${attentionPillClass(zone.attentionLevel)}`}>
+                    {attentionLabel(zone.attentionLevel)}
+                  </span>
+                </div>
+                <p className="office-zone-card-metrics">
+                  {zone.activeAgents} active · {zone.linkedAgents} linked · {zone.alertAgents} alerts
+                </p>
+                <p className="office-zone-card-focus">{zone.focus}</p>
+              </article>
+            ))}
+          </div>
 
           <h4>Goatherder Preset</h4>
           <div className="office-preset-active">
@@ -519,22 +551,31 @@ export function OfficePage() {
 
     return (
       <>
-        <header className="office-agent-header">
-          <div className={`office-avatar office-avatar-${classifyAgentHeat(selectedAgent.lastSeenAt)}`}>
-            {initials(selectedAgent.name)}
-          </div>
-          <div>
-            <h3>{selectedAgent.name}</h3>
-            <p className="office-agent-id">{selectedAgent.title}</p>
-          </div>
-          <span className={`office-pill office-pill-${selectedAgent.status === "ready" ? "idle" : selectedAgent.status}`}>
-            {selectedAgent.status}
-          </span>
+          <header className="office-agent-header">
+            <div className={`office-avatar office-avatar-${classifyAgentHeat(selectedAgent.lastSeenAt)}`}>
+              {initials(selectedAgent.name)}
+            </div>
+            <div>
+              <h3>{selectedAgent.name}</h3>
+              <p className="office-agent-id">{selectedAgent.title} - {selectedAgent.zoneLabel}</p>
+            </div>
+            <div className="office-agent-pills">
+              <span className={`office-pill office-pill-${selectedAgent.status === "ready" ? "idle" : selectedAgent.status}`}>
+                {selectedAgent.status}
+              </span>
+              <span className={`office-pill ${attentionPillClass(selectedAgent.attentionLevel)}`}>
+                {attentionLabel(selectedAgent.attentionLevel)}
+              </span>
+            </div>
         </header>
 
         <p>{selectedAgent.summary}</p>
         <p><strong>Doing:</strong> {selectedAgent.currentAction}</p>
         <p><strong>Thinking:</strong> {selectedAgent.currentThought}</p>
+        <div className={`office-behavior-banner office-behavior-banner-${selectedAgent.attentionLevel}`}>
+          <p className="office-behavior-label">Behavior directive</p>
+          <p>{selectedAgent.behaviorDirective}</p>
+        </div>
 
         <dl className="office-meta-grid">
           <div>
@@ -554,12 +595,28 @@ export function OfficePage() {
             <dd>{selectedAgent.activityState.replaceAll("_", " ")}</dd>
           </div>
           <div>
+            <dt>Attention</dt>
+            <dd>{attentionLabel(selectedAgent.attentionLevel)}</dd>
+          </div>
+          <div>
+            <dt>Zone</dt>
+            <dd>{selectedAgent.zoneLabel}</dd>
+          </div>
+          <div>
             <dt>Collaborators</dt>
-            <dd>{selectedAgent.collabPeers.length > 0 ? selectedAgent.collabPeers.join(", ") : "-"}</dd>
+            <dd>
+              {selectedAgent.collabPeers.length > 0
+                ? selectedAgent.collabPeers.map((roleId) => officeAgentNamesByRole.get(roleId) ?? roleId).join(", ")
+                : "-"}
+            </dd>
           </div>
           <div>
             <dt>Last seen</dt>
             <dd>{formatRelative(selectedAgent.lastSeenAt)}</dd>
+          </div>
+          <div>
+            <dt>Signal heat</dt>
+            <dd>{classifyAgentHeat(selectedAgent.lastSeenAt)}</dd>
           </div>
         </dl>
 
@@ -612,6 +669,9 @@ export function OfficePage() {
             <StatusChip tone={blockedAgents > 0 ? "critical" : "success"}>
               {blockedAgents} blocked
             </StatusChip>
+            <StatusChip tone={priorityAgents > 0 ? "critical" : watchAgents > 0 ? "warning" : "success"}>
+              {priorityAgents} priority · {watchAgents} watch
+            </StatusChip>
           </div>
         )}
       />
@@ -659,6 +719,13 @@ export function OfficePage() {
               <StatusChip tone={operatorPrefs.showCollabOverlay ? "live" : "muted"}>
                 {operatorPrefs.showCollabOverlay ? "Flow visible" : "Flow hidden"}
               </StatusChip>
+              <StatusChip tone={blockedAgents > 0 ? "critical" : "success"}>
+                {blockedAgents} alerts
+              </StatusChip>
+              <StatusChip tone={priorityAgents > 0 ? "critical" : watchAgents > 0 ? "warning" : "muted"}>
+                {priorityAgents > 0 ? "Priority desks active" : watchAgents > 0 ? "Watch desks active" : "Desk pressure stable"}
+              </StatusChip>
+              <StatusChip tone={goatAssetStatus.tone}>{goatAssetStatus.chipLabel}</StatusChip>
             </div>
           )}
         >
@@ -743,6 +810,31 @@ export function OfficePage() {
             </div>
           </div>
 
+          <div className="office-zone-grid">
+            {zoneTelemetry.map((zone) => {
+              const isSelectedZone = selectedEntityId === "operator"
+                ? zone.zoneId === "command"
+                : selectedAgent?.zoneId === zone.zoneId;
+              return (
+                <article
+                  key={zone.zoneId}
+                  className={`office-zone-card office-zone-card-${zone.attentionLevel}${isSelectedZone ? " active" : ""}`}
+                >
+                  <div className="office-zone-card-head">
+                    <p className="office-zone-card-label">{zone.label}</p>
+                    <span className={`office-pill ${attentionPillClass(zone.attentionLevel)}`}>
+                      {attentionLabel(zone.attentionLevel)}
+                    </span>
+                  </div>
+                  <p className="office-zone-card-metrics">
+                    {zone.totalAgents} goats · {zone.activeAgents} active · {zone.linkedAgents} linked
+                  </p>
+                  <p className="office-zone-card-focus">{zone.focus}</p>
+                </article>
+              );
+            })}
+          </div>
+
           {officeAgents.length === 0 ? (
             <div className="gc-empty-state office-empty-state">
               <p className="gc-empty-title">No agent roles are available yet.</p>
@@ -750,7 +842,7 @@ export function OfficePage() {
             </div>
           ) : (
             <>
-              <OfficeCanvasErrorBoundary>
+              <OfficeCanvasErrorBoundary resetKey={sceneResetKey}>
                 {sceneReady ? (
                   <Suspense
                     fallback={(
@@ -763,7 +855,7 @@ export function OfficePage() {
                       operator={operatorModel}
                       agents={officeAgents}
                       selectedEntityId={selectedEntityId}
-                      onSelect={(entityId) => setSelectedEntityId(entityId as SelectedEntityId)}
+                      onSelect={(entityId) => handleEntitySelect(entityId as SelectedEntityId)}
                       assetPack={assetPack}
                       motionMode={effectiveMotionMode}
                       showCollabOverlay={operatorPrefs.showCollabOverlay}
@@ -778,12 +870,16 @@ export function OfficePage() {
                 )}
               </OfficeCanvasErrorBoundary>
               <FieldHelp className="office-stage-help">
-                Click the Goatherder or any desk to inspect the operator, recent signals, collaboration edges, and risk state without leaving the scene.
+                Click the Goatherder or any desk to inspect the operator, desk zone, recent signals, collaboration edges, and alert state without leaving the scene.
+              </FieldHelp>
+              <FieldHelp className="office-stage-help">
+                Goat asset pipeline: {goatAssetStatus.helpLabel}.
+                {goatAssetStatus.helpCopy}
               </FieldHelp>
               <div className="office-desk-list">
                 <button type="button"
                   className={selectedEntityId === "operator" ? "active" : ""}
-                  onClick={() => setSelectedEntityId("operator")}
+                  onClick={() => handleEntitySelect("operator")}
                 >
                   {operatorPrefs.name}
                 </button>
@@ -791,7 +887,7 @@ export function OfficePage() {
                   <button type="button"
                     key={agent.roleId}
                     className={selectedEntityId === agent.roleId ? "active" : ""}
-                    onClick={() => setSelectedEntityId(agent.roleId)}
+                    onClick={() => handleEntitySelect(agent.roleId)}
                   >
                     {agent.name}
                   </button>
@@ -877,6 +973,7 @@ export function OfficePage() {
               <span><b>Beam</b> active collaboration</span>
               <span><b>Pulse</b> handoff in progress</span>
               <span><b>Red hold</b> blocked or approval risk</span>
+              <span><b>Zone deck</b> command, build, research, security, or ops lane</span>
             </footer>
           </Panel>
         ) : (
@@ -897,6 +994,7 @@ function deriveOfficeAgents(
   const runtimeLookup = new Map<string, string>();
 
   for (const agent of directory) {
+    const zoneId = inferOfficeZone(agent);
     byRole.set(agent.roleId, {
       ...agent,
       currentAction: agent.status === "active"
@@ -912,6 +1010,10 @@ function deriveOfficeAgents(
       eventTrail: [],
       activityState: "idle_milling",
       collabPeers: [],
+      zoneId,
+      zoneLabel: officeZoneLabel(zoneId),
+      attentionLevel: "stable",
+      behaviorDirective: "Patrol the event rail and hold warm context for the next task.",
     });
 
     if (agent.runtimeAgentId) {
@@ -998,7 +1100,9 @@ function deriveOfficeAgents(
     const peers = [...(peersByRole.get(agent.roleId) ?? [])].sort();
     agent.collabPeers = peers;
 
-    if (agent.status === "active") {
+    if (agent.risk === "blocked" || agent.risk === "error") {
+      agent.activityState = "alert_response";
+    } else if (agent.status === "active") {
       agent.activityState = ageMs <= ACTIVITY_TRANSITION_WINDOW_MS
         ? "transitioning_to_desk"
         : "working_seated";
@@ -1006,9 +1110,16 @@ function deriveOfficeAgents(
       agent.activityState = "idle_milling";
     }
 
-    if (peers.length > 0 && (agent.status === "active" || agent.risk !== "none")) {
+    if (
+      agent.activityState !== "alert_response"
+      && peers.length > 0
+      && (agent.status === "active" || agent.risk !== "none")
+    ) {
       agent.activityState = "collaborating";
     }
+
+    agent.attentionLevel = deriveAttentionLevel(agent);
+    agent.behaviorDirective = deriveBehaviorDirective(agent, peers.length);
   }
 
   return agents.sort((left, right) => {
@@ -1037,7 +1148,10 @@ function deriveCollaborationEdges(agents: OfficeAgentModel[]): OfficeCollaborati
         continue;
       }
       const risk = agent.risk !== "none" || peer.risk !== "none";
-      const key = `${agent.roleId}->${peerRoleId}`;
+      const orderedRoles = [agent.roleId, peerRoleId].sort();
+      const fromRoleId = orderedRoles[0] ?? agent.roleId;
+      const toRoleId = orderedRoles[1] ?? peerRoleId;
+      const key = `${fromRoleId}->${toRoleId}`;
       const existing = edgeMap.get(key);
       if (existing) {
         existing.strength = Math.min(3, existing.strength + 0.4);
@@ -1045,8 +1159,8 @@ function deriveCollaborationEdges(agents: OfficeAgentModel[]): OfficeCollaborati
         continue;
       }
       edgeMap.set(key, {
-        fromRoleId: agent.roleId,
-        toRoleId: peerRoleId,
+        fromRoleId,
+        toRoleId,
         strength: 1,
         risk,
       });
@@ -1377,6 +1491,129 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function attentionLabel(attentionLevel: OfficeAttentionLevel): string {
+  if (attentionLevel === "priority") {
+    return "Priority";
+  }
+  if (attentionLevel === "watch") {
+    return "Watch";
+  }
+  return "Stable";
+}
+
+function attentionPillClass(attentionLevel: OfficeAttentionLevel): string {
+  if (attentionLevel === "priority") {
+    return "office-pill-priority";
+  }
+  if (attentionLevel === "watch") {
+    return "office-pill-watch";
+  }
+  return "office-pill-active";
+}
+
+function deriveAttentionLevel(
+  agent: Pick<OfficeAgentModel, "risk" | "activityState" | "status">,
+): OfficeAttentionLevel {
+  if (agent.activityState === "alert_response" || agent.risk === "blocked" || agent.risk === "error") {
+    return "priority";
+  }
+  if (agent.risk === "approval" || agent.activityState === "collaborating" || agent.status === "active") {
+    return "watch";
+  }
+  return "stable";
+}
+
+function deriveBehaviorDirective(
+  agent: Pick<OfficeAgentModel, "risk" | "activityState" | "status">,
+  peerCount: number,
+): string {
+  if (agent.activityState === "alert_response" || agent.risk === "blocked" || agent.risk === "error") {
+    return "Escalate the blocked path, keep the inspector pinned, and clear the failing handoff before new work enters the zone.";
+  }
+  if (agent.risk === "approval") {
+    return "Hold warm context, surface the approval dependency, and stay ready to resume as soon as review clears.";
+  }
+  if (agent.activityState === "collaborating" || peerCount > 0) {
+    return "Keep the shared task synchronized across linked goats and publish progress without breaking zone cadence.";
+  }
+  if (agent.activityState === "transitioning_to_desk") {
+    return "Route the fresh signal into the desk, stabilize context, and settle into execution before accepting another interrupt.";
+  }
+  if (agent.activityState === "working_seated" || agent.status === "active") {
+    return "Stay seated on execution, keep the desk feed current, and emit progress back to GoatHerder.";
+  }
+  if (agent.status === "ready") {
+    return "Hold warm context, keep tools staged, and wait for the next assignment burst.";
+  }
+  return "Patrol the event rail, preserve context, and be ready to absorb the next signal.";
+}
+
+function deriveZoneTelemetry(agents: OfficeAgentModel[]): OfficeZoneTelemetry[] {
+  return OFFICE_ZONE_ORDER.map((zoneId) => {
+    const zoneAgents = agents.filter((agent) => agent.zoneId === zoneId);
+    const totalAgents = zoneAgents.length;
+    const activeAgents = zoneAgents.filter((agent) => agent.status === "active").length;
+    const linkedAgents = zoneAgents.filter((agent) => agent.activityState === "collaborating").length;
+    const alertAgents = zoneAgents.filter((agent) => agent.attentionLevel === "priority").length;
+    const watchAgents = zoneAgents.filter((agent) => agent.attentionLevel === "watch").length;
+    const hottestAgent = zoneAgents.find((agent) => agent.attentionLevel === "priority")
+      ?? zoneAgents.find((agent) => agent.attentionLevel === "watch")
+      ?? zoneAgents[0];
+
+    let focus = "No goats assigned to this deck yet.";
+    if (hottestAgent?.attentionLevel === "priority") {
+      focus = `${hottestAgent.name} is in escalation mode. Clear the block before new work lands here.`;
+    } else if (hottestAgent?.attentionLevel === "watch") {
+      focus = `${hottestAgent.name} is carrying the live signal. Keep this deck in view for follow-up.`;
+    } else if (activeAgents > 0) {
+      focus = `${activeAgents} goats are executing inside this deck with no active hold.`;
+    } else if (totalAgents > 0) {
+      focus = `${totalAgents} goats are holding warm context and waiting for the next signal.`;
+    }
+
+    return {
+      zoneId,
+      label: officeZoneLabel(zoneId),
+      totalAgents,
+      activeAgents,
+      linkedAgents,
+      alertAgents,
+      focus,
+      attentionLevel: alertAgents > 0 ? "priority" : watchAgents > 0 ? "watch" : "stable",
+    };
+  });
+}
+
+export function describeGoatAssetStatus(assetPack: OfficeAssetPack): {
+  tone: "live" | "muted" | "warning";
+  chipLabel: string;
+  helpLabel: string;
+  helpCopy: string;
+} {
+  if (assetPack.goatModelVariant === "animated") {
+    return {
+      tone: "live",
+      chipLabel: "Animated goat live",
+      helpLabel: assetPack.goatModelLabel ?? "Animated Goat",
+      helpCopy: " Animation clips are enabled when the current GLB provides them.",
+    };
+  }
+  if (assetPack.goatModelPath) {
+    return {
+      tone: "muted",
+      chipLabel: "Fallback goat live",
+      helpLabel: assetPack.goatModelLabel ?? "Goat Subagent",
+      helpCopy: " Static goat fallback is active until an animated GLB is added to the asset manifest.",
+    };
+  }
+  return {
+    tone: "warning",
+    chipLabel: "Procedural goat live",
+    helpLabel: assetPack.goatModelLabel ?? "Procedural Goat",
+    helpCopy: " No shipped goat asset resolved, so the scene is using the procedural fallback.",
+  };
+}
+
 function buildOperatorThought(input: {
   activeAgents: number;
   blockedAgents: number;
@@ -1412,9 +1649,9 @@ function scheduleSceneActivation(callback: () => void): () => void {
   return () => window.clearTimeout(handle);
 }
 
-async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
+export async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
   let manifest: {
-    models?: Array<{ id?: string; path?: string; includedInRepo?: boolean }>;
+    models?: Array<{ id?: string; label?: string; path?: string; includedInRepo?: boolean }>;
   };
 
   try {
@@ -1422,16 +1659,22 @@ async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
     if (!response.ok) {
       return {};
     }
-    manifest = await response.json() as { models?: Array<{ id?: string; path?: string; includedInRepo?: boolean }> };
+    manifest = await response.json() as {
+      models?: Array<{ id?: string; label?: string; path?: string; includedInRepo?: boolean }>;
+    };
   } catch {
-    return {};
+    return { goatModelVariant: "procedural", goatModelLabel: "Procedural Goat" };
   }
 
   const models = manifest.models ?? [];
   const operator = models.find((item) => item.id === "central-operator");
+  const animatedGoat = models.find((item) => item.id === "goat-subagent-animated");
   const goat = models.find((item) => item.id === "goat-subagent");
 
-  const pack: OfficeAssetPack = {};
+  const pack: OfficeAssetPack = {
+    goatModelVariant: "procedural",
+    goatModelLabel: "Procedural Goat",
+  };
   if (operator?.path && operator.includedInRepo) {
     const exists = await checkAssetExists(operator.path);
     if (exists) {
@@ -1439,10 +1682,22 @@ async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
     }
   }
 
+  if (animatedGoat?.path && animatedGoat.includedInRepo) {
+    const exists = await checkAssetExists(animatedGoat.path);
+    if (exists) {
+      pack.goatModelPath = animatedGoat.path;
+      pack.goatModelVariant = "animated";
+      pack.goatModelLabel = animatedGoat.label ?? "Animated Goat";
+      return pack;
+    }
+  }
+
   if (goat?.path && goat.includedInRepo) {
     const exists = await checkAssetExists(goat.path);
     if (exists) {
       pack.goatModelPath = goat.path;
+      pack.goatModelVariant = "fallback";
+      pack.goatModelLabel = goat.label ?? "Goat Subagent";
     }
   }
 

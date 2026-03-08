@@ -8,6 +8,10 @@ import {
   type OfficeOperatorModel,
 } from "./OfficeCanvas";
 
+const dreiMocks = vi.hoisted(() => ({
+  useGLTF: vi.fn(() => ({ scene: {}, animations: [] })),
+}));
+
 vi.mock("@react-three/fiber", () => ({
   Canvas: ({ children, onPointerMissed }: { children: React.ReactNode; onPointerMissed?: () => void }) => (
     <div
@@ -27,7 +31,7 @@ vi.mock("@react-three/drei", () => ({
   Clone: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Html: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   OrbitControls: () => <div />,
-  useGLTF: () => ({ scene: {} }),
+  useGLTF: dreiMocks.useGLTF,
 }));
 
 const operator: OfficeOperatorModel = {
@@ -61,6 +65,7 @@ const edges: OfficeCollaborationEdge[] = [
 
 describe("OfficeCanvas coverage", () => {
   it("renders immersive office scene with overlays and model paths", async () => {
+    dreiMocks.useGLTF.mockClear();
     let renderer = create(<div />);
     await act(async () => {
       renderer = create(
@@ -80,11 +85,15 @@ describe("OfficeCanvas coverage", () => {
     await act(async () => {
       renderer.root.findByType("div").props.onClick?.();
     });
+    const goatModelCalls = dreiMocks.useGLTF.mock.calls
+      .filter((call) => (call as unknown[]).includes("/assets/goat.glb"));
+    expect(goatModelCalls).toHaveLength(agents.length);
     expect(renderer.toJSON()).toBeTruthy();
     renderer.unmount();
   });
 
   it("renders reduced-motion office scene without collaboration overlay", async () => {
+    dreiMocks.useGLTF.mockClear();
     let renderer = create(<div />);
     await act(async () => {
       renderer = create(
