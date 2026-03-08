@@ -7,6 +7,12 @@ const transcribeSchema = z.object({
   language: z.string().optional(),
 });
 
+const runtimeInstallSchema = z.object({
+  modelId: z.string().min(1).optional(),
+  activate: z.boolean().optional(),
+  repair: z.boolean().optional(),
+});
+
 const talkCreateSchema = z.object({
   mode: z.enum(["push_to_talk", "wake"]).optional(),
   sessionId: z.string().optional(),
@@ -14,6 +20,10 @@ const talkCreateSchema = z.object({
 
 const talkParamsSchema = z.object({
   id: z.string().min(1),
+});
+
+const modelParamsSchema = z.object({
+  modelId: z.string().min(1),
 });
 
 export const voiceRoutes: FastifyPluginAsync = async (fastify) => {
@@ -62,6 +72,46 @@ export const voiceRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get("/api/v1/voice/status", async (_request, reply) => {
-    return reply.send(fastify.gateway.getVoiceStatus());
+    return reply.send(await fastify.gateway.getVoiceStatus());
+  });
+
+  fastify.get("/api/v1/voice/runtime", async (_request, reply) => {
+    return reply.send(await fastify.gateway.getVoiceRuntimeStatus());
+  });
+
+  fastify.post("/api/v1/voice/runtime/install", async (request, reply) => {
+    const parsed = runtimeInstallSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.installVoiceRuntime(parsed.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/voice/runtime/models/:modelId/select", async (request, reply) => {
+    const params = modelParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.selectVoiceRuntimeModel(params.data.modelId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.delete("/api/v1/voice/runtime/models/:modelId", async (request, reply) => {
+    const params = modelParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.removeVoiceRuntimeModel(params.data.modelId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
   });
 };

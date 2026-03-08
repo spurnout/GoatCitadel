@@ -218,6 +218,8 @@ import type {
   ToolInvokeRequest,
   ToolInvokeResult,
   VoiceStatus,
+  VoiceRuntimeInstallRequest,
+  VoiceRuntimeStatus,
   VoiceTalkSessionRecord,
   VoiceTranscribeResponse,
   GuidanceBundleRecord,
@@ -260,6 +262,19 @@ import {
   buildSelectedPathTurnIds,
   resolveNewestLeafTurnId,
 } from "./chat-thread-utils.js";
+import { executeOrchestrationPlan } from "../orchestration/engine.js";
+import { CHAT_MODE_POLICY } from "../orchestration/policies/chat-policy.js";
+import { buildProviderCapabilityRegistry } from "../orchestration/providers/capability-registry.js";
+import {
+  buildOrchestrationPlan,
+  resolveModePolicy,
+  shouldUseModeOrchestration,
+} from "../orchestration/router.js";
+import type {
+  OrchestrationExecutionResult,
+  OrchestrationRouterInput,
+  OrchestrationStepExecutionResult,
+} from "../orchestration/types.js";
 import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-catalog.js";
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
@@ -269,6 +284,12 @@ import { ResearchService } from "./research-service.js";
 import { ObsidianVaultService } from "./obsidian-vault-service.js";
 import { SkillImportService } from "./skill-import-service.js";
 import { AddonsService } from "./addons-service.js";
+import {
+  installManagedVoiceRuntime,
+  removeManagedVoiceModel,
+  selectManagedVoiceModel,
+} from "../voice-runtime/installer.js";
+import { getManagedVoiceRuntimeStatus } from "../voice-runtime/status.js";
 import { normalizeMemoryForgetCriteria, serializePathWithinRoot } from "./security-utils.js";
 import {
   COST_REPORT_HOURLY_JOB_ID,
@@ -6921,6 +6942,7 @@ export class GatewayService {
     normalized: ReturnType<typeof normalizeAgentInputFromSend>;
     retrievalTrace: NonNullable<ChatTurnTraceRecord["retrieval"]>;
     resolvedGuidance: ResolvedRuntimeGuidance;
+    conversationMessages: ChatMessageRecord[];
     history: ChatCompletionRequest["messages"];
     turnId: string;
     assistantMessageId: string;
@@ -7025,6 +7047,25 @@ export class GatewayService {
     const sessionState = await this.loadChatTurnSessionState(sessionId);
     const parentTurnId = options?.parentTurnId ?? sessionState.activeLeafTurnId;
     const pathTurnIds = parentTurnId ? buildSelectedPathTurnIds(sessionState.turnLineageById, parentTurnId) : [];
+    const conversationMessages = pathTurnIds.flatMap((turnId) => {
+      const trace = sessionState.tracesById.get(turnId);
+      if (!trace) {
+        return [];
+      }
+      const items: ChatMessageRecord[] = [];
+      const userMessageFromState = sessionState.messagesById.get(trace.userMessageId);
+      if (userMessageFromState) {
+        items.push(userMessageFromState);
+      }
+      if (trace.assistantMessageId) {
+        const assistantMessage = sessionState.messagesById.get(trace.assistantMessageId);
+        if (assistantMessage) {
+          items.push(assistantMessage);
+        }
+      }
+      return items;
+    });
+    conversationMessages.push(userMessage);
     const history = await this.buildLlmMessagesFromBranchPath(sessionId, pathTurnIds, userMessage, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
@@ -7043,6 +7084,7 @@ export class GatewayService {
       normalized,
       retrievalTrace,
       resolvedGuidance,
+      conversationMessages,
       history,
       turnId: randomUUID(),
       assistantMessageId: `assistant-${randomUUID()}`,
@@ -7050,6 +7092,199 @@ export class GatewayService {
       branchKind,
       sourceTurnId: options?.sourceTurnId,
       effectiveToolAutonomy,
+    };
+  }
+
+  private resolvePreparedTurnOrchestration(
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+  ): OrchestrationRouterInput & { plan: ReturnType<typeof buildOrchestrationPlan> } | undefined {
+    const mode = prepared.normalized.mode ?? prepared.prefs.mode;
+    const runtime = this.llmService.getRuntimeConfig({
+      useCache: true,
+    });
+    const capabilities = buildProviderCapabilityRegistry(runtime);
+    const policy = resolveModePolicy(mode);
+    const routerInput: OrchestrationRouterInput = {
+      task: {
+        sessionId: prepared.session.sessionId,
+        workspaceId: prepared.workspaceId,
+        mode,
+        objective: prepared.content,
+        prefs: prepared.prefs,
+        conversation: prepared.conversationMessages,
+        historyMessages: prepared.history,
+      },
+      runtime,
+      capabilities,
+      policy,
+    };
+    if (!shouldUseModeOrchestration(routerInput)) {
+      return undefined;
+    }
+    return {
+      ...routerInput,
+      plan: buildOrchestrationPlan(routerInput),
+    };
+  }
+
+  private buildChatOrchestrationSummary(input: {
+    runId: string;
+    objective: string;
+    modePolicy: ChatMode;
+    routeDecision: ReturnType<typeof buildOrchestrationPlan>["routeDecision"];
+    stepResults: OrchestrationStepExecutionResult[];
+    finalSummary?: string;
+    finalized?: boolean;
+  }): NonNullable<ChatTurnTraceRecord["orchestration"]> {
+    const completedCount = input.stepResults.filter((step) => step.status === "completed").length;
+    const failedCount = input.stepResults.filter((step) => step.status === "failed").length;
+    const status: ChatDelegationRunRecord["status"] = !input.finalized
+      ? "running"
+      : completedCount === 0
+        ? "failed"
+        : failedCount > 0
+          ? "partial"
+          : "completed";
+    return {
+      runId: input.runId,
+      objective: input.objective,
+      workflowTemplate: input.routeDecision.workflowTemplate,
+      status,
+      modePolicy: input.modePolicy,
+      visibility: input.routeDecision.visibility,
+      finalSummary: input.finalSummary,
+      routeDecision: input.routeDecision,
+      steps: input.stepResults.map((step) => ({
+        stepId: step.stepId,
+        role: step.role,
+        index: step.index,
+        status: step.status,
+        providerId: step.providerId,
+        model: step.model,
+        startedAt: step.startedAt,
+        finishedAt: step.finishedAt,
+        durationMs: step.durationMs,
+        summary: step.summary,
+        error: step.error,
+      })),
+    };
+  }
+
+  private async executePreparedModeOrchestration(
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    input: ChatSendMessageRequest,
+    onProgress?: (summary: NonNullable<ChatTurnTraceRecord["orchestration"]>) => Promise<void> | void,
+  ): Promise<OrchestrationExecutionResult & { summary: NonNullable<ChatTurnTraceRecord["orchestration"]> }> {
+    const orchestration = this.resolvePreparedTurnOrchestration(prepared);
+    if (!orchestration) {
+      throw new Error("Prepared chat turn is not eligible for orchestration");
+    }
+    const runId = randomUUID();
+    const runMode = orchestration.plan.routeDecision.parallelism === "parallel" ? "parallel" : "sequential";
+    const runTrace = {
+      primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+      primaryModel: input.model ?? prepared.prefs.model,
+      effectiveProviderId: orchestration.plan.steps.at(-1)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+      effectiveModel: orchestration.plan.steps.at(-1)?.model ?? input.model ?? prepared.prefs.model,
+    } satisfies ChatTurnTraceRecord["routing"];
+    this.storage.chatDelegationRuns.create({
+      runId,
+      sessionId: prepared.session.sessionId,
+      taskId: `chat-orchestration:${prepared.turnId}`,
+      objective: prepared.content,
+      roles: orchestration.plan.routeDecision.selectedRoles,
+      mode: runMode,
+      providerId: input.providerId ?? prepared.prefs.providerId,
+      model: input.model ?? prepared.prefs.model,
+      status: "running",
+      visibility: orchestration.plan.routeDecision.visibility,
+      workflowTemplate: orchestration.plan.workflowTemplate,
+      routeDecision: orchestration.plan.routeDecision,
+      citations: [],
+      trace: runTrace,
+    });
+
+    for (const [index, step] of orchestration.plan.steps.entries()) {
+      this.storage.chatDelegationSteps.create({
+        stepId: step.stepId,
+        runId,
+        role: step.role,
+        index,
+        status: "pending",
+        providerId: step.providerId,
+        model: step.model,
+      });
+    }
+
+    let currentSteps: OrchestrationStepExecutionResult[] = [];
+    const initialSummary = this.buildChatOrchestrationSummary({
+      runId,
+      objective: prepared.content,
+      modePolicy: orchestration.task.mode,
+      routeDecision: orchestration.plan.routeDecision,
+      stepResults: currentSteps,
+      finalized: false,
+    });
+    await onProgress?.(initialSummary);
+
+    const result = await executeOrchestrationPlan({
+      task: orchestration.task,
+      plan: orchestration.plan,
+      callbacks: {
+        createChatCompletion: (request) => this.createChatCompletion(request),
+        onStepResult: async (step, allSteps) => {
+          currentSteps = [...allSteps];
+          this.storage.chatDelegationSteps.patch(step.stepId, {
+            status: step.status,
+            providerId: step.providerId,
+            model: step.model,
+            summary: step.summary,
+            output: step.output,
+            error: step.error,
+            finishedAt: step.finishedAt,
+            durationMs: step.durationMs,
+          });
+          const summary = this.buildChatOrchestrationSummary({
+            runId,
+            objective: prepared.content,
+            modePolicy: orchestration.task.mode,
+            routeDecision: orchestration.plan.routeDecision,
+            stepResults: currentSteps,
+            finalized: false,
+          });
+          await onProgress?.(summary);
+        },
+      },
+    });
+
+    const summary = this.buildChatOrchestrationSummary({
+      runId,
+      objective: prepared.content,
+      modePolicy: orchestration.task.mode,
+      routeDecision: orchestration.plan.routeDecision,
+      stepResults: result.stepResults,
+      finalSummary: result.finalSummary,
+      finalized: true,
+    });
+    this.storage.chatDelegationRuns.patch(runId, {
+      status: summary.status,
+      visibility: summary.visibility,
+      workflowTemplate: summary.workflowTemplate,
+      routeDecision: summary.routeDecision,
+      finalSummary: result.finalSummary,
+      stitchedOutput: result.finalOutput,
+      citations: result.citations,
+      trace: {
+        ...runTrace,
+        effectiveProviderId: result.stepResults.at(-1)?.providerId ?? runTrace.effectiveProviderId,
+        effectiveModel: result.stepResults.at(-1)?.model ?? runTrace.effectiveModel,
+      },
+      finishedAt: new Date().toISOString(),
+    });
+    await onProgress?.(summary);
+    return {
+      ...result,
+      summary,
     };
   }
 
@@ -7071,6 +7306,167 @@ export class GatewayService {
       branchKind: prepared.branchKind,
       sourceTurnId: prepared.sourceTurnId,
     };
+
+    const modeOrchestration = this.resolvePreparedTurnOrchestration(prepared);
+    if (modeOrchestration) {
+      const mode = prepared.normalized.mode ?? prepared.prefs.mode;
+      const initialTrace = this.storage.chatTurnTraces.create({
+        turnId,
+        sessionId,
+        userMessageId: prepared.userEventId,
+        parentTurnId: prepared.parentTurnId,
+        branchKind: prepared.branchKind,
+        sourceTurnId: prepared.sourceTurnId,
+        status: "running",
+        mode,
+        model: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+        webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+        memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+        thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+        effectiveToolAutonomy: prepared.effectiveToolAutonomy,
+        routing: {
+          primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+          primaryModel: input.model ?? prepared.prefs.model,
+          effectiveProviderId: modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+          effectiveModel: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+        },
+      });
+      yield {
+        type: "trace_update",
+        sessionId,
+        turnId,
+        trace: initialTrace,
+      };
+
+      const orchestrationResult = await this.executePreparedModeOrchestration(prepared, input, async (summary) => {
+        this.storage.chatTurnTraces.patch(turnId, {
+          orchestration: summary,
+          model: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          routing: {
+            primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+            primaryModel: input.model ?? prepared.prefs.model,
+            effectiveProviderId: summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+            effectiveModel: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          },
+        });
+      });
+
+      let finalText = orchestrationResult.finalOutput.trim();
+      if (!finalText) {
+        finalText = buildEmptyAssistantTurnFallbackText();
+      }
+
+      await this.ingestEvent(randomUUID(), {
+        eventId: assistantMessageId,
+        route: prepared.route,
+        actor: {
+          type: "agent",
+          id: "assistant",
+        },
+        message: {
+          role: "assistant",
+          content: finalText,
+        },
+      });
+
+      for (const citation of orchestrationResult.citations) {
+        yield {
+          type: "citation",
+          sessionId,
+          turnId,
+          citation,
+        };
+      }
+
+      let hydratedTrace: ChatTurnTraceRecord = {
+        ...this.storage.chatTurnTraces.patch(turnId, {
+          assistantMessageId,
+          status: orchestrationResult.summary.status === "failed" ? "failed" : "completed",
+          finishedAt: new Date().toISOString(),
+          model: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          routing: {
+            primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+            primaryModel: input.model ?? prepared.prefs.model,
+            effectiveProviderId: orchestrationResult.summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+            effectiveModel: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          },
+          retrieval: prepared.retrievalTrace,
+          reflection: {
+            attempted: false,
+            attemptCount: 0,
+            outcome: "not_needed",
+          },
+          proactive: {
+            runId: prepared.autonomy.lastProactiveRunId,
+            mode: prepared.autonomy.proactiveMode,
+          },
+          orchestration: orchestrationResult.summary,
+          guidance: {
+            workspaceId: prepared.workspaceId,
+            globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+            workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+            truncated: prepared.resolvedGuidance.truncated,
+          },
+          citations: orchestrationResult.citations,
+        }),
+        toolRuns: [],
+      };
+      yield {
+        type: "message_done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+        content: finalText,
+      };
+      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+        sessionId,
+        content: prepared.content,
+        assistantText: finalText,
+        trace: hydratedTrace,
+      });
+      if (capabilityUpgradeSuggestions.length > 0) {
+        hydratedTrace = {
+          ...this.storage.chatTurnTraces.patch(turnId, {
+            capabilityUpgradeSuggestions,
+          }),
+          toolRuns: [],
+        };
+        yield {
+          type: "capability_upgrade_suggestion",
+          sessionId,
+          turnId,
+          capabilityUpgradeSuggestions,
+        };
+      }
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
+      yield {
+        type: "trace_update",
+        sessionId,
+        turnId,
+        trace: hydratedTrace,
+      };
+      this.publishRealtime("chat_thread_updated", "chat", {
+        type: threadEventType,
+        sessionId,
+        turnId,
+        activeLeafTurnId: turnId,
+      });
+      this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
+        role: "user",
+        sourceRef: prepared.userEventId,
+      });
+      this.extractAndPersistLearnedMemory(sessionId, finalText, {
+        role: "assistant",
+        sourceRef: assistantMessageId,
+      });
+      yield {
+        type: "done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+      };
+      return;
+    }
 
     let finalText = "";
     let assistantUsage: {
@@ -7318,6 +7714,14 @@ export class GatewayService {
           sessionId,
           prepared,
           binding,
+          "chat_thread_turn_appended",
+        );
+      }
+      if (this.resolvePreparedTurnOrchestration(prepared)) {
+        return this.consumePreparedAgentChatTurn(
+          sessionId,
+          input,
+          prepared,
           "chat_thread_turn_appended",
         );
       }
@@ -7767,6 +8171,45 @@ export class GatewayService {
         },
       },
     });
+  }
+
+  private async consumePreparedAgentChatTurn(
+    sessionId: string,
+    input: ChatSendMessageRequest,
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
+  ): Promise<ChatSendMessageResponse> {
+    let assistantMessage: ChatMessageRecord | undefined;
+    let trace: ChatTurnTraceRecord | undefined;
+    let citations: ChatCitationRecord[] = [];
+    for await (const chunk of this.streamPreparedAgentChatTurn(sessionId, input, prepared, threadEventType)) {
+      if (chunk.type === "message_done") {
+        assistantMessage = {
+          messageId: chunk.messageId,
+          sessionId,
+          role: "assistant",
+          actorType: "agent",
+          actorId: "assistant",
+          content: chunk.content,
+          timestamp: new Date().toISOString(),
+        };
+      } else if (chunk.type === "trace_update") {
+        trace = chunk.trace;
+      } else if (chunk.type === "citation") {
+        citations = [...citations, chunk.citation];
+      }
+    }
+    return {
+      sessionId,
+      userMessage: prepared.userMessage,
+      assistantMessage,
+      transport: "llm",
+      model: trace?.model ?? input.model ?? prepared.prefs.model,
+      turnId: prepared.turnId,
+      trace,
+      citations,
+      routing: trace?.routing,
+    };
   }
 
   private async sendPreparedIntegrationChatTurn(
@@ -10620,11 +11063,14 @@ export class GatewayService {
     return this.transcribeAudioBytes(bytes, input.mimeType, input.language);
   }
 
-  public getVoiceStatus(): VoiceStatus {
+  public async getVoiceStatus(): Promise<VoiceStatus> {
     const now = new Date().toISOString();
+    const runtime = await getManagedVoiceRuntimeStatus(this.storage.systemSettings);
     const stt = this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
       state: "stopped",
       provider: DEFAULT_VOICE_PROVIDER,
+      runtimeReady: runtime.readiness === "ready",
+      modelId: runtime.selectedModelId,
       updatedAt: now,
     };
     const wake = this.storage.systemSettings.get<VoiceStatus["wake"]>(VOICE_WAKE_STATUS_SETTING_KEY)?.value ?? {
@@ -10645,10 +11091,69 @@ export class GatewayService {
       updatedAt: now,
     };
     return {
-      stt,
+      stt: {
+        ...stt,
+        runtimeReady: runtime.readiness === "ready",
+        modelId: runtime.selectedModelId,
+      },
       talk: talkRecord,
       wake,
     };
+  }
+
+  public async getVoiceRuntimeStatus(): Promise<VoiceRuntimeStatus> {
+    return getManagedVoiceRuntimeStatus(this.storage.systemSettings);
+  }
+
+  public async installVoiceRuntime(input: VoiceRuntimeInstallRequest = {}): Promise<VoiceRuntimeStatus> {
+    const status = await installManagedVoiceRuntime(this.storage.systemSettings, input);
+    this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+      ...(this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
+        state: "stopped" as const,
+        provider: DEFAULT_VOICE_PROVIDER,
+        updatedAt: new Date().toISOString(),
+      }),
+      provider: DEFAULT_VOICE_PROVIDER,
+      runtimeReady: status.readiness === "ready",
+      modelId: status.selectedModelId,
+      lastError: status.lastError,
+      updatedAt: new Date().toISOString(),
+    });
+    return status;
+  }
+
+  public async selectVoiceRuntimeModel(modelId: string): Promise<VoiceRuntimeStatus> {
+    const status = await selectManagedVoiceModel(this.storage.systemSettings, modelId);
+    this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+      ...(this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
+        state: "stopped" as const,
+        provider: DEFAULT_VOICE_PROVIDER,
+        updatedAt: new Date().toISOString(),
+      }),
+      provider: DEFAULT_VOICE_PROVIDER,
+      runtimeReady: status.readiness === "ready",
+      modelId: status.selectedModelId,
+      lastError: status.lastError,
+      updatedAt: new Date().toISOString(),
+    });
+    return status;
+  }
+
+  public async removeVoiceRuntimeModel(modelId: string): Promise<VoiceRuntimeStatus> {
+    const status = await removeManagedVoiceModel(this.storage.systemSettings, modelId);
+    this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
+      ...(this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
+        state: "stopped" as const,
+        provider: DEFAULT_VOICE_PROVIDER,
+        updatedAt: new Date().toISOString(),
+      }),
+      provider: DEFAULT_VOICE_PROVIDER,
+      runtimeReady: status.readiness === "ready",
+      modelId: status.selectedModelId,
+      lastError: status.lastError,
+      updatedAt: new Date().toISOString(),
+    });
+    return status;
   }
 
   public startTalkSession(input?: { mode?: "push_to_talk" | "wake"; sessionId?: string }): VoiceTalkSessionRecord {
@@ -12349,39 +12854,60 @@ export class GatewayService {
     language?: string,
   ): Promise<VoiceTranscribeResponse> {
     const started = Date.now();
-    const binPath = process.env.GOATCITADEL_WHISPER_CPP_BIN?.trim();
+    const runtime = await getManagedVoiceRuntimeStatus(this.storage.systemSettings);
+    const binPath = process.env.GOATCITADEL_WHISPER_CPP_BIN?.trim() || runtime.binaryPath;
+    const modelPath = process.env.GOATCITADEL_WHISPER_CPP_MODEL_PATH?.trim() || runtime.selectedModelPath;
+    const ffmpegPath = process.env.GOATCITADEL_FFMPEG_BIN?.trim() || runtime.ffmpegPath;
+    const extraArgs = parseVoiceCliArgs(process.env.GOATCITADEL_WHISPER_CPP_ARGS);
     if (!binPath) {
       const now = new Date().toISOString();
       this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
         state: "error",
         provider: DEFAULT_VOICE_PROVIDER,
-        lastError: "GOATCITADEL_WHISPER_CPP_BIN is not configured.",
+        modelId: runtime.selectedModelId,
+        runtimeReady: false,
+        lastError: "No whisper.cpp runtime is configured.",
         updatedAt: now,
       });
-      throw new Error("Local STT is not configured. Set GOATCITADEL_WHISPER_CPP_BIN to the whisper.cpp CLI path.");
+      throw new Error("Local STT is not configured. Install the managed voice runtime or set GOATCITADEL_WHISPER_CPP_BIN.");
     }
 
     const tempBase = path.join(os.tmpdir(), `goatcitadel-whisper-${randomUUID()}`);
     const ext = extFromMimeType(mimeType);
     const inputPath = `${tempBase}${ext}`;
+    const normalizedInputPath = `${tempBase}-normalized.wav`;
     const outputBase = `${tempBase}-out`;
     const outputPath = `${outputBase}.txt`;
 
     this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
       state: "running",
       provider: DEFAULT_VOICE_PROVIDER,
+      modelId: runtime.selectedModelId,
+      runtimeReady: Boolean(binPath && (modelPath || process.env.GOATCITADEL_WHISPER_CPP_BIN?.trim())),
       updatedAt: new Date().toISOString(),
     });
 
     try {
       await fs.writeFile(inputPath, bytes);
-      const args = [
-        "-f",
+      const whisperInputPath = await normalizeAudioForWhisper({
         inputPath,
+        outputPath: normalizedInputPath,
+        mimeType,
+        ffmpegPath,
+      });
+      const args = [
+        ...extraArgs,
+      ];
+      if (modelPath) {
+        args.push("-m", modelPath);
+      }
+      args.push(
+        "-f",
+        whisperInputPath,
         "-otxt",
         "-of",
         outputBase,
-      ];
+      );
       if (language?.trim()) {
         args.push("-l", language.trim());
       }
@@ -12391,6 +12917,8 @@ export class GatewayService {
       this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
         state: "stopped",
         provider: DEFAULT_VOICE_PROVIDER,
+        modelId: runtime.selectedModelId,
+        runtimeReady: true,
         updatedAt: now,
       });
       return {
@@ -12404,6 +12932,8 @@ export class GatewayService {
       this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
         state: "error",
         provider: DEFAULT_VOICE_PROVIDER,
+        modelId: runtime.selectedModelId,
+        runtimeReady: false,
         lastError: (error as Error).message,
         updatedAt: now,
       });
@@ -12411,6 +12941,7 @@ export class GatewayService {
     } finally {
       await Promise.allSettled([
         fs.rm(inputPath, { force: true }),
+        fs.rm(normalizedInputPath, { force: true }),
         fs.rm(outputPath, { force: true }),
       ]);
     }
@@ -14256,6 +14787,48 @@ function extFromMimeType(mimeType?: string): string {
   return ".bin";
 }
 
+function parseVoiceCliArgs(rawValue?: string): string[] {
+  if (!rawValue?.trim()) {
+    return [];
+  }
+  return rawValue
+    .split(/\s+/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function normalizeAudioForWhisper(input: {
+  inputPath: string;
+  outputPath: string;
+  mimeType?: string;
+  ffmpegPath?: string;
+}): Promise<string> {
+  const normalized = input.mimeType?.toLowerCase() ?? "";
+  if (normalized.includes("wav") || input.inputPath.toLowerCase().endsWith(".wav")) {
+    return input.inputPath;
+  }
+  if (!input.ffmpegPath) {
+    throw new Error("Audio normalization helper is not configured for non-WAV input.");
+  }
+  execFileSync(
+    input.ffmpegPath,
+    [
+      "-y",
+      "-i",
+      input.inputPath,
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      "-f",
+      "wav",
+      input.outputPath,
+    ],
+    { stdio: "pipe" },
+  );
+  return input.outputPath;
+}
+
 function parseSlashCommand(input: string): string[] | undefined {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) {
@@ -14675,6 +15248,13 @@ function splitChatPrefsPatch(
     | "thinkingLevel"
     | "toolAutonomy"
     | "visionFallbackModel"
+    | "orchestrationEnabled"
+    | "orchestrationIntensity"
+    | "orchestrationVisibility"
+    | "orchestrationProviderPreference"
+    | "orchestrationReviewDepth"
+    | "orchestrationParallelism"
+    | "codeAutoApply"
   >;
   autonomyPatch: Partial<{
     proactiveMode: ChatProactiveMode;
@@ -14696,6 +15276,13 @@ function splitChatPrefsPatch(
     | "thinkingLevel"
     | "toolAutonomy"
     | "visionFallbackModel"
+    | "orchestrationEnabled"
+    | "orchestrationIntensity"
+    | "orchestrationVisibility"
+    | "orchestrationProviderPreference"
+    | "orchestrationReviewDepth"
+    | "orchestrationParallelism"
+    | "codeAutoApply"
   > = {
     mode: input.mode,
     planningMode: input.planningMode,
@@ -14706,6 +15293,13 @@ function splitChatPrefsPatch(
     thinkingLevel: input.thinkingLevel,
     toolAutonomy: input.toolAutonomy,
     visionFallbackModel: input.visionFallbackModel,
+    orchestrationEnabled: input.orchestrationEnabled,
+    orchestrationIntensity: input.orchestrationIntensity,
+    orchestrationVisibility: input.orchestrationVisibility,
+    orchestrationProviderPreference: input.orchestrationProviderPreference,
+    orchestrationReviewDepth: input.orchestrationReviewDepth,
+    orchestrationParallelism: input.orchestrationParallelism,
+    codeAutoApply: input.codeAutoApply,
   };
   return {
     basePatch,

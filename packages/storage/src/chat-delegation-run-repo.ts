@@ -1,5 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChatCitationRecord, ChatDelegationMode, ChatDelegationRunRecord, ChatDelegationRunStatus, ChatTurnTraceRecord } from "@goatcitadel/contracts";
+import type {
+  ChatCitationRecord,
+  ChatDelegationMode,
+  ChatDelegationRunRecord,
+  ChatDelegationRunStatus,
+  ChatOrchestrationRouteDecision,
+  ChatOrchestrationVisibility,
+  ChatTurnTraceRecord,
+} from "@goatcitadel/contracts";
 
 interface ChatDelegationRunRow {
   run_id: string;
@@ -11,6 +19,10 @@ interface ChatDelegationRunRow {
   provider_id: string | null;
   model: string | null;
   status: ChatDelegationRunStatus;
+  visibility: ChatOrchestrationVisibility | null;
+  workflow_template: string | null;
+  route_decision_json: string | null;
+  final_summary: string | null;
   stitched_output: string | null;
   citations_json: string;
   trace_json: string | null;
@@ -28,10 +40,12 @@ export class ChatDelegationRunRepository {
     this.getStmt = db.prepare("SELECT * FROM chat_delegation_runs WHERE run_id = ?");
     this.insertStmt = db.prepare(`
       INSERT INTO chat_delegation_runs (
-        run_id, session_id, task_id, objective, roles_json, mode, provider_id, model, status,
+        run_id, session_id, task_id, objective, roles_json, mode, provider_id, model, status, visibility,
+        workflow_template, route_decision_json, final_summary,
         stitched_output, citations_json, trace_json, started_at, finished_at
       ) VALUES (
-        @runId, @sessionId, @taskId, @objective, @rolesJson, @mode, @providerId, @model, @status,
+        @runId, @sessionId, @taskId, @objective, @rolesJson, @mode, @providerId, @model, @status, @visibility,
+        @workflowTemplate, @routeDecisionJson, @finalSummary,
         @stitchedOutput, @citationsJson, @traceJson, @startedAt, @finishedAt
       )
     `);
@@ -39,6 +53,10 @@ export class ChatDelegationRunRepository {
       UPDATE chat_delegation_runs
       SET
         status = @status,
+        visibility = @visibility,
+        workflow_template = @workflowTemplate,
+        route_decision_json = @routeDecisionJson,
+        final_summary = @finalSummary,
         stitched_output = @stitchedOutput,
         citations_json = @citationsJson,
         trace_json = @traceJson,
@@ -71,6 +89,10 @@ export class ChatDelegationRunRepository {
     providerId?: string;
     model?: string;
     status?: ChatDelegationRunStatus;
+    visibility?: ChatOrchestrationVisibility;
+    workflowTemplate?: string;
+    routeDecision?: ChatOrchestrationRouteDecision;
+    finalSummary?: string;
     stitchedOutput?: string;
     citations?: ChatCitationRecord[];
     trace?: ChatTurnTraceRecord["routing"];
@@ -87,6 +109,10 @@ export class ChatDelegationRunRepository {
       providerId: input.providerId ?? null,
       model: input.model ?? null,
       status: input.status ?? "running",
+      visibility: input.visibility ?? null,
+      workflowTemplate: input.workflowTemplate ?? null,
+      routeDecisionJson: input.routeDecision ? JSON.stringify(input.routeDecision) : null,
+      finalSummary: input.finalSummary ?? null,
       stitchedOutput: input.stitchedOutput ?? null,
       citationsJson: JSON.stringify(input.citations ?? []),
       traceJson: input.trace ? JSON.stringify(input.trace) : null,
@@ -98,6 +124,10 @@ export class ChatDelegationRunRepository {
 
   public patch(runId: string, input: {
     status?: ChatDelegationRunStatus;
+    visibility?: ChatOrchestrationVisibility;
+    workflowTemplate?: string;
+    routeDecision?: ChatOrchestrationRouteDecision;
+    finalSummary?: string;
     stitchedOutput?: string;
     citations?: ChatCitationRecord[];
     trace?: ChatTurnTraceRecord["routing"];
@@ -107,6 +137,10 @@ export class ChatDelegationRunRepository {
     this.patchStmt.run({
       runId,
       status: input.status ?? current.status,
+      visibility: input.visibility !== undefined ? input.visibility : (current.visibility ?? null),
+      workflowTemplate: input.workflowTemplate !== undefined ? input.workflowTemplate : (current.workflowTemplate ?? null),
+      routeDecisionJson: JSON.stringify(input.routeDecision ?? current.routeDecision ?? null),
+      finalSummary: input.finalSummary !== undefined ? input.finalSummary : (current.finalSummary ?? null),
       stitchedOutput: input.stitchedOutput !== undefined ? input.stitchedOutput : (current.stitchedOutput ?? null),
       citationsJson: JSON.stringify(input.citations ?? current.citations),
       traceJson: JSON.stringify(input.trace ?? current.trace ?? {}),
@@ -135,6 +169,12 @@ function mapRow(row: ChatDelegationRunRow): ChatDelegationRunRecord {
     providerId: row.provider_id ?? undefined,
     model: row.model ?? undefined,
     status: row.status,
+    visibility: row.visibility ?? undefined,
+    workflowTemplate: row.workflow_template ?? undefined,
+    routeDecision: row.route_decision_json
+      ? safeJsonParse<ChatOrchestrationRouteDecision | undefined>(row.route_decision_json, undefined)
+      : undefined,
+    finalSummary: row.final_summary ?? undefined,
     startedAt: row.started_at,
     finishedAt: row.finished_at ?? undefined,
     stitchedOutput: row.stitched_output ?? undefined,
@@ -150,4 +190,3 @@ function safeJsonParse<T>(raw: string, fallback: T): T {
     return fallback;
   }
 }
-

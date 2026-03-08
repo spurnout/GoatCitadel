@@ -1,7 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import type {
+  ChatCodeAutoApplyPosture,
   ChatMode,
   ChatMemoryMode,
+  ChatOrchestrationIntensity,
+  ChatOrchestrationParallelism,
+  ChatOrchestrationProviderPreference,
+  ChatOrchestrationReviewDepth,
+  ChatOrchestrationVisibility,
   ChatPlanningMode,
   ChatSessionPrefsRecord,
   ChatThinkingLevel,
@@ -19,6 +25,13 @@ interface ChatSessionPrefsRow {
   thinking_level: ChatThinkingLevel;
   tool_autonomy: "safe_auto" | "manual";
   vision_fallback_model: string | null;
+  orchestration_enabled: number;
+  orchestration_intensity: ChatOrchestrationIntensity;
+  orchestration_visibility: ChatOrchestrationVisibility;
+  orchestration_provider_preference: ChatOrchestrationProviderPreference;
+  orchestration_review_depth: ChatOrchestrationReviewDepth;
+  orchestration_parallelism: ChatOrchestrationParallelism;
+  code_auto_apply: ChatCodeAutoApplyPosture;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +46,13 @@ export interface ChatSessionPrefsPatchInput {
   thinkingLevel?: ChatThinkingLevel;
   toolAutonomy?: "safe_auto" | "manual";
   visionFallbackModel?: string;
+  orchestrationEnabled?: boolean;
+  orchestrationIntensity?: ChatOrchestrationIntensity;
+  orchestrationVisibility?: ChatOrchestrationVisibility;
+  orchestrationProviderPreference?: ChatOrchestrationProviderPreference;
+  orchestrationReviewDepth?: ChatOrchestrationReviewDepth;
+  orchestrationParallelism?: ChatOrchestrationParallelism;
+  codeAutoApply?: ChatCodeAutoApplyPosture;
 }
 
 const DEFAULT_PREFS: Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt"> = {
@@ -45,6 +65,13 @@ const DEFAULT_PREFS: Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "u
   thinkingLevel: "standard",
   toolAutonomy: "safe_auto",
   visionFallbackModel: undefined,
+  orchestrationEnabled: true,
+  orchestrationIntensity: "balanced",
+  orchestrationVisibility: "summarized",
+  orchestrationProviderPreference: "balanced",
+  orchestrationReviewDepth: "standard",
+  orchestrationParallelism: "auto",
+  codeAutoApply: "aggressive_auto",
 };
 
 export class ChatSessionPrefsRepository {
@@ -56,10 +83,14 @@ export class ChatSessionPrefsRepository {
     this.upsertStmt = db.prepare(`
       INSERT INTO chat_session_prefs (
         session_id, mode, planning_mode, provider_id, model, web_mode, memory_mode, thinking_level,
-        tool_autonomy, vision_fallback_model, created_at, updated_at
+        tool_autonomy, vision_fallback_model, orchestration_enabled, orchestration_intensity,
+        orchestration_visibility, orchestration_provider_preference, orchestration_review_depth,
+        orchestration_parallelism, code_auto_apply, created_at, updated_at
       ) VALUES (
         @sessionId, @mode, @planningMode, @providerId, @model, @webMode, @memoryMode, @thinkingLevel,
-        @toolAutonomy, @visionFallbackModel, @createdAt, @updatedAt
+        @toolAutonomy, @visionFallbackModel, @orchestrationEnabled, @orchestrationIntensity,
+        @orchestrationVisibility, @orchestrationProviderPreference, @orchestrationReviewDepth,
+        @orchestrationParallelism, @codeAutoApply, @createdAt, @updatedAt
       )
       ON CONFLICT(session_id) DO UPDATE SET
         mode = excluded.mode,
@@ -71,6 +102,13 @@ export class ChatSessionPrefsRepository {
         thinking_level = excluded.thinking_level,
         tool_autonomy = excluded.tool_autonomy,
         vision_fallback_model = excluded.vision_fallback_model,
+        orchestration_enabled = excluded.orchestration_enabled,
+        orchestration_intensity = excluded.orchestration_intensity,
+        orchestration_visibility = excluded.orchestration_visibility,
+        orchestration_provider_preference = excluded.orchestration_provider_preference,
+        orchestration_review_depth = excluded.orchestration_review_depth,
+        orchestration_parallelism = excluded.orchestration_parallelism,
+        code_auto_apply = excluded.code_auto_apply,
         updated_at = excluded.updated_at
     `);
   }
@@ -96,6 +134,13 @@ export class ChatSessionPrefsRepository {
       thinkingLevel: DEFAULT_PREFS.thinkingLevel,
       toolAutonomy: DEFAULT_PREFS.toolAutonomy,
       visionFallbackModel: null,
+      orchestrationEnabled: DEFAULT_PREFS.orchestrationEnabled ? 1 : 0,
+      orchestrationIntensity: DEFAULT_PREFS.orchestrationIntensity,
+      orchestrationVisibility: DEFAULT_PREFS.orchestrationVisibility,
+      orchestrationProviderPreference: DEFAULT_PREFS.orchestrationProviderPreference,
+      orchestrationReviewDepth: DEFAULT_PREFS.orchestrationReviewDepth,
+      orchestrationParallelism: DEFAULT_PREFS.orchestrationParallelism,
+      codeAutoApply: DEFAULT_PREFS.codeAutoApply,
       createdAt: now,
       updatedAt: now,
     });
@@ -117,6 +162,15 @@ export class ChatSessionPrefsRepository {
       visionFallbackModel: input.visionFallbackModel !== undefined
         ? normalizeOptional(input.visionFallbackModel)
         : (current.visionFallbackModel ?? null),
+      orchestrationEnabled: input.orchestrationEnabled !== undefined
+        ? (input.orchestrationEnabled ? 1 : 0)
+        : (current.orchestrationEnabled ? 1 : 0),
+      orchestrationIntensity: input.orchestrationIntensity ?? current.orchestrationIntensity,
+      orchestrationVisibility: input.orchestrationVisibility ?? current.orchestrationVisibility,
+      orchestrationProviderPreference: input.orchestrationProviderPreference ?? current.orchestrationProviderPreference,
+      orchestrationReviewDepth: input.orchestrationReviewDepth ?? current.orchestrationReviewDepth,
+      orchestrationParallelism: input.orchestrationParallelism ?? current.orchestrationParallelism,
+      codeAutoApply: input.codeAutoApply ?? current.codeAutoApply,
       createdAt: current.createdAt,
       updatedAt: now,
     });
@@ -144,6 +198,13 @@ function mapRow(row: ChatSessionPrefsRow): ChatSessionPrefsRecord {
     thinkingLevel: row.thinking_level,
     toolAutonomy: row.tool_autonomy,
     visionFallbackModel: row.vision_fallback_model ?? undefined,
+    orchestrationEnabled: row.orchestration_enabled !== 0,
+    orchestrationIntensity: row.orchestration_intensity,
+    orchestrationVisibility: row.orchestration_visibility,
+    orchestrationProviderPreference: row.orchestration_provider_preference,
+    orchestrationReviewDepth: row.orchestration_review_depth,
+    orchestrationParallelism: row.orchestration_parallelism,
+    codeAutoApply: row.code_auto_apply,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

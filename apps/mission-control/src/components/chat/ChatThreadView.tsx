@@ -105,6 +105,8 @@ function ChatTurnRunStrip({ turn }: { turn: ChatThreadTurnRecord }) {
       {turn.trace.effectiveToolAutonomy ? <span>{turn.trace.effectiveToolAutonomy === "manual" ? "manual tools" : "safe auto tools"}</span> : null}
       <span>{turn.toolRuns.length} tool{turn.toolRuns.length === 1 ? "" : "s"}</span>
       <span>{turn.citations.length} citation{turn.citations.length === 1 ? "" : "s"}</span>
+      {turn.trace.orchestration ? <span>{turn.trace.orchestration.workflowTemplate}</span> : null}
+      {turn.trace.orchestration ? <span>{turn.trace.orchestration.steps.length} roles</span> : null}
       {routing.map((item) => <span key={item}>{item}</span>)}
       {turn.trace.routing.fallbackUsed ? <span>fallback used</span> : null}
     </div>
@@ -161,6 +163,20 @@ function ChatTurnDetails({
         <h5>Routing</h5>
         <p>{summarizeRouting(turn).join(" · ") || "No routing metadata yet."}</p>
       </div>
+      {turn.trace.orchestration ? (
+        <div className="chat-v11-turn-section">
+          <h5>Orchestration</h5>
+          <p>
+            {turn.trace.orchestration.workflowTemplate}
+            {" · "}
+            {turn.trace.orchestration.visibility}
+            {" · "}
+            {turn.trace.orchestration.status}
+          </p>
+          <p>{turn.trace.orchestration.routeDecision.selectedRoles.join(" -> ")}</p>
+          {turn.trace.orchestration.finalSummary ? <p>{turn.trace.orchestration.finalSummary}</p> : null}
+        </div>
+      ) : null}
       {suggestionSummary ? (
         <div className="chat-v11-turn-section">
           <h5>Capability suggestions</h5>

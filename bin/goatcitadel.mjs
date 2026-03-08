@@ -78,6 +78,10 @@ async function main() {
     runPnpm(["--dir", appDir, "tools", ...rest]);
     return;
   }
+  if (command === "voice") {
+    runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", "--", ...rest]);
+    return;
+  }
   if (command === "admin") {
     runPnpm(["--dir", appDir, "admin", ...rest]);
     return;
@@ -132,6 +136,28 @@ function installOrUpdate() {
     console.log("Re-syncing preserved GoatCitadel config after update...");
     runPnpm(["--dir", appDir, "config:sync"]);
   }
+  if (!installArgs.skipVoice) {
+    console.log(`Installing managed local voice runtime (${installArgs.voiceModel})...`);
+    try {
+      runPnpm([
+        "--dir",
+        appDir,
+        "--filter",
+        "@goatcitadel/gateway",
+        "run",
+        "voice:runtime",
+        "--",
+        "install",
+        "--model",
+        installArgs.voiceModel,
+      ]);
+    } catch (error) {
+      console.warn(
+        `Managed voice runtime install failed: ${error instanceof Error ? error.message : String(error)}. ` +
+        "Core GoatCitadel install is complete. Repair later with `goatcitadel voice install`.",
+      );
+    }
+  }
 
   console.log("");
   console.log("GoatCitadel install complete.");
@@ -140,15 +166,19 @@ function installOrUpdate() {
   console.log("  goatcitadel up");
   console.log("  goatcitadel onboard");
   console.log("  goatcitadel doctor --deep");
+  console.log("  goatcitadel voice status");
   console.log("  goat up");
   console.log("  goat onboard");
   console.log("  goat doctor --deep");
+  console.log("  goat voice status");
   console.log("  Managed GoatCitadel config is preserved across installer updates.");
 }
 
 function parseInstallArgs(argv) {
   let installDir;
   let repoUrlOverride;
+  let skipVoice = false;
+  let voiceModel = "base.en";
   const passthrough = [];
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -168,11 +198,25 @@ function parseInstallArgs(argv) {
       index += 1;
       continue;
     }
+    if (value === "--skip-voice") {
+      skipVoice = true;
+      continue;
+    }
+    if (value === "--voice-model") {
+      voiceModel = argv[index + 1];
+      if (!voiceModel) {
+        throw new Error("Missing value for --voice-model");
+      }
+      index += 1;
+      continue;
+    }
     passthrough.push(value);
   }
   return {
     installDir,
     repoUrl: repoUrlOverride,
+    skipVoice,
+    voiceModel,
     passthrough,
   };
 }
@@ -395,14 +439,15 @@ Usage:
   goat <command> (short shell shortcut; works in PowerShell)
 
 Commands:
-  install    Install GoatCitadel from GitHub [--install-dir <path>] [--repo <url>]
-  update     Update existing install from GitHub [--install-dir <path>] [--repo <url>]
+  install    Install GoatCitadel from GitHub [--install-dir <path>] [--repo <url>] [--skip-voice] [--voice-model <id>]
+  update     Update existing install from GitHub [--install-dir <path>] [--repo <url>] [--skip-voice] [--voice-model <id>]
   up         Start gateway + mission control
   gateway    Start gateway only
   ui         Start mission control UI only
   onboard    Run TUI onboarding wizard
   tui        Run terminal Mission Control
   tools      Tool access CLI (catalog/grants/invoke)
+  voice      Managed local voice runtime (install/status/models/select/remove)
   admin      Backup/retention admin CLI
   smoke      Run smoke tests
   npu        Run local NPU sidecar (Python)
@@ -412,6 +457,7 @@ Commands:
 Install defaults:
   repo       ${defaultRepoUrl}
   base dir   ${baseDir}
+  voice      base.en (managed whisper.cpp + local audio helper)
 `);
 }
 

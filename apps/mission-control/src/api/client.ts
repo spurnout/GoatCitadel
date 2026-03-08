@@ -78,6 +78,8 @@ import type {
   ToolInvokeResult,
   UiActionState,
   VoiceStatus,
+  VoiceRuntimeInstallRequest,
+  VoiceRuntimeStatus,
   VoiceTalkSessionRecord,
   VoiceTranscribeResponse,
   BackupCreateResponse,
@@ -3228,6 +3230,31 @@ export async function transcribeVoice(input: {
 
 export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   return request<VoiceStatus>("/api/v1/voice/status");
+}
+
+export async function fetchVoiceRuntimeStatus(): Promise<VoiceRuntimeStatus> {
+  return request<VoiceRuntimeStatus>("/api/v1/voice/runtime");
+}
+
+export async function installVoiceRuntime(input: VoiceRuntimeInstallRequest = {}): Promise<VoiceRuntimeStatus> {
+  return request<VoiceRuntimeStatus>("/api/v1/voice/runtime/install", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function selectVoiceRuntimeModel(modelId: string): Promise<VoiceRuntimeStatus> {
+  return request<VoiceRuntimeStatus>(`/api/v1/voice/runtime/models/${encodeURIComponent(modelId)}/select`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function removeVoiceRuntimeModel(modelId: string): Promise<VoiceRuntimeStatus> {
+  return request<VoiceRuntimeStatus>(`/api/v1/voice/runtime/models/${encodeURIComponent(modelId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
 }
 
 export async function startVoiceTalkSession(input?: {

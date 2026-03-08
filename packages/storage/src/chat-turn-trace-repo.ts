@@ -3,6 +3,7 @@ import type {
   ChatCapabilityUpgradeSuggestion,
   ChatCitationRecord,
   ChatMode,
+  ChatOrchestrationSummary,
   ChatThinkingLevel,
   ChatTurnBranchKind,
   ChatTurnTraceRecord,
@@ -28,6 +29,7 @@ interface ChatTurnTraceRow {
   retrieval_json: string | null;
   reflection_json: string | null;
   proactive_json: string | null;
+  orchestration_json: string | null;
   guidance_json: string | null;
   citations_json: string | null;
   capability_upgrade_suggestions_json: string | null;
@@ -54,6 +56,7 @@ export interface ChatTurnTraceCreateInput {
   retrieval?: ChatTurnTraceRecord["retrieval"];
   reflection?: ChatTurnTraceRecord["reflection"];
   proactive?: ChatTurnTraceRecord["proactive"];
+  orchestration?: ChatOrchestrationSummary;
   guidance?: ChatTurnTraceRecord["guidance"];
   citations?: ChatCitationRecord[];
   capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
@@ -73,6 +76,7 @@ export interface ChatTurnTracePatchInput {
   retrieval?: ChatTurnTraceRecord["retrieval"];
   reflection?: ChatTurnTraceRecord["reflection"];
   proactive?: ChatTurnTraceRecord["proactive"];
+  orchestration?: ChatOrchestrationSummary;
   guidance?: ChatTurnTraceRecord["guidance"];
   citations?: ChatCitationRecord[];
   capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
@@ -91,12 +95,12 @@ export class ChatTurnTraceRepository {
       INSERT INTO chat_turn_traces (
         turn_id, session_id, user_message_id, parent_turn_id, branch_kind, source_turn_id,
         assistant_message_id, status, mode, model, web_mode, memory_mode, thinking_level,
-        routing_json, retrieval_json, reflection_json, proactive_json, guidance_json, citations_json,
+        routing_json, retrieval_json, reflection_json, proactive_json, orchestration_json, guidance_json, citations_json,
         capability_upgrade_suggestions_json, started_at, finished_at
       ) VALUES (
         @turnId, @sessionId, @userMessageId, @parentTurnId, @branchKind, @sourceTurnId,
         @assistantMessageId, @status, @mode, @model, @webMode, @memoryMode, @thinkingLevel,
-        @routingJson, @retrievalJson, @reflectionJson, @proactiveJson, @guidanceJson, @citationsJson,
+        @routingJson, @retrievalJson, @reflectionJson, @proactiveJson, @orchestrationJson, @guidanceJson, @citationsJson,
         @capabilityUpgradeSuggestionsJson, @startedAt, @finishedAt
       )
     `);
@@ -113,6 +117,7 @@ export class ChatTurnTraceRepository {
         retrieval_json = @retrievalJson,
         reflection_json = @reflectionJson,
         proactive_json = @proactiveJson,
+        orchestration_json = @orchestrationJson,
         guidance_json = @guidanceJson,
         citations_json = @citationsJson,
         capability_upgrade_suggestions_json = @capabilityUpgradeSuggestionsJson,
@@ -154,6 +159,7 @@ export class ChatTurnTraceRepository {
       retrievalJson: input.retrieval ? JSON.stringify(input.retrieval) : null,
       reflectionJson: input.reflection ? JSON.stringify(input.reflection) : null,
       proactiveJson: input.proactive ? JSON.stringify(input.proactive) : null,
+      orchestrationJson: input.orchestration ? JSON.stringify(input.orchestration) : null,
       guidanceJson: input.guidance ? JSON.stringify(input.guidance) : null,
       citationsJson: input.citations ? JSON.stringify(input.citations) : null,
       capabilityUpgradeSuggestionsJson: input.capabilityUpgradeSuggestions
@@ -184,6 +190,7 @@ export class ChatTurnTraceRepository {
       retrievalJson: JSON.stringify(input.retrieval ?? current.retrieval ?? null),
       reflectionJson: JSON.stringify(input.reflection ?? current.reflection ?? null),
       proactiveJson: JSON.stringify(input.proactive ?? current.proactive ?? null),
+      orchestrationJson: JSON.stringify(input.orchestration ?? current.orchestration ?? null),
       guidanceJson: JSON.stringify(input.guidance ?? current.guidance ?? null),
       citationsJson: JSON.stringify(input.citations ?? current.citations ?? []),
       capabilityUpgradeSuggestionsJson: JSON.stringify(
@@ -228,6 +235,7 @@ function mapRow(row: ChatTurnTraceRow): ChatTurnTraceRecord {
     retrieval: safeJsonParse<ChatTurnTraceRecord["retrieval"] | undefined>(row.retrieval_json ?? "", undefined),
     reflection: safeJsonParse<ChatTurnTraceRecord["reflection"] | undefined>(row.reflection_json ?? "", undefined),
     proactive: safeJsonParse<ChatTurnTraceRecord["proactive"] | undefined>(row.proactive_json ?? "", undefined),
+    orchestration: safeJsonParse<ChatOrchestrationSummary | undefined>(row.orchestration_json ?? "", undefined),
     guidance: safeJsonParse<ChatTurnTraceRecord["guidance"] | undefined>(row.guidance_json ?? "", undefined),
     capabilityUpgradeSuggestions: safeJsonParse<ChatCapabilityUpgradeSuggestion[] | undefined>(
       row.capability_upgrade_suggestions_json ?? "",

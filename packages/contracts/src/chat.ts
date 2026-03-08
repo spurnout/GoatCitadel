@@ -12,6 +12,12 @@ export type ChatProactiveMode = "off" | "suggest" | "auto_safe";
 export type ChatRetrievalMode = "standard" | "layered";
 export type ChatReflectionMode = "off" | "on";
 export type ChatPlanningMode = "off" | "advisory";
+export type ChatOrchestrationIntensity = "minimal" | "balanced" | "deep";
+export type ChatOrchestrationVisibility = "hidden" | "summarized" | "expandable" | "explicit";
+export type ChatOrchestrationProviderPreference = "speed" | "quality" | "balanced" | "low_cost";
+export type ChatOrchestrationReviewDepth = "off" | "standard" | "strict";
+export type ChatOrchestrationParallelism = "auto" | "sequential" | "parallel";
+export type ChatCodeAutoApplyPosture = "manual" | "low_risk_auto" | "aggressive_auto";
 export type ChatTurnBranchKind = "append" | "retry" | "edit";
 export type ChatDelegationMode = "sequential" | "parallel";
 export type ChatDelegationStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
@@ -137,6 +143,13 @@ export interface ChatSessionPrefsRecord {
   thinkingLevel: ChatThinkingLevel;
   toolAutonomy: "safe_auto" | "manual";
   visionFallbackModel?: string;
+  orchestrationEnabled: boolean;
+  orchestrationIntensity: ChatOrchestrationIntensity;
+  orchestrationVisibility: ChatOrchestrationVisibility;
+  orchestrationProviderPreference: ChatOrchestrationProviderPreference;
+  orchestrationReviewDepth: ChatOrchestrationReviewDepth;
+  orchestrationParallelism: ChatOrchestrationParallelism;
+  codeAutoApply: ChatCodeAutoApplyPosture;
   proactiveMode?: ChatProactiveMode;
   autonomyBudget?: ChatAutonomyBudget;
   retrievalMode?: ChatRetrievalMode;
@@ -161,6 +174,13 @@ export interface ChatSessionPrefsPatch {
   thinkingLevel?: ChatThinkingLevel;
   toolAutonomy?: "safe_auto" | "manual";
   visionFallbackModel?: string;
+  orchestrationEnabled?: boolean;
+  orchestrationIntensity?: ChatOrchestrationIntensity;
+  orchestrationVisibility?: ChatOrchestrationVisibility;
+  orchestrationProviderPreference?: ChatOrchestrationProviderPreference;
+  orchestrationReviewDepth?: ChatOrchestrationReviewDepth;
+  orchestrationParallelism?: ChatOrchestrationParallelism;
+  codeAutoApply?: ChatCodeAutoApplyPosture;
   proactiveMode?: ChatProactiveMode;
   autonomyBudget?: Partial<ChatAutonomyBudget>;
   retrievalMode?: ChatRetrievalMode;
@@ -200,6 +220,52 @@ export interface ChatCapabilityUpgradeSuggestion {
   recommendedAction: "enable_skill" | "install_skill_disabled" | "add_mcp_template" | "switch_tool_profile";
   candidateId?: string;
   requiresUserApproval: true;
+}
+
+export interface ChatOrchestrationProviderSelection {
+  role: string;
+  providerId?: string;
+  model?: string;
+}
+
+export interface ChatOrchestrationRouteDecision {
+  modePolicy: ChatMode;
+  workflowTemplate: string;
+  hidden: boolean;
+  visibility: ChatOrchestrationVisibility;
+  intensity: ChatOrchestrationIntensity;
+  providerPreference: ChatOrchestrationProviderPreference;
+  reviewDepth: ChatOrchestrationReviewDepth;
+  parallelism: ChatOrchestrationParallelism;
+  selectedRoles: string[];
+  selectedProviders: ChatOrchestrationProviderSelection[];
+  triggerReason: string;
+}
+
+export interface ChatOrchestrationStepSummary {
+  stepId: string;
+  role: string;
+  index: number;
+  status: ChatDelegationStepStatus;
+  providerId?: string;
+  model?: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  summary?: string;
+  error?: string;
+}
+
+export interface ChatOrchestrationSummary {
+  runId: string;
+  objective: string;
+  workflowTemplate: string;
+  status: ChatDelegationRunStatus;
+  modePolicy: ChatMode;
+  visibility: ChatOrchestrationVisibility;
+  finalSummary?: string;
+  routeDecision: ChatOrchestrationRouteDecision;
+  steps: ChatOrchestrationStepSummary[];
 }
 
 export interface ChatTurnTraceRecord {
@@ -253,6 +319,7 @@ export interface ChatTurnTraceRecord {
     actionCount?: number;
     mode?: ChatProactiveMode;
   };
+  orchestration?: ChatOrchestrationSummary;
   guidance?: {
     workspaceId: string;
     globalFilesUsed: string[];
@@ -268,9 +335,12 @@ export interface ChatDelegationStepRecord {
   role: string;
   status: ChatDelegationStepStatus;
   index: number;
+  providerId?: string;
+  model?: string;
   startedAt: string;
   finishedAt?: string;
   durationMs?: number;
+  summary?: string;
   output?: string;
   error?: string;
 }
@@ -285,6 +355,10 @@ export interface ChatDelegationRunRecord {
   providerId?: string;
   model?: string;
   status: ChatDelegationRunStatus;
+  visibility?: ChatOrchestrationVisibility;
+  workflowTemplate?: string;
+  routeDecision?: ChatOrchestrationRouteDecision;
+  finalSummary?: string;
   startedAt: string;
   finishedAt?: string;
   stitchedOutput?: string;

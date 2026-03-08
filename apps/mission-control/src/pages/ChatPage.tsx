@@ -904,12 +904,19 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     () => thread?.turns.find((turn) => turn.turnId === selectedTurnId) ?? thread?.turns.at(-1) ?? null,
     [selectedTurnId, thread],
   );
+  const latestOrchestration = useMemo(
+    () => selectedTurn?.trace.orchestration ?? thread?.turns.at(-1)?.trace.orchestration,
+    [selectedTurn, thread],
+  );
   const effectiveToolAutonomy = selectedTurn?.trace.effectiveToolAutonomy
     ?? (planningMode === "advisory" ? "manual" : prefs?.toolAutonomy);
   useEffect(() => {
     setCapabilitySuggestions(selectedTurn?.trace.capabilityUpgradeSuggestions ?? []);
   }, [selectedTurn]);
-  const coworkItems = useMemo(() => deriveCoworkItems(messages, localNotices), [localNotices, messages]);
+  const coworkItems = useMemo(
+    () => deriveCoworkItems(messages, localNotices, latestOrchestration),
+    [latestOrchestration, localNotices, messages],
+  );
   const canSend = Boolean(draft.trim()) && !sending;
 
   const tryBeginOutboundExecution = useCallback(() => {
@@ -1910,7 +1917,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                     </div>
                   </div>
                 </article>
-                {messageMode === "cowork" ? <CoworkCanvasPanel items={coworkItems} /> : null}
+                {messageMode === "cowork" ? <CoworkCanvasPanel items={coworkItems} orchestration={latestOrchestration} /> : null}
               </div>
               <aside className="chat-v11-inspector-lane">
                 <Panel
@@ -2009,6 +2016,90 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                       </>
                     )}
                   />
+                  <div className="chat-v11-orchestration-controls">
+                    <GCSwitch
+                      checked={prefs?.orchestrationEnabled ?? true}
+                      disabled={!selectedSessionId || sending}
+                      label="Orchestration"
+                      onCheckedChange={(checked) => void handlePrefPatch({ orchestrationEnabled: checked })}
+                    />
+                    <label className="chat-v11-select">Intensity
+                      <GCSelect
+                        value={prefs?.orchestrationIntensity ?? "balanced"}
+                        disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                        onChange={(value) => void handlePrefPatch({ orchestrationIntensity: value as "minimal" | "balanced" | "deep" })}
+                        options={[
+                          { value: "minimal", label: "Minimal" },
+                          { value: "balanced", label: "Balanced" },
+                          { value: "deep", label: "Deep" },
+                        ]}
+                      />
+                    </label>
+                    <label className="chat-v11-select">Visibility
+                      <GCSelect
+                        value={prefs?.orchestrationVisibility ?? (messageMode === "chat" ? "summarized" : "expandable")}
+                        disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                        onChange={(value) => void handlePrefPatch({ orchestrationVisibility: value as "hidden" | "summarized" | "expandable" | "explicit" })}
+                        options={[
+                          { value: "hidden", label: "Hidden" },
+                          { value: "summarized", label: "Summarized" },
+                          { value: "expandable", label: "Expandable" },
+                          { value: "explicit", label: "Explicit" },
+                        ]}
+                      />
+                    </label>
+                    <label className="chat-v11-select">Provider posture
+                      <GCSelect
+                        value={prefs?.orchestrationProviderPreference ?? "balanced"}
+                        disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                        onChange={(value) => void handlePrefPatch({ orchestrationProviderPreference: value as "speed" | "quality" | "balanced" | "low_cost" })}
+                        options={[
+                          { value: "speed", label: "Speed" },
+                          { value: "quality", label: "Quality" },
+                          { value: "balanced", label: "Balanced" },
+                          { value: "low_cost", label: "Low cost" },
+                        ]}
+                      />
+                    </label>
+                    <label className="chat-v11-select">Review depth
+                      <GCSelect
+                        value={prefs?.orchestrationReviewDepth ?? "standard"}
+                        disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                        onChange={(value) => void handlePrefPatch({ orchestrationReviewDepth: value as "off" | "standard" | "strict" })}
+                        options={[
+                          { value: "off", label: "Off" },
+                          { value: "standard", label: "Standard" },
+                          { value: "strict", label: "Strict" },
+                        ]}
+                      />
+                    </label>
+                    <label className="chat-v11-select">Parallelism
+                      <GCSelect
+                        value={prefs?.orchestrationParallelism ?? "auto"}
+                        disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                        onChange={(value) => void handlePrefPatch({ orchestrationParallelism: value as "auto" | "sequential" | "parallel" })}
+                        options={[
+                          { value: "auto", label: "Auto" },
+                          { value: "sequential", label: "Sequential" },
+                          { value: "parallel", label: "Parallel" },
+                        ]}
+                      />
+                    </label>
+                    {messageMode === "code" ? (
+                      <label className="chat-v11-select">Code apply
+                        <GCSelect
+                          value={prefs?.codeAutoApply ?? "aggressive_auto"}
+                          disabled={!selectedSessionId || sending || !(prefs?.orchestrationEnabled ?? true)}
+                          onChange={(value) => void handlePrefPatch({ codeAutoApply: value as "manual" | "low_risk_auto" | "aggressive_auto" })}
+                          options={[
+                            { value: "manual", label: "Manual" },
+                            { value: "low_risk_auto", label: "Low risk auto" },
+                            { value: "aggressive_auto", label: "Aggressive auto" },
+                          ]}
+                        />
+                      </label>
+                    ) : null}
+                  </div>
                   <FieldHelp>Provider and model choose the answering engine. Thinking controls reasoning depth. Web lets GoatCitadel browse live sources. Proactive, retrieval, and reflection govern how much it suggests, revisits context, and self-checks in this session.</FieldHelp>
                 </Panel>
                 {selectedTurn ? (
@@ -2266,7 +2357,17 @@ function formatCommandResult(result: { ok: boolean; message: string; research?: 
 function deriveCoworkItems(
   messages: ChatMessageRecord[],
   notices: ChatThreadNotice[],
+  orchestration?: ChatThreadResponse["turns"][number]["trace"]["orchestration"],
 ): Array<{ id: string; title: string; note?: string }> {
+  if (orchestration) {
+    return orchestration.steps
+      .slice(0, 5)
+      .map((step) => ({
+        id: step.stepId,
+        title: `${step.role} · ${step.status}`,
+        note: step.summary ?? step.error ?? [step.providerId, step.model].filter(Boolean).join(" · "),
+      }));
+  }
   const latestAssistant = [...messages].reverse().find((item) => item.role === "assistant");
   const latestUser = [...messages].reverse().find((item) => item.role === "user");
   const items: Array<{ id: string; title: string; note?: string }> = [];

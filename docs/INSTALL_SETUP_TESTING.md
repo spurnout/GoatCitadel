@@ -75,6 +75,12 @@ Custom install root:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$HOME\\.GoatCitadel"
 ```
 
+Skip the managed local voice runtime:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -SkipVoice
+```
+
 ### macOS / Linux
 
 Safer download-and-run flow:
@@ -96,6 +102,12 @@ Custom install root:
 bash install.sh --install-dir "$HOME/.GoatCitadel"
 ```
 
+Choose a different starter voice model:
+
+```bash
+bash install.sh --voice-model small.en
+```
+
 ### Verify the installed launcher
 
 ```bash
@@ -103,6 +115,7 @@ goatcitadel help
 goatcitadel up
 goatcitadel onboard
 goatcitadel doctor --deep
+goatcitadel voice status
 ```
 
 Short alias:
@@ -175,6 +188,29 @@ At minimum, set one model provider key if you plan to use cloud models:
 OPENAI_API_KEY=your_key_here
 GLM_API_KEY=your_key_here
 MOONSHOT_API_KEY=your_key_here
+```
+
+## Managed Local Voice Runtime
+
+- GoatCitadel installs a managed local whisper.cpp runtime by default unless you pass `--skip-voice`.
+- The default starter model is `base.en`.
+- Models are downloaded on demand into `~/.GoatCitadel/tools/voice/` and are not committed to the repo.
+- Ongoing model management:
+
+```bash
+goatcitadel voice status
+goatcitadel voice models
+goatcitadel voice install --model base.en
+goatcitadel voice select small.en
+```
+
+Advanced manual overrides still exist for custom whisper setups:
+
+```env
+GOATCITADEL_WHISPER_CPP_BIN=
+GOATCITADEL_WHISPER_CPP_MODEL_PATH=
+GOATCITADEL_WHISPER_CPP_ARGS=
+GOATCITADEL_FFMPEG_BIN=
 ```
 
 ### Recommended remote / shared-host posture

@@ -1,0 +1,166 @@
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ChatCitationRecord,
+  ChatCompletionResponse,
+  ChatSessionPrefsRecord,
+} from "@goatcitadel/contracts";
+import { executeOrchestrationPlan } from "./engine.js";
+import type { OrchestrationPlan, OrchestrationTaskInput } from "./types.js";
+
+const NOW = "2026-03-08T20:15:00.000Z";
+
+function createPrefs(overrides: Partial<ChatSessionPrefsRecord> = {}): ChatSessionPrefsRecord {
+  return {
+    sessionId: "session-1",
+    mode: "cowork",
+    planningMode: "off",
+    providerId: undefined,
+    model: undefined,
+    webMode: "auto",
+    memoryMode: "auto",
+    thinkingLevel: "standard",
+    toolAutonomy: "safe_auto",
+    visionFallbackModel: undefined,
+    orchestrationEnabled: true,
+    orchestrationIntensity: "balanced",
+    orchestrationVisibility: "explicit",
+    orchestrationProviderPreference: "balanced",
+    orchestrationReviewDepth: "standard",
+    orchestrationParallelism: "parallel",
+    codeAutoApply: "aggressive_auto",
+    proactiveMode: "off",
+    autonomyBudget: undefined,
+    retrievalMode: "standard",
+    reflectionMode: "off",
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+function createTask(): OrchestrationTaskInput {
+  return {
+    sessionId: "session-1",
+    workspaceId: "workspace-1",
+    mode: "cowork",
+    objective: "Research options, synthesize a recommendation, and critique the weaknesses.",
+    prefs: createPrefs(),
+    conversation: [
+      {
+        messageId: "msg-user-1",
+        sessionId: "session-1",
+        role: "user",
+        actorType: "user",
+        actorId: "operator",
+        content: "We need a recommendation with tradeoffs.",
+        timestamp: NOW,
+      },
+    ],
+    historyMessages: [],
+  };
+}
+
+function createPlan(): OrchestrationPlan {
+  return {
+    workflowTemplate: "cowork.research.synthesize.critic",
+    routeDecision: {
+      modePolicy: "cowork",
+      workflowTemplate: "cowork.research.synthesize.critic",
+      hidden: false,
+      visibility: "explicit",
+      intensity: "balanced",
+      providerPreference: "balanced",
+      reviewDepth: "standard",
+      parallelism: "parallel",
+      selectedRoles: ["researcher", "researcher", "synthesizer", "critic"],
+      selectedProviders: [
+        { role: "researcher", providerId: "perplexity", model: "sonar" },
+        { role: "researcher", providerId: "openai", model: "gpt-4.1-mini" },
+        { role: "synthesizer", providerId: "anthropic", model: "claude-3-7-sonnet-latest" },
+        { role: "critic", providerId: "openai", model: "gpt-4.1-mini" },
+      ],
+      triggerReason: "cowork_explicit_orchestration",
+    },
+    steps: [
+      { stepId: "step-1", role: "researcher", stage: 1, providerId: "perplexity", model: "sonar" },
+      { stepId: "step-2", role: "researcher", stage: 1, providerId: "openai", model: "gpt-4.1-mini" },
+      { stepId: "step-3", role: "synthesizer", stage: 2, providerId: "anthropic", model: "claude-3-7-sonnet-latest" },
+      { stepId: "step-4", role: "critic", stage: 3, providerId: "openai", model: "gpt-4.1-mini" },
+    ],
+  };
+}
+
+function createCompletion(text: string, citations: ChatCitationRecord[] = []): ChatCompletionResponse {
+  return {
+    model: "mock-model",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: text,
+        },
+      },
+    ],
+    citations,
+  } as ChatCompletionResponse;
+}
+
+describe("orchestration engine", () => {
+  it("executes staged orchestration, reports step progress, and returns the final completed output", async () => {
+    const onStepResult = vi.fn();
+    const createChatCompletion = vi
+      .fn()
+      .mockResolvedValueOnce(createCompletion(
+        "Research angle one",
+        [{ citationId: "c1", url: "https://example.com/1", title: "Source 1" }],
+      ))
+      .mockResolvedValueOnce(createCompletion(
+        "Research angle two",
+        [{ citationId: "c1b", url: "https://example.com/1", title: "Source 1" }],
+      ))
+      .mockResolvedValueOnce(createCompletion("Synthesized recommendation"))
+      .mockResolvedValueOnce(createCompletion("Critical caveats"));
+
+    const result = await executeOrchestrationPlan({
+      task: createTask(),
+      plan: createPlan(),
+      callbacks: {
+        createChatCompletion,
+        onStepResult,
+      },
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(4);
+    expect(onStepResult).toHaveBeenCalledTimes(4);
+    expect(result.finalOutput).toBe("Critical caveats");
+    expect(result.finalSummary).toContain("Critical caveats");
+    expect(result.stepResults).toHaveLength(4);
+    expect(result.stepResults.every((step) => step.status === "completed")).toBe(true);
+    expect(result.citations).toEqual([
+      { citationId: "c1", url: "https://example.com/1", title: "Source 1" },
+    ]);
+  });
+
+  it("degrades cleanly when every stage fails", async () => {
+    const createChatCompletion = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+
+    const result = await executeOrchestrationPlan({
+      task: createTask(),
+      plan: {
+        ...createPlan(),
+        steps: [
+          { stepId: "step-1", role: "planner", stage: 1, providerId: "openai", model: "gpt-4.1-mini" },
+        ],
+      },
+      callbacks: {
+        createChatCompletion,
+      },
+    });
+
+    expect(result.stepResults).toHaveLength(1);
+    expect(result.stepResults[0]?.status).toBe("failed");
+    expect(result.finalOutput).toContain("could not complete the orchestrated workflow");
+    expect(result.finalOutput).toContain("Planner");
+  });
+});

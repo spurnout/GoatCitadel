@@ -42,6 +42,13 @@ describe("ChatSessionPrefsRepository", () => {
     assert.equal(prefs.providerId, undefined);
     assert.equal(prefs.model, undefined);
     assert.equal(prefs.visionFallbackModel, undefined);
+    assert.equal(prefs.orchestrationEnabled, true);
+    assert.equal(prefs.orchestrationIntensity, "balanced");
+    assert.equal(prefs.orchestrationVisibility, "summarized");
+    assert.equal(prefs.orchestrationProviderPreference, "balanced");
+    assert.equal(prefs.orchestrationReviewDepth, "standard");
+    assert.equal(prefs.orchestrationParallelism, "auto");
+    assert.equal(prefs.codeAutoApply, "aggressive_auto");
   });
 
   it("round-trips patched base chat prefs fields", () => {
@@ -56,6 +63,13 @@ describe("ChatSessionPrefsRepository", () => {
       thinkingLevel: "minimal",
       toolAutonomy: "manual",
       visionFallbackModel: "glm-vision",
+      orchestrationEnabled: false,
+      orchestrationIntensity: "deep",
+      orchestrationVisibility: "explicit",
+      orchestrationProviderPreference: "quality",
+      orchestrationReviewDepth: "strict",
+      orchestrationParallelism: "parallel",
+      codeAutoApply: "manual",
     }, "2026-03-07T00:00:00.000Z");
 
     assert.equal(patched.mode, "cowork");
@@ -67,10 +81,24 @@ describe("ChatSessionPrefsRepository", () => {
     assert.equal(patched.thinkingLevel, "minimal");
     assert.equal(patched.toolAutonomy, "manual");
     assert.equal(patched.visionFallbackModel, "glm-vision");
+    assert.equal(patched.orchestrationEnabled, false);
+    assert.equal(patched.orchestrationIntensity, "deep");
+    assert.equal(patched.orchestrationVisibility, "explicit");
+    assert.equal(patched.orchestrationProviderPreference, "quality");
+    assert.equal(patched.orchestrationReviewDepth, "strict");
+    assert.equal(patched.orchestrationParallelism, "parallel");
+    assert.equal(patched.codeAutoApply, "manual");
 
     const reloaded = repo.get("sess-1");
     assert.equal(reloaded?.planningMode, "advisory");
     assert.equal(reloaded?.toolAutonomy, "manual");
     assert.equal(reloaded?.visionFallbackModel, "glm-vision");
+    assert.equal(reloaded?.orchestrationEnabled, false);
+    assert.equal(reloaded?.orchestrationIntensity, "deep");
+    assert.equal(reloaded?.orchestrationVisibility, "explicit");
+    assert.equal(reloaded?.orchestrationProviderPreference, "quality");
+    assert.equal(reloaded?.orchestrationReviewDepth, "strict");
+    assert.equal(reloaded?.orchestrationParallelism, "parallel");
+    assert.equal(reloaded?.codeAutoApply, "manual");
   });
 });

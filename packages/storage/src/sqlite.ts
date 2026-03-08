@@ -223,6 +223,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "chat_branching_and_planning_mode",
     up: createChatBranchingAndPlanningSchema,
   },
+  {
+    version: 26,
+    name: "chat_mode_orchestration_foundation",
+    up: createChatModeOrchestrationFoundationSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -717,6 +722,24 @@ function createChatBranchingAndPlanningSchema(db: DatabaseSync): void {
   `);
 }
 
+function createChatModeOrchestrationFoundationSchema(db: DatabaseSync): void {
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_enabled", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_intensity", "TEXT NOT NULL DEFAULT 'balanced'");
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_visibility", "TEXT NOT NULL DEFAULT 'summarized'");
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_provider_preference", "TEXT NOT NULL DEFAULT 'balanced'");
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_review_depth", "TEXT NOT NULL DEFAULT 'standard'");
+  addColumnIfMissing(db, "chat_session_prefs", "orchestration_parallelism", "TEXT NOT NULL DEFAULT 'auto'");
+  addColumnIfMissing(db, "chat_session_prefs", "code_auto_apply", "TEXT NOT NULL DEFAULT 'aggressive_auto'");
+  addColumnIfMissing(db, "chat_turn_traces", "orchestration_json", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_runs", "visibility", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_runs", "workflow_template", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_runs", "route_decision_json", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_runs", "final_summary", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "provider_id", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "model", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "summary", "TEXT");
+}
+
 function migrateApprovalsColumns(db: DatabaseSync): void {
   const rows = db.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
   const columns = new Set(rows.map((row) => row.name));
@@ -1146,6 +1169,7 @@ function createAgenticChatSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS chat_session_prefs (
       session_id TEXT PRIMARY KEY,
       mode TEXT NOT NULL DEFAULT 'chat',
+      planning_mode TEXT NOT NULL DEFAULT 'off',
       provider_id TEXT,
       model TEXT,
       web_mode TEXT NOT NULL DEFAULT 'auto',
@@ -1153,6 +1177,13 @@ function createAgenticChatSchema(db: DatabaseSync): void {
       thinking_level TEXT NOT NULL DEFAULT 'standard',
       tool_autonomy TEXT NOT NULL DEFAULT 'safe_auto',
       vision_fallback_model TEXT,
+      orchestration_enabled INTEGER NOT NULL DEFAULT 1,
+      orchestration_intensity TEXT NOT NULL DEFAULT 'balanced',
+      orchestration_visibility TEXT NOT NULL DEFAULT 'summarized',
+      orchestration_provider_preference TEXT NOT NULL DEFAULT 'balanced',
+      orchestration_review_depth TEXT NOT NULL DEFAULT 'standard',
+      orchestration_parallelism TEXT NOT NULL DEFAULT 'auto',
+      code_auto_apply TEXT NOT NULL DEFAULT 'aggressive_auto',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -1172,6 +1203,13 @@ function createAgenticChatSchema(db: DatabaseSync): void {
       memory_mode TEXT NOT NULL,
       thinking_level TEXT NOT NULL,
       routing_json TEXT NOT NULL,
+      retrieval_json TEXT,
+      reflection_json TEXT,
+      proactive_json TEXT,
+      orchestration_json TEXT,
+      guidance_json TEXT,
+      citations_json TEXT,
+      capability_upgrade_suggestions_json TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT
     );
@@ -1259,6 +1297,10 @@ function createPromptPackReadinessSchema(db: DatabaseSync): void {
       provider_id TEXT,
       model TEXT,
       status TEXT NOT NULL,
+      visibility TEXT,
+      workflow_template TEXT,
+      route_decision_json TEXT,
+      final_summary TEXT,
       stitched_output TEXT,
       citations_json TEXT NOT NULL,
       trace_json TEXT,
@@ -1277,6 +1319,9 @@ function createPromptPackReadinessSchema(db: DatabaseSync): void {
       role TEXT NOT NULL,
       step_index INTEGER NOT NULL,
       status TEXT NOT NULL,
+      provider_id TEXT,
+      model TEXT,
+      summary TEXT,
       output TEXT,
       error TEXT,
       started_at TEXT NOT NULL,
@@ -2044,4 +2089,14 @@ function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: str
   if (!columns.has(columnName)) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`);
   }
+}
+
+function addColumnIfMissingIfTableExists(db: DatabaseSync, tableName: string, columnName: string, columnSql: string): void {
+  const row = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(tableName) as { name: string } | undefined;
+  if (!row) {
+    return;
+  }
+  addColumnIfMissing(db, tableName, columnName, columnSql);
 }

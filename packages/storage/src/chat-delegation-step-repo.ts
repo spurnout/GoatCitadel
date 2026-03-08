@@ -7,6 +7,9 @@ interface ChatDelegationStepRow {
   role: string;
   step_index: number;
   status: ChatDelegationStepStatus;
+  provider_id: string | null;
+  model: string | null;
+  summary: string | null;
   output: string | null;
   error: string | null;
   started_at: string;
@@ -24,15 +27,18 @@ export class ChatDelegationStepRepository {
     this.getStmt = db.prepare("SELECT * FROM chat_delegation_steps WHERE step_id = ?");
     this.insertStmt = db.prepare(`
       INSERT INTO chat_delegation_steps (
-        step_id, run_id, role, step_index, status, output, error, started_at, finished_at, duration_ms
+        step_id, run_id, role, step_index, status, provider_id, model, summary, output, error, started_at, finished_at, duration_ms
       ) VALUES (
-        @stepId, @runId, @role, @index, @status, @output, @error, @startedAt, @finishedAt, @durationMs
+        @stepId, @runId, @role, @index, @status, @providerId, @model, @summary, @output, @error, @startedAt, @finishedAt, @durationMs
       )
     `);
     this.patchStmt = db.prepare(`
       UPDATE chat_delegation_steps
       SET
         status = @status,
+        provider_id = @providerId,
+        model = @model,
+        summary = @summary,
         output = @output,
         error = @error,
         finished_at = @finishedAt,
@@ -60,6 +66,9 @@ export class ChatDelegationStepRepository {
     role: string;
     index: number;
     status?: ChatDelegationStepStatus;
+    providerId?: string;
+    model?: string;
+    summary?: string;
     output?: string;
     error?: string;
     startedAt?: string;
@@ -72,6 +81,9 @@ export class ChatDelegationStepRepository {
       role: input.role,
       index: input.index,
       status: input.status ?? "pending",
+      providerId: input.providerId ?? null,
+      model: input.model ?? null,
+      summary: input.summary ?? null,
       output: input.output ?? null,
       error: input.error ?? null,
       startedAt: input.startedAt ?? new Date().toISOString(),
@@ -83,6 +95,9 @@ export class ChatDelegationStepRepository {
 
   public patch(stepId: string, input: {
     status?: ChatDelegationStepStatus;
+    providerId?: string;
+    model?: string;
+    summary?: string;
     output?: string;
     error?: string;
     finishedAt?: string;
@@ -92,6 +107,9 @@ export class ChatDelegationStepRepository {
     this.patchStmt.run({
       stepId,
       status: input.status ?? current.status,
+      providerId: input.providerId !== undefined ? input.providerId : (current.providerId ?? null),
+      model: input.model !== undefined ? input.model : (current.model ?? null),
+      summary: input.summary !== undefined ? input.summary : (current.summary ?? null),
       output: input.output !== undefined ? input.output : (current.output ?? null),
       error: input.error !== undefined ? input.error : (current.error ?? null),
       finishedAt: input.finishedAt !== undefined ? input.finishedAt : (current.finishedAt ?? null),
@@ -113,11 +131,13 @@ function mapRow(row: ChatDelegationStepRow): ChatDelegationStepRecord {
     role: row.role,
     status: row.status,
     index: row.step_index,
+    providerId: row.provider_id ?? undefined,
+    model: row.model ?? undefined,
     startedAt: row.started_at,
     finishedAt: row.finished_at ?? undefined,
     durationMs: row.duration_ms ?? undefined,
+    summary: row.summary ?? undefined,
     output: row.output ?? undefined,
     error: row.error ?? undefined,
   };
 }
-

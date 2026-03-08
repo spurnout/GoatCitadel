@@ -94,6 +94,12 @@ Optional custom install root:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$HOME\\.GoatCitadel"
 ```
 
+Skip the managed local voice runtime during install:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -SkipVoice
+```
+
 ### macOS / Linux
 
 Safer download-and-run flow:
@@ -113,6 +119,12 @@ Optional custom install root:
 
 ```bash
 bash install.sh --install-dir "$HOME/.GoatCitadel"
+```
+
+Choose a different starter voice model:
+
+```bash
+bash install.sh --voice-model small.en
 ```
 
 ### Verify The Installed Launcher
@@ -346,6 +358,17 @@ Break-glass env vars are supported but should stay off in shared/public environm
 - The current trust model and runtime expectations are documented here:
   - [Add-ons Trust Policy](docs/ADDONS_TRUST_POLICY.md)
   - [Arena Integration Contract](docs/ARENA_INTEGRATION_CONTRACT.md)
+
+## Local Voice Runtime
+
+- GoatCitadel installs a managed local whisper.cpp runtime by default unless you pass `--skip-voice`.
+- The default starter model is `base.en`.
+- Models are downloaded into `~/.GoatCitadel/tools/voice/` and are not kept in the repo.
+- You can manage install, repair, and model selection from Forge > Voice Runtime or from the launcher:
+  - `goatcitadel voice status`
+  - `goatcitadel voice models`
+  - `goatcitadel voice install --model small.en`
+  - `goatcitadel voice select base.en`
 
 ## Finding More MCP Servers and Skills
 

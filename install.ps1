@@ -3,7 +3,9 @@ param(
   [string]$InstallDir = "",
   [ValidateSet("git")]
   [string]$InstallMethod = "git",
-  [switch]$NoPathUpdate
+  [switch]$NoPathUpdate,
+  [switch]$SkipVoice,
+  [string]$VoiceModel = "base.en"
 )
 
 Set-StrictMode -Version Latest
@@ -188,6 +190,14 @@ if ($null -ne $preservedManagedConfig) {
   Write-Host "Re-syncing preserved GoatCitadel config after update..."
   Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "config:sync") -FailureMessage "Failed to sync preserved GoatCitadel config after update"
 }
+if (-not $SkipVoice) {
+  Write-Host "Installing managed local voice runtime ($VoiceModel)..."
+  try {
+    Invoke-NativeOrThrow -FilePath "pnpm" -Arguments @("--dir", $AppDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", "--", "install", "--model", $VoiceModel) -FailureMessage "Failed to install managed voice runtime"
+  } catch {
+    Write-Warning "Managed voice runtime install failed. Core GoatCitadel install is complete. Repair later with '$BinDir\goatcitadel.cmd voice install'."
+  }
+}
 
 $launcherCmd = @"
 @echo off
@@ -272,9 +282,11 @@ Write-Host "Run:"
 Write-Host "  goatcitadel up"
 Write-Host "  goatcitadel onboard"
 Write-Host "  goatcitadel doctor --deep"
+Write-Host "  goatcitadel voice status"
 Write-Host "  goat onboard"
 Write-Host "  goat up"
 Write-Host "  goat doctor --deep"
+Write-Host "  goat voice status"
 Write-Host ""
 Write-Host "PowerShell notes:"
 Write-Host "  - Open a new PowerShell window if 'goatcitadel' is not found yet."

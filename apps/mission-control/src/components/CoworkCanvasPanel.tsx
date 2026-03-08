@@ -1,3 +1,5 @@
+import type { ChatOrchestrationSummary } from "@goatcitadel/contracts";
+
 export interface CoworkTaskItem {
   id: string;
   title: string;
@@ -6,15 +8,42 @@ export interface CoworkTaskItem {
 
 export function CoworkCanvasPanel({
   items,
+  orchestration,
 }: {
   items: CoworkTaskItem[];
+  orchestration?: ChatOrchestrationSummary;
 }) {
   return (
     <aside className="chat-cowork-panel">
       <header>
         <h4>Cowork Canvas</h4>
-        <p>Shared context and active checklist for this session.</p>
+        <p>
+          {orchestration
+            ? `Workflow ${orchestration.workflowTemplate} · ${orchestration.steps.length} role${orchestration.steps.length === 1 ? "" : "s"}`
+            : "Shared context and active checklist for this session."}
+        </p>
       </header>
+      {orchestration ? (
+        <div className="chat-cowork-orchestration">
+          <p className="chat-cowork-orchestration-summary">
+            <strong>{orchestration.status}</strong>
+            {" · "}
+            {orchestration.routeDecision.selectedRoles.join(" -> ")}
+          </p>
+          {orchestration.finalSummary ? <p>{orchestration.finalSummary}</p> : null}
+          <ul className="chat-cowork-orchestration-steps">
+            {orchestration.steps.map((step) => (
+              <li key={step.stepId}>
+                <strong>{step.role}</strong>
+                <span>{step.providerId ?? "provider auto"}{step.model ? ` · ${step.model}` : ""}</span>
+                <span>{step.status}</span>
+                {step.summary ? <p>{step.summary}</p> : null}
+                {step.error ? <p>{step.error}</p> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {items.length === 0 ? (
         <p className="chat-cowork-empty">No active tasks yet. Use `/research ...` or ask the model to plan next steps.</p>
       ) : (
@@ -30,4 +59,3 @@ export function CoworkCanvasPanel({
     </aside>
   );
 }
-

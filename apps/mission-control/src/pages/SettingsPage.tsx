@@ -9,10 +9,14 @@ import {
   persistGatewayAuthState,
   readStoredGatewayAuthState,
   fetchVoiceStatus,
+  fetchVoiceRuntimeStatus,
   fetchProviderSecretStatus,
   fetchSettings,
+  installVoiceRuntime,
   patchSettings,
+  removeVoiceRuntimeModel,
   saveProviderSecret,
+  selectVoiceRuntimeModel,
   setGatewayAuthStorageMode,
   startVoiceTalkSession,
   startVoiceWake,
@@ -23,7 +27,7 @@ import {
   type ProviderSecretStatus,
   type RuntimeSettingsResponse,
 } from "../api/client";
-import type { VoiceStatus } from "@goatcitadel/contracts";
+import type { VoiceRuntimeStatus, VoiceStatus } from "@goatcitadel/contracts";
 import { ChangeReviewPanel } from "../components/ChangeReviewPanel";
 import { FieldHelp } from "../components/FieldHelp";
 import { HelpHint } from "../components/HelpHint";
@@ -165,6 +169,7 @@ export function SettingsPage() {
   const [allowlistPreset, setAllowlistPreset] = useState("strict");
   const [chatResponse, setChatResponse] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
+  const [voiceRuntime, setVoiceRuntime] = useState<VoiceRuntimeStatus | null>(null);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceTalkMode, setVoiceTalkMode] = useState<"push_to_talk" | "wake">("push_to_talk");
   const [voiceFile, setVoiceFile] = useState<File | null>(null);
@@ -296,15 +301,17 @@ export function SettingsPage() {
   );
 
   useEffect(() => {
-    void fetchVoiceStatus()
-      .then((status) => {
+    void Promise.all([fetchVoiceStatus(), fetchVoiceRuntimeStatus()])
+      .then(([status, runtime]) => {
         setVoiceStatus(status);
+        setVoiceRuntime(runtime);
         if (status.talk.mode) {
           setVoiceTalkMode(status.talk.mode);
         }
       })
       .catch(() => {
         setVoiceStatus(null);
+        setVoiceRuntime(null);
       });
   }, []);
 
@@ -592,10 +599,69 @@ export function SettingsPage() {
   };
 
   const refreshVoiceRuntime = async () => {
-    const status = await fetchVoiceStatus();
+    const [status, runtime] = await Promise.all([
+      fetchVoiceStatus(),
+      fetchVoiceRuntimeStatus(),
+    ]);
     setVoiceStatus(status);
+    setVoiceRuntime(runtime);
     if (status.talk.mode) {
       setVoiceTalkMode(status.talk.mode);
+    }
+  };
+
+  const onInstallManagedVoiceRuntime = async (modelId?: string, activate = true) => {
+    setVoiceBusy(true);
+    setError(null);
+    try {
+      const runtime = await installVoiceRuntime({
+        modelId,
+        activate,
+      });
+      setVoiceRuntime(runtime);
+      await refreshVoiceRuntime();
+      setVoiceActionInfo(
+        runtime.readiness === "ready"
+          ? `Managed voice runtime is ready${runtime.selectedModelId ? ` with ${runtime.selectedModelId}` : ""}.`
+          : "Managed voice runtime was updated, but it still needs attention.",
+      );
+    } catch (err) {
+      setVoiceActionInfo("");
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onSelectManagedVoiceModel = async (modelId: string) => {
+    setVoiceBusy(true);
+    setError(null);
+    try {
+      const runtime = await selectVoiceRuntimeModel(modelId);
+      setVoiceRuntime(runtime);
+      await refreshVoiceRuntime();
+      setVoiceActionInfo(`Activated local voice model ${modelId}.`);
+    } catch (err) {
+      setVoiceActionInfo("");
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const onRemoveManagedVoiceModel = async (modelId: string) => {
+    setVoiceBusy(true);
+    setError(null);
+    try {
+      const runtime = await removeVoiceRuntimeModel(modelId);
+      setVoiceRuntime(runtime);
+      await refreshVoiceRuntime();
+      setVoiceActionInfo(`Removed local voice model ${modelId}.`);
+    } catch (err) {
+      setVoiceActionInfo("");
+      setError((err as Error).message);
+    } finally {
+      setVoiceBusy(false);
     }
   };
 
@@ -781,6 +847,7 @@ export function SettingsPage() {
   }
 
   const blockSaves = changeReview.overall === "critical" && !criticalConfirmed;
+  const installedVoiceModelIds = new Set(voiceRuntime?.installedModels.map((item) => item.modelId) ?? []);
 
   return (
     <section>
@@ -954,6 +1021,8 @@ export function SettingsPage() {
             <h4>Speech To Text</h4>
             <p><strong>Provider:</strong> {voiceStatus?.stt.provider ?? "unknown"}</p>
             <p><strong>State:</strong> {voiceStatus?.stt.state ?? "unknown"}</p>
+            <p><strong>Managed runtime:</strong> {voiceStatus?.stt.runtimeReady ? "ready" : "not ready"}</p>
+            <p><strong>Active model:</strong> {voiceStatus?.stt.modelId ?? "none"}</p>
             <p className="table-subtext">{describeVoiceState(voiceStatus?.stt.state)}</p>
             <p className="table-subtext">Updated: {formatVoiceDate(voiceStatus?.stt.updatedAt)}</p>
           </article>
@@ -973,14 +1042,36 @@ export function SettingsPage() {
             <p className="table-subtext">{describeVoiceState(voiceStatus?.wake.state)}</p>
             <p className="table-subtext">Updated: {formatVoiceDate(voiceStatus?.wake.updatedAt)}</p>
           </article>
+          <article className="voice-status-card">
+            <h4>Managed Runtime</h4>
+            <p><strong>Readiness:</strong> {describeVoiceRuntimeReadiness(voiceRuntime?.readiness)}</p>
+            <p><strong>Source:</strong> {voiceRuntime?.source ?? "unknown"}</p>
+            <p><strong>Binary:</strong> {voiceRuntime?.binaryReady ? "ready" : "missing"}</p>
+            <p><strong>Audio helper:</strong> {voiceRuntime?.ffmpegReady ? "ready" : "missing"}</p>
+            <p className="table-subtext">
+              {voiceRuntime?.selectedModelId
+                ? `Selected model: ${voiceRuntime.selectedModelId}`
+                : "No managed model selected yet."}
+            </p>
+            {voiceRuntime?.binaryPath ? (
+              <p className="table-subtext">Binary path: {voiceRuntime.binaryPath}</p>
+            ) : null}
+          </article>
         </div>
         {voiceStatus?.stt.lastError ? (
           <p className="error">Last STT error: {voiceStatus.stt.lastError}</p>
         ) : null}
+        {voiceRuntime?.lastError ? (
+          <p className="error">Last runtime error: {voiceRuntime.lastError}</p>
+        ) : null}
         {voiceActionInfo ? <p className="status-banner">{voiceActionInfo}</p> : null}
         <article className="voice-help-card">
-          <h4>What Each Button Does</h4>
+          <h4>Managed Voice Runtime</h4>
           <ul className="voice-help-list">
+            <li><strong>Install / Repair Voice Runtime:</strong> Downloads or repairs the managed whisper.cpp runtime, the audio normalization helper, and a selected starter model.</li>
+            <li><strong>Download model:</strong> Adds another local whisper model without changing the active one.</li>
+            <li><strong>Activate model:</strong> Switches GoatCitadel to use that installed model for local transcription.</li>
+            <li><strong>Remove model:</strong> Deletes an inactive installed model from your local GoatCitadel home.</li>
             <li><strong>Start Talk Mode:</strong> Creates a talk session and begins live listening flow using the selected mode.</li>
             <li><strong>Stop Talk Mode:</strong> Stops the current talk session and clears active session state.</li>
             <li><strong>Enable Wake:</strong> Turns on wake-word listener mode (for hands-free trigger workflows).</li>
@@ -989,9 +1080,74 @@ export function SettingsPage() {
             <li><strong>Run Local Transcription:</strong> Uploads your selected audio file for one-shot local STT test.</li>
           </ul>
           <p className="office-subtitle">
-            Setup note: local transcription requires <code>GOATCITADEL_WHISPER_CPP_BIN</code> set to your whisper.cpp CLI binary path.
+            GoatCitadel now manages whisper.cpp locally by default. Advanced overrides like <code>GOATCITADEL_WHISPER_CPP_BIN</code> and <code>GOATCITADEL_WHISPER_CPP_MODEL_PATH</code> are still available for custom setups.
           </p>
         </article>
+        <div className="controls-row">
+          <button
+            type="button"
+            onClick={() => void onInstallManagedVoiceRuntime(voiceRuntime?.selectedModelId ?? "base.en", true)}
+            disabled={voiceBusy}
+          >
+            {voiceRuntime?.readiness === "ready" ? "Repair Voice Runtime" : "Install Voice Runtime"}
+          </button>
+          <button type="button" onClick={() => void refreshVoiceRuntime()} disabled={voiceBusy}>
+            Refresh Voice Status
+          </button>
+        </div>
+        <div className="voice-model-catalog">
+          {(voiceRuntime?.catalog ?? []).map((model) => {
+            const installed = installedVoiceModelIds.has(model.id);
+            const active = voiceRuntime?.selectedModelId === model.id;
+            return (
+              <article key={model.id} className="voice-model-card">
+                <div className="voice-model-card__head">
+                  <div>
+                    <h4>{model.label}</h4>
+                    <p className="table-subtext">
+                      {formatVoiceLanguageScope(model.languageScope)} | {model.approxSizeLabel}
+                    </p>
+                  </div>
+                  <div className="voice-model-card__badges">
+                    {model.recommended ? <StatusChip tone="live">Recommended</StatusChip> : null}
+                    {model.defaultInstall ? <StatusChip tone="muted">Starter</StatusChip> : null}
+                    {installed ? <StatusChip tone="success">Installed</StatusChip> : <StatusChip tone="warning">Available</StatusChip>}
+                    {active ? <StatusChip tone="live">Active</StatusChip> : null}
+                  </div>
+                </div>
+                <div className="voice-model-card__actions">
+                  {!installed ? (
+                    <button
+                      type="button"
+                      onClick={() => void onInstallManagedVoiceRuntime(model.id, false)}
+                      disabled={voiceBusy}
+                    >
+                      Download model
+                    </button>
+                  ) : null}
+                  {installed && !active ? (
+                    <button
+                      type="button"
+                      onClick={() => void onSelectManagedVoiceModel(model.id)}
+                      disabled={voiceBusy}
+                    >
+                      Activate model
+                    </button>
+                  ) : null}
+                  {installed && !active ? (
+                    <button
+                      type="button"
+                      onClick={() => void onRemoveManagedVoiceModel(model.id)}
+                      disabled={voiceBusy}
+                    >
+                      Remove model
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
         <div className="controls-row">
           <label htmlFor="voiceTalkMode">Talk mode</label>
           <GCSelect
@@ -1016,9 +1172,6 @@ export function SettingsPage() {
           </button>
           <button type="button" onClick={onStopWake} disabled={voiceBusy || !voiceStatus?.wake.enabled}>
             Disable Wake
-          </button>
-          <button type="button" onClick={() => void refreshVoiceRuntime()} disabled={voiceBusy}>
-            Refresh Voice Status
           </button>
         </div>
         <div className="controls-row">
@@ -1339,6 +1492,23 @@ function describeVoiceState(state?: VoiceStatus["stt"]["state"]): string {
     return "Runtime is idle.";
   }
   return "State unknown.";
+}
+
+function describeVoiceRuntimeReadiness(readiness?: VoiceRuntimeStatus["readiness"]): string {
+  if (readiness === "ready") {
+    return "Ready";
+  }
+  if (readiness === "broken") {
+    return "Installed but incomplete";
+  }
+  if (readiness === "missing") {
+    return "Missing";
+  }
+  return "Unknown";
+}
+
+function formatVoiceLanguageScope(scope: VoiceRuntimeStatus["catalog"][number]["languageScope"]): string {
+  return scope === "english" ? "English" : "Multilingual";
 }
 
 function formatTalkModeLabel(mode?: VoiceStatus["talk"]["mode"]): string {

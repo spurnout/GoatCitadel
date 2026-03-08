@@ -314,26 +314,46 @@ function buildPayload(pathname: string, method: string): unknown {
   }
   if (pathname.includes("/voice/status")) {
     return {
-      wakeActive: false,
-      talkActive: false,
-      activeSessionId: null,
-      lastTranscript: null,
       stt: {
-        provider: "none",
-        model: "none",
-        state: "idle",
-      },
-      tts: {
-        provider: "none",
-        voice: "none",
+        provider: "whisper.cpp",
+        modelId: "base.en",
+        runtimeReady: false,
+        state: "stopped",
+        updatedAt: now,
       },
       talk: {
-        state: "idle",
-        sessionId: null,
+        activeSessionId: undefined,
+        state: "stopped",
+        mode: "push_to_talk",
+        updatedAt: now,
       },
       wake: {
-        state: "idle",
+        enabled: false,
+        state: "stopped",
+        model: "openwakeword",
+        updatedAt: now,
       },
+    };
+  }
+  if (pathname.includes("/voice/runtime")) {
+    return {
+      provider: "whisper.cpp",
+      source: "managed",
+      readiness: "missing",
+      binaryReady: false,
+      ffmpegReady: false,
+      installedModels: [],
+      catalog: [
+        {
+          id: "base.en",
+          label: "Base English",
+          languageScope: "english",
+          approxSizeLabel: "141 MB",
+          sizeBytes: 147964211,
+          recommended: true,
+          defaultInstall: true,
+        },
+      ],
     };
   }
   if (pathname.includes("/guidance/global")) {

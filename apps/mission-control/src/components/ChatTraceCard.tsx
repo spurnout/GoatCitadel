@@ -76,9 +76,31 @@ export function ChatTraceCard({
               </ul>
             </div>
           ) : null}
+          {trace.orchestration ? (
+            <div className="chat-trace-section">
+              <strong>Orchestration</strong>
+              <p>
+                {trace.orchestration.workflowTemplate}
+                {" · "}
+                {trace.orchestration.visibility}
+                {" · "}
+                {trace.orchestration.status}
+              </p>
+              <p>{trace.orchestration.routeDecision.selectedRoles.join(" -> ")}</p>
+              {trace.orchestration.finalSummary ? <p>{trace.orchestration.finalSummary}</p> : null}
+              <ul className="chat-trace-list">
+                {trace.orchestration.steps.map((step) => (
+                  <li key={step.stepId}>
+                    <span>{step.role}</span>
+                    <span>{step.providerId ?? "provider auto"}{step.model ? ` · ${step.model}` : ""}</span>
+                    <span>{step.status}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       )}
     </article>
   );
 }
-

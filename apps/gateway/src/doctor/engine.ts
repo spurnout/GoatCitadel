@@ -821,6 +821,82 @@ async function checkDeepRuntime(
     details.push(`Onboarding state unavailable: ${onboarding.detail}`);
   }
 
+  const voiceStatus = await fetchGatewayJson(
+    context.gatewayBaseUrl,
+    "/api/v1/voice/status",
+    context.authToken,
+    tokenQueryParam,
+  );
+  if (!voiceStatus.ok) {
+    repairs.push({
+      checkId: id,
+      applied: false,
+      skipped: true,
+      reason: "Voice status endpoint unavailable during deep runtime checks.",
+    });
+    return {
+      id,
+      group: "runtime",
+      title: "Deep runtime checks",
+      status: "warn",
+      severity: "warning",
+      detail: `${details.join(" ")} Voice status unavailable: ${voiceStatus.detail}`,
+      repairable: false,
+      repairAction: "Run `goatcitadel voice status` after the gateway starts.",
+    };
+  }
+
+  const voiceRuntime = await fetchGatewayJson(
+    context.gatewayBaseUrl,
+    "/api/v1/voice/runtime",
+    context.authToken,
+    tokenQueryParam,
+  );
+  if (!voiceRuntime.ok) {
+    repairs.push({
+      checkId: id,
+      applied: false,
+      skipped: true,
+      reason: "Voice runtime endpoint unavailable during deep runtime checks.",
+    });
+    return {
+      id,
+      group: "runtime",
+      title: "Deep runtime checks",
+      status: "warn",
+      severity: "warning",
+      detail: `${details.join(" ")} Voice runtime unavailable: ${voiceRuntime.detail}`,
+      repairable: false,
+      repairAction: "Repair the managed voice runtime with `goatcitadel voice install`.",
+    };
+  }
+
+  const runtimePayload = asRecord(voiceRuntime.payload);
+  const voiceReadiness = typeof runtimePayload?.readiness === "string" ? runtimePayload.readiness : "missing";
+  const selectedModelId = typeof runtimePayload?.selectedModelId === "string" ? runtimePayload.selectedModelId : undefined;
+  if (voiceReadiness !== "ready") {
+    const repairAction = selectedModelId
+      ? `Run \`goatcitadel voice install --voice-model ${selectedModelId}\` or \`goatcitadel voice select ${selectedModelId}\`.`
+      : "Run `goatcitadel voice install` to provision the managed whisper.cpp runtime.";
+    repairs.push({
+      checkId: id,
+      applied: false,
+      skipped: true,
+      reason: "Voice runtime needs install or repair.",
+    });
+    return {
+      id,
+      group: "runtime",
+      title: "Deep runtime checks",
+      status: "warn",
+      severity: "warning",
+      detail: `${details.join(" ")} Voice runtime readiness is ${voiceReadiness}.`,
+      repairable: false,
+      repairAction,
+    };
+  }
+  details.push("Managed voice runtime is ready.");
+
   repairs.push({
     checkId: id,
     applied: false,

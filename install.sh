@@ -7,6 +7,8 @@ APP_DIR="${BASE_DIR}/app"
 BIN_DIR="${BASE_DIR}/bin"
 INSTALL_METHOD="git"
 NO_PATH_UPDATE="0"
+SKIP_VOICE="0"
+VOICE_MODEL="base.en"
 PNPM_VERSION="10.29.3"
 WORKSPACE_BOOTSTRAP_BUILD_PACKAGES=(
   "@goatcitadel/contracts"
@@ -34,6 +36,8 @@ Options:
   --install-dir <path>      Base install directory (default: ~/.GoatCitadel)
   --install-method <name>   Install method (supported: git)
   --no-path-update          Do not modify shell profile PATH
+  --skip-voice              Skip managed local voice runtime install
+  --voice-model <modelId>   Managed starter voice model (default: base.en)
   --help                    Show this help
 
 Examples:
@@ -61,6 +65,14 @@ while [[ $# -gt 0 ]]; do
     --no-path-update)
       NO_PATH_UPDATE="1"
       shift
+      ;;
+    --skip-voice)
+      SKIP_VOICE="1"
+      shift
+      ;;
+    --voice-model)
+      VOICE_MODEL="${2:-}"
+      shift 2
       ;;
     --help|-h)
       print_help
@@ -172,6 +184,12 @@ if [[ -n "${PRESERVED_MANAGED_CONFIG_DIR}" ]]; then
   echo "Re-syncing preserved GoatCitadel config after update..."
   pnpm --dir "${APP_DIR}" config:sync
 fi
+if [[ "${SKIP_VOICE}" != "1" ]]; then
+  echo "Installing managed local voice runtime (${VOICE_MODEL})..."
+  if ! pnpm --dir "${APP_DIR}" --filter "@goatcitadel/gateway" run voice:runtime -- install --model "${VOICE_MODEL}"; then
+    echo "Managed voice runtime install failed. Core GoatCitadel install is complete. Repair later with 'goatcitadel voice install'." >&2
+  fi
+fi
 
 cat > "${BIN_DIR}/goatcitadel" <<EOF
 #!/usr/bin/env bash
@@ -223,7 +241,9 @@ echo "Run:"
 echo "  ${BIN_DIR}/goatcitadel up"
 echo "  ${BIN_DIR}/goatcitadel onboard"
 echo "  ${BIN_DIR}/goatcitadel doctor --deep"
+echo "  ${BIN_DIR}/goatcitadel voice status"
 echo "  ${BIN_DIR}/goat up"
 echo "  ${BIN_DIR}/goat onboard"
 echo "  ${BIN_DIR}/goat doctor --deep"
+echo "  ${BIN_DIR}/goat voice status"
 echo "  Managed GoatCitadel config is preserved across installer updates."
