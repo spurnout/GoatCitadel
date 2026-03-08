@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { gunzipSync } from "node:zlib";
 import AdmZip from "adm-zip";
 
 export async function downloadFile(url: string, destinationPath: string, expectedSha256: string): Promise<void> {
@@ -33,6 +34,13 @@ export async function extractZip(archivePath: string, destinationDir: string): P
 export async function extractTarGz(archivePath: string, destinationDir: string): Promise<void> {
   await fs.mkdir(destinationDir, { recursive: true });
   runCommand("tar", ["-xzf", archivePath, "-C", destinationDir], "Failed to extract whisper.cpp source archive.");
+}
+
+export async function extractGzip(archivePath: string, destinationPath: string): Promise<void> {
+  const compressed = await fs.readFile(archivePath);
+  const buffer = gunzipSync(compressed);
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  await fs.writeFile(destinationPath, buffer);
 }
 
 export function runCommand(command: string, args: string[], failureMessage: string, cwd?: string): void {

@@ -1,16 +1,24 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createRequire } from "node:module";
 import type { SystemSettingsRepository } from "@goatcitadel/storage";
 import type { VoiceRuntimeInstallRequest, VoiceRuntimeStatus } from "@goatcitadel/contracts";
 import {
   DEFAULT_MANAGED_VOICE_MODEL_ID,
   FFMPEG_HELPER_VERSION,
+  getManagedFfmpegSource,
   getManagedVoiceModel,
   getManagedVoiceRuntimeSource,
   WHISPER_RUNTIME_VERSION,
 } from "./catalog.js";
-import { createTempDir, downloadFile, extractTarGz, extractZip, findFileRecursive, runCommand } from "./download.js";
+import {
+  createTempDir,
+  downloadFile,
+  extractGzip,
+  extractTarGz,
+  extractZip,
+  findFileRecursive,
+  runCommand,
+} from "./download.js";
 import { detectManagedVoicePlatform, resolveVoiceRuntimePaths } from "./paths.js";
 import {
   type ManagedVoiceManifest,
@@ -21,8 +29,6 @@ import {
   setVoiceRuntimeConfig,
   writeManagedVoiceManifest,
 } from "./status.js";
-
-const require = createRequire(import.meta.url);
 
 export async function installManagedVoiceRuntime(
   systemSettings: Pick<SystemSettingsRepository, "get" | "set">,
@@ -206,20 +212,24 @@ async function ensureManagedFfmpeg(
     }
   }
 
-  const ffmpegPath = require("ffmpeg-static") as string | null;
-  if (!ffmpegPath) {
-    throw new Error("ffmpeg-static did not provide a binary for this platform.");
-  }
+  const source = getManagedFfmpegSource(platform);
   const paths = resolveVoiceRuntimePaths();
-  const fileName = path.basename(ffmpegPath);
   const installDir = path.join(
     paths.ffmpegDir,
     FFMPEG_HELPER_VERSION.replace(/[^a-z0-9._-]+/gi, "_"),
     platform,
   );
+  await fs.rm(installDir, { recursive: true, force: true });
   await fs.mkdir(installDir, { recursive: true });
-  const targetPath = path.join(installDir, fileName);
-  await fs.copyFile(ffmpegPath, targetPath);
+  const tempDir = await createTempDir("goatcitadel-voice-ffmpeg-");
+  const archivePath = path.join(tempDir, path.basename(new URL(source.url).pathname));
+  const targetPath = path.join(installDir, source.binaryFileName);
+  try {
+    await downloadFile(source.url, archivePath, source.sha256);
+    await extractGzip(archivePath, targetPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
   if (process.platform !== "win32") {
     await fs.chmod(targetPath, 0o755);
   }
@@ -227,7 +237,7 @@ async function ensureManagedFfmpeg(
     version: FFMPEG_HELPER_VERSION,
     binaryPath: targetPath,
     installedAt: new Date().toISOString(),
-    source: "package-managed",
+    source: "download-binary",
   };
 }
 

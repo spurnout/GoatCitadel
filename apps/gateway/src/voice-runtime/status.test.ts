@@ -89,7 +89,7 @@ describe("managed voice runtime status", () => {
   it("reports a managed install with an active selected model as ready", async () => {
     const systemSettings = createSystemSettingsMock();
     const whisperBinary = path.join(tempHome, "tools", "voice", "whispercpp", "v1.8.3", "windows-x64", "Release", "whisper-cli.exe");
-    const ffmpegBinary = path.join(tempHome, "tools", "voice", "ffmpeg", "package_ffmpeg", "ffmpeg.exe");
+    const ffmpegBinary = path.join(tempHome, "tools", "voice", "ffmpeg", "eugeneware_ffmpeg-static_b6.1.1", "windows-x64", "ffmpeg.exe");
     const modelPath = path.join(tempHome, "tools", "voice", "models", "ggml-base.en.bin");
     await fs.mkdir(path.dirname(whisperBinary), { recursive: true });
     await fs.mkdir(path.dirname(ffmpegBinary), { recursive: true });
@@ -108,10 +108,10 @@ describe("managed voice runtime status", () => {
         source: "download-binary",
       },
       ffmpeg: {
-        version: "package:ffmpeg-static@5.3.0",
+        version: "eugeneware/ffmpeg-static@b6.1.1",
         binaryPath: ffmpegBinary,
         installedAt: "2026-03-08T00:00:00.000Z",
-        source: "package-managed",
+        source: "download-binary",
       },
       models: [
         {

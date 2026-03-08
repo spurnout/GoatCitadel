@@ -3,8 +3,13 @@ import type {
   VoiceRuntimeReadiness,
 } from "@goatcitadel/contracts";
 
-export type ManagedVoicePlatform = "windows-x64" | "darwin-x64" | "darwin-arm64" | "linux-x64";
-export type ManagedVoiceArchiveKind = "zip" | "tar.gz";
+export type ManagedVoicePlatform =
+  | "windows-x64"
+  | "windows-arm64"
+  | "darwin-x64"
+  | "darwin-arm64"
+  | "linux-x64";
+export type ManagedVoiceArchiveKind = "zip" | "tar.gz" | "gz";
 
 export interface ManagedWhisperRuntimeSource {
   platform: ManagedVoicePlatform;
@@ -22,23 +27,39 @@ export interface ManagedVoiceModelSource extends VoiceModelCatalogEntry {
   fileName: string;
 }
 
+export interface ManagedFfmpegSource {
+  platform: ManagedVoicePlatform;
+  archiveKind: Extract<ManagedVoiceArchiveKind, "gz">;
+  version: string;
+  url: string;
+  sha256: string;
+  binaryFileName: string;
+}
+
 export const WHISPER_RUNTIME_VERSION = "v1.8.3";
-export const FFMPEG_HELPER_VERSION = "package:ffmpeg-static@5.3.0";
+export const FFMPEG_HELPER_VERSION = "eugeneware/ffmpeg-static@b6.1.1";
 export const WHISPER_SOURCE_TARBALL = {
   version: WHISPER_RUNTIME_VERSION,
   url: `https://github.com/ggml-org/whisper.cpp/archive/refs/tags/${WHISPER_RUNTIME_VERSION}.tar.gz`,
   sha256: "c6ca89a5ed05b959d2935e65cd4a8c325ab537e598dc7e7d8aa6572794571885",
 };
+const WINDOWS_WHISPER_RUNTIME_SOURCE = {
+  archiveKind: "zip",
+  version: WHISPER_RUNTIME_VERSION,
+  url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip",
+  sha256: "d824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d",
+  installMethod: "download-binary",
+  binaryRelativePath: "Release/whisper-cli.exe",
+} as const satisfies Omit<ManagedWhisperRuntimeSource, "platform">;
 
 export const MANAGED_WHISPER_RUNTIME_SOURCES: Record<ManagedVoicePlatform, ManagedWhisperRuntimeSource> = {
   "windows-x64": {
     platform: "windows-x64",
-    archiveKind: "zip",
-    version: WHISPER_RUNTIME_VERSION,
-    url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip",
-    sha256: "d824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d",
-    installMethod: "download-binary",
-    binaryRelativePath: "Release/whisper-cli.exe",
+    ...WINDOWS_WHISPER_RUNTIME_SOURCE,
+  },
+  "windows-arm64": {
+    platform: "windows-arm64",
+    ...WINDOWS_WHISPER_RUNTIME_SOURCE,
   },
   "darwin-x64": {
     platform: "darwin-x64",
@@ -63,6 +84,49 @@ export const MANAGED_WHISPER_RUNTIME_SOURCES: Record<ManagedVoicePlatform, Manag
     url: WHISPER_SOURCE_TARBALL.url,
     sha256: WHISPER_SOURCE_TARBALL.sha256,
     installMethod: "build-from-source",
+  },
+};
+
+export const MANAGED_FFMPEG_SOURCES: Record<ManagedVoicePlatform, ManagedFfmpegSource> = {
+  "windows-x64": {
+    platform: "windows-x64",
+    archiveKind: "gz",
+    version: FFMPEG_HELPER_VERSION,
+    url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
+    sha256: "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77",
+    binaryFileName: "ffmpeg.exe",
+  },
+  "windows-arm64": {
+    platform: "windows-arm64",
+    archiveKind: "gz",
+    version: FFMPEG_HELPER_VERSION,
+    url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64.gz",
+    sha256: "8883a3dffbd0a16cf4ef95206ea05283f78908dbfb118f73c83f4951dcc06d77",
+    binaryFileName: "ffmpeg.exe",
+  },
+  "darwin-x64": {
+    platform: "darwin-x64",
+    archiveKind: "gz",
+    version: FFMPEG_HELPER_VERSION,
+    url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz",
+    sha256: "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106",
+    binaryFileName: "ffmpeg",
+  },
+  "darwin-arm64": {
+    platform: "darwin-arm64",
+    archiveKind: "gz",
+    version: FFMPEG_HELPER_VERSION,
+    url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
+    sha256: "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa",
+    binaryFileName: "ffmpeg",
+  },
+  "linux-x64": {
+    platform: "linux-x64",
+    archiveKind: "gz",
+    version: FFMPEG_HELPER_VERSION,
+    url: "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-linux-x64.gz",
+    sha256: "bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa",
+    binaryFileName: "ffmpeg",
   },
 };
 
@@ -153,6 +217,10 @@ export function getManagedVoiceModel(modelId: string): ManagedVoiceModelSource |
 
 export function getManagedVoiceRuntimeSource(platform: ManagedVoicePlatform): ManagedWhisperRuntimeSource {
   return MANAGED_WHISPER_RUNTIME_SOURCES[platform];
+}
+
+export function getManagedFfmpegSource(platform: ManagedVoicePlatform): ManagedFfmpegSource {
+  return MANAGED_FFMPEG_SOURCES[platform];
 }
 
 export function formatVoiceReadiness(binaryReady: boolean, modelReady: boolean): VoiceRuntimeReadiness {

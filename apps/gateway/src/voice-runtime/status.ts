@@ -35,7 +35,7 @@ export interface ManagedVoiceManifest {
     version: string;
     binaryPath: string;
     installedAt: string;
-    source: "package-managed";
+    source: "package-managed" | "download-binary";
   };
   models: Array<{
     modelId: string;

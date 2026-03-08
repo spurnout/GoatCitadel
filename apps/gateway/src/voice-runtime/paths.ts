@@ -40,17 +40,23 @@ export function resolveVoiceRuntimePaths(): VoiceRuntimePaths {
   };
 }
 
-export function detectManagedVoicePlatform(): ManagedVoicePlatform | null {
-  if (process.platform === "win32" && process.arch === "x64") {
+export function detectManagedVoicePlatform(
+  platform = process.platform,
+  arch = process.arch,
+): ManagedVoicePlatform | null {
+  if (platform === "win32" && arch === "x64") {
     return "windows-x64";
   }
-  if (process.platform === "darwin" && process.arch === "x64") {
+  if (platform === "win32" && arch === "arm64") {
+    return "windows-arm64";
+  }
+  if (platform === "darwin" && arch === "x64") {
     return "darwin-x64";
   }
-  if (process.platform === "darwin" && process.arch === "arm64") {
+  if (platform === "darwin" && arch === "arm64") {
     return "darwin-arm64";
   }
-  if (process.platform === "linux" && process.arch === "x64") {
+  if (platform === "linux" && arch === "x64") {
     return "linux-x64";
   }
   return null;
