@@ -79,4 +79,95 @@ describe("chat routes additional coverage", () => {
     expect(response.body).toContain("\"type\":\"delta\"");
     expect(sendChatMessageStream).toHaveBeenCalledWith("sess-1", expect.objectContaining({ content: "Hello" }));
   });
+
+  it("emits an error chunk without a fabricated done chunk when SSE streaming fails", async () => {
+    const sendChatMessageStream = vi.fn(async function* () {
+      throw new Error("stream exploded");
+    });
+    app = Fastify();
+    app.decorate("gateway", {
+      sendChatMessageStream,
+    } as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/messages/stream",
+      payload: {
+        content: "Hello",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("\"type\":\"error\"");
+    expect(response.body).not.toContain("\"type\":\"done\"");
+  });
+
+  it("wires thread routes and planning-mode prefs through the gateway", async () => {
+    const getChatThread = vi.fn(async () => ({
+      sessionId: "sess-1",
+      activeLeafTurnId: "turn-2",
+      selectedTurnId: "turn-2",
+      turns: [],
+    }));
+    const selectChatBranchTurn = vi.fn(async () => ({
+      sessionId: "sess-1",
+      activeLeafTurnId: "turn-3",
+      selectedTurnId: "turn-3",
+      turns: [],
+    }));
+    const updateChatSessionPrefs = vi.fn(() => ({
+      sessionId: "sess-1",
+      mode: "chat",
+      planningMode: "advisory",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "auto",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      visionFallbackModel: undefined,
+      proactiveMode: "off",
+      autonomyBudget: {
+        maxActionsPerHour: 2,
+        maxActionsPerTurn: 1,
+        cooldownSeconds: 60,
+      },
+      retrievalMode: "standard",
+      reflectionMode: "off",
+      createdAt: "2026-03-07T00:00:00.000Z",
+      updatedAt: "2026-03-07T00:00:00.000Z",
+    }));
+    app = Fastify();
+    app.decorate("gateway", {
+      getChatThread,
+      selectChatBranchTurn,
+      updateChatSessionPrefs,
+    } as never);
+    await app.register(chatRoutes);
+
+    const threadResponse = await app.inject({
+      method: "GET",
+      url: "/api/v1/chat/sessions/sess-1/thread",
+    });
+    expect(threadResponse.statusCode).toBe(200);
+    expect(getChatThread).toHaveBeenCalledWith("sess-1");
+
+    const selectResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/turns/turn-2/select",
+    });
+    expect(selectResponse.statusCode).toBe(200);
+    expect(selectChatBranchTurn).toHaveBeenCalledWith("sess-1", "turn-2");
+
+    const prefsResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/chat/sessions/sess-1/prefs",
+      payload: {
+        planningMode: "advisory",
+      },
+    });
+    expect(prefsResponse.statusCode).toBe(200);
+    expect(updateChatSessionPrefs).toHaveBeenCalledWith("sess-1", { planningMode: "advisory" });
+  });
 });

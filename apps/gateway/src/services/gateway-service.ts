@@ -68,6 +68,7 @@ import type {
   ChatMemoryMode,
   ChatMode,
   ChatMessageRecord,
+  ChatPlanningMode,
   ChatProactiveMode,
   ChatProjectRecord,
   ChatReflectionMode,
@@ -79,7 +80,9 @@ import type {
   ChatSessionRecord,
   ChatSessionPrefsPatch,
   ChatStreamChunk,
+  ChatThreadResponse,
   ChatThinkingLevel,
+  ChatTurnBranchKind,
   ChatTurnTraceRecord,
   ChatWebMode,
   DocsIngestInput,
@@ -246,6 +249,17 @@ import type { OrchestrationCheckpoint } from "@goatcitadel/storage";
 import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
 import { scoutCapabilityUpgradeSuggestions } from "./chat-capability-scout.js";
+import {
+  assertChatSessionActive,
+  buildChatSessionUpdatedPayload,
+  deriveChatSessionTitleFromContent,
+  shouldAllowCrossProviderFallback,
+} from "./chat-session-utils.js";
+import {
+  buildChatThreadResponse,
+  buildSelectedPathTurnIds,
+  resolveNewestLeafTurnId,
+} from "./chat-thread-utils.js";
 import { getIntegrationFormSchema, INTEGRATION_CATALOG } from "./integration-catalog.js";
 import { MemoryContextService } from "./memory-context-service.js";
 import { NpuSidecarService } from "./npu-sidecar-service.js";
@@ -1318,19 +1332,46 @@ export class GatewayService {
     this.storage.chatSessionMeta.patch(sessionId, {
       title: input.title,
     });
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_title_updated", "chat", {
+      type: "chat_session_title_updated",
+      sessionId: updated.sessionId,
+      title: updated.title,
+    });
+    return updated;
+  }
+
+  private maybeAutoTitleChatSession(sessionId: string, content: string): void {
+    const meta = this.storage.chatSessionMeta.ensure(sessionId);
+    if (meta.title?.trim()) {
+      return;
+    }
+    const derivedTitle = deriveChatSessionTitleFromContent(content);
+    if (!derivedTitle) {
+      return;
+    }
+    this.storage.chatSessionMeta.patch(sessionId, { title: derivedTitle });
+    this.publishRealtime("chat_session_title_updated", "chat", {
+      type: "chat_session_title_updated",
+      sessionId,
+      title: derivedTitle,
+    });
   }
 
   public pinChatSession(sessionId: string): ChatSessionRecord {
     this.getSession(sessionId);
     this.storage.chatSessionMeta.patch(sessionId, { pinned: true });
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_pinned", updated));
+    return updated;
   }
 
   public unpinChatSession(sessionId: string): ChatSessionRecord {
     this.getSession(sessionId);
     this.storage.chatSessionMeta.patch(sessionId, { pinned: false });
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_unpinned", updated));
+    return updated;
   }
 
   public archiveChatSession(sessionId: string): ChatSessionRecord {
@@ -1339,7 +1380,9 @@ export class GatewayService {
       lifecycleStatus: "archived",
       archivedAt: new Date().toISOString(),
     });
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_archived", updated));
+    return updated;
   }
 
   public restoreChatSession(sessionId: string): ChatSessionRecord {
@@ -1348,7 +1391,9 @@ export class GatewayService {
       lifecycleStatus: "active",
       archivedAt: undefined,
     });
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_restored", updated));
+    return updated;
   }
 
   public assignChatSessionProject(sessionId: string, projectId?: string): ChatSessionRecord {
@@ -1357,14 +1402,18 @@ export class GatewayService {
     const workspaceId = this.normalizeWorkspaceId(meta.workspaceId);
     if (!projectId) {
       this.storage.chatSessionProjects.unassign(sessionId);
-      return this.requireChatSession(sessionId);
+      const updated = this.requireChatSession(sessionId);
+      this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_project_unassigned", updated));
+      return updated;
     }
     const project = this.storage.chatProjects.get(projectId);
     if (this.normalizeWorkspaceId(project.workspaceId) !== workspaceId) {
       throw new Error("project workspace does not match session workspace");
     }
     this.storage.chatSessionProjects.assign(sessionId, projectId);
-    return this.requireChatSession(sessionId);
+    const updated = this.requireChatSession(sessionId);
+    this.publishRealtime("chat_session_updated", "chat", buildChatSessionUpdatedPayload("chat_session_project_assigned", updated));
+    return updated;
   }
 
   public getChatSessionBinding(sessionId: string): ChatSessionBindingRecord | undefined {
@@ -1416,6 +1465,79 @@ export class GatewayService {
       });
       return this.listChatMessagesFromTranscript(sessionId, safeLimit, cursor);
     }
+  }
+
+  private async loadChatTurnSessionState(sessionId: string): Promise<{
+    traces: ChatTurnTraceRecord[];
+    tracesById: Map<string, ChatTurnTraceRecord>;
+    turnLineageById: Map<string, { turnId: string; parentTurnId?: string }>;
+    messages: ChatMessageRecord[];
+    messagesById: Map<string, ChatMessageRecord>;
+    childrenByTurnId: Map<string, string[]>;
+    activeLeafTurnId?: string;
+  }> {
+    await this.ensureChatMessageProjection(sessionId);
+    const traces = this.listHydratedChatTurnTraces(sessionId, 2_000);
+    const messages = this.storage.chatMessages.list(sessionId, 5_000);
+    return {
+      traces,
+      tracesById: new Map(traces.map((trace) => [trace.turnId, trace])),
+      turnLineageById: new Map(traces.map((trace) => [trace.turnId, {
+        turnId: trace.turnId,
+        parentTurnId: trace.parentTurnId,
+      }])),
+      messages,
+      messagesById: new Map(messages.map((message) => [message.messageId, message])),
+      childrenByTurnId: this.buildChatTurnChildrenMap(traces),
+      activeLeafTurnId: this.resolveChatActiveLeafTurnId(sessionId, traces),
+    };
+  }
+
+  public async getChatThread(sessionId: string): Promise<ChatThreadResponse> {
+    this.getSession(sessionId);
+    const state = await this.loadChatTurnSessionState(sessionId);
+    return buildChatThreadResponse({
+      sessionId,
+      activeLeafTurnId: state.activeLeafTurnId,
+      turns: state.traces.map((trace) => ({
+        trace,
+        userMessage: state.messagesById.get(trace.userMessageId),
+        assistantMessage: trace.assistantMessageId ? state.messagesById.get(trace.assistantMessageId) : undefined,
+      })),
+    });
+  }
+
+  public async selectChatBranchTurn(sessionId: string, turnId: string): Promise<ChatThreadResponse> {
+    this.getSession(sessionId);
+    const state = await this.loadChatTurnSessionState(sessionId);
+    const target = state.traces.find((trace) => trace.turnId === turnId);
+    if (!target) {
+      throw new Error(`Chat turn ${turnId} not found in session ${sessionId}`);
+    }
+    const newestLeafTurnId = resolveNewestLeafTurnId(
+      turnId,
+      new Map(state.traces.map((trace) => [trace.turnId, {
+        turnId: trace.turnId,
+        startedAtMs: Date.parse(trace.startedAt) || 0,
+      }])),
+      state.childrenByTurnId,
+    );
+    this.storage.chatSessionBranchState.setActiveLeaf(sessionId, newestLeafTurnId);
+    this.publishRealtime("chat_thread_updated", "chat", {
+      type: "chat_thread_branch_selected",
+      sessionId,
+      turnId,
+      activeLeafTurnId: newestLeafTurnId,
+    });
+    return buildChatThreadResponse({
+      sessionId,
+      activeLeafTurnId: newestLeafTurnId,
+      turns: state.traces.map((trace) => ({
+        trace,
+        userMessage: state.messagesById.get(trace.userMessageId),
+        assistantMessage: trace.assistantMessageId ? state.messagesById.get(trace.assistantMessageId) : undefined,
+      })),
+    });
   }
 
   public getChatSessionPrefs(sessionId: string): ChatSessionPrefsRecord {
@@ -2445,6 +2567,7 @@ export class GatewayService {
   }> {
     return [
       { command: "/mode", usage: "/mode chat|cowork|code", description: "Switch session mode." },
+      { command: "/plan", usage: "/plan [on|off]", description: "Show or set advisory planning mode." },
       { command: "/model", usage: "/model <model-id>", description: "Override model for this session." },
       { command: "/web", usage: "/web auto|off|quick|deep", description: "Set web retrieval behavior." },
       { command: "/memory", usage: "/memory auto|on|off", description: "Set memory behavior." },
@@ -2458,6 +2581,14 @@ export class GatewayService {
       { command: "/pipeline", usage: "/pipeline prd|build|triage|release :: <objective>", description: "Run a built-in delegation template." },
       { command: "/score", usage: "/score <TEST-##> <routing> <honesty> <handoff> <robustness> <usability>", description: "Score the latest run for a prompt-pack test." },
       { command: "/pack", usage: "/pack run <TEST-##|all>", description: "Run prompt-pack tests from Prompt Lab." },
+      { command: "/skills", usage: "/skills", description: "List installed skills and their runtime state." },
+      { command: "/skill", usage: "/skill enable|sleep|disable <skillId>", description: "Change an installed skill's runtime state." },
+      { command: "/skill", usage: "/skill search <query>", description: "Search skill import sources." },
+      { command: "/skill", usage: "/skill install <sourceRef> [--confirm-high-risk]", description: "Validate and install a skill, disabled by default." },
+      { command: "/mcp", usage: "/mcp", description: "List configured MCP servers and connection state." },
+      { command: "/mcp", usage: "/mcp connect|disconnect <serverId>", description: "Connect or disconnect a configured MCP server." },
+      { command: "/mcp", usage: "/mcp templates [query]", description: "List known MCP server templates." },
+      { command: "/mcp", usage: "/mcp add-template <templateId>", description: "Add an MCP template definition in a disconnected state." },
       { command: "/project", usage: "/project <project-id|none>", description: "Assign or clear this session project." },
       { command: "/attach", usage: "/attach <attachment-id>", description: "Reference an attachment id in your next send." },
       { command: "/run", usage: "/run research <query>", description: "Run a named workflow from chat." },
@@ -2519,6 +2650,33 @@ export class GatewayService {
       }
       const prefs = this.updateChatSessionPrefs(sessionId, { mode });
       return { ok: true, command, args, prefs, message: `Mode set to ${prefs.mode}.` };
+    }
+
+    if (command === "/plan") {
+      const next = (args[0] ?? "").toLowerCase();
+      if (!next) {
+        const prefs = this.getChatSessionPrefs(sessionId);
+        return {
+          ok: true,
+          command,
+          args,
+          prefs,
+          message: `Planning mode is ${prefs.planningMode}.`,
+        };
+      }
+      if (next !== "on" && next !== "off") {
+        return { ok: false, command, args, message: "Usage: /plan [on|off]" };
+      }
+      const prefs = this.updateChatSessionPrefs(sessionId, {
+        planningMode: next === "on" ? "advisory" : "off",
+      });
+      return {
+        ok: true,
+        command,
+        args,
+        prefs,
+        message: `Planning mode set to ${prefs.planningMode}.`,
+      };
     }
 
     if (command === "/model") {
@@ -2708,6 +2866,206 @@ export class GatewayService {
         command,
         args,
         message: `Prompt pack run complete: ${results.length} test(s) executed.`,
+      };
+    }
+
+    if (command === "/skills") {
+      const skills = this.listSkills();
+      if (skills.length === 0) {
+        return { ok: true, command, args, message: "No installed skills found." };
+      }
+      return {
+        ok: true,
+        command,
+        args,
+        message: skills
+          .slice(0, 20)
+          .map((skill) => `- ${skill.skillId} [${skill.state}]${skill.note ? ` - ${skill.note}` : ""}`)
+          .join("\n"),
+      };
+    }
+
+    if (command === "/skill") {
+      const action = (args[0] ?? "").toLowerCase();
+      if (action === "enable" || action === "sleep" || action === "disable") {
+        const skillId = args.slice(1).join(" ").trim();
+        if (!skillId) {
+          return { ok: false, command, args, message: `Usage: /skill ${action} <skillId>` };
+        }
+        const state = action === "enable" ? "enabled" : action === "sleep" ? "sleep" : "disabled";
+        const updated = this.setSkillState(skillId, state, `Updated from chat command ${commandText.trim()}`);
+        return {
+          ok: true,
+          command,
+          args,
+          message: `Skill ${updated.skillId} is now ${updated.state}.`,
+        };
+      }
+      if (action === "search") {
+        const query = args.slice(1).join(" ").trim();
+        if (!query) {
+          return { ok: false, command, args, message: "Usage: /skill search <query>" };
+        }
+        const results = await this.listSkillSources(query, 5);
+        if (results.items.length === 0) {
+          return { ok: true, command, args, message: `No skill source matches found for "${query}".` };
+        }
+        return {
+          ok: true,
+          command,
+          args,
+          message: results.items
+            .slice(0, 5)
+            .map((item) => `- ${item.name} (${item.sourceProvider}) - ${item.sourceUrl}`)
+            .join("\n"),
+        };
+      }
+      if (action === "install") {
+        const confirmHighRisk = args.includes("--confirm-high-risk");
+        const sourceRef = args
+          .filter((item) => item !== "--confirm-high-risk")
+          .slice(1)
+          .join(" ")
+          .trim();
+        if (!sourceRef) {
+          return {
+            ok: false,
+            command,
+            args,
+            message: "Usage: /skill install <sourceRef> [--confirm-high-risk]",
+          };
+        }
+        const validation = await this.validateSkillImport({ sourceRef });
+        if (!validation.valid) {
+          return {
+            ok: false,
+            command,
+            args,
+            message: `Skill import rejected: ${validation.errors.join("; ") || "validation failed"}`,
+          };
+        }
+        if (validation.riskLevel === "high" && !confirmHighRisk) {
+          return {
+            ok: false,
+            command,
+            args,
+            message: "High-risk skill import requires --confirm-high-risk.",
+          };
+        }
+        const installed = await this.installSkillImport({ sourceRef, confirmHighRisk });
+        return {
+          ok: true,
+          command,
+          args,
+          message: `Installed ${installed.installedSkillId ?? validation.inferredSkillName ?? sourceRef}. Skill starts disabled by default.`,
+        };
+      }
+      return {
+        ok: false,
+        command,
+        args,
+        message: "Usage: /skill enable|sleep|disable <skillId> | /skill search <query> | /skill install <sourceRef> [--confirm-high-risk]",
+      };
+    }
+
+    if (command === "/mcp") {
+      const action = (args[0] ?? "").toLowerCase();
+      if (!action) {
+        const servers = this.listMcpServers();
+        if (servers.length === 0) {
+          return { ok: true, command, args, message: "No MCP servers configured." };
+        }
+        return {
+          ok: true,
+          command,
+          args,
+          message: servers
+            .slice(0, 20)
+            .map((server) => `- ${server.serverId} ${server.label} [${server.status}]${server.enabled ? "" : " disabled"}`)
+            .join("\n"),
+        };
+      }
+      if (action === "connect" || action === "disconnect") {
+        const serverId = args.slice(1).join(" ").trim();
+        if (!serverId) {
+          return { ok: false, command, args, message: `Usage: /mcp ${action} <serverId>` };
+        }
+        const updated = action === "connect"
+          ? this.connectMcpServer(serverId)
+          : this.disconnectMcpServer(serverId);
+        return {
+          ok: true,
+          command,
+          args,
+          message: `MCP server ${updated.serverId} is now ${updated.status}.`,
+        };
+      }
+      if (action === "templates") {
+        const query = args.slice(1).join(" ").trim().toLowerCase();
+        const templates = this.listMcpTemplates()
+          .filter((template) => {
+            if (!query) {
+              return true;
+            }
+            const haystack = `${template.templateId} ${template.label} ${template.description}`.toLowerCase();
+            return haystack.includes(query);
+          });
+        if (templates.length === 0) {
+          return { ok: true, command, args, message: query ? `No MCP templates match "${query}".` : "No MCP templates available." };
+        }
+        return {
+          ok: true,
+          command,
+          args,
+          message: templates
+            .slice(0, 10)
+            .map((template) => `- ${template.templateId} ${template.label}${template.installed ? " [installed]" : ""}`)
+            .join("\n"),
+        };
+      }
+      if (action === "add-template") {
+        const templateId = args.slice(1).join(" ").trim().toLowerCase();
+        if (!templateId) {
+          return { ok: false, command, args, message: "Usage: /mcp add-template <templateId>" };
+        }
+        const template = MCP_SERVER_TEMPLATES.find((item) => item.templateId.toLowerCase() === templateId);
+        if (!template) {
+          return { ok: false, command, args, message: `Unknown MCP template ${templateId}.` };
+        }
+        const existing = this.listMcpServers().find((server) => server.label.toLowerCase() === template.label.toLowerCase());
+        if (existing) {
+          return {
+            ok: true,
+            command,
+            args,
+            message: `MCP template ${template.templateId} already exists as ${existing.serverId}.`,
+          };
+        }
+        const created = this.createMcpServer({
+          label: template.label,
+          transport: template.transport,
+          command: template.command,
+          args: template.args,
+          url: template.url,
+          authType: template.authType,
+          enabled: false,
+          category: template.category,
+          trustTier: template.trustTier,
+          costTier: template.costTier,
+          policy: template.policy,
+        });
+        return {
+          ok: true,
+          command,
+          args,
+          message: `Added MCP template ${template.templateId} as ${created.serverId}. It is disconnected until you connect it.`,
+        };
+      }
+      return {
+        ok: false,
+        command,
+        args,
+        message: "Usage: /mcp | /mcp connect <serverId> | /mcp disconnect <serverId> | /mcp templates [query] | /mcp add-template <templateId>",
       };
     }
 
@@ -6418,72 +6776,140 @@ export class GatewayService {
     });
   }
 
-  public async agentSendChatMessage(
+  private async requireChatTurnContext(
+    sessionId: string,
+    turnId: string,
+    state?: Awaited<ReturnType<GatewayService["loadChatTurnSessionState"]>>,
+  ): Promise<{
+    trace: ChatTurnTraceRecord;
+    userMessage: ChatMessageRecord;
+    assistantMessage?: ChatMessageRecord;
+  }> {
+    const sessionState = state ?? await this.loadChatTurnSessionState(sessionId);
+    const trace = sessionState.traces.find((item) => item.turnId === turnId);
+    if (!trace) {
+      throw new Error(`Chat turn ${turnId} not found in session ${sessionId}`);
+    }
+    const userMessage = sessionState.messagesById.get(trace.userMessageId);
+    if (!userMessage) {
+      throw new Error(`User message ${trace.userMessageId} not found for chat turn ${turnId}`);
+    }
+    return {
+      trace,
+      userMessage,
+      assistantMessage: trace.assistantMessageId ? sessionState.messagesById.get(trace.assistantMessageId) : undefined,
+    };
+  }
+
+  private async buildChatSendMessageResponseFromTurnId(
+    sessionId: string,
+    turnId: string,
+  ): Promise<ChatSendMessageResponse> {
+    const turn = await this.requireChatTurnContext(sessionId, turnId);
+    return {
+      sessionId,
+      userMessage: turn.userMessage,
+      assistantMessage: turn.assistantMessage,
+      transport: "llm",
+      model: turn.trace.model,
+      turnId: turn.trace.turnId,
+      trace: turn.trace,
+      citations: turn.trace.citations,
+      routing: turn.trace.routing,
+    };
+  }
+
+  private async prepareAgentChatTurn(
     sessionId: string,
     input: ChatSendMessageRequest,
-  ): Promise<ChatSendMessageResponse> {
+    options?: {
+      branchKind?: ChatTurnBranchKind;
+      sourceTurnId?: string;
+      parentTurnId?: string;
+      existingUserMessage?: ChatMessageRecord;
+      ingestUserMessage?: boolean;
+    },
+  ): Promise<{
+    session: SessionMeta;
+    route: ReturnType<GatewayService["routeFromSession"]>;
+    workspaceId: string;
+    content: string;
+    userEventId: string;
+    userMessage: ChatMessageRecord;
+    prefs: ChatSessionPrefsRecord;
+    autonomy: SessionAutonomyPrefsRecord;
+    normalized: ReturnType<typeof normalizeAgentInputFromSend>;
+    retrievalTrace: NonNullable<ChatTurnTraceRecord["retrieval"]>;
+    resolvedGuidance: ResolvedRuntimeGuidance;
+    history: ChatCompletionRequest["messages"];
+    turnId: string;
+    assistantMessageId: string;
+    parentTurnId?: string;
+    branchKind: ChatTurnBranchKind;
+    sourceTurnId?: string;
+    effectiveToolAutonomy: ChatSessionPrefsRecord["toolAutonomy"];
+  }> {
     const session = this.getSession(sessionId);
     this.ensureChatSessionRuntimeGrants(sessionId);
     const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
+    assertChatSessionActive(sessionId, sessionMeta.lifecycleStatus);
     const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
-    if (sessionMeta.lifecycleStatus === "archived") {
-      throw new Error(`Session ${sessionId} is archived`);
-    }
-
-    const content = input.content.trim();
+    const branchKind = options?.branchKind ?? "append";
+    const content = (options?.existingUserMessage?.content ?? input.content).trim();
     if (!content) {
       throw new Error("content is required");
     }
+    if (branchKind !== "retry") {
+      this.maybeAutoTitleChatSession(sessionId, content);
+    }
 
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
-    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
     const route = this.routeFromSession(session);
-    const userEventId = randomUUID();
-    await this.ingestEvent(randomUUID(), {
-      eventId: userEventId,
-      route,
-      actor: {
-        type: "user",
-        id: "operator",
-      },
-      message: {
-        role: "user",
-        content,
-        parts: inputParts,
-        attachments: attachments.map((item) => ({
-          attachmentId: item.attachmentId,
-          fileName: item.fileName,
-          mimeType: item.mimeType,
-          sizeBytes: item.sizeBytes,
-        })),
-      },
-    });
-
-    const userMessage: ChatMessageRecord = {
-      messageId: userEventId,
-      sessionId,
-      role: "user",
-      actorType: "user",
-      actorId: "operator",
-      content,
-      timestamp: new Date().toISOString(),
-      attachments: attachments.map((item) => ({
+    const ingestUserMessage = options?.ingestUserMessage ?? !options?.existingUserMessage;
+    let userEventId = options?.existingUserMessage?.messageId ?? "";
+    let userMessage = options?.existingUserMessage;
+    let attachments = options?.existingUserMessage?.attachments ?? [];
+    if (ingestUserMessage || !userMessage) {
+      const uploadAttachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
+      const inputParts = normalizeChatInputParts(content, input.parts, uploadAttachments);
+      userEventId = randomUUID();
+      await this.ingestEvent(randomUUID(), {
+        eventId: userEventId,
+        route,
+        actor: {
+          type: "user",
+          id: "operator",
+        },
+        message: {
+          role: "user",
+          content,
+          parts: inputParts,
+          attachments: uploadAttachments.map((item) => ({
+            attachmentId: item.attachmentId,
+            fileName: item.fileName,
+            mimeType: item.mimeType,
+            sizeBytes: item.sizeBytes,
+          })),
+        },
+      });
+      attachments = uploadAttachments.map((item) => ({
         attachmentId: item.attachmentId,
         fileName: item.fileName,
         mimeType: item.mimeType,
         sizeBytes: item.sizeBytes,
-      })),
-    };
-
-    const binding = this.storage.chatSessionBindings.get(sessionId)
-      ?? this.storage.chatSessionBindings.upsert({
+      }));
+      userMessage = {
+        messageId: userEventId,
         sessionId,
-        workspaceId,
-        transport: "llm",
-        writable: true,
-      });
-    if (binding.transport !== "llm") {
-      return this.sendChatMessage(sessionId, input);
+        role: "user",
+        actorType: "user",
+        actorId: "operator",
+        content,
+        timestamp: new Date().toISOString(),
+        attachments: attachments.length > 0 ? attachments : undefined,
+      };
+    }
+    if (!userMessage) {
+      throw new Error("user message is required");
     }
 
     const prefsOverride = {
@@ -6503,6 +6929,7 @@ export class GatewayService {
     const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
     const autonomy = this.getSessionAutonomyPrefs(sessionId);
     const normalized = normalizeAgentInputFromSend(input);
+    const effectiveToolAutonomy = prefs.planningMode === "advisory" ? "manual" : prefs.toolAutonomy;
     const retrievalTrace = buildRetrievalTrace({
       content,
       retrievalMode: autonomy.retrievalMode,
@@ -6510,27 +6937,322 @@ export class GatewayService {
       memoryMode: normalized.memoryMode ?? prefs.memoryMode,
     });
     const resolvedGuidance = await this.resolveRuntimeGuidance(workspaceId);
+    const guidanceSystemInstruction = mergeChatSystemInstructions(
+      resolvedGuidance.systemInstruction,
+      buildPlanningModeSystemInstruction(prefs.planningMode),
+    );
 
-    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
+    const sessionState = await this.loadChatTurnSessionState(sessionId);
+    const parentTurnId = options?.parentTurnId ?? sessionState.activeLeafTurnId;
+    const pathTurnIds = parentTurnId ? buildSelectedPathTurnIds(sessionState.turnLineageById, parentTurnId) : [];
+    const history = await this.buildLlmMessagesFromBranchPath(sessionId, pathTurnIds, userMessage, {
       providerId: input.providerId ?? prefs.providerId,
       model: input.model ?? prefs.model,
-      guidanceSystemInstruction: resolvedGuidance.systemInstruction,
-    });
+      guidanceSystemInstruction,
+    }, sessionState);
 
-    let turnId = randomUUID();
+    return {
+      session,
+      route,
+      workspaceId,
+      content,
+      userEventId,
+      userMessage,
+      prefs,
+      autonomy,
+      normalized,
+      retrievalTrace,
+      resolvedGuidance,
+      history,
+      turnId: randomUUID(),
+      assistantMessageId: `assistant-${randomUUID()}`,
+      parentTurnId,
+      branchKind,
+      sourceTurnId: options?.sourceTurnId,
+      effectiveToolAutonomy,
+    };
+  }
+
+  private async *streamPreparedAgentChatTurn(
+    sessionId: string,
+    input: ChatSendMessageRequest,
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
+  ): AsyncGenerator<ChatStreamChunk> {
+    const turnId = prepared.turnId;
+    const assistantMessageId = prepared.assistantMessageId;
+
+    yield {
+      type: "message_start",
+      sessionId,
+      turnId,
+      messageId: assistantMessageId,
+      parentTurnId: prepared.parentTurnId,
+      branchKind: prepared.branchKind,
+      sourceTurnId: prepared.sourceTurnId,
+    };
+
+    let finalText = "";
+    let assistantUsage: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      costUsd?: number;
+    } | undefined;
+    let hasStreamedDelta = false;
+    let approvalRequired = false;
+    const streamCitations: ChatCitationRecord[] = [];
+    for await (const chunk of this.chatAgentOrchestrator.runStream({
+      sessionId,
+      turnId,
+      userMessageId: prepared.userEventId,
+      parentTurnId: prepared.parentTurnId,
+      branchKind: prepared.branchKind,
+      sourceTurnId: prepared.sourceTurnId,
+      outputMessageId: assistantMessageId,
+      content: prepared.content,
+      mode: prepared.normalized.mode ?? prepared.prefs.mode,
+      providerId: input.providerId ?? prepared.prefs.providerId,
+      model: input.model ?? prepared.prefs.model,
+      webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+      memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+      thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+      toolAutonomy: prepared.effectiveToolAutonomy,
+      historyMessages: prepared.history,
+    })) {
+      if (chunk.type === "message_done" && chunk.content) {
+        finalText = chunk.content;
+      }
+      if (chunk.type === "approval_required") {
+        approvalRequired = true;
+        yield chunk;
+      }
+      if (chunk.type === "usage") {
+        assistantUsage = chunk.usage;
+        yield chunk;
+      }
+      if (chunk.type === "message_done") {
+        if (chunk.content.trim() && !hasStreamedDelta) {
+          finalText = chunk.content;
+          for (const slice of splitIntoChunks(chunk.content, 120)) {
+            yield {
+              type: "delta",
+              sessionId,
+              turnId,
+              messageId: assistantMessageId,
+              delta: slice,
+            };
+          }
+        }
+      }
+      if (chunk.type === "citation") {
+        streamCitations.push(chunk.citation);
+        yield chunk;
+      }
+      if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "error") {
+        yield chunk;
+      }
+      if (chunk.type === "delta") {
+        hasStreamedDelta = true;
+        yield {
+          ...chunk,
+          messageId: chunk.messageId ?? assistantMessageId,
+        };
+      }
+    }
+
+    if (!approvalRequired && !finalText.trim()) {
+      finalText = buildEmptyAssistantTurnFallbackText();
+      if (!hasStreamedDelta) {
+        for (const slice of splitIntoChunks(finalText, 120)) {
+          yield {
+            type: "delta",
+            sessionId,
+            turnId,
+            messageId: assistantMessageId,
+            delta: slice,
+          };
+        }
+      }
+    }
+
+    if (approvalRequired) {
+      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+      this.publishRealtime("chat_thread_updated", "chat", {
+        type: threadEventType,
+        sessionId,
+        turnId,
+        activeLeafTurnId: turnId,
+      });
+      const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
+        retrieval: prepared.retrievalTrace,
+        reflection: {
+          attempted: false,
+          attemptCount: 0,
+          outcome: "not_needed",
+        },
+        proactive: {
+          runId: prepared.autonomy.lastProactiveRunId,
+          mode: prepared.autonomy.proactiveMode,
+        },
+        guidance: {
+          workspaceId: prepared.workspaceId,
+          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+          truncated: prepared.resolvedGuidance.truncated,
+        },
+        citations: streamCitations,
+      });
+      yield {
+        type: "trace_update",
+        sessionId,
+        turnId,
+        trace: {
+          ...traceWithMeta,
+          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+        },
+      };
+      yield {
+        type: "done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+      };
+      return;
+    }
+
+    if (finalText.trim()) {
+      await this.ingestEvent(randomUUID(), {
+        eventId: assistantMessageId,
+        route: prepared.route,
+        actor: {
+          type: "agent",
+          id: "assistant",
+        },
+        message: {
+          role: "assistant",
+          content: finalText,
+        },
+        usage: assistantUsage,
+      });
+      let hydratedTrace: ChatTurnTraceRecord = {
+        ...this.storage.chatTurnTraces.patch(turnId, {
+          assistantMessageId,
+          status: "completed",
+          finishedAt: new Date().toISOString(),
+          retrieval: prepared.retrievalTrace,
+          reflection: {
+            attempted: false,
+            attemptCount: 0,
+            outcome: "not_needed",
+          },
+          proactive: {
+            runId: prepared.autonomy.lastProactiveRunId,
+            mode: prepared.autonomy.proactiveMode,
+          },
+          guidance: {
+            workspaceId: prepared.workspaceId,
+            globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+            workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+            truncated: prepared.resolvedGuidance.truncated,
+          },
+          citations: streamCitations,
+        }),
+        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+      };
+      yield {
+        type: "message_done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+        content: finalText,
+      };
+      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+        sessionId,
+        content: prepared.content,
+        assistantText: finalText,
+        trace: hydratedTrace,
+      });
+      if (capabilityUpgradeSuggestions.length > 0) {
+        hydratedTrace = {
+          ...this.storage.chatTurnTraces.patch(turnId, {
+            capabilityUpgradeSuggestions,
+          }),
+          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+        };
+        yield {
+          type: "capability_upgrade_suggestion",
+          sessionId,
+          turnId,
+          capabilityUpgradeSuggestions,
+        };
+      }
+      yield {
+        type: "trace_update",
+        sessionId,
+        turnId,
+        trace: hydratedTrace,
+      };
+      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+      this.publishRealtime("chat_thread_updated", "chat", {
+        type: threadEventType,
+        sessionId,
+        turnId,
+        activeLeafTurnId: turnId,
+      });
+      this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
+        role: "user",
+        sourceRef: prepared.userEventId,
+      });
+      this.extractAndPersistLearnedMemory(sessionId, finalText, {
+        role: "assistant",
+        sourceRef: assistantMessageId,
+      });
+    }
+
+    yield {
+      type: "done",
+      sessionId,
+      turnId,
+      messageId: assistantMessageId,
+    };
+  }
+
+  public async agentSendChatMessage(
+    sessionId: string,
+    input: ChatSendMessageRequest,
+  ): Promise<ChatSendMessageResponse> {
+    const prepared = await this.prepareAgentChatTurn(sessionId, input, {
+      branchKind: "append",
+    });
+    const binding = this.storage.chatSessionBindings.get(sessionId)
+      ?? this.storage.chatSessionBindings.upsert({
+        sessionId,
+        workspaceId: prepared.workspaceId,
+        transport: "llm",
+        writable: true,
+      });
+    if (binding.transport !== "llm") {
+      return this.sendChatMessage(sessionId, input);
+    }
+    let turnId = prepared.turnId;
     let turnResult = await this.chatAgentOrchestrator.run({
       sessionId,
       turnId,
-      userMessageId: userEventId,
-      content,
-      mode: normalized.mode ?? prefs.mode,
-      providerId: input.providerId ?? prefs.providerId,
-      model: input.model ?? prefs.model,
-      webMode: normalized.webMode ?? prefs.webMode,
-      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
-      thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
-      toolAutonomy: prefs.toolAutonomy,
-      historyMessages: history,
+      userMessageId: prepared.userEventId,
+      parentTurnId: prepared.parentTurnId,
+      branchKind: prepared.branchKind,
+      sourceTurnId: prepared.sourceTurnId,
+      content: prepared.content,
+      mode: prepared.normalized.mode ?? prepared.prefs.mode,
+      providerId: input.providerId ?? prepared.prefs.providerId,
+      model: input.model ?? prepared.prefs.model,
+      webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+      memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+      thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+      toolAutonomy: prepared.effectiveToolAutonomy,
+      historyMessages: prepared.history,
+      outputMessageId: prepared.assistantMessageId,
     });
     let reflectionTrace: ChatTurnTraceRecord["reflection"] = {
       attempted: false,
@@ -6538,7 +7260,8 @@ export class GatewayService {
       outcome: "not_needed",
     };
 
-    const shouldAttemptReflection = autonomy.reflectionMode === "on"
+    const shouldAttemptReflection = prepared.autonomy.reflectionMode === "on"
+      && prepared.prefs.planningMode !== "advisory"
       && !turnResult.requiresApproval
       && (turnResult.turnTrace.status === "failed" || looksLowConfidenceResponse(turnResult.assistantContent));
 
@@ -6571,25 +7294,25 @@ export class GatewayService {
         createdAt: new Date().toISOString(),
       });
 
-      const retryHistory = await this.buildLlmMessagesFromTranscript(sessionId, {
-        providerId: input.providerId ?? prefs.providerId,
-        model: input.model ?? prefs.model,
-        guidanceSystemInstruction: resolvedGuidance.systemInstruction,
-      });
-      const retryPrompt = `${content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
+      const retryHistory = prepared.history;
+      const retryPrompt = `${prepared.content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
       const retryResult = await this.chatAgentOrchestrator.run({
         sessionId,
         turnId: retryTurnId,
-        userMessageId: userEventId,
+        userMessageId: prepared.userEventId,
+        parentTurnId: prepared.parentTurnId,
+        branchKind: "retry",
+        sourceTurnId: turnId,
         content: retryPrompt,
-        mode: normalized.mode ?? prefs.mode,
-        providerId: input.providerId ?? prefs.providerId,
-        model: input.model ?? prefs.model,
-        webMode: normalized.webMode ?? prefs.webMode,
-        memoryMode: normalized.memoryMode ?? prefs.memoryMode,
-        thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
-        toolAutonomy: prefs.toolAutonomy,
+        mode: prepared.normalized.mode ?? prepared.prefs.mode,
+        providerId: input.providerId ?? prepared.prefs.providerId,
+        model: input.model ?? prepared.prefs.model,
+        webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+        memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+        thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+        toolAutonomy: prepared.effectiveToolAutonomy,
         historyMessages: retryHistory,
+        outputMessageId: prepared.assistantMessageId,
       });
       if (retryResult.turnTrace.status === "completed" && retryResult.assistantContent.trim().length > 0) {
         turnId = retryTurnId;
@@ -6605,22 +7328,30 @@ export class GatewayService {
 
     if (turnResult.requiresApproval) {
       const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
-        retrieval: retrievalTrace,
+        retrieval: prepared.retrievalTrace,
         reflection: reflectionTrace,
         proactive: {
-          runId: autonomy.lastProactiveRunId,
-          mode: autonomy.proactiveMode,
+          runId: prepared.autonomy.lastProactiveRunId,
+          mode: prepared.autonomy.proactiveMode,
         },
         guidance: {
-          workspaceId,
-          globalFilesUsed: resolvedGuidance.globalFilesUsed,
-          workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
-          truncated: resolvedGuidance.truncated,
+          workspaceId: prepared.workspaceId,
+          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+          truncated: prepared.resolvedGuidance.truncated,
         },
+        citations: turnResult.turnTrace.citations,
+      });
+      this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+      this.publishRealtime("chat_thread_updated", "chat", {
+        type: "chat_thread_turn_appended",
+        sessionId,
+        turnId,
+        activeLeafTurnId: turnId,
       });
       return {
         sessionId,
-        userMessage,
+        userMessage: prepared.userMessage,
         assistantMessage: undefined,
         transport: "llm",
         model: turnResult.assistantModel,
@@ -6639,10 +7370,10 @@ export class GatewayService {
       ? turnResult.assistantContent
       : buildEmptyAssistantTurnFallbackText();
     const assistantUsage = turnResult.usage;
-    const assistantEventId = randomUUID();
+    const assistantEventId = prepared.assistantMessageId;
     await this.ingestEvent(randomUUID(), {
       eventId: assistantEventId,
-      route,
+      route: prepared.route,
       actor: {
         type: "agent",
         id: "assistant",
@@ -6667,18 +7398,19 @@ export class GatewayService {
       assistantMessageId: assistantEventId,
       status: finalTraceStatus,
       finishedAt: new Date().toISOString(),
-      retrieval: retrievalTrace,
+      retrieval: prepared.retrievalTrace,
       reflection: reflectionTrace,
       proactive: {
-        runId: autonomy.lastProactiveRunId,
-        mode: autonomy.proactiveMode,
+        runId: prepared.autonomy.lastProactiveRunId,
+        mode: prepared.autonomy.proactiveMode,
       },
       guidance: {
-        workspaceId,
-        globalFilesUsed: resolvedGuidance.globalFilesUsed,
-        workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
-        truncated: resolvedGuidance.truncated,
+        workspaceId: prepared.workspaceId,
+        globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+        workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+        truncated: prepared.resolvedGuidance.truncated,
       },
+      citations: turnResult.turnTrace.citations,
     });
     let hydratedTrace: ChatTurnTraceRecord = {
       ...trace,
@@ -6687,27 +7419,37 @@ export class GatewayService {
     };
     const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
       sessionId,
-      content,
+      content: prepared.content,
       assistantText,
       trace: hydratedTrace,
     });
     if (capabilityUpgradeSuggestions.length > 0) {
+      hydratedTrace = this.storage.chatTurnTraces.patch(turnId, {
+        capabilityUpgradeSuggestions,
+      });
       hydratedTrace = {
         ...hydratedTrace,
-        capabilityUpgradeSuggestions,
+        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
       };
     }
 
-    this.extractAndPersistLearnedMemory(sessionId, content, {
+    this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
       role: "user",
-      sourceRef: userEventId,
+      sourceRef: prepared.userEventId,
     });
     this.extractAndPersistLearnedMemory(sessionId, assistantText, {
       role: "assistant",
       sourceRef: assistantEventId,
     });
-    const delegationDetection = detectDelegationRoles(content);
-    if (delegationDetection.length > 1) {
+    this.storage.chatSessionBranchState.setActiveLeaf(sessionId, turnId);
+    this.publishRealtime("chat_thread_updated", "chat", {
+      type: "chat_thread_turn_appended",
+      sessionId,
+      turnId,
+      activeLeafTurnId: turnId,
+    });
+    const delegationDetection = detectDelegationRoles(prepared.content);
+    if (prepared.prefs.planningMode !== "advisory" && delegationDetection.length > 1) {
       await this.triggerChatSessionProactive(sessionId, {
         source: "chat",
         reason: "Detected multi-role phrasing; generated delegation suggestion.",
@@ -6716,7 +7458,7 @@ export class GatewayService {
 
     return {
       sessionId,
-      userMessage,
+      userMessage: prepared.userMessage,
       assistantMessage,
       transport: "llm",
       model: turnResult.assistantModel,
@@ -6731,238 +7473,110 @@ export class GatewayService {
     sessionId: string,
     input: ChatSendMessageRequest,
   ): AsyncGenerator<ChatStreamChunk> {
-    const session = this.getSession(sessionId);
-    this.ensureChatSessionRuntimeGrants(sessionId);
-    const content = input.content.trim();
-    if (!content) {
-      throw new Error("content is required");
-    }
-    const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
-    const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
-    const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
-    const inputParts = normalizeChatInputParts(content, input.parts, attachments);
-    const route = this.routeFromSession(session);
-    const userEventId = randomUUID();
-    await this.ingestEvent(randomUUID(), {
-      eventId: userEventId,
-      route,
-      actor: {
-        type: "user",
-        id: "operator",
-      },
-      message: {
-        role: "user",
-        content,
-        parts: inputParts,
-        attachments: attachments.map((item) => ({
-          attachmentId: item.attachmentId,
-          fileName: item.fileName,
-          mimeType: item.mimeType,
-          sizeBytes: item.sizeBytes,
-        })),
-      },
+    const prepared = await this.prepareAgentChatTurn(sessionId, input, {
+      branchKind: "append",
     });
+    yield* this.streamPreparedAgentChatTurn(sessionId, input, prepared, "chat_thread_turn_appended");
+  }
 
-    const prefsOverride = {
-      ...(input.prefsOverride ?? {}),
-      mode: input.mode ?? input.prefsOverride?.mode,
-      providerId: input.providerId ?? input.prefsOverride?.providerId,
-      model: input.model ?? input.prefsOverride?.model,
-      webMode: input.webMode ?? input.prefsOverride?.webMode,
-      memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
-      thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
+  public async retryChatTurn(
+    sessionId: string,
+    turnId: string,
+    overrides: Partial<ChatSendMessageRequest> = {},
+  ): Promise<ChatSendMessageResponse> {
+    const current = await this.requireChatTurnContext(sessionId, turnId);
+    const request: ChatSendMessageRequest = {
+      content: current.userMessage.content,
+      attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
+      providerId: overrides.providerId,
+      model: overrides.model,
+      useMemory: overrides.useMemory,
+      mode: overrides.mode,
+      webMode: overrides.webMode,
+      memoryMode: overrides.memoryMode,
+      thinkingLevel: overrides.thinkingLevel,
+      commandText: overrides.commandText,
+      prefsOverride: overrides.prefsOverride,
     };
-    const splitPrefs = splitChatPrefsPatch(prefsOverride);
-    if (Object.keys(splitPrefs.autonomyPatch).length > 0) {
-      this.patchSessionAutonomyPrefs(sessionId, splitPrefs.autonomyPatch);
-    }
-    const prefsPatched = this.storage.chatSessionPrefs.patch(sessionId, splitPrefs.basePatch);
-    const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
-    const autonomy = this.getSessionAutonomyPrefs(sessionId);
-    const normalized = normalizeAgentInputFromSend(input);
-    const retrievalTrace = buildRetrievalTrace({
-      content,
-      retrievalMode: autonomy.retrievalMode,
-      webMode: normalized.webMode ?? prefs.webMode,
-      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
+    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+      branchKind: "retry",
+      sourceTurnId: turnId,
+      parentTurnId: current.trace.parentTurnId,
+      existingUserMessage: current.userMessage,
+      ingestUserMessage: false,
     });
-    const resolvedGuidance = await this.resolveRuntimeGuidance(workspaceId);
-    const history = await this.buildLlmMessagesFromTranscript(sessionId, {
-      providerId: input.providerId ?? prefs.providerId,
-      model: input.model ?? prefs.model,
-      guidanceSystemInstruction: resolvedGuidance.systemInstruction,
+    for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried")) {
+      // consume stream for non-stream callers so branch behavior stays aligned
+    }
+    return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
+  }
+
+  public async *retryChatTurnStream(
+    sessionId: string,
+    turnId: string,
+    overrides: Partial<ChatSendMessageRequest> = {},
+  ): AsyncGenerator<ChatStreamChunk> {
+    const current = await this.requireChatTurnContext(sessionId, turnId);
+    const request: ChatSendMessageRequest = {
+      content: current.userMessage.content,
+      attachments: current.userMessage.attachments?.map((item) => item.attachmentId),
+      providerId: overrides.providerId,
+      model: overrides.model,
+      useMemory: overrides.useMemory,
+      mode: overrides.mode,
+      webMode: overrides.webMode,
+      memoryMode: overrides.memoryMode,
+      thinkingLevel: overrides.thinkingLevel,
+      commandText: overrides.commandText,
+      prefsOverride: overrides.prefsOverride,
+    };
+    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+      branchKind: "retry",
+      sourceTurnId: turnId,
+      parentTurnId: current.trace.parentTurnId,
+      existingUserMessage: current.userMessage,
+      ingestUserMessage: false,
     });
-    const turnId = randomUUID();
-    const assistantMessageId = `assistant-${randomUUID()}`;
+    yield* this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_retried");
+  }
 
-    yield {
-      type: "message_start",
-      sessionId,
-      turnId,
-      messageId: assistantMessageId,
+  public async editChatTurn(
+    sessionId: string,
+    turnId: string,
+    input: ChatSendMessageRequest,
+  ): Promise<ChatSendMessageResponse> {
+    const current = await this.requireChatTurnContext(sessionId, turnId);
+    const request: ChatSendMessageRequest = {
+      ...input,
+      attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
     };
-
-    let finalText = "";
-    let assistantUsage: ChatStreamChunk["usage"] | undefined;
-    let hasStreamedDelta = false;
-    for await (const chunk of this.chatAgentOrchestrator.runStream({
-      sessionId,
-      turnId,
-      userMessageId: userEventId,
-      outputMessageId: assistantMessageId,
-      content,
-      mode: normalized.mode ?? prefs.mode,
-      providerId: input.providerId ?? prefs.providerId,
-      model: input.model ?? prefs.model,
-      webMode: normalized.webMode ?? prefs.webMode,
-      memoryMode: normalized.memoryMode ?? prefs.memoryMode,
-      thinkingLevel: normalized.thinkingLevel ?? prefs.thinkingLevel,
-      toolAutonomy: prefs.toolAutonomy,
-      historyMessages: history,
-    })) {
-      if (chunk.type === "message_done" && chunk.content) {
-        finalText = chunk.content;
-      }
-      if (chunk.type === "approval_required") {
-        yield chunk;
-      }
-      if (chunk.type === "usage") {
-        assistantUsage = chunk.usage;
-        yield chunk;
-      }
-      if (chunk.type === "message_done") {
-        if (chunk.content?.trim()) {
-          finalText = chunk.content;
-          if (!hasStreamedDelta) {
-            const slices = splitIntoChunks(chunk.content, 120);
-            for (const slice of slices) {
-              yield {
-                type: "delta",
-                sessionId,
-                turnId,
-                messageId: assistantMessageId,
-                delta: slice,
-              };
-            }
-          }
-        }
-      }
-      if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "citation" || chunk.type === "error") {
-        yield chunk;
-      }
-      if (chunk.type === "delta" && chunk.delta) {
-        hasStreamedDelta = true;
-        yield {
-          ...chunk,
-          messageId: chunk.messageId ?? assistantMessageId,
-        };
-      }
+    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+      branchKind: "edit",
+      sourceTurnId: turnId,
+      parentTurnId: current.trace.parentTurnId,
+    });
+    for await (const _chunk of this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited")) {
+      // consume stream for non-stream callers so branch behavior stays aligned
     }
+    return this.buildChatSendMessageResponseFromTurnId(sessionId, prepared.turnId);
+  }
 
-    if (!finalText.trim()) {
-      finalText = buildEmptyAssistantTurnFallbackText();
-      if (!hasStreamedDelta) {
-        const slices = splitIntoChunks(finalText, 120);
-        for (const slice of slices) {
-          yield {
-            type: "delta",
-            sessionId,
-            turnId,
-            messageId: assistantMessageId,
-            delta: slice,
-          };
-        }
-      }
-    }
-
-    if (finalText.trim()) {
-      const assistantEventId = assistantMessageId;
-      await this.ingestEvent(randomUUID(), {
-        eventId: assistantEventId,
-        route,
-        actor: {
-          type: "agent",
-          id: "assistant",
-        },
-        message: {
-          role: "assistant",
-          content: finalText,
-        },
-        usage: assistantUsage,
-      });
-      const updatedTrace = this.storage.chatTurnTraces.patch(turnId, {
-        assistantMessageId: assistantEventId,
-        status: "completed",
-        finishedAt: new Date().toISOString(),
-        retrieval: retrievalTrace,
-        reflection: {
-          attempted: false,
-          attemptCount: 0,
-          outcome: "not_needed",
-        },
-        proactive: {
-          runId: autonomy.lastProactiveRunId,
-          mode: autonomy.proactiveMode,
-        },
-        guidance: {
-          workspaceId,
-          globalFilesUsed: resolvedGuidance.globalFilesUsed,
-          workspaceFilesUsed: resolvedGuidance.workspaceFilesUsed,
-          truncated: resolvedGuidance.truncated,
-        },
-      });
-      let hydratedTrace: ChatTurnTraceRecord = {
-        ...updatedTrace,
-        citations: updatedTrace.citations,
-        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-      };
-      yield {
-        type: "message_done",
-        sessionId,
-        turnId,
-        messageId: assistantMessageId,
-        content: finalText,
-      };
-      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
-        sessionId,
-        content,
-        assistantText: finalText,
-        trace: hydratedTrace,
-      });
-      if (capabilityUpgradeSuggestions.length > 0) {
-        hydratedTrace = {
-          ...hydratedTrace,
-          capabilityUpgradeSuggestions,
-        };
-        yield {
-          type: "capability_upgrade_suggestion",
-          sessionId,
-          turnId,
-          capabilityUpgradeSuggestions,
-        };
-      }
-      yield {
-        type: "trace_update",
-        sessionId,
-        turnId,
-        trace: hydratedTrace,
-      };
-      this.extractAndPersistLearnedMemory(sessionId, content, {
-        role: "user",
-        sourceRef: userEventId,
-      });
-      this.extractAndPersistLearnedMemory(sessionId, finalText, {
-        role: "assistant",
-        sourceRef: assistantEventId,
-      });
-    }
-
-    yield {
-      type: "done",
-      sessionId,
-      turnId,
-      messageId: assistantMessageId,
+  public async *editChatTurnStream(
+    sessionId: string,
+    turnId: string,
+    input: ChatSendMessageRequest,
+  ): AsyncGenerator<ChatStreamChunk> {
+    const current = await this.requireChatTurnContext(sessionId, turnId);
+    const request: ChatSendMessageRequest = {
+      ...input,
+      attachments: input.attachments ?? current.userMessage.attachments?.map((item) => item.attachmentId),
     };
+    const prepared = await this.prepareAgentChatTurn(sessionId, request, {
+      branchKind: "edit",
+      sourceTurnId: turnId,
+      parentTurnId: current.trace.parentTurnId,
+    });
+    yield* this.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited");
   }
 
   private async collectCapabilityUpgradeSuggestions(input: {
@@ -7005,13 +7619,12 @@ export class GatewayService {
     const session = this.getSession(sessionId);
     const sessionMeta = this.storage.chatSessionMeta.ensure(sessionId);
     const workspaceId = this.normalizeWorkspaceId(sessionMeta.workspaceId);
-    if (sessionMeta.lifecycleStatus === "archived") {
-      throw new Error(`Session ${sessionId} is archived`);
-    }
+    assertChatSessionActive(sessionId, sessionMeta.lifecycleStatus);
     const content = input.content.trim();
     if (!content) {
       throw new Error("content is required");
     }
+    this.maybeAutoTitleChatSession(sessionId, content);
 
     const attachments = this.storage.chatAttachments.listByIds(input.attachments ?? [], workspaceId);
     const inputParts = normalizeChatInputParts(content, input.parts, attachments);
@@ -7189,22 +7802,26 @@ export class GatewayService {
       attachments?: string[];
     },
   ): AsyncGenerator<ChatStreamChunk> {
-    const started = new Date().toISOString();
+    const streamTurnId = `legacy-${randomUUID()}`;
+    const startedMessageId = `msg_${randomUUID()}`;
     yield {
       type: "message_start",
       sessionId,
-      messageId: `msg_${randomUUID()}`,
+      turnId: streamTurnId,
+      messageId: startedMessageId,
+      branchKind: "append",
     };
     try {
       const response = await this.sendChatMessage(sessionId, input);
       const assistant = response.assistantMessage;
-      const messageId = assistant?.messageId ?? `msg_${randomUUID()}`;
+      const messageId = assistant?.messageId ?? startedMessageId;
       const content = assistant?.content ?? "";
       const chunks = splitIntoChunks(content, 120);
       for (const delta of chunks) {
         yield {
           type: "delta",
           sessionId,
+          turnId: streamTurnId,
           messageId,
           delta,
         };
@@ -7212,6 +7829,7 @@ export class GatewayService {
       yield {
         type: "usage",
         sessionId,
+        turnId: streamTurnId,
         messageId,
         usage: {
           inputTokens: assistant?.tokenInput,
@@ -7222,23 +7840,28 @@ export class GatewayService {
       yield {
         type: "message_done",
         sessionId,
+        turnId: streamTurnId,
         messageId,
         content,
       };
       yield {
         type: "done",
         sessionId,
+        turnId: streamTurnId,
+        messageId,
       };
     } catch (error) {
       yield {
         type: "error",
         sessionId,
+        turnId: streamTurnId,
         error: (error as Error).message,
       };
       yield {
         type: "done",
         sessionId,
-        content: started,
+        turnId: streamTurnId,
+        messageId: startedMessageId,
       };
     }
   }
@@ -10604,6 +11227,7 @@ export class GatewayService {
     const primaryModel = withContext.model
       ?? primaryProvider?.defaultModel
       ?? runtime.activeModel;
+    const allowCrossProviderFallback = shouldAllowCrossProviderFallback(withContext);
     const routing: ChatTurnTraceRecord["routing"] = {
       primaryProviderId,
       primaryModel,
@@ -10645,7 +11269,7 @@ export class GatewayService {
       }
     }
 
-    if (!response) {
+    if (!response && allowCrossProviderFallback) {
       const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
       for (const fallback of fallbacks) {
         try {
@@ -10750,6 +11374,7 @@ export class GatewayService {
     const primaryModel = withContext.model
       ?? primaryProvider?.defaultModel
       ?? runtime.activeModel;
+    const allowCrossProviderFallback = shouldAllowCrossProviderFallback(withContext);
     const routing: ChatTurnTraceRecord["routing"] = {
       primaryProviderId,
       primaryModel,
@@ -10795,7 +11420,7 @@ export class GatewayService {
       }
     }
 
-    if (!streamed) {
+    if (!streamed && allowCrossProviderFallback) {
       const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
       for (const fallback of fallbacks) {
         try {
@@ -10881,10 +11506,10 @@ export class GatewayService {
       candidates.push({ providerId, model });
     };
 
-    const kimi = runtime.providers.find((provider) => provider.providerId === "moonshot");
-    pushCandidate(kimi?.providerId, kimi?.defaultModel);
     const active = runtime.providers.find((provider) => provider.providerId === runtime.activeProviderId);
     pushCandidate(active?.providerId, runtime.activeModel || active?.defaultModel);
+    const kimi = runtime.providers.find((provider) => provider.providerId === "moonshot");
+    pushCandidate(kimi?.providerId, kimi?.defaultModel);
     return candidates;
   }
 
@@ -12169,6 +12794,146 @@ export class GatewayService {
       ];
     }
     return messages;
+  }
+
+  private listHydratedChatTurnTraces(sessionId: string, limit = 200): ChatTurnTraceRecord[] {
+    return this.storage.chatTurnTraces.listBySession(sessionId, limit).map((trace) => ({
+      ...trace,
+      toolRuns: this.storage.chatToolRuns.listByTurn(trace.turnId),
+      citations: trace.citations ?? [],
+      capabilityUpgradeSuggestions: trace.capabilityUpgradeSuggestions,
+    }));
+  }
+
+  private resolveChatActiveLeafTurnId(
+    sessionId: string,
+    traces: ChatTurnTraceRecord[],
+  ): string | undefined {
+    const branchState = this.storage.chatSessionBranchState.get(sessionId);
+    if (branchState && traces.some((trace) => trace.turnId === branchState.activeLeafTurnId)) {
+      return branchState.activeLeafTurnId;
+    }
+    const newest = [...traces]
+      .sort((left, right) => {
+        const leftStarted = Date.parse(left.startedAt) || 0;
+        const rightStarted = Date.parse(right.startedAt) || 0;
+        if (leftStarted !== rightStarted) {
+          return rightStarted - leftStarted;
+        }
+        return right.turnId.localeCompare(left.turnId);
+      })
+      .at(0);
+    if (!newest) {
+      return undefined;
+    }
+    this.storage.chatSessionBranchState.setActiveLeaf(sessionId, newest.turnId, newest.finishedAt ?? newest.startedAt);
+    return newest.turnId;
+  }
+
+  private buildChatTurnChildrenMap(traces: ChatTurnTraceRecord[]): Map<string, string[]> {
+    const childrenByTurnId = new Map<string, string[]>();
+    for (const trace of traces) {
+      if (!trace.parentTurnId) {
+        continue;
+      }
+      const children = childrenByTurnId.get(trace.parentTurnId) ?? [];
+      children.push(trace.turnId);
+      childrenByTurnId.set(trace.parentTurnId, children);
+    }
+    return childrenByTurnId;
+  }
+
+  private async buildLlmMessagesFromBranchPath(
+    sessionId: string,
+    pathTurnIds: string[],
+    currentUserMessage: ChatMessageRecord | undefined,
+    options?: {
+      providerId?: string;
+      model?: string;
+      guidanceSystemInstruction?: string;
+    },
+    state?: Awaited<ReturnType<GatewayService["loadChatTurnSessionState"]>>,
+  ): Promise<ChatCompletionRequest["messages"]> {
+    const sessionState = state ?? await this.loadChatTurnSessionState(sessionId);
+    const orderedMessages: ChatMessageRecord[] = [];
+    for (const turnId of pathTurnIds) {
+      const trace = sessionState.tracesById.get(turnId);
+      if (!trace) {
+        continue;
+      }
+      const userMessage = sessionState.messagesById.get(trace.userMessageId);
+      if (userMessage) {
+        orderedMessages.push(userMessage);
+      }
+      if (trace.assistantMessageId) {
+        const assistantMessage = sessionState.messagesById.get(trace.assistantMessageId);
+        if (assistantMessage) {
+          orderedMessages.push(assistantMessage);
+        }
+      }
+    }
+    if (currentUserMessage) {
+      orderedMessages.push(currentUserMessage);
+    }
+    return this.buildLlmMessagesFromRecords(orderedMessages, options);
+  }
+
+  private async buildLlmMessagesFromRecords(
+    records: ChatMessageRecord[],
+    options?: {
+      providerId?: string;
+      model?: string;
+      guidanceSystemInstruction?: string;
+    },
+  ): Promise<ChatCompletionRequest["messages"]> {
+    const runtime = this.llmService.getRuntimeConfig();
+    const providerId = options?.providerId ?? runtime.activeProviderId;
+    const providerSummary = runtime.providers.find((item) => item.providerId === providerId);
+    const model = options?.model ?? providerSummary?.defaultModel ?? runtime.activeModel;
+    const supportsVision = Boolean(providerSummary?.capabilities?.vision || inferModelVisionSupport(model));
+    const mapped = await Promise.all(records.map(async (message) => {
+      if (message.role === "assistant") {
+        return {
+          role: "assistant" as const,
+          content: message.content,
+        };
+      }
+      if (message.role === "system") {
+        return {
+          role: "system" as const,
+          content: message.content,
+        };
+      }
+      const contentParts = await this.buildAttachmentMessageParts(
+        message.attachments,
+        message.content,
+        supportsVision,
+      );
+      const attachmentContext = this.buildAttachmentPromptContext(message.attachments, supportsVision);
+      if (contentParts) {
+        return {
+          role: "user" as const,
+          content: contentParts,
+        };
+      }
+      return {
+        role: "user" as const,
+        content: attachmentContext
+          ? `${message.content}\n\n${attachmentContext}`
+          : message.content,
+      };
+    }));
+    const messages = mapped.slice(-80);
+    if (!options?.guidanceSystemInstruction?.trim()) {
+      return messages;
+    }
+    return [
+      {
+        role: "system",
+        content: options.guidanceSystemInstruction.trim(),
+      },
+      ...messages,
+    ];
   }
 
   private buildAttachmentPromptContext(input: unknown, supportsVision = false): string | undefined {
@@ -13804,7 +14569,15 @@ function splitChatPrefsPatch(
 ): {
   basePatch: Pick<
     ChatSessionPrefsPatch,
-    "mode" | "providerId" | "model" | "webMode" | "memoryMode" | "thinkingLevel" | "toolAutonomy" | "visionFallbackModel"
+    | "mode"
+    | "planningMode"
+    | "providerId"
+    | "model"
+    | "webMode"
+    | "memoryMode"
+    | "thinkingLevel"
+    | "toolAutonomy"
+    | "visionFallbackModel"
   >;
   autonomyPatch: Partial<{
     proactiveMode: ChatProactiveMode;
@@ -13817,9 +14590,18 @@ function splitChatPrefsPatch(
 } {
   const basePatch: Pick<
     ChatSessionPrefsPatch,
-    "mode" | "providerId" | "model" | "webMode" | "memoryMode" | "thinkingLevel" | "toolAutonomy" | "visionFallbackModel"
+    | "mode"
+    | "planningMode"
+    | "providerId"
+    | "model"
+    | "webMode"
+    | "memoryMode"
+    | "thinkingLevel"
+    | "toolAutonomy"
+    | "visionFallbackModel"
   > = {
     mode: input.mode,
+    planningMode: input.planningMode,
     providerId: input.providerId,
     model: input.model,
     webMode: input.webMode,
@@ -13839,6 +14621,28 @@ function splitChatPrefsPatch(
       reflectionMode: input.reflectionMode,
     },
   };
+}
+
+function buildPlanningModeSystemInstruction(planningMode: ChatPlanningMode | undefined): string | undefined {
+  if (planningMode !== "advisory") {
+    return undefined;
+  }
+  return [
+    "Planning mode is active for this session.",
+    "Respond with an advisory plan, specification, or options analysis only.",
+    "Do not claim to have executed tools, delegated work, or changed files in this turn.",
+    "If tools would help, explain which tool or follow-up action the operator should explicitly run next.",
+  ].join("\n");
+}
+
+function mergeChatSystemInstructions(...parts: Array<string | undefined>): string | undefined {
+  const merged = parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part));
+  if (merged.length === 0) {
+    return undefined;
+  }
+  return merged.join("\n\n");
 }
 
 function buildRetrievalTrace(input: {

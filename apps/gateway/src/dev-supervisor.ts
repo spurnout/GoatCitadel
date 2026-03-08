@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   console.log(`[gateway-supervisor] runtime root: ${runtimeRoot}`);
   console.log(`[gateway-supervisor] watching for changes (${pollMs}ms poll)`);
   console.log(`[gateway-supervisor] target health: http://${gatewayHealthHost}:${gatewayPort}/health`);
+  assertGatewayBindIsSafeForDev(gatewayHost);
   console.log(
     `[gateway-supervisor] restart budget: max ${restartMaxFailures} failures per ${restartWindowMs}ms`,
   );
@@ -402,6 +403,25 @@ function resolveWarnUnauthNonLoopback(): boolean {
     return true;
   }
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function resolveAllowUnauthNetwork(): boolean {
+  const raw = process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK?.trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function assertGatewayBindIsSafeForDev(host: string): void {
+  if (isLoopbackHost(host) || resolveAllowUnauthNetwork() || !shouldWarnUnauthNonLoopbackBind(host)) {
+    return;
+  }
+  throw new Error(
+    `Unsafe gateway bind blocked for local dev: GATEWAY_HOST=${host}. `
+    + "Set GATEWAY_HOST=127.0.0.1 for local-only access, configure GOATCITADEL_AUTH_MODE with credentials, "
+    + "or explicitly set GOATCITADEL_ALLOW_UNAUTH_NETWORK=1 to override.",
+  );
 }
 
 function shouldWarnUnauthNonLoopbackBind(bindHost: string): boolean {

@@ -35,6 +35,7 @@ import type {
   ChatSessionPrefsPatch,
   ChatSessionRecord,
   ChatStreamChunk,
+  ChatThreadResponse,
   ChatThinkingLevel,
   ChatTurnTraceRecord,
   ChatWebMode,
@@ -1004,6 +1005,10 @@ export async function fetchChatMessages(sessionId: string, limit = 200, cursor?:
   );
 }
 
+export async function fetchChatThread(sessionId: string): Promise<ChatThreadResponse> {
+  return request<ChatThreadResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/thread`);
+}
+
 export async function sendChatMessage(sessionId: string, input: ChatSendMessageRequest): Promise<ChatSendMessageResponse> {
   return request<ChatSendMessageResponse>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
@@ -1047,6 +1052,92 @@ export async function streamAgentChatMessage(
 ): Promise<void> {
   const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`);
   const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+      ...authHeaders,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+  await consumeSseResponse(response.body, onChunk);
+}
+
+export async function selectChatBranchTurn(sessionId: string, turnId: string): Promise<ChatThreadResponse> {
+  return request<ChatThreadResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/select`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function retryChatTurn(
+  sessionId: string,
+  turnId: string,
+  input?: Partial<ChatSendMessageRequest>,
+): Promise<ChatSendMessageResponse> {
+  return request<ChatSendMessageResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry`,
+    {
+      method: "POST",
+      body: JSON.stringify(input ?? {}),
+    },
+  );
+}
+
+export async function streamRetryChatTurn(
+  sessionId: string,
+  turnId: string,
+  input: Partial<ChatSendMessageRequest>,
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry/stream`;
+  const authHeaders = readGatewayAuthHeaders(path);
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+      ...authHeaders,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(`API error ${response.status}: ${text}`);
+  }
+  await consumeSseResponse(response.body, onChunk);
+}
+
+export async function editChatTurn(
+  sessionId: string,
+  turnId: string,
+  input: ChatSendMessageRequest,
+): Promise<ChatSendMessageResponse> {
+  return request<ChatSendMessageResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/edit`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function streamEditChatTurn(
+  sessionId: string,
+  turnId: string,
+  input: ChatSendMessageRequest,
+  onChunk: (chunk: ChatStreamChunk) => void,
+): Promise<void> {
+  const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/edit/stream`;
+  const authHeaders = readGatewayAuthHeaders(path);
+  const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

@@ -48,6 +48,7 @@ function createTrace(status: ChatTurnTraceRecord["status"] = "completed"): ChatT
     turnId: "turn-1",
     sessionId: "session-1",
     userMessageId: "user-1",
+    branchKind: "append",
     status,
     mode: "chat",
     webMode: "auto",

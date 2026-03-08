@@ -11,6 +11,8 @@ export type ChatThinkingLevel = "minimal" | "standard" | "extended";
 export type ChatProactiveMode = "off" | "suggest" | "auto_safe";
 export type ChatRetrievalMode = "standard" | "layered";
 export type ChatReflectionMode = "off" | "on";
+export type ChatPlanningMode = "off" | "advisory";
+export type ChatTurnBranchKind = "append" | "retry" | "edit";
 export type ChatDelegationMode = "sequential" | "parallel";
 export type ChatDelegationStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type ChatDelegationRunStatus = "running" | "completed" | "failed" | "partial";
@@ -127,6 +129,7 @@ export interface ChatMessageRecord {
 export interface ChatSessionPrefsRecord {
   sessionId: string;
   mode: ChatMode;
+  planningMode: ChatPlanningMode;
   providerId?: string;
   model?: string;
   webMode: ChatWebMode;
@@ -150,6 +153,7 @@ export interface ChatAutonomyBudget {
 
 export interface ChatSessionPrefsPatch {
   mode?: ChatMode;
+  planningMode?: ChatPlanningMode;
   providerId?: string;
   model?: string;
   webMode?: ChatWebMode;
@@ -202,6 +206,9 @@ export interface ChatTurnTraceRecord {
   turnId: string;
   sessionId: string;
   userMessageId: string;
+  parentTurnId?: string;
+  branchKind: ChatTurnBranchKind;
+  sourceTurnId?: string;
   assistantMessageId?: string;
   status: "running" | "completed" | "failed" | "approval_required";
   mode: ChatMode;
@@ -209,6 +216,7 @@ export interface ChatTurnTraceRecord {
   webMode: ChatWebMode;
   memoryMode: ChatMemoryMode;
   thinkingLevel: ChatThinkingLevel;
+  effectiveToolAutonomy?: "safe_auto" | "manual";
   startedAt: string;
   finishedAt?: string;
   toolRuns: ChatToolRunRecord[];
@@ -359,39 +367,140 @@ export interface ChatSendMessageResponse {
   routing?: ChatTurnTraceRecord["routing"];
 }
 
-export interface ChatStreamChunk {
-  type:
-    | "message_start"
-    | "delta"
-    | "usage"
-    | "message_done"
-    | "tool_start"
-    | "tool_result"
-    | "approval_required"
-    | "trace_update"
-    | "capability_upgrade_suggestion"
-    | "citation"
-    | "error"
-    | "done";
-  sessionId: string;
-  messageId?: string;
-  turnId?: string;
-  delta?: string;
-  content?: string;
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-    costUsd?: number;
-  };
-  toolRun?: ChatToolRunRecord;
-  trace?: ChatTurnTraceRecord;
-  citation?: ChatCitationRecord;
-  approval?: {
-    approvalId: string;
-    toolName?: string;
-    reason?: string;
-  };
-  capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
-  error?: string;
+export interface ChatThreadTurnBranchRecord {
+  siblingTurnIds: string[];
+  activeSiblingIndex: number;
+  siblingCount: number;
+  isSelectedPath: boolean;
+  newestLeafTurnId: string;
 }
+
+export interface ChatThreadTurnRecord {
+  turnId: string;
+  parentTurnId?: string;
+  branchKind: ChatTurnBranchKind;
+  sourceTurnId?: string;
+  userMessage: ChatMessageRecord;
+  assistantMessage?: ChatMessageRecord;
+  trace: ChatTurnTraceRecord;
+  toolRuns: ChatToolRunRecord[];
+  citations: ChatCitationRecord[];
+  branch: ChatThreadTurnBranchRecord;
+}
+
+export interface ChatThreadResponse {
+  sessionId: string;
+  activeLeafTurnId?: string;
+  selectedTurnId?: string;
+  turns: ChatThreadTurnRecord[];
+}
+
+export interface ChatStreamUsageRecord {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  costUsd?: number;
+}
+
+export interface ChatStreamApprovalRecord {
+  approvalId: string;
+  toolName?: string;
+  reason?: string;
+}
+
+interface ChatStreamChunkBase {
+  sessionId: string;
+}
+
+export interface ChatStreamMessageStartChunk extends ChatStreamChunkBase {
+  type: "message_start";
+  turnId: string;
+  messageId: string;
+  parentTurnId?: string;
+  branchKind: ChatTurnBranchKind;
+  sourceTurnId?: string;
+}
+
+export interface ChatStreamDeltaChunk extends ChatStreamChunkBase {
+  type: "delta";
+  turnId: string;
+  messageId?: string;
+  delta: string;
+}
+
+export interface ChatStreamUsageChunk extends ChatStreamChunkBase {
+  type: "usage";
+  turnId: string;
+  messageId?: string;
+  usage: ChatStreamUsageRecord;
+}
+
+export interface ChatStreamMessageDoneChunk extends ChatStreamChunkBase {
+  type: "message_done";
+  turnId: string;
+  messageId: string;
+  content: string;
+}
+
+export interface ChatStreamToolStartChunk extends ChatStreamChunkBase {
+  type: "tool_start";
+  turnId: string;
+  toolRun: ChatToolRunRecord;
+}
+
+export interface ChatStreamToolResultChunk extends ChatStreamChunkBase {
+  type: "tool_result";
+  turnId: string;
+  toolRun: ChatToolRunRecord;
+}
+
+export interface ChatStreamApprovalRequiredChunk extends ChatStreamChunkBase {
+  type: "approval_required";
+  turnId: string;
+  approval: ChatStreamApprovalRecord;
+}
+
+export interface ChatStreamTraceUpdateChunk extends ChatStreamChunkBase {
+  type: "trace_update";
+  turnId: string;
+  trace: ChatTurnTraceRecord;
+}
+
+export interface ChatStreamCitationChunk extends ChatStreamChunkBase {
+  type: "citation";
+  turnId: string;
+  citation: ChatCitationRecord;
+}
+
+export interface ChatStreamCapabilitySuggestionChunk extends ChatStreamChunkBase {
+  type: "capability_upgrade_suggestion";
+  turnId: string;
+  capabilityUpgradeSuggestions: ChatCapabilityUpgradeSuggestion[];
+}
+
+export interface ChatStreamErrorChunk extends ChatStreamChunkBase {
+  type: "error";
+  // Route-level stream failures can end after an error chunk without a matching done chunk.
+  turnId?: string;
+  error: string;
+}
+
+export interface ChatStreamDoneChunk extends ChatStreamChunkBase {
+  type: "done";
+  turnId: string;
+  messageId: string;
+}
+
+export type ChatStreamChunk =
+  | ChatStreamMessageStartChunk
+  | ChatStreamDeltaChunk
+  | ChatStreamUsageChunk
+  | ChatStreamMessageDoneChunk
+  | ChatStreamToolStartChunk
+  | ChatStreamToolResultChunk
+  | ChatStreamApprovalRequiredChunk
+  | ChatStreamTraceUpdateChunk
+  | ChatStreamCitationChunk
+  | ChatStreamCapabilitySuggestionChunk
+  | ChatStreamErrorChunk
+  | ChatStreamDoneChunk;

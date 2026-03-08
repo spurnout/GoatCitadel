@@ -99,4 +99,17 @@ describe("dev supervisor coverage", () => {
     expect(spawnMock).toHaveBeenCalled();
     expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining("[gateway-supervisor] fatal"));
   });
+
+  it("fails loudly for unauthenticated non-loopback binds instead of silently rewriting the host", async () => {
+    process.env.GATEWAY_HOST = "0.0.0.0";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await import("./dev-supervisor.js");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+      "Unsafe gateway bind blocked for local dev: GATEWAY_HOST=0.0.0.0",
+    ));
+  });
 });

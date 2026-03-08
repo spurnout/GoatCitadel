@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessageRecord } from "@goatcitadel/contracts";
-import { shouldApplyFetchedMessagesAfterStream } from "./ChatPage";
+import {
+  formatSessionLabel,
+  looksMachineSessionLabel,
+  shouldApplyFetchedMessagesAfterStream,
+} from "./ChatPage";
 
 function makeMessage(
   messageId: string,
@@ -17,6 +21,59 @@ function makeMessage(
     timestamp: "2026-03-06T00:00:00.000Z",
   };
 }
+
+function makeSession(
+  overrides: Partial<Parameters<typeof formatSessionLabel>[0]> = {},
+): Parameters<typeof formatSessionLabel>[0] {
+  return {
+    sessionId: "sess_123456",
+    sessionKey: "mission:operator:chat_123456",
+    workspaceId: "default",
+    scope: "mission",
+    title: undefined,
+    pinned: false,
+    lifecycleStatus: "active",
+    archivedAt: undefined,
+    projectId: undefined,
+    projectName: undefined,
+    channel: "mission",
+    account: "operator",
+    updatedAt: "2026-03-06T00:00:00.000Z",
+    lastActivityAt: "2026-03-06T00:00:00.000Z",
+    tokenTotal: 0,
+    costUsdTotal: 0,
+    ...overrides,
+  };
+}
+
+describe("chat session rail labels", () => {
+  it("detects machine-generated labels", () => {
+    expect(looksMachineSessionLabel(undefined, "mission:operator:chat_123456")).toBe(true);
+    expect(looksMachineSessionLabel("mission:operator:chat_123456", "mission:operator:chat_123456")).toBe(true);
+    expect(looksMachineSessionLabel("external:slack:thread_1")).toBe(true);
+    expect(looksMachineSessionLabel(":operator:chat_abcdef")).toBe(true);
+    expect(looksMachineSessionLabel("Release checklist", "mission:operator:chat_123456")).toBe(false);
+  });
+
+  it("formats human and fallback labels for the session rail", () => {
+    expect(formatSessionLabel(makeSession({
+      title: "Release checklist",
+    }))).toBe("Release checklist");
+
+    expect(formatSessionLabel(makeSession({
+      title: "mission:operator:chat_123456",
+    }))).toBe("Mission chat - 123456");
+
+    expect(formatSessionLabel(makeSession({
+      sessionId: "sess_654321",
+      sessionKey: "external:slack:thread_1",
+      scope: "external",
+      title: "external:slack:thread_1",
+      channel: "slack",
+      account: "ops",
+    }))).toBe("External chat - slack / ops");
+  });
+});
 
 describe("shouldApplyFetchedMessagesAfterStream", () => {
   it("rejects stale fetched messages that would wipe a finalized streamed assistant reply", () => {

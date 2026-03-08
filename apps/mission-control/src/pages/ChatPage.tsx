@@ -13,14 +13,18 @@ import type {
   ChatCapabilityUpgradeSuggestion,
   ChatDelegationSuggestionRecord,
   ChatMessageRecord,
-  ChatSessionPrefsPatch,
   ChatSessionBindingRecord,
+  ChatSessionPrefsPatch,
   ChatSessionPrefsRecord,
   ChatSessionRecord,
-  ChatTurnTraceRecord,
+  ChatStreamChunk,
+  ChatThreadResponse,
   LearnedMemoryItemRecord,
+  McpServerRecord,
+  McpServerTemplateRecord,
   ProactivePolicy,
   ProactiveRunRecord,
+  SkillListItem,
 } from "@goatcitadel/contracts";
 import {
   acceptChatDelegation,
@@ -32,7 +36,7 @@ import {
   createChatSession,
   denyChatTool,
   fetchChatCommandCatalog,
-  fetchChatMessages,
+  fetchChatThread,
   fetchChatProactiveRuns,
   fetchChatProactiveStatus,
   fetchChatProjects,
@@ -40,20 +44,27 @@ import {
   fetchChatLearnedMemory,
   fetchChatSessionPrefs,
   fetchChatSessions,
+  fetchMcpServers,
   fetchMcpTemplates,
+  fetchSkills,
   fetchSettings,
+  editChatTurn,
   installSkillImport,
   parseChatCommand,
   rebuildChatLearnedMemory,
+  retryChatTurn,
   pinChatSession,
   restoreChatSession,
   runChatResearch,
   sendAgentChatMessage,
+  selectChatBranchTurn,
   triggerChatProactive,
   updateChatProactivePolicy,
   setChatSessionBinding,
   suggestChatDelegation,
   streamAgentChatMessage,
+  streamEditChatTurn,
+  streamRetryChatTurn,
   unpinChatSession,
   updateChatSession,
   updateChatLearnedMemoryItem,
@@ -67,6 +78,14 @@ import {
 } from "../api/client";
 import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
+import { ChatPlanningPill } from "../components/chat/ChatPlanningPill";
+import { ChatQueueBar, type ChatQueueItemView } from "../components/chat/ChatQueueBar";
+import {
+  isThreadMutatingStreamChunk,
+  type PendingStreamTurnSeed,
+  updateThreadFromStreamChunk,
+} from "../components/chat/chat-thread-reducer";
+import { ChatThreadView, type ChatThreadNotice } from "../components/chat/ChatThreadView";
 import { ChatComposerPlusMenu } from "../components/ChatComposerPlusMenu";
 import { ChatModeSwitch } from "../components/ChatModeSwitch";
 import { ChatModelPicker, type ChatModelProviderOption } from "../components/ChatModelPicker";
@@ -99,12 +118,38 @@ interface CommandCatalogItem {
   description: string;
 }
 
+interface CommandSuggestionItem {
+  key: string;
+  command: string;
+  description: string;
+  applyValue: string;
+}
+
 interface FinalizedStreamMessageState {
   sessionId: string;
   placeholderId: string;
   messageId?: string;
   content: string;
 }
+
+interface OutboundQueueItem {
+  id: string;
+  action: "send" | "edit" | "retry";
+  sessionId?: string;
+  targetTurnId?: string;
+  content: string;
+  attachments: ChatAttachmentRecord[];
+  createdAt: string;
+  paused?: boolean;
+}
+
+type SessionControlPending =
+  | null
+  | "rename"
+  | "pin"
+  | "archive"
+  | "project"
+  | "binding";
 
 function normalizeComparableAssistantContent(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -139,23 +184,123 @@ export function shouldApplyFetchedMessagesAfterStream(
   return fetchedHasEquivalentAssistant;
 }
 
+export function looksMachineSessionLabel(label: string | undefined, sessionKey?: string): boolean {
+  const trimmed = label?.trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (sessionKey && trimmed === sessionKey.trim()) {
+    return true;
+  }
+  return /^(mission|external):/i.test(trimmed) || /:operator:chat_/i.test(trimmed);
+}
+
+export function formatSessionLabel(session: ChatSessionsResponse["items"][number]): string {
+  const title = session.title?.trim();
+  if (title && !looksMachineSessionLabel(title, session.sessionKey)) {
+    return title;
+  }
+  if (session.scope === "external") {
+    const channel = [session.channel, session.account].filter(Boolean).join(" / ");
+    return channel ? `External chat - ${channel}` : `External chat - ${session.sessionId.slice(-6)}`;
+  }
+  return `Mission chat - ${session.sessionId.slice(-6)}`;
+}
+
+function flattenThreadMessages(thread: ChatThreadResponse | null): ChatMessagesResponse["items"] {
+  if (!thread) {
+    return [];
+  }
+  return thread.turns.flatMap((turn) => {
+    const items: ChatMessageRecord[] = [turn.userMessage];
+    if (turn.assistantMessage) {
+      items.push(turn.assistantMessage);
+    }
+    return items;
+  });
+}
+
+function createDraftStorageKey(workspaceId: string, sessionId: string | null): string {
+  return `goatcitadel.chat.draft.${workspaceId}.${sessionId ?? "new"}`;
+}
+
+function createAttachmentStorageKey(workspaceId: string, sessionId: string | null): string {
+  return `goatcitadel.chat.attachments.${workspaceId}.${sessionId ?? "new"}`;
+}
+
+function createQueueStorageKey(workspaceId: string, sessionId: string | null): string {
+  return `goatcitadel.chat.queue.${workspaceId}.${sessionId ?? "new"}`;
+}
+
+function useDebouncedLocalStoragePersistence(key: string, value: string, delayMs = 400): void {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingWriteRef = useRef<{ key: string; value: string } | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (pendingWriteRef.current && pendingWriteRef.current.key !== key) {
+      window.localStorage.setItem(pendingWriteRef.current.key, pendingWriteRef.current.value);
+      pendingWriteRef.current = null;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    pendingWriteRef.current = { key, value };
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    timerRef.current = setTimeout(() => {
+      const pending = pendingWriteRef.current;
+      if (pending) {
+        window.localStorage.setItem(pending.key, pending.value);
+        pendingWriteRef.current = null;
+      }
+      timerRef.current = null;
+    }, delayMs);
+  }, [delayMs, key, value]);
+
+  useEffect(() => () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (pendingWriteRef.current) {
+      window.localStorage.setItem(pendingWriteRef.current.key, pendingWriteRef.current.value);
+      pendingWriteRef.current = null;
+    }
+  }, []);
+}
+
 export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) {
   const [projects, setProjects] = useState<ChatProjectsResponse | null>(null);
   const [sessions, setSessions] = useState<ChatSessionsResponse | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [thread, setThread] = useState<ChatThreadResponse | null>(null);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessagesResponse["items"]>([]);
   const [prefs, setPrefs] = useState<ChatSessionPrefsRecord | null>(null);
   const [binding, setBinding] = useState<ChatSessionBindingRecord | null>(null);
   const [settings, setSettings] = useState<RuntimeSettingsResponse | null>(null);
   const [commandCatalog, setCommandCatalog] = useState<CommandCatalogItem[]>([]);
-  const [latestTrace, setLatestTrace] = useState<ChatTurnTraceRecord | null>(null);
   const [capabilitySuggestions, setCapabilitySuggestions] = useState<ChatCapabilityUpgradeSuggestion[]>([]);
   const [pendingApproval, setPendingApproval] = useState<PendingApprovalState | null>(null);
   const [proactiveStatus, setProactiveStatus] = useState<ProactivePolicy | null>(null);
   const [proactiveRuns, setProactiveRuns] = useState<ProactiveRunRecord[]>([]);
   const [learnedMemory, setLearnedMemory] = useState<LearnedMemoryItemRecord[]>([]);
   const [delegationSuggestion, setDelegationSuggestion] = useState<ChatDelegationSuggestionRecord | null>(null);
+  const [localNotices, setLocalNotices] = useState<ChatThreadNotice[]>([]);
+  const [queuedOutbound, setQueuedOutbound] = useState<OutboundQueueItem[]>([]);
+  const [installedSkills, setInstalledSkills] = useState<SkillListItem[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
+  const [mcpTemplates, setMcpTemplates] = useState<Array<McpServerTemplateRecord & { installed: boolean }>>([]);
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -174,6 +319,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [projectPath, setProjectPath] = useState("chat/default");
   const [showProjectCreate, setShowProjectCreate] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
+  const [sessionControlPending, setSessionControlPending] = useState<SessionControlPending>(null);
   const [integrationConnectionId, setIntegrationConnectionId] = useState("");
   const [integrationTarget, setIntegrationTarget] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
@@ -181,7 +327,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const messageListRef = useRef<HTMLUListElement | null>(null);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
   const initializedRef = useRef(false);
   const lastLoadedSessionIdRef = useRef<string | null>(null);
@@ -193,6 +339,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const selectedSessionIdRef = useRef<string | null>(null);
   const finalizedStreamMessageRef = useRef<FinalizedStreamMessageState | null>(null);
   const streamReconcileTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendingRef = useRef(false);
   const {
     config: runtimeLlmConfig,
     providers: runtimeProviderCatalog,
@@ -210,9 +357,18 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   }, [workspaceId]);
 
   const loadRuntimeCatalog = useCallback(async () => {
-    const [runtimeSettings, commands] = await Promise.all([fetchSettings(), fetchChatCommandCatalog()]);
+    const [runtimeSettings, commands, skills, servers, templates] = await Promise.all([
+      fetchSettings(),
+      fetchChatCommandCatalog(),
+      fetchSkills(),
+      fetchMcpServers(),
+      fetchMcpTemplates(),
+    ]);
     setSettings(runtimeSettings);
     setCommandCatalog(commands.items);
+    setInstalledSkills(skills.items);
+    setMcpServers(servers.items);
+    setMcpTemplates(templates.items);
   }, []);
 
   useEffect(() => {
@@ -233,44 +389,63 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setMessages(updater);
   }, []);
 
-  const applyFetchedMessages = useCallback((
-    items: ChatMessagesResponse["items"],
+  const pushLocalNotice = useCallback((
+    content: string,
+    tone: ChatThreadNotice["tone"] = "neutral",
+  ) => {
+    setLocalNotices((current) => [{
+      id: `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      content,
+      tone,
+      timestamp: new Date().toISOString(),
+    }, ...current].slice(0, 12));
+  }, []);
+
+  const commitThreadUpdate = useCallback((
+    updater: ChatThreadResponse | null | ((current: ChatThreadResponse | null) => ChatThreadResponse | null),
+  ) => {
+    setThread((current) => typeof updater === "function" ? updater(current) : updater);
+  }, []);
+
+  const applyFetchedThread = useCallback((
+    nextThread: ChatThreadResponse,
     requestVersion: number | null,
   ) => {
     if (requestVersion !== null && requestVersion !== messageMutationVersionRef.current) {
       return false;
     }
+    const items = flattenThreadMessages(nextThread);
     if (!shouldApplyFetchedMessagesAfterStream(latestMessagesRef.current, items, finalizedStreamMessageRef.current)) {
       return false;
     }
     if (finalizedStreamMessageRef.current) {
       finalizedStreamMessageRef.current = null;
     }
-    commitMessageUpdate(items);
+    commitThreadUpdate(nextThread);
     return true;
-  }, [commitMessageUpdate]);
+  }, [commitThreadUpdate]);
 
   const loadSessionCoreState = useCallback(async (
     sessionId: string,
     options: {
       background?: boolean;
-      includeMessages?: boolean;
+      includeThread?: boolean;
     } = {},
   ) => {
     const background = options.background ?? false;
-    const includeMessages = options.includeMessages ?? true;
-    const messageVersionAtStart = includeMessages ? messageMutationVersionRef.current : null;
+    const includeThread = options.includeThread ?? true;
+    const messageVersionAtStart = includeThread ? messageMutationVersionRef.current : null;
     if (!background) {
       setMessagesLoading(true);
     }
     try {
-      const [nextMessages, nextBinding, nextPrefs] = await Promise.all([
-        includeMessages ? fetchChatMessages(sessionId, 500) : Promise.resolve(undefined),
+      const [nextThread, nextBinding, nextPrefs] = await Promise.all([
+        includeThread ? fetchChatThread(sessionId) : Promise.resolve(undefined),
         fetchChatSessionBinding(sessionId),
         fetchChatSessionPrefs(sessionId),
       ]);
-      if (nextMessages) {
-        applyFetchedMessages(nextMessages.items, messageVersionAtStart);
+      if (nextThread) {
+        applyFetchedThread(nextThread, messageVersionAtStart);
       }
       setBinding(nextBinding.item);
       setPrefs(nextPrefs);
@@ -279,7 +454,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         setMessagesLoading(false);
       }
     }
-  }, [applyFetchedMessages]);
+  }, [applyFetchedThread]);
 
   const scheduleStreamMessageReconciliation = useCallback((sessionId: string) => {
     if (streamReconcileTimeoutRef.current) {
@@ -292,7 +467,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
       void loadSessionCoreState(sessionId, {
         background: true,
-        includeMessages: true,
+        includeThread: true,
       }).catch((err: Error) => setError(err.message));
     }, 300);
   }, [loadSessionCoreState]);
@@ -327,14 +502,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     sessionId: string,
     options: {
       background?: boolean;
-      includeMessages?: boolean;
+      includeThread?: boolean;
       deferSecondary?: boolean;
     } = {},
   ) => {
     const background = options.background ?? false;
-    const includeMessages = options.includeMessages ?? true;
+    const includeThread = options.includeThread ?? true;
     const deferSecondary = options.deferSecondary ?? false;
-    await loadSessionCoreState(sessionId, { background, includeMessages });
+    await loadSessionCoreState(sessionId, { background, includeThread });
     if (deferSecondary) {
       void loadSessionSecondaryState(sessionId, { background: false }).catch((err: Error) => setError(err.message));
       return;
@@ -365,7 +540,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         if (refreshSession === "full") {
           await loadSessionState(selectedSessionId, {
             background: true,
-            includeMessages: true,
+            includeThread: true,
           });
         } else {
           await loadSessionSecondaryState(selectedSessionId, {
@@ -411,8 +586,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
       const localPrefEcho = now - lastLocalPrefMutationAtRef.current < 2500
         && /\b(pref|policy|session|proactive|retrieval|reflection|mode)\b/.test(haystack);
-      const mentionsMessages = /\b(message|turn|assistant|user|tool|trace|approval)\b/.test(haystack);
-      const affectsSidebar = /\b(project|archive|restore|pin|unpin|binding|workspace|external|session_created|session_deleted)\b/.test(haystack);
+      const mentionsMessages = /\b(message|thread|turn|assistant|user|tool|trace|approval|chat_thread_updated)\b/.test(haystack);
+      const affectsSidebar = /\b(project|archive|restore|pin|unpin|binding|workspace|external|session_created|session_deleted|title|rename|chat_session_title_updated|chat_session_updated)\b/.test(haystack);
       const mentionsSessionState = /\b(pref|policy|proactive|retrieval|reflection|mode|learned_memory)\b/.test(haystack);
       const refreshSession = localPrefEcho
         ? "none"
@@ -433,6 +608,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   useEffect(() => {
     if (!selectedSessionId) {
       commitMessageUpdate([]);
+      setThread(null);
+      setSelectedTurnId(null);
       setPrefs(null);
       setBinding(null);
       setProactiveStatus(null);
@@ -440,6 +617,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       setLearnedMemory([]);
       setSecondaryLoading(false);
       setDelegationSuggestion(null);
+      setLocalNotices([]);
       setPendingAttachments([]);
       finalizedStreamMessageRef.current = null;
       if (streamReconcileTimeoutRef.current) {
@@ -451,7 +629,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     }
     if (lastLoadedSessionIdRef.current !== selectedSessionId) {
       setPendingAttachments([]);
-      setLatestTrace(null);
+      setThread(null);
+      setSelectedTurnId(null);
+      setEditingTurnId(null);
+      setLocalNotices([]);
       setPendingApproval(null);
       finalizedStreamMessageRef.current = null;
       if (streamReconcileTimeoutRef.current) {
@@ -461,15 +642,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       lastLoadedSessionIdRef.current = selectedSessionId;
     }
     setDelegationSuggestion(null);
-    setLatestTrace(null);
     setCapabilitySuggestions([]);
     setPendingApproval(null);
     void loadSessionState(selectedSessionId, {
       background: false,
-      includeMessages: true,
+      includeThread: true,
       deferSecondary: true,
     }).catch((err: Error) => setError(err.message));
-  }, [commitMessageUpdate, loadSessionState, selectedSessionId]);
+  }, [loadSessionState, selectedSessionId]);
 
   useEffect(() => {
     shouldFollowMessagesRef.current = true;
@@ -483,6 +663,40 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const draftRaw = window.localStorage.getItem(createDraftStorageKey(workspaceId, selectedSessionId));
+      setDraft(draftRaw ?? "");
+      const attachmentsRaw = window.localStorage.getItem(createAttachmentStorageKey(workspaceId, selectedSessionId));
+      setPendingAttachments(attachmentsRaw ? JSON.parse(attachmentsRaw) as ChatAttachmentRecord[] : []);
+      const queueRaw = window.localStorage.getItem(createQueueStorageKey(workspaceId, selectedSessionId));
+      setQueuedOutbound(queueRaw
+        ? (JSON.parse(queueRaw) as OutboundQueueItem[]).map((item) => ({ ...item, paused: true }))
+        : []);
+    } catch {
+      setDraft("");
+      setPendingAttachments([]);
+      setQueuedOutbound([]);
+    }
+  }, [selectedSessionId, workspaceId]);
+
+  useDebouncedLocalStoragePersistence(createDraftStorageKey(workspaceId, selectedSessionId), draft);
+  useDebouncedLocalStoragePersistence(
+    createAttachmentStorageKey(workspaceId, selectedSessionId),
+    JSON.stringify(pendingAttachments),
+  );
+  useDebouncedLocalStoragePersistence(
+    createQueueStorageKey(workspaceId, selectedSessionId),
+    JSON.stringify(queuedOutbound),
+  );
 
   useEffect(() => () => {
     if (streamReconcileTimeoutRef.current) {
@@ -500,6 +714,21 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     () => sessions?.items.find((item) => item.sessionId === selectedSessionId) ?? null,
     [selectedSessionId, sessions?.items],
   );
+
+  useEffect(() => {
+    const nextMessages = flattenThreadMessages(thread);
+    latestMessagesRef.current = nextMessages;
+    commitMessageUpdate(nextMessages);
+    setSelectedTurnId((current) => {
+      if (!thread?.turns.length) {
+        return null;
+      }
+      if (current && thread.turns.some((turn) => turn.turnId === current)) {
+        return current;
+      }
+      return thread.selectedTurnId ?? thread.activeLeafTurnId ?? thread.turns.at(-1)?.turnId ?? null;
+    });
+  }, [commitMessageUpdate, thread]);
 
   useEffect(() => {
     setRenameTitle(selectedSession?.title ?? "");
@@ -564,20 +793,114 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   }, [loadModelsForProvider, selectedProviderId]);
 
   const commandSuggestions = useMemo(() => {
-    if (!draft.trimStart().startsWith("/")) return [] as CommandCatalogItem[];
-    const query = draft.trim().slice(1).toLowerCase();
-    if (!query) return commandCatalog.slice(0, 8);
+    const trimmed = draft.trimStart();
+    if (!trimmed.startsWith("/")) return [] as CommandSuggestionItem[];
+    const normalized = trimmed.toLowerCase();
+    if (/^\/plan(\s+\w*)?$/.test(normalized)) {
+      return [
+        {
+          key: "plan-on",
+          command: "/plan on",
+          description: "Switch this session into advisory planning mode.",
+          applyValue: "/plan on",
+        },
+        {
+          key: "plan-off",
+          command: "/plan off",
+          description: "Return this session to normal execution mode.",
+          applyValue: "/plan off",
+        },
+      ];
+    }
+    const skillStateMatch = normalized.match(/^\/skill\s+(enable|disable|sleep)\s+(.+)?$/);
+    if (skillStateMatch) {
+      const query = (skillStateMatch[2] ?? "").trim();
+      return installedSkills
+        .filter((skill) => !query || skill.skillId.toLowerCase().includes(query))
+        .slice(0, 8)
+        .map((skill) => ({
+          key: `${skillStateMatch[1]}-${skill.skillId}`,
+          command: `/skill ${skillStateMatch[1]} ${skill.skillId}`,
+          description: `${skill.state} · ${skill.name}`,
+          applyValue: `/skill ${skillStateMatch[1]} ${skill.skillId}`,
+        }));
+    }
+    const mcpServerMatch = normalized.match(/^\/mcp\s+(connect|disconnect)\s+(.+)?$/);
+    if (mcpServerMatch) {
+      const query = (mcpServerMatch[2] ?? "").trim();
+      return mcpServers
+        .filter((server) => !query || `${server.serverId} ${server.label}`.toLowerCase().includes(query))
+        .slice(0, 8)
+        .map((server) => ({
+          key: `${mcpServerMatch[1]}-${server.serverId}`,
+          command: `/mcp ${mcpServerMatch[1]} ${server.serverId}`,
+          description: `${server.label} · ${server.status}`,
+          applyValue: `/mcp ${mcpServerMatch[1]} ${server.serverId}`,
+        }));
+    }
+    const mcpTemplateMatch = normalized.match(/^\/mcp\s+add-template\s+(.+)?$/);
+    if (mcpTemplateMatch) {
+      const query = (mcpTemplateMatch[1] ?? "").trim();
+      return mcpTemplates
+        .filter((template) => !query || `${template.templateId} ${template.label}`.toLowerCase().includes(query))
+        .slice(0, 8)
+        .map((template) => ({
+          key: `template-${template.templateId}`,
+          command: `/mcp add-template ${template.templateId}`,
+          description: `${template.label}${template.installed ? " · installed" : ""}`,
+          applyValue: `/mcp add-template ${template.templateId}`,
+        }));
+    }
+    const query = trimmed.slice(1).toLowerCase();
+    if (!query) {
+      return commandCatalog.slice(0, 8).map((item) => ({
+        key: item.usage,
+        command: item.command,
+        description: item.description,
+        applyValue: item.command,
+      }));
+    }
     return commandCatalog
       .filter((item) => `${item.command} ${item.usage} ${item.description}`.toLowerCase().includes(query))
+      .map((item) => ({
+        key: item.usage,
+        command: item.command,
+        description: item.description,
+        applyValue: item.command,
+      }))
       .slice(0, 8);
-  }, [commandCatalog, draft]);
+  }, [commandCatalog, draft, installedSkills, mcpServers, mcpTemplates]);
 
   useEffect(() => setCommandIndex(0), [draft]);
 
   const selectedSessionProjectValue = selectedSession?.projectId ?? "none";
   const messageMode = prefs?.mode ?? "chat";
-  const coworkItems = useMemo(() => deriveCoworkItems(messages), [messages]);
+  const planningMode = prefs?.planningMode ?? "off";
+  const selectedTurn = useMemo(
+    () => thread?.turns.find((turn) => turn.turnId === selectedTurnId) ?? thread?.turns.at(-1) ?? null,
+    [selectedTurnId, thread],
+  );
+  const effectiveToolAutonomy = selectedTurn?.trace.effectiveToolAutonomy
+    ?? (planningMode === "advisory" ? "manual" : prefs?.toolAutonomy);
+  useEffect(() => {
+    setCapabilitySuggestions(selectedTurn?.trace.capabilityUpgradeSuggestions ?? []);
+  }, [selectedTurn]);
+  const coworkItems = useMemo(() => deriveCoworkItems(messages, localNotices), [localNotices, messages]);
   const canSend = Boolean(draft.trim()) && !sending;
+
+  const tryBeginOutboundExecution = useCallback(() => {
+    if (sendingRef.current) {
+      return false;
+    }
+    sendingRef.current = true;
+    setSending(true);
+    return true;
+  }, []);
+
+  const finishOutboundExecution = useCallback(() => {
+    sendingRef.current = false;
+    setSending(false);
+  }, []);
 
   const ensureSession = useCallback(async (): Promise<ChatSessionRecord> => {
     if (selectedSession) return selectedSession;
@@ -630,23 +953,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         providerId: prefs?.providerId,
         model: prefs?.model,
       });
-      const synthetic: ChatMessageRecord = {
-        messageId: `research-${summary.runId}`,
-        sessionId: session.sessionId,
-        role: "assistant",
-        actorType: "system",
-        actorId: "research",
-        content: `Research summary:\n${summary.summary}\n\nSources: ${summary.sources.length}`,
-        timestamp: new Date().toISOString(),
-      };
-      commitMessageUpdate((current) => [...current, synthetic]);
+      pushLocalNotice(`Research summary:\n${summary.summary}\n\nSources: ${summary.sources.length}`, "success");
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSending(false);
     }
-  }, [commitMessageUpdate, draft, ensureSession, messages, prefs?.model, prefs?.providerId, prefs?.webMode, sending]);
+  }, [draft, ensureSession, messages, prefs?.model, prefs?.providerId, prefs?.webMode, pushLocalNotice, sending]);
 
   const handleProactivePolicyPatch = useCallback(async (
     patch: {
@@ -686,21 +1000,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         reason: "Operator triggered from chat workspace.",
       });
       setProactiveRuns((current) => [run, ...current].slice(0, 30));
-      commitMessageUpdate((current) => [...current, {
-        messageId: `proactive-${run.runId}`,
-        sessionId: selectedSession.sessionId,
-        role: "system",
-        actorType: "system",
-        actorId: "proactive",
-        content: `Proactive run ${run.status}: ${run.reasoningSummary}`,
-        timestamp: new Date().toISOString(),
-      }]);
+      pushLocalNotice(`Proactive run ${run.status}: ${run.reasoningSummary}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSending(false);
     }
-  }, [selectedSession, sending]);
+  }, [pushLocalNotice, selectedSession, sending]);
 
   const handleSuggestDelegation = useCallback(async () => {
     if (!selectedSession || sending) return;
@@ -732,15 +1038,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         providerId: prefs?.providerId,
         model: prefs?.model,
       });
-      commitMessageUpdate((current) => [...current, {
-        messageId: `delegation-${accepted.runId}`,
-        sessionId: selectedSession.sessionId,
-        role: "assistant",
-        actorType: "agent",
-        actorId: "delegation",
-        content: accepted.stitchedOutput,
-        timestamp: new Date().toISOString(),
-      }]);
+      pushLocalNotice(`Delegation completed:\n${accepted.stitchedOutput}`, "success");
       setDelegationSuggestion(null);
       await loadSidebar();
     } catch (err) {
@@ -748,7 +1046,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     } finally {
       setSending(false);
     }
-  }, [commitMessageUpdate, delegationSuggestion, loadSidebar, prefs?.model, prefs?.providerId, selectedSession, sending]);
+  }, [delegationSuggestion, loadSidebar, prefs?.model, prefs?.providerId, pushLocalNotice, selectedSession, sending]);
 
   const handleMemoryStatusUpdate = useCallback(async (
     itemId: string,
@@ -853,21 +1151,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     composerRef.current?.focus();
   }, []);
 
-  const appendLocalSystemMessage = useCallback((content: string) => {
-    if (!selectedSessionId) {
-      return;
-    }
-    commitMessageUpdate((current) => [...current, {
-      messageId: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      sessionId: selectedSessionId,
-      role: "system",
-      actorType: "system",
-      actorId: "capability",
-      content,
-      timestamp: new Date().toISOString(),
-    }]);
-  }, [commitMessageUpdate, selectedSessionId]);
-
   const dismissCapabilitySuggestion = useCallback((suggestion: ChatCapabilityUpgradeSuggestion) => {
     setCapabilitySuggestions((current) => current.filter((item) => (
       item.kind !== suggestion.kind
@@ -890,7 +1173,8 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           state: "enabled",
           note: "Enabled from chat capability suggestion.",
         });
-        appendLocalSystemMessage(`Enabled skill ${updated.skillId}. You can retry the request now.`);
+        pushLocalNotice(`Enabled skill ${updated.skillId}. You can retry the request now.`, "success");
+        setInstalledSkills(await fetchSkills().then((result) => result.items));
         dismissCapabilitySuggestion(suggestion);
         return;
       }
@@ -912,11 +1196,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             : undefined,
           confirmHighRisk: suggestion.riskLevel === "high",
         });
-        appendLocalSystemMessage(
+        pushLocalNotice(
           installed.installedSkillId
             ? `Installed ${installed.installedSkillId}. It remains disabled by default until you enable it.`
             : "Installed the suggested skill. It remains disabled by default until you enable it.",
+          "success",
         );
+        setInstalledSkills(await fetchSkills().then((result) => result.items));
         dismissCapabilitySuggestion(suggestion);
         window.location.hash = "skills";
         return;
@@ -937,7 +1223,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           throw new Error("The suggested MCP template is no longer available.");
         }
         if (template.installed) {
-          appendLocalSystemMessage(`${template.label} is already installed. Review it in MCP Servers.`);
+          pushLocalNotice(`${template.label} is already installed. Review it in MCP Servers.`);
           dismissCapabilitySuggestion(suggestion);
           window.location.hash = "mcp";
           return;
@@ -955,175 +1241,317 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           costTier: template.costTier,
           policy: template.policy,
         });
-        appendLocalSystemMessage(`${template.label} was added. Review trust/auth details in MCP before first live use.`);
+        pushLocalNotice(`${template.label} was added. Review trust/auth details in MCP before first live use.`, "success");
+        setMcpServers(await fetchMcpServers().then((result) => result.items));
+        setMcpTemplates(await fetchMcpTemplates().then((result) => result.items));
         dismissCapabilitySuggestion(suggestion);
         window.location.hash = "mcp";
         return;
       }
 
       if (suggestion.recommendedAction === "switch_tool_profile") {
-        appendLocalSystemMessage("This request is blocked by the current tool/profile policy. Review Tool Access and retry.");
+        pushLocalNotice("This request is blocked by the current tool/profile policy. Review Tool Access and retry.", "warning");
         window.location.hash = "tools";
         return;
       }
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [appendLocalSystemMessage, dismissCapabilitySuggestion]);
+  }, [dismissCapabilitySuggestion, pushLocalNotice]);
 
   const handleCommandExecution = useCallback(async (sessionId: string, commandText: string) => {
     const result = await parseChatCommand(sessionId, commandText);
     if (result.prefs) setPrefs(result.prefs);
-    const echo: ChatMessageRecord = {
-      messageId: `command-${Date.now()}`,
-      sessionId,
-      role: "system",
-      actorType: "system",
-      actorId: "slash",
-      content: formatCommandResult(result),
-      timestamp: new Date().toISOString(),
-    };
-    commitMessageUpdate((current) => [...current, echo]);
+    pushLocalNotice(formatCommandResult(result), result.ok ? "success" : "warning");
     if (result.command === "/project") await loadSidebar();
-  }, [commitMessageUpdate, loadSidebar]);
+    if (result.command === "/plan" && result.prefs) {
+      setPrefs(result.prefs);
+    }
+    if (result.command === "/skill" || result.command === "/skills") {
+      setInstalledSkills(await fetchSkills().then((payload) => payload.items));
+    }
+    if (result.command === "/mcp") {
+      const [servers, templates] = await Promise.all([
+        fetchMcpServers(),
+        fetchMcpTemplates(),
+      ]);
+      setMcpServers(servers.items);
+      setMcpTemplates(templates.items);
+    }
+  }, [loadSidebar, pushLocalNotice]);
 
-  const handleSend = useCallback(async () => {
-    const content = draft.trim();
-    if (!content || sending) return;
-    setSending(true);
-    setError(null);
-    const attachmentsSnapshot = pendingAttachments;
-    const attachmentIds = attachmentsSnapshot.map((item) => item.attachmentId);
-    const localAttachments = attachmentsSnapshot.map((item) => ({
-      attachmentId: item.attachmentId,
-      fileName: item.fileName,
-      mimeType: item.mimeType,
-      sizeBytes: item.sizeBytes,
+  const executeOutboundItem = useCallback(async (item: OutboundQueueItem) => {
+    const trimmedContent = item.content.trim();
+    const attachmentsSnapshot = item.attachments;
+    const attachmentIds = attachmentsSnapshot.map((entry) => entry.attachmentId);
+    const localAttachments = attachmentsSnapshot.map((entry) => ({
+      attachmentId: entry.attachmentId,
+      fileName: entry.fileName,
+      mimeType: entry.mimeType,
+      sizeBytes: entry.sizeBytes,
     }));
-    setDraft("");
-    setPendingAttachments([]);
-    setPendingApproval(null);
-
-    let localUserId: string | null = null;
-    let placeholderId: string | null = null;
-    let committed = false;
+    let session: ChatSessionRecord | null = null;
     try {
-      const session = await ensureSession();
-      if (content.startsWith("/")) {
-        await handleCommandExecution(session.sessionId, content);
-        committed = true;
+      setError(null);
+      setPendingApproval(null);
+      session = await ensureSession();
+      if (item.action === "send" && trimmedContent.startsWith("/")) {
+        await handleCommandExecution(session.sessionId, trimmedContent);
         await loadSidebar();
         return;
       }
 
-      localUserId = `local-user-${Date.now()}`;
-      commitMessageUpdate((current) => [...current, {
-        messageId: localUserId!,
-        sessionId: session.sessionId,
-        role: "user",
-        actorType: "user",
-        actorId: "operator",
-        content,
-        timestamp: new Date().toISOString(),
-        attachments: localAttachments.length > 0 ? localAttachments : undefined,
-      }]);
-
-      const payload = {
-        content,
-        attachments: attachmentIds,
-        useMemory: (prefs?.memoryMode ?? "auto") !== "off",
-        mode: prefs?.mode ?? "chat",
-        providerId: prefs?.providerId,
-        model: prefs?.model,
-        webMode: prefs?.webMode ?? "auto",
-        memoryMode: prefs?.memoryMode ?? "auto",
-        thinkingLevel: prefs?.thinkingLevel ?? "standard",
-      } as const;
-
-      if (streamEnabled) {
-        placeholderId = `stream-${Date.now()}`;
-        commitMessageUpdate((current) => [...current, {
-          messageId: placeholderId!,
+      const targetTurn = item.targetTurnId
+        ? (thread?.turns.find((turn) => turn.turnId === item.targetTurnId) ?? null)
+        : null;
+      if ((item.action === "edit" || item.action === "retry") && !targetTurn) {
+        throw new Error("The selected branch turn is no longer available.");
+      }
+      const effectiveUserMessage: ChatMessageRecord = item.action === "retry" && targetTurn
+        ? targetTurn.userMessage
+        : {
+          messageId: `local-user-${Date.now()}`,
           sessionId: session.sessionId,
-          role: "assistant",
-          actorType: "agent",
-          actorId: "assistant",
-          content: "",
+          role: "user",
+          actorType: "user",
+          actorId: "operator",
+          content: trimmedContent,
           timestamp: new Date().toISOString(),
-        }]);
-        await streamAgentChatMessage(session.sessionId, payload, (chunk) => {
-          if (chunk.type === "delta" && chunk.delta) {
-            commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
-              ? { ...item, content: `${item.content}${chunk.delta}` }
-              : item));
-            return;
-          }
+          attachments: localAttachments.length > 0 ? localAttachments : undefined,
+        };
+      if (streamEnabled) {
+        const streamSeed: PendingStreamTurnSeed = {
+          userMessage: effectiveUserMessage,
+          parentTurnId: item.action === "send" ? thread?.activeLeafTurnId : targetTurn?.parentTurnId,
+          branchKind: item.action === "send" ? "append" : item.action === "edit" ? "edit" : "retry",
+          sourceTurnId: item.action === "send" ? undefined : item.targetTurnId,
+          mode: item.action,
+        };
+        const onChunk = (chunk: ChatStreamChunk) => {
           if (chunk.type === "message_done") {
-            let finalizedContent = chunk.content;
-            let finalizedMessageId = chunk.messageId;
-            commitMessageUpdate((current) => current.map((item) => item.messageId === placeholderId
-              ? (() => {
-                const content = chunk.content || item.content;
-                const messageId = chunk.messageId || item.messageId;
-                finalizedContent = content;
-                finalizedMessageId = messageId;
-                return { ...item, messageId, content };
-              })()
-              : item));
-            if (placeholderId && finalizedContent?.trim()) {
-              finalizedStreamMessageRef.current = {
-                sessionId: session.sessionId,
-                placeholderId,
-                messageId: finalizedMessageId,
-                content: finalizedContent,
-              };
-            }
-            return;
+            finalizedStreamMessageRef.current = {
+              sessionId: session!.sessionId,
+              placeholderId: chunk.messageId,
+              messageId: chunk.messageId,
+              content: chunk.content,
+            };
           }
-          if (chunk.type === "trace_update" && chunk.trace) {
-            setLatestTrace(chunk.trace);
+          if (chunk.type === "trace_update") {
             setCapabilitySuggestions(chunk.trace.capabilityUpgradeSuggestions ?? []);
-            return;
           }
           if (chunk.type === "capability_upgrade_suggestion") {
             setCapabilitySuggestions(chunk.capabilityUpgradeSuggestions ?? []);
+          }
+          if (chunk.type === "approval_required") {
+            setPendingApproval({
+              approvalId: chunk.approval.approvalId,
+              toolName: chunk.approval.toolName,
+              reason: chunk.approval.reason,
+            });
+          }
+          if (chunk.type === "error") {
+            setError(chunk.error || "Streaming request failed.");
+          }
+          if (!isThreadMutatingStreamChunk(chunk)) {
             return;
           }
-          if (chunk.type === "approval_required" && chunk.approval?.approvalId) {
-            setPendingApproval({ approvalId: chunk.approval.approvalId, toolName: chunk.approval.toolName, reason: chunk.approval.reason });
-            return;
-          }
-          if (chunk.type === "error") setError(chunk.error || "Streaming request failed.");
-        });
+          commitThreadUpdate((current) => updateThreadFromStreamChunk(current, chunk, streamSeed, session!.sessionId, prefs));
+        };
+        if (item.action === "retry" && item.targetTurnId) {
+          await streamRetryChatTurn(session.sessionId, item.targetTurnId, {
+            providerId: prefs?.providerId,
+            model: prefs?.model,
+            mode: prefs?.mode,
+            webMode: prefs?.webMode,
+            memoryMode: prefs?.memoryMode,
+            thinkingLevel: prefs?.thinkingLevel,
+          }, onChunk);
+        } else if (item.action === "edit" && item.targetTurnId) {
+          await streamEditChatTurn(session.sessionId, item.targetTurnId, {
+            content: trimmedContent,
+            attachments: attachmentIds,
+            useMemory: (prefs?.memoryMode ?? "auto") !== "off",
+            mode: prefs?.mode ?? "chat",
+            providerId: prefs?.providerId,
+            model: prefs?.model,
+            webMode: prefs?.webMode ?? "auto",
+            memoryMode: prefs?.memoryMode ?? "auto",
+            thinkingLevel: prefs?.thinkingLevel ?? "standard",
+          }, onChunk);
+        } else {
+          await streamAgentChatMessage(session.sessionId, {
+            content: trimmedContent,
+            attachments: attachmentIds,
+            useMemory: (prefs?.memoryMode ?? "auto") !== "off",
+            mode: prefs?.mode ?? "chat",
+            providerId: prefs?.providerId,
+            model: prefs?.model,
+            webMode: prefs?.webMode ?? "auto",
+            memoryMode: prefs?.memoryMode ?? "auto",
+            thinkingLevel: prefs?.thinkingLevel ?? "standard",
+          }, onChunk);
+        }
         scheduleStreamMessageReconciliation(session.sessionId);
-        committed = true;
       } else {
-        const sent = await sendAgentChatMessage(session.sessionId, payload);
-        committed = true;
-        commitMessageUpdate((current) => current.map((item) => item.messageId === localUserId ? sent.userMessage : item));
-        if (sent.assistantMessage) commitMessageUpdate((current) => [...current, sent.assistantMessage as ChatMessageRecord]);
+        const sent = item.action === "retry" && item.targetTurnId
+          ? await retryChatTurn(session.sessionId, item.targetTurnId, {
+            providerId: prefs?.providerId,
+            model: prefs?.model,
+            mode: prefs?.mode,
+            webMode: prefs?.webMode,
+            memoryMode: prefs?.memoryMode,
+            thinkingLevel: prefs?.thinkingLevel,
+          })
+          : item.action === "edit" && item.targetTurnId
+            ? await editChatTurn(session.sessionId, item.targetTurnId, {
+              content: trimmedContent,
+              attachments: attachmentIds,
+              useMemory: (prefs?.memoryMode ?? "auto") !== "off",
+              mode: prefs?.mode ?? "chat",
+              providerId: prefs?.providerId,
+              model: prefs?.model,
+              webMode: prefs?.webMode ?? "auto",
+              memoryMode: prefs?.memoryMode ?? "auto",
+              thinkingLevel: prefs?.thinkingLevel ?? "standard",
+            })
+            : await sendAgentChatMessage(session.sessionId, {
+              content: trimmedContent,
+              attachments: attachmentIds,
+              useMemory: (prefs?.memoryMode ?? "auto") !== "off",
+              mode: prefs?.mode ?? "chat",
+              providerId: prefs?.providerId,
+              model: prefs?.model,
+              webMode: prefs?.webMode ?? "auto",
+              memoryMode: prefs?.memoryMode ?? "auto",
+              thinkingLevel: prefs?.thinkingLevel ?? "standard",
+            });
         if (sent.trace) {
-          setLatestTrace(sent.trace);
           setCapabilitySuggestions(sent.trace.capabilityUpgradeSuggestions ?? []);
         }
+        await loadSessionCoreState(session.sessionId, {
+          background: true,
+          includeThread: true,
+        });
       }
-
+      setEditingTurnId(null);
       await loadSidebar();
     } catch (err) {
-      if (placeholderId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== placeholderId));
-      if (placeholderId && finalizedStreamMessageRef.current?.placeholderId === placeholderId) {
-        finalizedStreamMessageRef.current = null;
+      if (session) {
+        void loadSessionCoreState(session.sessionId, {
+          background: true,
+          includeThread: true,
+        }).catch(() => undefined);
       }
-      if (!committed) {
-        if (localUserId) commitMessageUpdate((current) => current.filter((item) => item.messageId !== localUserId));
-        setDraft((current) => (current.trim().length > 0 ? current : content));
-        setPendingAttachments((current) => (current.length > 0 ? current : attachmentsSnapshot));
+      if (item.action !== "retry") {
+        setDraft((current) => current.trim().length > 0 ? current : item.content);
+        setPendingAttachments((current) => current.length > 0 ? current : attachmentsSnapshot);
+        if (item.action === "edit" && item.targetTurnId) {
+          setEditingTurnId(item.targetTurnId);
+        }
       }
       setError((err as Error).message);
     } finally {
-      setSending(false);
+      finishOutboundExecution();
     }
-  }, [commitMessageUpdate, draft, ensureSession, handleCommandExecution, loadSidebar, pendingAttachments, prefs?.memoryMode, prefs?.mode, prefs?.model, prefs?.providerId, prefs?.thinkingLevel, prefs?.webMode, scheduleStreamMessageReconciliation, sending, streamEnabled]);
+  }, [
+    commitThreadUpdate,
+    ensureSession,
+    finishOutboundExecution,
+    handleCommandExecution,
+    loadSessionCoreState,
+    loadSidebar,
+    prefs,
+    scheduleStreamMessageReconciliation,
+    streamEnabled,
+    thread,
+  ]);
+
+  const handleSend = useCallback(async () => {
+    const content = draft.trim();
+    if (!content) return;
+    const nextItem: OutboundQueueItem = {
+      id: `queue-${Date.now()}`,
+      action: editingTurnId ? "edit" : "send",
+      sessionId: selectedSessionId ?? undefined,
+      targetTurnId: editingTurnId ?? undefined,
+      content,
+      attachments: pendingAttachments,
+      createdAt: new Date().toISOString(),
+    };
+    setDraft("");
+    setPendingAttachments([]);
+    setPendingApproval(null);
+    if (!tryBeginOutboundExecution()) {
+      setQueuedOutbound((current) => [...current, nextItem]);
+      pushLocalNotice(`${editingTurnId ? "Edit" : "Message"} queued while the current turn finishes.`);
+      return;
+    }
+    await executeOutboundItem(nextItem);
+  }, [draft, editingTurnId, executeOutboundItem, pendingAttachments, pushLocalNotice, selectedSessionId, tryBeginOutboundExecution]);
+
+  const handleRetryTurn = useCallback(async (turnId: string) => {
+    const nextItem: OutboundQueueItem = {
+      id: `queue-${Date.now()}`,
+      action: "retry",
+      sessionId: selectedSessionId ?? undefined,
+      targetTurnId: turnId,
+      content: "",
+      attachments: [],
+      createdAt: new Date().toISOString(),
+    };
+    if (!tryBeginOutboundExecution()) {
+      setQueuedOutbound((current) => [...current, nextItem]);
+      pushLocalNotice("Retry queued while the current turn finishes.");
+      return;
+    }
+    await executeOutboundItem(nextItem);
+  }, [executeOutboundItem, pushLocalNotice, selectedSessionId, tryBeginOutboundExecution]);
+
+  const handleBeginEditTurn = useCallback((turnId: string) => {
+    const turn = thread?.turns.find((item) => item.turnId === turnId);
+    if (!turn) {
+      return;
+    }
+    setEditingTurnId(turnId);
+    setDraft(turn.userMessage.content);
+    composerRef.current?.focus();
+  }, [thread]);
+
+  const handleSelectBranchTurn = useCallback(async (turnId: string) => {
+    if (!selectedSessionId) {
+      return;
+    }
+    try {
+      const nextThread = await selectChatBranchTurn(selectedSessionId, turnId);
+      commitThreadUpdate(nextThread);
+      setSelectedTurnId(nextThread.activeLeafTurnId ?? turnId);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [commitThreadUpdate, selectedSessionId]);
+
+  const handleResumeQueue = useCallback(() => {
+    setQueuedOutbound((current) => current.map((item) => ({ ...item, paused: false })));
+  }, []);
+
+  const handleRemoveQueuedItem = useCallback((id: string) => {
+    setQueuedOutbound((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  useEffect(() => {
+    if (sendingRef.current || sending) {
+      return;
+    }
+    const nextItem = queuedOutbound.find((item) => !item.paused);
+    if (!nextItem) {
+      return;
+    }
+    if (!tryBeginOutboundExecution()) {
+      return;
+    }
+    setQueuedOutbound((current) => current.filter((item) => item.id !== nextItem.id));
+    void executeOutboundItem(nextItem);
+  }, [executeOutboundItem, queuedOutbound, sending, tryBeginOutboundExecution]);
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (commandSuggestions.length > 0) {
@@ -1140,7 +1568,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       if (event.key === "Tab") {
         event.preventDefault();
         const suggestion = commandSuggestions[commandIndex];
-        if (suggestion) applyDraftCommand(suggestion.command);
+        if (suggestion) applyDraftCommand(suggestion.applyValue);
         return;
       }
     }
@@ -1155,44 +1583,28 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     setApprovalPending(true);
     try {
       await approveChatTool(selectedSession.sessionId, pendingApproval.approvalId);
-      commitMessageUpdate((current) => [...current, {
-        messageId: `approval-ok-${Date.now()}`,
-        sessionId: selectedSession.sessionId,
-        role: "system",
-        actorType: "system",
-        actorId: "approval",
-        content: `Approved request ${pendingApproval.approvalId}. Send your message again and I will continue.`,
-        timestamp: new Date().toISOString(),
-      }]);
+      pushLocalNotice(`Approved request ${pendingApproval.approvalId}. Send your message again and I will continue.`, "success");
       setPendingApproval(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setApprovalPending(false);
     }
-  }, [commitMessageUpdate, pendingApproval, selectedSession]);
+  }, [pendingApproval, pushLocalNotice, selectedSession]);
 
   const handleDenyPending = useCallback(async () => {
     if (!selectedSession || !pendingApproval) return;
     setApprovalPending(true);
     try {
       await denyChatTool(selectedSession.sessionId, pendingApproval.approvalId);
-      commitMessageUpdate((current) => [...current, {
-        messageId: `approval-deny-${Date.now()}`,
-        sessionId: selectedSession.sessionId,
-        role: "system",
-        actorType: "system",
-        actorId: "approval",
-        content: `Denied request ${pendingApproval.approvalId}. No action was taken.`,
-        timestamp: new Date().toISOString(),
-      }]);
+      pushLocalNotice(`Denied request ${pendingApproval.approvalId}. No action was taken.`, "warning");
       setPendingApproval(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setApprovalPending(false);
     }
-  }, [commitMessageUpdate, pendingApproval, selectedSession]);
+  }, [pendingApproval, pushLocalNotice, selectedSession]);
 
   const handlePrefPatch = useCallback(async (patch: ChatSessionPrefsPatch) => {
     if (!selectedSession) return;
@@ -1236,7 +1648,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                 {selectedSession.scope === "external" ? "External writeback" : "Mission session"}
               </StatusChip>
             ) : null}
-            {latestTrace ? <StatusChip tone="muted">{latestTrace.status}</StatusChip> : null}
+            {selectedTurn ? <StatusChip tone="muted">{selectedTurn.trace.status}</StatusChip> : null}
             <HelpHint
               label="Chat workspace help"
               text="Use slash commands for quick control, switch mode and model from the toolbar, and keep the inspector open when you want trace, suggestions, or learned memory details."
@@ -1330,7 +1742,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
               {missionSessions.map((session) => (
                 <li key={session.sessionId}>
                   <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
-                    {session.title || session.sessionKey}
+                    {formatSessionLabel(session)}
                   </button>
                   <p>{session.projectName ?? "No project yet"}</p>
                 </li>
@@ -1347,7 +1759,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
               {externalSessions.map((session) => (
                 <li key={session.sessionId}>
                   <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
-                    {session.title || session.sessionKey}
+                    {formatSessionLabel(session)}
                   </button>
                   <p>{session.channel}/{session.account}</p>
                 </li>
@@ -1363,37 +1775,55 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <div className="chat-v11-conversation-shell">
               <div className={`chat-v11-main-grid ${messageMode === "cowork" ? "with-cowork" : ""}`}>
                 <article className={`card chat-v11-thread mode-${messageMode}`}>
-                  {messagesLoading ? <CardSkeleton lines={8} /> : (
-                    <ul
-                      ref={messageListRef}
-                      className="chat-v11-messages"
-                      onScroll={handleMessageListScroll}
-                    >
-                      {messages.map((message) => (
-                        <li key={message.messageId} className={`chat-v11-message ${message.role}`}>
-                          <p className="chat-v11-message-meta"><strong>{formatMessageActor(message.role)}</strong> · {new Date(message.timestamp).toLocaleTimeString()}</p>
-                          <p>{message.content}</p>
-                          {message.attachments && message.attachments.length > 0 ? <div className="chat-v11-attachment-row">{message.attachments.map((attachment) => <span key={attachment.attachmentId} className="token-chip">{attachment.fileName}</span>)}</div> : null}
-                        </li>
-                      ))}
-                      {messages.length === 0 ? (
-                        <li className="chat-v11-message system chat-v11-empty-thread">
-                          <p className="chat-v11-message-meta"><strong>GoatCitadel</strong></p>
-                          <p>Start with a plain request, or type <code>/help</code> to see commands.</p>
-                        </li>
-                      ) : null}
-                    </ul>
-                  )}
+                  <div
+                    ref={messageListRef}
+                    className="chat-v11-thread-scroll"
+                    onScroll={handleMessageListScroll}
+                  >
+                    <ChatThreadView
+                      loading={messagesLoading}
+                      thread={thread}
+                      selectedTurnId={selectedTurnId}
+                      notices={localNotices}
+                      onSelectTurn={setSelectedTurnId}
+                      onSwitchBranch={(turnId) => void handleSelectBranchTurn(turnId)}
+                      onRetryTurn={(turnId) => void handleRetryTurn(turnId)}
+                      onEditTurn={handleBeginEditTurn}
+                    />
+                  </div>
 
                   {pendingApproval ? <InlineApprovalPrompt approvalId={pendingApproval.approvalId} toolName={pendingApproval.toolName} reason={pendingApproval.reason} pending={approvalPending} onApprove={() => void handleApprovePending()} onDeny={() => void handleDenyPending()} /> : null}
 
                   <div className={`chat-v11-composer ${isDragActive ? "drop-active" : ""}`} onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
                     {isDragActive ? <div className="chat-drop-overlay">Drop files to attach</div> : null}
+                    <ChatQueueBar
+                      items={queuedOutbound.map((item): ChatQueueItemView => ({
+                        id: item.id,
+                        action: item.action,
+                        label: item.content.trim() ? item.content.trim().slice(0, 96) : `Turn ${item.targetTurnId?.slice(-6) ?? "queued"}`,
+                        createdAt: item.createdAt,
+                        paused: item.paused,
+                      }))}
+                      onResumeAll={handleResumeQueue}
+                      onRemove={handleRemoveQueuedItem}
+                    />
+                    {editingTurnId ? (
+                      <div className="chat-v11-composer-banner">
+                        Editing branch from turn {editingTurnId.slice(-6)}.
+                        <button type="button" onClick={() => setEditingTurnId(null)}>Cancel edit</button>
+                      </div>
+                    ) : null}
+                    {planningMode === "advisory" ? (
+                      <div className="chat-v11-composer-banner planning">
+                        Planning mode is on. GoatCitadel will respond with a plan/spec instead of executing tool work automatically.
+                        {effectiveToolAutonomy === "manual" ? " Manual tool execution is enforced for this turn." : ""}
+                      </div>
+                    ) : null}
                     <textarea ref={composerRef} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} onPaste={handleComposerPaste} placeholder="Ask GoatCitadel anything... Try /help" rows={4} />
                     {commandSuggestions.length > 0 ? (
                       <div className="chat-v11-command-popover" role="listbox" aria-label="Slash command suggestions">
                         {commandSuggestions.map((item, index) => (
-                          <button key={item.command} type="button" className={index === commandIndex ? "active" : ""} onClick={() => applyDraftCommand(item.command)}>
+                          <button key={item.key} type="button" className={index === commandIndex ? "active" : ""} onClick={() => applyDraftCommand(item.applyValue)}>
                             <strong>{item.command}</strong>
                             <span>{item.description}</span>
                           </button>
@@ -1414,8 +1844,10 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                         if (!files || files.length === 0) return;
                         void uploadAttachments(Array.from(files));
                       }} />
-                      <p>Tip: drag files here, paste screenshots, and press Enter to send.</p>
-                      <button type="button" disabled={!canSend} onClick={() => void handleSend()}>{sending ? "Sending..." : "Send message"}</button>
+                      <p>Tip: drag files here, paste screenshots, press Enter to send, or queue the next prompt while a turn is still streaming.</p>
+                      <button type="button" disabled={!canSend} onClick={() => void handleSend()}>
+                        {sending ? "Sending..." : editingTurnId ? "Edit and resend" : "Send message"}
+                      </button>
                     </div>
                   </div>
                 </article>
@@ -1426,8 +1858,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                   className="chat-v11-topbar-panel"
                   padding="compact"
                   title="Conversation controls"
-                  subtitle="Adjust model, mode, retrieval, and proactive behavior without covering the thread."
+                  subtitle="Choose which model answers, how much reasoning it uses, whether GoatCitadel browses live sources, and how proactive this conversation should be."
                 >
+                  <ChatPlanningPill planningMode={planningMode} effectiveToolAutonomy={effectiveToolAutonomy} />
                   <DataToolbar
                     primary={(
                       <>
@@ -1517,19 +1950,19 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                       </>
                     )}
                   />
-                  <FieldHelp>Session-level controls save directly to the selected chat. Keep the inspector open when you want trace, suggestions, and learned memory side by side.</FieldHelp>
+                  <FieldHelp>Provider and model choose the answering engine. Thinking controls reasoning depth. Web lets GoatCitadel browse live sources. Proactive, retrieval, and reflection govern how much it suggests, revisits context, and self-checks in this session.</FieldHelp>
                 </Panel>
-                {latestTrace ? (
+                {selectedTurn ? (
                   <Panel
                     className="chat-v11-agentic-card chat-v11-trace-card"
                     title="Run trace"
                     actions={(
-                      <StatusChip tone={latestTrace.status === "completed" ? "success" : latestTrace.status === "failed" ? "critical" : "warning"}>
-                        {latestTrace.status}
+                      <StatusChip tone={selectedTurn.trace.status === "completed" ? "success" : selectedTurn.trace.status === "failed" ? "critical" : "warning"}>
+                        {selectedTurn.trace.status}
                       </StatusChip>
                     )}
                   >
-                    <ChatTraceCard trace={latestTrace} />
+                    <ChatTraceCard trace={selectedTurn.trace} />
                   </Panel>
                 ) : null}
                 <Panel
@@ -1653,54 +2086,60 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                 <Panel
                   className="chat-v11-session-bar"
                   title="Session controls"
-                  subtitle="Rename, pin, archive, and reassign the current chat without leaving the thread."
+                  subtitle="Give this chat a human title, pin it to the top, archive it, or move it into a project without leaving the thread."
                 >
-                  <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} placeholder="Session title" />
-                  <ActionButton label="Save" pending={sending} onClick={async () => {
+                  <FieldHelp>Titles replace autogenerated session keys in the chat rail.</FieldHelp>
+                  <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} placeholder="Give this chat a title" />
+                  <ActionButton label="Save" disabled={sending || Boolean(sessionControlPending)} pending={sessionControlPending === "rename"} onClick={async () => {
                     if (!selectedSession) return;
-                    setSending(true);
+                    setSessionControlPending("rename");
                     try {
                       await updateChatSession(selectedSession.sessionId, { title: renameTitle.trim() || undefined });
                       await loadSidebar();
                     } catch (err) {
                       setError((err as Error).message);
                     } finally {
-                      setSending(false);
+                      setSessionControlPending(null);
                     }
                   }} />
-                  <ActionButton label={selectedSession.pinned ? "Unpin" : "Pin"} pending={sending} onClick={async () => {
+                  <ActionButton label={selectedSession.pinned ? "Unpin" : "Pin"} disabled={sending || Boolean(sessionControlPending)} pending={sessionControlPending === "pin"} onClick={async () => {
                     if (!selectedSession) return;
-                    setSending(true);
+                    setSessionControlPending("pin");
                     try {
                       if (selectedSession.pinned) await unpinChatSession(selectedSession.sessionId); else await pinChatSession(selectedSession.sessionId);
                       await loadSidebar();
                     } catch (err) {
                       setError((err as Error).message);
                     } finally {
-                      setSending(false);
+                      setSessionControlPending(null);
                     }
                   }} />
-                  <ActionButton label={selectedSession.lifecycleStatus === "archived" ? "Restore" : "Archive"} pending={sending} onClick={async () => {
+                  <ActionButton label={selectedSession.lifecycleStatus === "archived" ? "Restore" : "Archive"} disabled={sending || Boolean(sessionControlPending)} pending={sessionControlPending === "archive"} onClick={async () => {
                     if (!selectedSession) return;
-                    setSending(true);
+                    setSessionControlPending("archive");
                     try {
                       if (selectedSession.lifecycleStatus === "archived") await restoreChatSession(selectedSession.sessionId); else await archiveChatSession(selectedSession.sessionId);
                       await loadSidebar();
                     } catch (err) {
                       setError((err as Error).message);
                     } finally {
-                      setSending(false);
+                      setSessionControlPending(null);
                     }
                   }} />
                   <GCCombobox
                     value={selectedSessionProjectValue}
                     onChange={(value) => {
+                      setSessionControlPending("project");
                       void assignChatSessionProject(
                         selectedSession.sessionId,
                         value === "none" ? undefined : value,
-                      ).then(loadSidebar).catch((err) => setError((err as Error).message));
+                      )
+                        .then(loadSidebar)
+                        .catch((err) => setError((err as Error).message))
+                        .finally(() => setSessionControlPending(null));
                     }}
                     placeholder="Pick project"
+                    disabled={sending || Boolean(sessionControlPending)}
                     options={[
                       { value: "none", label: "Unassigned" },
                       ...(projects?.items ?? [])
@@ -1719,16 +2158,16 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                   >
                     <input value={integrationConnectionId} onChange={(event) => setIntegrationConnectionId(event.target.value)} placeholder="Connection ID (example: slack:workspace-a)" />
                     <input value={integrationTarget} onChange={(event) => setIntegrationTarget(event.target.value)} placeholder="Target (example: #ops-room or thread id)" />
-                    <ActionButton label="Save binding" pending={sending} onClick={async () => {
+                    <ActionButton label="Save binding" disabled={sending || Boolean(sessionControlPending)} pending={sessionControlPending === "binding"} onClick={async () => {
                       if (!selectedSession) return;
-                      setSending(true);
+                      setSessionControlPending("binding");
                       try {
                         const next = await setChatSessionBinding(selectedSession.sessionId, { transport: "integration", connectionId: integrationConnectionId.trim(), target: integrationTarget.trim(), writable: true });
                         setBinding(next);
                       } catch (err) {
                         setError((err as Error).message);
                       } finally {
-                        setSending(false);
+                        setSessionControlPending(null);
                       }
                     }} />
                   </Panel>
@@ -1765,13 +2204,10 @@ function formatCommandResult(result: { ok: boolean; message: string; research?: 
   return `${status}: ${result.message}\nSources: ${result.research.sources.length}`;
 }
 
-function formatMessageActor(role: ChatMessageRecord["role"]): string {
-  if (role === "assistant") return "GoatCitadel";
-  if (role === "user") return "You";
-  return "System";
-}
-
-function deriveCoworkItems(messages: ChatMessageRecord[]): Array<{ id: string; title: string; note?: string }> {
+function deriveCoworkItems(
+  messages: ChatMessageRecord[],
+  notices: ChatThreadNotice[],
+): Array<{ id: string; title: string; note?: string }> {
   const latestAssistant = [...messages].reverse().find((item) => item.role === "assistant");
   const latestUser = [...messages].reverse().find((item) => item.role === "user");
   const items: Array<{ id: string; title: string; note?: string }> = [];
@@ -1781,6 +2217,17 @@ function deriveCoworkItems(messages: ChatMessageRecord[]): Array<{ id: string; t
   }
   if (items.length < 3 && latestUser) {
     items.push({ id: "user-goal", title: "Current operator request", note: latestUser.content.slice(0, 180) });
+  }
+  if (items.length < 5) {
+    notices
+      .slice(0, 2)
+      .forEach((notice, index) => {
+        items.push({
+          id: `notice-${notice.id}`,
+          title: index === 0 ? "Latest system notice" : "Recent system notice",
+          note: notice.content.slice(0, 180),
+        });
+      });
   }
   return items.slice(0, 5);
 }

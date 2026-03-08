@@ -1,9 +1,17 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ChatMode, ChatMemoryMode, ChatSessionPrefsRecord, ChatThinkingLevel, ChatWebMode } from "@goatcitadel/contracts";
+import type {
+  ChatMode,
+  ChatMemoryMode,
+  ChatPlanningMode,
+  ChatSessionPrefsRecord,
+  ChatThinkingLevel,
+  ChatWebMode,
+} from "@goatcitadel/contracts";
 
 interface ChatSessionPrefsRow {
   session_id: string;
   mode: ChatMode;
+  planning_mode: ChatPlanningMode;
   provider_id: string | null;
   model: string | null;
   web_mode: ChatWebMode;
@@ -17,6 +25,7 @@ interface ChatSessionPrefsRow {
 
 export interface ChatSessionPrefsPatchInput {
   mode?: ChatMode;
+  planningMode?: ChatPlanningMode;
   providerId?: string;
   model?: string;
   webMode?: ChatWebMode;
@@ -28,6 +37,7 @@ export interface ChatSessionPrefsPatchInput {
 
 const DEFAULT_PREFS: Omit<ChatSessionPrefsRecord, "sessionId" | "createdAt" | "updatedAt"> = {
   mode: "chat",
+  planningMode: "off",
   providerId: undefined,
   model: undefined,
   webMode: "auto",
@@ -45,14 +55,15 @@ export class ChatSessionPrefsRepository {
     this.getStmt = db.prepare("SELECT * FROM chat_session_prefs WHERE session_id = ?");
     this.upsertStmt = db.prepare(`
       INSERT INTO chat_session_prefs (
-        session_id, mode, provider_id, model, web_mode, memory_mode, thinking_level,
+        session_id, mode, planning_mode, provider_id, model, web_mode, memory_mode, thinking_level,
         tool_autonomy, vision_fallback_model, created_at, updated_at
       ) VALUES (
-        @sessionId, @mode, @providerId, @model, @webMode, @memoryMode, @thinkingLevel,
+        @sessionId, @mode, @planningMode, @providerId, @model, @webMode, @memoryMode, @thinkingLevel,
         @toolAutonomy, @visionFallbackModel, @createdAt, @updatedAt
       )
       ON CONFLICT(session_id) DO UPDATE SET
         mode = excluded.mode,
+        planning_mode = excluded.planning_mode,
         provider_id = excluded.provider_id,
         model = excluded.model,
         web_mode = excluded.web_mode,
@@ -77,6 +88,7 @@ export class ChatSessionPrefsRepository {
     this.upsertStmt.run({
       sessionId,
       mode: DEFAULT_PREFS.mode,
+      planningMode: DEFAULT_PREFS.planningMode,
       providerId: null,
       model: null,
       webMode: DEFAULT_PREFS.webMode,
@@ -95,6 +107,7 @@ export class ChatSessionPrefsRepository {
     this.upsertStmt.run({
       sessionId,
       mode: input.mode ?? current.mode,
+      planningMode: input.planningMode ?? current.planningMode,
       providerId: input.providerId !== undefined ? normalizeOptional(input.providerId) : (current.providerId ?? null),
       model: input.model !== undefined ? normalizeOptional(input.model) : (current.model ?? null),
       webMode: input.webMode ?? current.webMode,
@@ -123,6 +136,7 @@ function mapRow(row: ChatSessionPrefsRow): ChatSessionPrefsRecord {
   return {
     sessionId: row.session_id,
     mode: row.mode,
+    planningMode: row.planning_mode,
     providerId: row.provider_id ?? undefined,
     model: row.model ?? undefined,
     webMode: row.web_mode,

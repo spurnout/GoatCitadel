@@ -218,6 +218,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "sessions_operator_summary_index",
     up: createSessionsOperatorSummaryIndex,
   },
+  {
+    version: 25,
+    name: "chat_branching_and_planning_mode",
+    up: createChatBranchingAndPlanningSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -637,6 +642,78 @@ function createSessionsOperatorSummaryIndex(db: DatabaseSync): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sessions_account_last_activity_at
       ON sessions(account, last_activity_at DESC);
+  `);
+}
+
+function createChatBranchingAndPlanningSchema(db: DatabaseSync): void {
+  addColumnIfMissing(db, "chat_session_prefs", "planning_mode", "TEXT NOT NULL DEFAULT 'off'");
+  addColumnIfMissing(db, "chat_turn_traces", "parent_turn_id", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "branch_kind", "TEXT NOT NULL DEFAULT 'append'");
+  addColumnIfMissing(db, "chat_turn_traces", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "citations_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "capability_upgrade_suggestions_json", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_session_branch_state (
+      session_id TEXT PRIMARY KEY,
+      active_leaf_turn_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_session_parent_started
+      ON chat_turn_traces(session_id, parent_turn_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_branch_state_updated
+      ON chat_session_branch_state(updated_at DESC);
+
+    UPDATE chat_session_prefs
+    SET planning_mode = 'off'
+    WHERE planning_mode IS NULL OR TRIM(planning_mode) = '';
+
+    UPDATE chat_turn_traces
+    SET branch_kind = 'append'
+    WHERE branch_kind IS NULL OR TRIM(branch_kind) = '';
+
+    WITH ordered_turns AS (
+      SELECT
+        turn_id,
+        LAG(turn_id) OVER (
+          PARTITION BY session_id
+          ORDER BY started_at ASC, turn_id ASC
+        ) AS computed_parent_turn_id
+      FROM chat_turn_traces
+    )
+    UPDATE chat_turn_traces
+    SET parent_turn_id = (
+      SELECT ordered_turns.computed_parent_turn_id
+      FROM ordered_turns
+      WHERE ordered_turns.turn_id = chat_turn_traces.turn_id
+    )
+    WHERE (parent_turn_id IS NULL OR TRIM(parent_turn_id) = '')
+      AND EXISTS (
+        SELECT 1
+        FROM ordered_turns
+        WHERE ordered_turns.turn_id = chat_turn_traces.turn_id
+          AND ordered_turns.computed_parent_turn_id IS NOT NULL
+      );
+
+    WITH ranked_turns AS (
+      SELECT
+        session_id,
+        turn_id,
+        COALESCE(finished_at, started_at) AS updated_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY session_id
+          ORDER BY started_at DESC, turn_id DESC
+        ) AS row_num
+      FROM chat_turn_traces
+    )
+    INSERT INTO chat_session_branch_state (session_id, active_leaf_turn_id, updated_at)
+    SELECT session_id, turn_id, updated_at
+    FROM ranked_turns
+    WHERE row_num = 1
+    ON CONFLICT(session_id) DO UPDATE SET
+      active_leaf_turn_id = excluded.active_leaf_turn_id,
+      updated_at = excluded.updated_at;
   `);
 }
 

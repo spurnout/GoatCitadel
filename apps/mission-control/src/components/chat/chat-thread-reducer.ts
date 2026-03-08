@@ -1,0 +1,251 @@
+import type {
+  ChatMessageRecord,
+  ChatSessionPrefsRecord,
+  ChatStreamChunk,
+  ChatThreadResponse,
+  ChatThreadTurnRecord,
+} from "@goatcitadel/contracts";
+
+export interface PendingStreamTurnSeed {
+  userMessage: ChatMessageRecord;
+  parentTurnId?: string;
+  branchKind: "append" | "retry" | "edit";
+  sourceTurnId?: string;
+  mode: "send" | "edit" | "retry";
+}
+
+export function isThreadMutatingStreamChunk(chunk: ChatStreamChunk): boolean {
+  switch (chunk.type) {
+    case "message_start":
+    case "delta":
+    case "message_done":
+    case "tool_start":
+    case "tool_result":
+    case "trace_update":
+    case "capability_upgrade_suggestion":
+    case "citation":
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function updateThreadFromStreamChunk(
+  current: ChatThreadResponse | null,
+  chunk: ChatStreamChunk,
+  seed: PendingStreamTurnSeed | null,
+  sessionId: string,
+  prefs: ChatSessionPrefsRecord | null,
+): ChatThreadResponse | null {
+  if (chunk.sessionId !== sessionId) {
+    return current;
+  }
+
+  if (chunk.type === "message_start") {
+    if (!seed) {
+      return current;
+    }
+    const startedAt = new Date().toISOString();
+    const optimisticTurn: ChatThreadTurnRecord = {
+      turnId: chunk.turnId,
+      parentTurnId: chunk.parentTurnId,
+      branchKind: chunk.branchKind,
+      sourceTurnId: chunk.sourceTurnId,
+      userMessage: seed.userMessage,
+      assistantMessage: {
+        messageId: chunk.messageId,
+        sessionId,
+        role: "assistant",
+        actorType: "agent",
+        actorId: "assistant",
+        content: "",
+        timestamp: startedAt,
+      },
+      trace: {
+        turnId: chunk.turnId,
+        sessionId,
+        userMessageId: seed.userMessage.messageId,
+        parentTurnId: chunk.parentTurnId,
+        branchKind: chunk.branchKind,
+        sourceTurnId: chunk.sourceTurnId,
+        assistantMessageId: chunk.messageId,
+        status: "running",
+        mode: prefs?.mode ?? "chat",
+        model: prefs?.model,
+        webMode: prefs?.webMode ?? "auto",
+        memoryMode: prefs?.memoryMode ?? "auto",
+        thinkingLevel: prefs?.thinkingLevel ?? "standard",
+        effectiveToolAutonomy: prefs?.planningMode === "advisory" ? "manual" : prefs?.toolAutonomy,
+        startedAt,
+        toolRuns: [],
+        citations: [],
+        routing: {
+          primaryProviderId: prefs?.providerId,
+          primaryModel: prefs?.model,
+          effectiveProviderId: prefs?.providerId,
+          effectiveModel: prefs?.model,
+        },
+      },
+      toolRuns: [],
+      citations: [],
+      branch: {
+        siblingTurnIds: [chunk.turnId],
+        activeSiblingIndex: 0,
+        siblingCount: 1,
+        isSelectedPath: true,
+        newestLeafTurnId: chunk.turnId,
+      },
+    };
+    const baseTurns = (() => {
+      if (!current || !chunk.parentTurnId) {
+        return current?.turns ?? [];
+      }
+      const parentIndex = current.turns.findIndex((turn) => turn.turnId === chunk.parentTurnId);
+      if (parentIndex < 0) {
+        return current.turns;
+      }
+      return current.turns.slice(0, parentIndex + 1);
+    })();
+    return {
+      sessionId,
+      activeLeafTurnId: chunk.turnId,
+      selectedTurnId: chunk.turnId,
+      turns: [...baseTurns, optimisticTurn],
+    };
+  }
+
+  if (!current || !("turnId" in chunk) || !chunk.turnId) {
+    return current;
+  }
+
+  let changed = false;
+  const turns = current.turns.map((turn) => {
+    if (turn.turnId !== chunk.turnId) {
+      return turn;
+    }
+    const nextTurn = updateTurnFromStreamChunk(turn, chunk, sessionId);
+    if (nextTurn !== turn) {
+      changed = true;
+    }
+    return nextTurn;
+  });
+
+  if (!changed) {
+    return current;
+  }
+
+  return {
+    ...current,
+    activeLeafTurnId: chunk.turnId,
+    selectedTurnId: chunk.turnId,
+    turns,
+  };
+}
+
+function updateTurnFromStreamChunk(
+  turn: ChatThreadTurnRecord,
+  chunk: Exclude<ChatStreamChunk, { type: "message_start" }>,
+  sessionId: string,
+): ChatThreadTurnRecord {
+  switch (chunk.type) {
+    case "delta": {
+      const nextContent = `${turn.assistantMessage?.content ?? ""}${chunk.delta}`;
+      if (turn.assistantMessage && turn.assistantMessage.content === nextContent) {
+        return turn;
+      }
+      return {
+        ...turn,
+        assistantMessage: turn.assistantMessage ? {
+          ...turn.assistantMessage,
+          messageId: chunk.messageId ?? turn.assistantMessage.messageId,
+          content: nextContent,
+        } : {
+          messageId: chunk.messageId ?? `assistant-${turn.turnId}`,
+          sessionId,
+          role: "assistant",
+          actorType: "agent",
+          actorId: "assistant",
+          content: chunk.delta,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    }
+    case "message_done": {
+      const sameAssistant = turn.assistantMessage
+        && turn.assistantMessage.messageId === chunk.messageId
+        && turn.assistantMessage.content === chunk.content;
+      if (sameAssistant) {
+        return turn;
+      }
+      return {
+        ...turn,
+        assistantMessage: turn.assistantMessage ? {
+          ...turn.assistantMessage,
+          messageId: chunk.messageId,
+          content: chunk.content,
+        } : {
+          messageId: chunk.messageId,
+          sessionId,
+          role: "assistant",
+          actorType: "agent",
+          actorId: "assistant",
+          content: chunk.content,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    }
+    case "tool_start":
+    case "tool_result": {
+      const toolRuns = appendOrReplaceToolRun(turn.toolRuns, chunk.toolRun);
+      return {
+        ...turn,
+        toolRuns,
+        trace: {
+          ...turn.trace,
+          toolRuns,
+        },
+      };
+    }
+    case "citation": {
+      const citations = [...turn.citations, chunk.citation];
+      return {
+        ...turn,
+        citations,
+        trace: {
+          ...turn.trace,
+          citations,
+        },
+      };
+    }
+    case "capability_upgrade_suggestion":
+      return {
+        ...turn,
+        trace: {
+          ...turn.trace,
+          capabilityUpgradeSuggestions: chunk.capabilityUpgradeSuggestions,
+        },
+      };
+    case "trace_update":
+      return {
+        ...turn,
+        trace: chunk.trace,
+        toolRuns: chunk.trace.toolRuns,
+        citations: chunk.trace.citations,
+        assistantMessage: turn.assistantMessage ? {
+          ...turn.assistantMessage,
+          messageId: chunk.trace.assistantMessageId ?? turn.assistantMessage.messageId,
+        } : turn.assistantMessage,
+      };
+    default:
+      return turn;
+  }
+}
+
+function appendOrReplaceToolRun(
+  current: ChatThreadTurnRecord["toolRuns"],
+  toolRun: ChatThreadTurnRecord["toolRuns"][number],
+): ChatThreadTurnRecord["toolRuns"] {
+  const next = current.filter((item) => item.toolRunId !== toolRun.toolRunId);
+  next.push(toolRun);
+  return next;
+}

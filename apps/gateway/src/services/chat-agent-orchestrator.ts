@@ -8,6 +8,7 @@ import type {
   ChatStreamChunk,
   ChatThinkingLevel,
   ChatToolRunRecord,
+  ChatTurnBranchKind,
   ChatTurnTraceRecord,
   ChatWebMode,
   ToolCatalogEntry,
@@ -40,6 +41,9 @@ export interface ChatAgentTurnInput {
   sessionId: string;
   turnId: string;
   userMessageId: string;
+  parentTurnId?: string;
+  branchKind?: ChatTurnBranchKind;
+  sourceTurnId?: string;
   content: string;
   mode: ChatMode;
   model?: string;
@@ -135,12 +139,16 @@ export class ChatAgentOrchestrator {
       turnId: input.turnId,
       sessionId: input.sessionId,
       userMessageId: input.userMessageId,
+      parentTurnId: input.parentTurnId,
+      branchKind: input.branchKind ?? "append",
+      sourceTurnId: input.sourceTurnId,
       status: "running",
       mode: input.mode,
       model: input.model,
       webMode: input.webMode,
       memoryMode: input.memoryMode,
       thinkingLevel: input.thinkingLevel,
+      effectiveToolAutonomy: input.toolAutonomy,
       routing: {
         liveDataIntent: intents.liveData,
       },
@@ -188,6 +196,7 @@ export class ChatAgentOrchestrator {
     let usageObserved = false;
     let circuitBreakerReason: string | undefined;
     const toolFailureSignatureCounts = new Map<string, number>();
+    const outputMessageId = input.outputMessageId ?? `assistant-${input.turnId}`;
 
     if (intents.missingLogPayload) {
       assistantContent = buildMissingLogInputTemplate();
@@ -622,6 +631,7 @@ export class ChatAgentOrchestrator {
         type: "message_done",
         sessionId: input.sessionId,
         turnId: input.turnId,
+        messageId: outputMessageId,
         content: assistantContent,
       };
     }
@@ -637,6 +647,7 @@ export class ChatAgentOrchestrator {
       type: "done",
       sessionId: input.sessionId,
       turnId: input.turnId,
+      messageId: outputMessageId,
     };
   }
 

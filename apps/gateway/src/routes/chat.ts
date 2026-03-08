@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 
 const projectViewSchema = z.object({
@@ -43,6 +43,11 @@ const listChatSessionsSchema = z.object({
 
 const sessionParamsSchema = z.object({
   sessionId: z.string().min(1),
+});
+
+const turnParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  turnId: z.string().min(1),
 });
 
 const createSessionSchema = z.object({
@@ -133,6 +138,7 @@ const prefsPatchSchema = z.object({
   mode: z.enum(["chat", "cowork", "code"]).optional(),
   providerId: z.string().optional(),
   model: z.string().optional(),
+  planningMode: z.enum(["off", "advisory"]).optional(),
   webMode: z.enum(["auto", "off", "quick", "deep"]).optional(),
   memoryMode: z.enum(["auto", "on", "off"]).optional(),
   thinkingLevel: z.enum(["minimal", "standard", "extended"]).optional(),
@@ -147,6 +153,12 @@ const prefsPatchSchema = z.object({
   retrievalMode: z.enum(["standard", "layered"]).optional(),
   reflectionMode: z.enum(["off", "on"]).optional(),
 });
+
+const retryTurnSchema = sendMessageSchema.partial().extend({
+  content: z.string().optional(),
+});
+
+const editTurnSchema = sendMessageSchema;
 
 const commandParseSchema = z.object({
   commandText: z.string().min(1),
@@ -330,6 +342,47 @@ const attachmentParamsSchema = z.object({
 const attachmentContentQuerySchema = z.object({
   disposition: z.enum(["inline", "attachment"]).default("attachment"),
 });
+
+async function streamSseReply(
+  reply: FastifyReply,
+  sessionId: string,
+  source: () => AsyncGenerator<unknown>,
+): Promise<void> {
+  const raw = reply.raw;
+  const corsOrigin = reply.getHeader("Access-Control-Allow-Origin");
+  const corsCredentials = reply.getHeader("Access-Control-Allow-Credentials");
+  const corsVary = reply.getHeader("Vary");
+  raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    ...(typeof corsOrigin === "string" ? { "Access-Control-Allow-Origin": corsOrigin } : {}),
+    ...(typeof corsCredentials === "string" ? { "Access-Control-Allow-Credentials": corsCredentials } : {}),
+    ...(typeof corsVary === "string" ? { Vary: corsVary } : {}),
+  });
+  raw.flushHeaders?.();
+  raw.write(": connected\n\n");
+
+  const send = (payload: unknown) => {
+    raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  try {
+    for await (const chunk of source()) {
+      send(chunk);
+    }
+  } catch (error) {
+    send({
+      type: "error",
+      sessionId,
+      error: (error as Error).message,
+    });
+  } finally {
+    raw.end();
+  }
+  reply.hijack();
+}
 
 export const chatRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get("/api/v1/chat/projects", async (request, reply) => {
@@ -586,6 +639,18 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
+  fastify.get("/api/v1/chat/sessions/:sessionId/thread", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.getChatThread(params.data.sessionId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.post("/api/v1/chat/sessions/:sessionId/messages", async (request, reply) => {
     const params = sessionParamsSchema.safeParse(request.params);
     const body = sendMessageSchema.safeParse(request.body);
@@ -636,37 +701,8 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const raw = reply.raw;
-    const corsOrigin = reply.getHeader("Access-Control-Allow-Origin");
-    const corsCredentials = reply.getHeader("Access-Control-Allow-Credentials");
-    const corsVary = reply.getHeader("Vary");
-    raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-      ...(typeof corsOrigin === "string" ? { "Access-Control-Allow-Origin": corsOrigin } : {}),
-      ...(typeof corsCredentials === "string" ? { "Access-Control-Allow-Credentials": corsCredentials } : {}),
-      ...(typeof corsVary === "string" ? { Vary: corsVary } : {}),
-    });
-    raw.flushHeaders?.();
-    raw.write(": connected\n\n");
-
-    const send = (payload: unknown) => {
-      raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
-
-    try {
-      for await (const chunk of fastify.gateway.sendChatMessageStream(params.data.sessionId, body.data)) {
-        send(chunk);
-      }
-    } catch (error) {
-      send({ type: "error", error: (error as Error).message });
-      send({ type: "done" });
-    } finally {
-      raw.end();
-    }
-    reply.hijack();
+    return streamSseReply(reply, params.data.sessionId, () =>
+      fastify.gateway.sendChatMessageStream(params.data.sessionId, body.data));
   });
 
   fastify.post("/api/v1/chat/sessions/:sessionId/agent-send/stream", async (request, reply) => {
@@ -681,37 +717,86 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const raw = reply.raw;
-    const corsOrigin = reply.getHeader("Access-Control-Allow-Origin");
-    const corsCredentials = reply.getHeader("Access-Control-Allow-Credentials");
-    const corsVary = reply.getHeader("Vary");
-    raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-      ...(typeof corsOrigin === "string" ? { "Access-Control-Allow-Origin": corsOrigin } : {}),
-      ...(typeof corsCredentials === "string" ? { "Access-Control-Allow-Credentials": corsCredentials } : {}),
-      ...(typeof corsVary === "string" ? { Vary: corsVary } : {}),
-    });
-    raw.flushHeaders?.();
-    raw.write(": connected\n\n");
+    return streamSseReply(reply, params.data.sessionId, () =>
+      fastify.gateway.agentSendChatMessageStream(params.data.sessionId, body.data));
+  });
 
-    const send = (payload: unknown) => {
-      raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
-
-    try {
-      for await (const chunk of fastify.gateway.agentSendChatMessageStream(params.data.sessionId, body.data)) {
-        send(chunk);
-      }
-    } catch (error) {
-      send({ type: "error", error: (error as Error).message });
-      send({ type: "done" });
-    } finally {
-      raw.end();
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/select", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
     }
-    reply.hijack();
+    try {
+      return reply.send(await fastify.gateway.selectChatBranchTurn(params.data.sessionId, params.data.turnId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/retry", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    const body = retryTurnSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.retryChatTurn(params.data.sessionId, params.data.turnId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/retry/stream", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    const body = retryTurnSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    return streamSseReply(reply, params.data.sessionId, () =>
+      fastify.gateway.retryChatTurnStream(params.data.sessionId, params.data.turnId, body.data));
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/edit", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    const body = editTurnSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.editChatTurn(params.data.sessionId, params.data.turnId, body.data));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/edit/stream", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    const body = editTurnSchema.safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    return streamSseReply(reply, params.data.sessionId, () =>
+      fastify.gateway.editChatTurnStream(params.data.sessionId, params.data.turnId, body.data));
   });
 
   fastify.get("/api/v1/chat/sessions/:sessionId/prefs", async (request, reply) => {
