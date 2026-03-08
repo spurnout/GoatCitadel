@@ -24,9 +24,12 @@ export default defineConfig({
   resolve: {
     // Fresh installer-based copies may not have workspace package dist output yet.
     // Resolve contracts from source so Mission Control stays bootable in dev mode.
-    alias: {
-      "@goatcitadel/contracts": path.resolve(configDir, "../../packages/contracts/src/index.ts"),
-    },
+    alias: [
+      {
+        find: "@goatcitadel/contracts",
+        replacement: path.resolve(configDir, "../../packages/contracts/src/index.ts"),
+      },
+    ],
   },
   server: {
     host: "0.0.0.0",
@@ -35,6 +38,9 @@ export default defineConfig({
     allowedHosts: resolveViteAllowedHosts(),
   },
   build: {
+    // The remaining heavy payload is the Office/Herd HQ Three.js bundle, which is
+    // lazily loaded and no longer part of the main application path.
+    chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -49,38 +55,20 @@ export default defineConfig({
           if (normalized.includes("/node_modules/@react-three/drei/")) {
             return "vendor-drei";
           }
+          if (normalized.includes("/node_modules/react-dom/") || normalized.includes("/node_modules/react/")) {
+            return "vendor-react";
+          }
+          if (normalized.includes("/node_modules/@radix-ui/")) {
+            return "vendor-radix";
+          }
+          if (normalized.includes("/node_modules/cmdk/")) {
+            return "vendor-cmdk";
+          }
+          if (normalized.includes("/node_modules/react-virtuoso/")) {
+            return "vendor-virtuoso";
+          }
           if (normalized.includes("/node_modules/three-stdlib/")) {
             return "vendor-three-stdlib";
-          }
-          if (normalized.includes("/node_modules/three/examples/")) {
-            return "vendor-three-examples";
-          }
-          if (normalized.includes("/node_modules/three/src/")) {
-            if (normalized.includes("/src/renderers/")) {
-              return "vendor-three-renderers";
-            }
-            if (normalized.includes("/src/geometries/")) {
-              return "vendor-three-geometries";
-            }
-            if (normalized.includes("/src/materials/")) {
-              return "vendor-three-materials";
-            }
-            if (normalized.includes("/src/textures/")) {
-              return "vendor-three-textures";
-            }
-            if (normalized.includes("/src/loaders/")) {
-              return "vendor-three-loaders";
-            }
-            if (normalized.includes("/src/math/")) {
-              return "vendor-three-math";
-            }
-            if (normalized.includes("/src/animation/")) {
-              return "vendor-three-animation";
-            }
-            if (normalized.includes("/src/core/")) {
-              return "vendor-three-base";
-            }
-            return "vendor-three-core";
           }
           if (normalized.includes("/node_modules/three/build/")) {
             return "vendor-three-build";

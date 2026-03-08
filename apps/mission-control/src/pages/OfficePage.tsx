@@ -48,6 +48,7 @@ const HOT_AGENT_WINDOW_MS = 2 * 60 * 1000;
 const WARM_AGENT_WINDOW_MS = 10 * 60 * 1000;
 const EVENTS_PER_MINUTE_WINDOW_MS = 5 * 60 * 1000;
 const ACTIVITY_TRANSITION_WINDOW_MS = 18_000;
+const MAX_VISIBLE_COLLAB_EDGES = 8;
 const OPERATOR_STORAGE_KEY = "goatcitadel.office.operator";
 const OPERATOR_NAME_OPTIONS = [
   "GoatHerder",
@@ -104,6 +105,20 @@ export interface OfficeAssetPack {
   goatModelPath?: string;
   goatModelVariant?: "animated" | "fallback" | "procedural";
   goatModelLabel?: string;
+  roomFloorTilePath?: string;
+  roomWallPath?: string;
+  roomWindowWallPath?: string;
+  roomColumnPath?: string;
+  roomLightPath?: string;
+  deskModelPath?: string;
+  commandDeskModelPath?: string;
+  chairModelPath?: string;
+  lockerModelPath?: string;
+  shelfModelPath?: string;
+  crateModelPath?: string;
+  accessPointModelPath?: string;
+  computerModelPath?: string;
+  mugModelPath?: string;
 }
 
 type SelectedEntityId = "operator" | string;
@@ -393,12 +408,8 @@ export function OfficePage() {
   ]);
 
   useEffect(() => {
-    if (officeAgents.length === 0) {
-      setSceneReady(false);
-      return;
-    }
     return scheduleSceneActivation(() => setSceneReady(true));
-  }, [officeAgents.length]);
+  }, []);
 
   const officeCopy = pageCopy.office;
   const officeGuide = officeCopy.guide ?? {
@@ -682,7 +693,12 @@ export function OfficePage() {
         actions={officeGuide.actions}
         terms={officeGuide.terms}
       />
-      {error ? <p className="error">{error}</p> : null}
+      {error ? (
+        <div className="office-stream-banner">
+          <strong>Command feed degraded.</strong>
+          <span>The office shell stays interactive while GoatCitadel reconnects. {error}</span>
+        </div>
+      ) : null}
 
       <div className="office-kpi-grid">
         <article className="office-kpi-card">
@@ -835,66 +851,63 @@ export function OfficePage() {
             })}
           </div>
 
-          {officeAgents.length === 0 ? (
-            <div className="gc-empty-state office-empty-state">
-              <p className="gc-empty-title">No agent roles are available yet.</p>
-              <p className="gc-empty-subtitle">When the herd is configured, desks will appear here and the Office scene will light up.</p>
-            </div>
-          ) : (
-            <>
-              <OfficeCanvasErrorBoundary resetKey={sceneResetKey}>
-                {sceneReady ? (
-                  <Suspense
-                    fallback={(
-                      <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
-                        <p>Loading office scene...</p>
-                      </div>
-                    )}
-                  >
-                    <OfficeCanvasScene
-                      operator={operatorModel}
-                      agents={officeAgents}
-                      selectedEntityId={selectedEntityId}
-                      onSelect={(entityId) => handleEntitySelect(entityId as SelectedEntityId)}
-                      assetPack={assetPack}
-                      motionMode={effectiveMotionMode}
-                      showCollabOverlay={operatorPrefs.showCollabOverlay}
-                      idleMillingEnabled={operatorPrefs.idleMillingEnabled}
-                      collaborationEdges={collaborationEdges}
-                    />
-                  </Suspense>
-                ) : (
+          <OfficeCanvasErrorBoundary resetKey={sceneResetKey}>
+            {sceneReady ? (
+              <Suspense
+                fallback={(
                   <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
                     <p>Loading office scene...</p>
                   </div>
                 )}
-              </OfficeCanvasErrorBoundary>
-              <FieldHelp className="office-stage-help">
-                Click the Goatherder or any desk to inspect the operator, desk zone, recent signals, collaboration edges, and alert state without leaving the scene.
-              </FieldHelp>
-              <FieldHelp className="office-stage-help">
-                Goat asset pipeline: {goatAssetStatus.helpLabel}.
-                {goatAssetStatus.helpCopy}
-              </FieldHelp>
-              <div className="office-desk-list">
-                <button type="button"
-                  className={selectedEntityId === "operator" ? "active" : ""}
-                  onClick={() => handleEntitySelect("operator")}
-                >
-                  {operatorPrefs.name}
-                </button>
-                {officeAgents.map((agent) => (
-                  <button type="button"
-                    key={agent.roleId}
-                    className={selectedEntityId === agent.roleId ? "active" : ""}
-                    onClick={() => handleEntitySelect(agent.roleId)}
-                  >
-                    {agent.name}
-                  </button>
-                ))}
+              >
+                <OfficeCanvasScene
+                  operator={operatorModel}
+                  agents={officeAgents}
+                  selectedEntityId={selectedEntityId}
+                  onSelect={(entityId) => handleEntitySelect(entityId as SelectedEntityId)}
+                  assetPack={assetPack}
+                  motionMode={effectiveMotionMode}
+                  showCollabOverlay={operatorPrefs.showCollabOverlay}
+                  idleMillingEnabled={operatorPrefs.idleMillingEnabled}
+                  collaborationEdges={collaborationEdges}
+                />
+              </Suspense>
+            ) : (
+              <div className="office-webgl-stage office-webgl-stage-v5 office-stage-loading">
+                <p>Loading office scene...</p>
               </div>
-            </>
-          )}
+            )}
+          </OfficeCanvasErrorBoundary>
+          <FieldHelp className="office-stage-help">
+            Click the Goatherder or any desk to inspect the operator, desk zone, recent signals, collaboration edges, and alert state without leaving the scene.
+          </FieldHelp>
+          <FieldHelp className="office-stage-help">
+            Goat asset pipeline: {goatAssetStatus.helpLabel}.
+            {goatAssetStatus.helpCopy}
+          </FieldHelp>
+          {officeAgents.length === 0 ? (
+            <div className="gc-empty-state office-empty-state">
+              <p className="gc-empty-title">No agent roles are available yet.</p>
+              <p className="gc-empty-subtitle">The Goatherder and office shell stay visible so you can inspect the room even before the herd is configured.</p>
+            </div>
+          ) : null}
+          <div className="office-desk-list">
+            <button type="button"
+              className={selectedEntityId === "operator" ? "active" : ""}
+              onClick={() => handleEntitySelect("operator")}
+            >
+              {operatorPrefs.name}
+            </button>
+            {officeAgents.map((agent) => (
+              <button type="button"
+                key={agent.roleId}
+                className={selectedEntityId === agent.roleId ? "active" : ""}
+                onClick={() => handleEntitySelect(agent.roleId)}
+              >
+                {agent.name}
+              </button>
+            ))}
+          </div>
         </Panel>
 
         {(operatorPrefs.showInspectorDock || operatorPrefs.showRailDock) ? (
@@ -1037,22 +1050,23 @@ function deriveOfficeAgents(
     }
 
     const details = describeAgentEvent(event);
-    if (!existing.lastSeenAt || parseTimestamp(event.timestamp) >= parseTimestamp(existing.lastSeenAt)) {
-      existing.currentAction = details.action;
-      existing.currentThought = details.thought;
-      existing.lastSeenAt = event.timestamp;
-      existing.lastEventType = event.eventType;
-      existing.taskId = details.taskId;
-      existing.sessionId = details.sessionId;
-      existing.risk = details.risk;
-      if (details.status) {
-        existing.status = details.status;
-      }
-    }
+    const shouldRefresh = !existing.lastSeenAt || parseTimestamp(event.timestamp) >= parseTimestamp(existing.lastSeenAt);
+    const nextEventTrail = existing.eventTrail.length < 12
+      ? [...existing.eventTrail, event]
+      : existing.eventTrail;
 
-    if (existing.eventTrail.length < 12) {
-      existing.eventTrail.push(event);
-    }
+    byRole.set(roleId, {
+      ...existing,
+      currentAction: shouldRefresh ? details.action : existing.currentAction,
+      currentThought: shouldRefresh ? details.thought : existing.currentThought,
+      lastSeenAt: shouldRefresh ? event.timestamp : existing.lastSeenAt,
+      lastEventType: shouldRefresh ? event.eventType : existing.lastEventType,
+      taskId: shouldRefresh ? details.taskId : existing.taskId,
+      sessionId: shouldRefresh ? details.sessionId : existing.sessionId,
+      risk: shouldRefresh ? details.risk : existing.risk,
+      status: shouldRefresh && details.status ? details.status : existing.status,
+      eventTrail: nextEventTrail,
+    });
   }
 
   const agents = [...byRole.values()];
@@ -1095,34 +1109,39 @@ function deriveOfficeAgents(
   bySession.forEach(linkGroup);
 
   const now = Date.now();
-  for (const agent of agents) {
+  const nextAgents = agents.map((agent) => {
     const ageMs = now - parseTimestamp(agent.lastSeenAt);
     const peers = [...(peersByRole.get(agent.roleId) ?? [])].sort();
-    agent.collabPeers = peers;
+    let activityState: OfficeAgentModel["activityState"];
 
     if (agent.risk === "blocked" || agent.risk === "error") {
-      agent.activityState = "alert_response";
+      activityState = "alert_response";
     } else if (agent.status === "active") {
-      agent.activityState = ageMs <= ACTIVITY_TRANSITION_WINDOW_MS
+      activityState = ageMs <= ACTIVITY_TRANSITION_WINDOW_MS
         ? "transitioning_to_desk"
         : "working_seated";
     } else {
-      agent.activityState = "idle_milling";
+      activityState = "idle_milling";
     }
 
     if (
-      agent.activityState !== "alert_response"
+      activityState !== "alert_response"
       && peers.length > 0
       && (agent.status === "active" || agent.risk !== "none")
     ) {
-      agent.activityState = "collaborating";
+      activityState = "collaborating";
     }
 
-    agent.attentionLevel = deriveAttentionLevel(agent);
-    agent.behaviorDirective = deriveBehaviorDirective(agent, peers.length);
-  }
+    return {
+      ...agent,
+      collabPeers: peers,
+      activityState,
+      attentionLevel: deriveAttentionLevel(agent),
+      behaviorDirective: deriveBehaviorDirective(agent, peers.length),
+    };
+  });
 
-  return agents.sort((left, right) => {
+  return nextAgents.sort((left, right) => {
     const statusDelta = statusScore(right.status) - statusScore(left.status);
     if (statusDelta !== 0) {
       return statusDelta;
@@ -1172,7 +1191,7 @@ function deriveCollaborationEdges(agents: OfficeAgentModel[]): OfficeCollaborati
       return left.risk ? -1 : 1;
     }
     return right.strength - left.strength;
-  });
+  }).slice(0, MAX_VISIBLE_COLLAB_EDGES);
 }
 
 function resolveEventRoleId(
@@ -1650,8 +1669,25 @@ function scheduleSceneActivation(callback: () => void): () => void {
 }
 
 export async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
+  type AssetManifestModel = { id?: string; label?: string; path?: string; includedInRepo?: boolean };
+  type OfficeAssetPathKey =
+    | "roomFloorTilePath"
+    | "roomWallPath"
+    | "roomWindowWallPath"
+    | "roomColumnPath"
+    | "roomLightPath"
+    | "deskModelPath"
+    | "commandDeskModelPath"
+    | "chairModelPath"
+    | "lockerModelPath"
+    | "shelfModelPath"
+    | "crateModelPath"
+    | "accessPointModelPath"
+    | "computerModelPath"
+    | "mugModelPath";
+
   let manifest: {
-    models?: Array<{ id?: string; label?: string; path?: string; includedInRepo?: boolean }>;
+    models?: AssetManifestModel[];
   };
 
   try {
@@ -1660,44 +1696,85 @@ export async function loadOfficeAssetPack(): Promise<OfficeAssetPack> {
       return {};
     }
     manifest = await response.json() as {
-      models?: Array<{ id?: string; label?: string; path?: string; includedInRepo?: boolean }>;
+      models?: AssetManifestModel[];
     };
   } catch {
     return { goatModelVariant: "procedural", goatModelLabel: "Procedural Goat" };
   }
 
-  const models = manifest.models ?? [];
-  const operator = models.find((item) => item.id === "central-operator");
-  const animatedGoat = models.find((item) => item.id === "goat-subagent-animated");
-  const goat = models.find((item) => item.id === "goat-subagent");
+  const includedModels = new Map<string, AssetManifestModel>();
+  for (const model of manifest.models ?? []) {
+    if (model.id && model.path && model.includedInRepo) {
+      includedModels.set(model.id, model);
+    }
+  }
+
+  const optionalModelMap: Array<[id: string, key: OfficeAssetPathKey]> = [
+    ["office-floor-tile", "roomFloorTilePath"],
+    ["office-wall-panel", "roomWallPath"],
+    ["office-wall-window-panel", "roomWindowWallPath"],
+    ["office-column-round", "roomColumnPath"],
+    ["office-light-wide", "roomLightPath"],
+    ["office-desk-medium", "deskModelPath"],
+    ["office-desk-command", "commandDeskModelPath"],
+    ["office-chair", "chairModelPath"],
+    ["office-locker", "lockerModelPath"],
+    ["office-shelf", "shelfModelPath"],
+    ["office-crate", "crateModelPath"],
+    ["office-access-point", "accessPointModelPath"],
+    ["office-computer", "computerModelPath"],
+    ["office-mug", "mugModelPath"],
+  ];
+
+  const idsToResolve = [
+    "central-operator",
+    "goat-subagent-animated",
+    "goat-subagent",
+    ...optionalModelMap.map(([id]) => id),
+  ];
+
+  const resolvedEntries = await Promise.all(idsToResolve.map(async (id) => {
+    const model = includedModels.get(id);
+    if (!model?.path) {
+      return [id, undefined] as const;
+    }
+    const exists = await checkAssetExists(model.path);
+    return [id, exists ? model : undefined] as const;
+  }));
+
+  const resolvedById = new Map<string, AssetManifestModel>();
+  for (const [id, model] of resolvedEntries) {
+    if (model) {
+      resolvedById.set(id, model);
+    }
+  }
 
   const pack: OfficeAssetPack = {
     goatModelVariant: "procedural",
     goatModelLabel: "Procedural Goat",
   };
-  if (operator?.path && operator.includedInRepo) {
-    const exists = await checkAssetExists(operator.path);
-    if (exists) {
-      pack.operatorModelPath = operator.path;
-    }
+
+  const operator = resolvedById.get("central-operator");
+  if (operator?.path) {
+    pack.operatorModelPath = operator.path;
   }
 
-  if (animatedGoat?.path && animatedGoat.includedInRepo) {
-    const exists = await checkAssetExists(animatedGoat.path);
-    if (exists) {
-      pack.goatModelPath = animatedGoat.path;
-      pack.goatModelVariant = "animated";
-      pack.goatModelLabel = animatedGoat.label ?? "Animated Goat";
-      return pack;
-    }
+  const animatedGoat = resolvedById.get("goat-subagent-animated");
+  const goat = resolvedById.get("goat-subagent");
+  if (animatedGoat?.path) {
+    pack.goatModelPath = animatedGoat.path;
+    pack.goatModelVariant = "animated";
+    pack.goatModelLabel = animatedGoat.label ?? "Animated Goat";
+  } else if (goat?.path) {
+    pack.goatModelPath = goat.path;
+    pack.goatModelVariant = "fallback";
+    pack.goatModelLabel = goat.label ?? "Goat Subagent";
   }
 
-  if (goat?.path && goat.includedInRepo) {
-    const exists = await checkAssetExists(goat.path);
-    if (exists) {
-      pack.goatModelPath = goat.path;
-      pack.goatModelVariant = "fallback";
-      pack.goatModelLabel = goat.label ?? "Goat Subagent";
+  for (const [id, key] of optionalModelMap) {
+    const model = resolvedById.get(id);
+    if (model?.path) {
+      pack[key] = model.path;
     }
   }
 

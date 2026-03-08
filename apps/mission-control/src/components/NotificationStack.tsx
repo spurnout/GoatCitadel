@@ -3,6 +3,39 @@ export interface NotificationItem {
   tone: "info" | "success" | "warning" | "error";
   message: string;
   timestamp: number;
+  groupKey?: string;
+  count?: number;
+}
+
+export function upsertNotificationItem(
+  current: NotificationItem[],
+  incoming: NotificationItem,
+  maxItems = 6,
+): NotificationItem[] {
+  const matchIndex = current.findIndex((item) => (
+    incoming.groupKey
+      ? item.groupKey === incoming.groupKey
+      : item.tone === incoming.tone && item.message === incoming.message
+  ));
+
+  if (matchIndex === -1) {
+    return [{ ...incoming, count: incoming.count ?? 1 }, ...current].slice(0, maxItems);
+  }
+
+  const matched = current[matchIndex]!;
+  const nextCount = matched.tone === incoming.tone && matched.message === incoming.message
+    ? (matched.count ?? 1) + 1
+    : 1;
+  const nextItem: NotificationItem = {
+    ...incoming,
+    id: matched.id,
+    count: nextCount,
+  };
+
+  return [
+    nextItem,
+    ...current.filter((_, index) => index !== matchIndex),
+  ].slice(0, maxItems);
 }
 
 interface NotificationStackProps {
@@ -26,7 +59,10 @@ export function NotificationStack({ items, onDismiss }: NotificationStackProps) 
           aria-atomic="true"
         >
           <div className="notification-copy">
-            <p className="notification-tone">{item.tone}</p>
+            <p className="notification-tone">
+              {item.tone}
+              {item.count && item.count > 1 ? <span className="notification-count">x{item.count}</span> : null}
+            </p>
             <p>{item.message}</p>
             <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
           </div>

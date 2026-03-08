@@ -250,6 +250,7 @@ export function DashboardPage({
         <Panel
           title="Quick actions"
           subtitle="Jump straight into the most common operator tasks."
+          className="dashboard-quick-actions-panel"
         >
           <div className="dashboard-action-grid">
             <button type="button" onClick={() => onNavigate?.("approvals")}>Review approvals</button>

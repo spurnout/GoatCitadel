@@ -180,6 +180,7 @@ export function ApprovalsPage() {
         title={pageCopy.approvals.title}
         subtitle={pageCopy.approvals.subtitle}
         hint="Each approval keeps the action preview, explainer context, replay trail, and checkpoint resume path in one place."
+        className="page-header-citadel approvals-header"
         actions={approvalsHeaderActions}
       />
       <PageGuideCard
@@ -197,6 +198,7 @@ export function ApprovalsPage() {
           title="No Pending Approvals"
           subtitle="When risky actions require a human decision, they appear here with replay context and durable resume controls."
           tone="soft"
+          className="approval-empty-panel"
         >
           <p className="office-subtitle">Nothing is waiting for review right now.</p>
         </Panel>
@@ -227,6 +229,7 @@ export function ApprovalsPage() {
           <Panel
             key={approval.approvalId}
             title={approval.kind}
+            className={`approval-card approval-card-${approval.riskLevel}`}
             subtitle={(
               <div className="workflow-summary-strip">
                 <StatusChip tone={approval.riskLevel === "nuclear" ? "critical" : approval.riskLevel === "danger" ? "warning" : "muted"}>

@@ -17,18 +17,20 @@ export function PageHeader({
   actions,
   className,
 }: PageHeaderProps) {
+  const hasActions = Boolean(actions);
+  const hasHint = Boolean(hint);
   return (
-    <header className={`page-header${className ? ` ${className}` : ""}`}>
+    <header className={`page-header${hasActions ? " page-header-has-actions" : ""}${hasHint ? " page-header-has-hint" : ""}${className ? ` ${className}` : ""}`}>
       <div className="page-header-main">
         {eyebrow ? <p className="page-header-eyebrow">{eyebrow}</p> : null}
         <div className="page-header-title-row">
           <h2 className="page-header-title">{title}</h2>
-          {actions ? <div className="page-header-actions mobile-only">{actions}</div> : null}
+          {hasActions ? <div className="page-header-actions mobile-only">{actions}</div> : null}
         </div>
         {subtitle ? <div className="page-header-subtitle">{subtitle}</div> : null}
-        {hint ? <div className="page-header-hint">{hint}</div> : null}
+        {hasHint ? <div className="page-header-hint">{hint}</div> : null}
       </div>
-      {actions ? <div className="page-header-actions desktop-only">{actions}</div> : null}
+      {hasActions ? <div className="page-header-actions desktop-only">{actions}</div> : null}
     </header>
   );
 }

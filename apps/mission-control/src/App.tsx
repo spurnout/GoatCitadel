@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import {
   connectEventStream,
   fetchWorkspaces,
@@ -7,34 +7,10 @@ import {
   type EventStreamStatus,
   type RealtimeEvent,
 } from "./api/client";
-import { DashboardPage } from "./pages/DashboardPage";
-import { SystemPage } from "./pages/SystemPage";
-import { FilesPage } from "./pages/FilesPage";
-import { MemoryPage } from "./pages/MemoryPage";
-import { AgentsPage } from "./pages/AgentsPage";
-import { ActivityPage } from "./pages/ActivityPage";
-import { CronPage } from "./pages/CronPage";
-import { SessionsPage } from "./pages/SessionsPage";
-import { ChatPage } from "./pages/ChatPage";
-import { PromptLabPage } from "./pages/PromptLabPage";
-import { ImprovementPage } from "./pages/ImprovementPage";
-import { SkillsPage } from "./pages/SkillsPage";
-import { CostConsolePage } from "./pages/CostConsolePage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { ToolsPage } from "./pages/ToolsPage";
-import { ApprovalsPage } from "./pages/ApprovalsPage";
-import { TasksPage } from "./pages/TasksPage";
-import { IntegrationsPage } from "./pages/IntegrationsPage";
-import { McpPage } from "./pages/McpPage";
-import { MeshPage } from "./pages/MeshPage";
-import { OnboardingPage } from "./pages/OnboardingPage";
-import { NpuPage } from "./pages/NpuPage";
-import { WorkspacesPage } from "./pages/WorkspacesPage";
-import { AddonsPage } from "./pages/AddonsPage";
 import { CommandPalette } from "./components/CommandPalette";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
-import { NotificationStack, type NotificationItem } from "./components/NotificationStack";
+import { NotificationStack, type NotificationItem, upsertNotificationItem } from "./components/NotificationStack";
 import { ClockBadge } from "./components/ClockBadge";
 import { ShellActionGroup } from "./components/ShellActionGroup";
 import { StatusChip } from "./components/StatusChip";
@@ -43,10 +19,49 @@ import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
 import { useUiPreferences } from "./state/ui-preferences";
 import { GCSelect, GCSwitch } from "./components/ui";
 
-const OfficePage = lazy(async () => {
-  const module = await import("./pages/OfficePage");
-  return { default: module.OfficePage };
-});
+function lazyPage(loader: () => Promise<Record<string, unknown>>, exportName: string) {
+  return lazy(async () => {
+    const module = await loader();
+    return { default: module[exportName] as ComponentType<any> };
+  });
+}
+
+const AddonsPage = lazyPage(() => import("./pages/AddonsPage"), "AddonsPage");
+const OnboardingPage = lazyPage(() => import("./pages/OnboardingPage"), "OnboardingPage");
+const DashboardPage = lazyPage(() => import("./pages/DashboardPage"), "DashboardPage");
+const SystemPage = lazyPage(() => import("./pages/SystemPage"), "SystemPage");
+const FilesPage = lazyPage(() => import("./pages/FilesPage"), "FilesPage");
+const MemoryPage = lazyPage(() => import("./pages/MemoryPage"), "MemoryPage");
+const AgentsPage = lazyPage(() => import("./pages/AgentsPage"), "AgentsPage");
+const OfficePage = lazyPage(() => import("./pages/OfficePage"), "OfficePage");
+const ActivityPage = lazyPage(() => import("./pages/ActivityPage"), "ActivityPage");
+const CronPage = lazyPage(() => import("./pages/CronPage"), "CronPage");
+const SessionsPage = lazyPage(() => import("./pages/SessionsPage"), "SessionsPage");
+const ChatPage = lazyPage(() => import("./pages/ChatPage"), "ChatPage");
+const PromptLabPage = lazyPage(() => import("./pages/PromptLabPage"), "PromptLabPage");
+const ImprovementPage = lazyPage(() => import("./pages/ImprovementPage"), "ImprovementPage");
+const SkillsPage = lazyPage(() => import("./pages/SkillsPage"), "SkillsPage");
+const CostConsolePage = lazyPage(() => import("./pages/CostConsolePage"), "CostConsolePage");
+const SettingsPage = lazyPage(() => import("./pages/SettingsPage"), "SettingsPage");
+const ToolsPage = lazyPage(() => import("./pages/ToolsPage"), "ToolsPage");
+const ApprovalsPage = lazyPage(() => import("./pages/ApprovalsPage"), "ApprovalsPage");
+const TasksPage = lazyPage(() => import("./pages/TasksPage"), "TasksPage");
+const IntegrationsPage = lazyPage(() => import("./pages/IntegrationsPage"), "IntegrationsPage");
+const McpPage = lazyPage(() => import("./pages/McpPage"), "McpPage");
+const MeshPage = lazyPage(() => import("./pages/MeshPage"), "MeshPage");
+const NpuPage = lazyPage(() => import("./pages/NpuPage"), "NpuPage");
+const WorkspacesPage = lazyPage(() => import("./pages/WorkspacesPage"), "WorkspacesPage");
+
+function PageLoadingFallback({ label }: { label: string }) {
+  return (
+    <section className="shell-page-loading" aria-live="polite">
+      <div className="shell-page-loading-card">
+        <p className="shell-page-loading-kicker">Loading module</p>
+        <h3>{label}</h3>
+      </div>
+    </section>
+  );
+}
 
 type Tab =
   | "addons"
@@ -207,15 +222,15 @@ export function App() {
     }
   }, []);
 
-  const pushNotification = useCallback((tone: NotificationItem["tone"], message: string) => {
+  const pushNotification = useCallback((tone: NotificationItem["tone"], message: string, groupKey?: string) => {
     setNotifications((current) => {
-      const item: NotificationItem = {
+      return upsertNotificationItem(current, {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         tone,
         message,
         timestamp: Date.now(),
-      };
-      return [item, ...current].slice(0, 6);
+        groupKey,
+      });
     });
   }, []);
 
@@ -242,10 +257,10 @@ export function App() {
       (nextState) => {
         setStreamState(nextState);
         if (nextState === "error") {
-          pushNotification("warning", "Live updates degraded. GoatCitadel is reconnecting.");
+          pushNotification("warning", "Live updates degraded. GoatCitadel is reconnecting.", "stream-connection");
         }
         if (nextState === "open") {
-          pushNotification("success", "Live updates connected.");
+          pushNotification("success", "Live updates connected.", "stream-connection");
         }
       },
       setStreamStatus,
@@ -364,7 +379,7 @@ export function App() {
       return <OnboardingPage onCompleted={handleOnboardingCompleted} />;
     }
     if (tab === "dashboard") {
-      return <DashboardPage onNavigate={(next) => setTab(next as Tab)} />;
+      return <DashboardPage onNavigate={(next: string) => setTab(next as Tab)} />;
     }
     if (tab === "system") {
       return <SystemPage />;
@@ -379,11 +394,7 @@ export function App() {
       return <AgentsPage />;
     }
     if (tab === "office") {
-      return (
-        <Suspense fallback={<p>Loading Herd HQ...</p>}>
-          <OfficePage />
-        </Suspense>
-      );
+      return <OfficePage />;
     }
     if (tab === "activity") {
       return <ActivityPage />;
@@ -443,7 +454,7 @@ export function App() {
 
   return (
     <div
-      className={`layout-shell theme-obsidian-crimson ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      className={`layout-shell theme-signal-noir theme-obsidian-crimson ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
       data-density={density}
     >
       <aside className="sidebar">
@@ -624,7 +635,9 @@ export function App() {
             {appCopy.streamBanner.replace("{state}", streamState)}
           </div>
         ) : null}
-        {content}
+        <Suspense fallback={<PageLoadingFallback label={activeNav?.label ?? "Mission Control"} />}>
+          {content}
+        </Suspense>
       </main>
       <CommandPalette
         open={paletteOpen}
