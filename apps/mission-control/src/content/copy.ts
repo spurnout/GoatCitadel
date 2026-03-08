@@ -163,11 +163,11 @@ export const pageCopy: Record<PageId, PageCopy> = {
       actions: [
         "Review trust and provenance before every install.",
         "Install the add-on into the dedicated GoatCitadel add-ons root.",
-        "Use readiness checks to confirm whether the add-on is display-ready or only runtime-ready.",
+        "Use readiness checks to confirm whether the add-on is display-ready and safe to open.",
       ],
       terms: [
         { term: "Same owner", meaning: "Configured metadata that says the add-on repository is published by the same owner as GoatCitadel. It is still separate code that you should review." },
-        { term: "Display-ready", meaning: "The add-on exposes a stable web entry path that GoatCitadel can open or embed. Runtime-only add-ons may still install and run without a full UI surface." },
+        { term: "Display-ready", meaning: "The add-on exposes a stable web entry path that GoatCitadel can open externally or embed. Arena currently uses an external local URL instead of an embedded surface." },
       ],
     },
   },

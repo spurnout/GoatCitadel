@@ -46,9 +46,29 @@ const AddonManifestFileSchema = z.object({
 const ARENA_REPO_URL = "https://github.com/spurnout/goatcitadel-arena";
 const ARENA_SERVER_PORT = 3099;
 const ARENA_SERVER_HEALTH_URL = `http://127.0.0.1:${ARENA_SERVER_PORT}/health`;
+const ARENA_LAUNCH_URL = `http://127.0.0.1:${ARENA_SERVER_PORT}/`;
 const MANIFEST_VERSION: AddonManifestFile = {
   items: {},
 };
+
+interface ArenaHealthPayload {
+  status?: string;
+  uiReady?: boolean;
+  uiEntryPath?: string;
+}
+
+interface ArenaHealthProbe {
+  ready: boolean;
+  statusOk: boolean;
+  uiReady: boolean;
+  uiEntryPath?: string;
+}
+
+const ArenaHealthPayloadSchema = z.object({
+  status: z.string().optional(),
+  uiReady: z.boolean().optional(),
+  uiEntryPath: z.string().optional(),
+});
 
 const ADDON_CATALOG: AddonCatalogEntry[] = [
   {
@@ -78,7 +98,8 @@ const ADDON_CATALOG: AddonCatalogEntry[] = [
         note: "Builds the Arena packages and server.",
       },
     ],
-    webEntryMode: "none",
+    webEntryMode: "external_local_url",
+    launchUrl: ARENA_LAUNCH_URL,
     requiresSeparateRepoDownload: true,
     healthChecks: [
       {
@@ -88,8 +109,8 @@ const ADDON_CATALOG: AddonCatalogEntry[] = [
       },
       {
         key: "ui",
-        status: "warn",
-        message: "Arena currently exposes a server/runtime foundation; full in-app UI display depends on a future web surface.",
+        status: "pass",
+        message: "Arena exposes a stable local web entry and launches as a separate local app from the Add-ons page.",
       },
     ],
   },
@@ -163,6 +184,7 @@ export class AddonsService {
       trustTier: addon.trustTier,
       runtimeType: addon.runtimeType,
       webEntryMode: addon.webEntryMode,
+      launchUrl: addon.launchUrl,
       installRef: readGitRef(targetDir),
       installedAt: now,
       updatedAt: now,
@@ -177,6 +199,7 @@ export class AddonsService {
   }
 
   public async update(addonId: string): Promise<AddonActionResponse> {
+    const addon = this.requireCatalogEntry(addonId);
     const manifest = await this.readManifest();
     const current = this.requireInstalledRecord(addonId, manifest);
     const installedPath = assertAddonPathWithinRoot(current.installedPath, this.addonsRootDir);
@@ -191,6 +214,8 @@ export class AddonsService {
       manifest.items[addonId] = {
         ...current,
         installedPath,
+        webEntryMode: addon.webEntryMode,
+        launchUrl: current.launchUrl ?? addon.launchUrl,
         installRef: readGitRef(installedPath),
         updatedAt: new Date().toISOString(),
         runtimeStatus: current.runtimeStatus === "running" ? "running" : "installed",
@@ -214,6 +239,7 @@ export class AddonsService {
   }
 
   public async launch(addonId: string): Promise<AddonActionResponse> {
+    const addon = this.requireCatalogEntry(addonId);
     const manifest = await this.readManifest();
     const current = this.requireInstalledRecord(addonId, manifest);
     if (addonId !== "arena") {
@@ -232,20 +258,25 @@ export class AddonsService {
         {
           ARENA_HOST: "127.0.0.1",
           ARENA_PORT: String(ARENA_SERVER_PORT),
-          CORS_ORIGIN: "http://127.0.0.1:5173",
+          CORS_ORIGIN: ARENA_LAUNCH_URL.replace(/\/$/, ""),
           GOATCITADEL_BASE_URL: "http://127.0.0.1:8787",
         },
       );
       current.pid = child.pid;
     }
 
-    const ready = await waitForHealth(ARENA_SERVER_HEALTH_URL, 12_000);
+    const probe = await waitForArenaReady(ARENA_SERVER_HEALTH_URL, 12_000);
+    const ready = probe?.ready ?? false;
     const updated: AddonInstalledRecord = {
       ...current,
       installedPath,
+      webEntryMode: addon.webEntryMode,
+      launchUrl: current.launchUrl ?? addon.launchUrl,
       runtimeStatus: ready ? "running" : "error",
       updatedAt: new Date().toISOString(),
-      lastError: ready ? undefined : `Arena health check did not become ready at ${ARENA_SERVER_HEALTH_URL}.`,
+      lastError: ready
+        ? undefined
+        : `Arena health check did not report uiReady at ${ARENA_SERVER_HEALTH_URL}.`,
     };
     manifest.items[addonId] = updated;
     await this.writeManifest(manifest);
@@ -265,6 +296,7 @@ export class AddonsService {
       ...current,
       installedPath,
       pid: undefined,
+      launchUrl: current.launchUrl ?? ARENA_LAUNCH_URL,
       runtimeStatus: "stopped",
       updatedAt: new Date().toISOString(),
       lastError: undefined,
@@ -316,6 +348,7 @@ export class AddonsService {
     });
 
     const arenaServerEntry = path.join(installedPath, "apps", "server", "dist", "index.js");
+    const arenaWebEntry = path.join(installedPath, "apps", "web", "dist", "index.html");
     checks.push({
       key: "build_output",
       status: fsSync.existsSync(arenaServerEntry) ? "pass" : "warn",
@@ -323,15 +356,23 @@ export class AddonsService {
         ? "Arena server build output exists."
         : "Arena build output is missing; rerun update/build if launch fails.",
     });
+    checks.push({
+      key: "web_build",
+      status: fsSync.existsSync(arenaWebEntry) ? "pass" : "warn",
+      message: fsSync.existsSync(arenaWebEntry)
+        ? "Arena web build output exists."
+        : "Arena web build output is missing; rebuild Arena before trying to open it from GoatCitadel.",
+    });
 
     if (installed.runtimeStatus === "running") {
-      const healthy = await waitForHealth(ARENA_SERVER_HEALTH_URL, 1_500);
+      const probe = await readArenaHealth(ARENA_SERVER_HEALTH_URL, 1_500);
+      const healthy = probe?.ready ?? false;
       checks.push({
         key: "health",
         status: healthy ? "pass" : "fail",
         message: healthy
-          ? `Health check passed at ${ARENA_SERVER_HEALTH_URL}.`
-          : `Health check failed at ${ARENA_SERVER_HEALTH_URL}.`,
+          ? `Health check passed at ${ARENA_SERVER_HEALTH_URL} and Arena reported uiReady.`
+          : `Health check failed or Arena did not report uiReady at ${ARENA_SERVER_HEALTH_URL}.`,
       });
     } else {
       checks.push({
@@ -349,11 +390,16 @@ export class AddonsService {
     installed: AddonInstalledRecord,
   ): Promise<AddonInstalledRecord> {
     const installedPath = assertAddonPathWithinRoot(installed.installedPath, this.addonsRootDir);
+    const normalizedRecord: AddonInstalledRecord = {
+      ...installed,
+      installedPath,
+      webEntryMode: addon.webEntryMode,
+      launchUrl: installed.launchUrl ?? addon.launchUrl,
+    };
     if (!fsSync.existsSync(installedPath)) {
       return {
-        ...installed,
+        ...normalizedRecord,
         runtimeStatus: "error",
-        installedPath,
         lastError: `Installed path is missing: ${installedPath}.`,
         updatedAt: new Date().toISOString(),
       };
@@ -361,25 +407,24 @@ export class AddonsService {
     const hasRunningPid = typeof installed.pid === "number" && isProcessRunning(installed.pid);
     if (!hasRunningPid && installed.runtimeStatus === "running") {
       return {
-        ...installed,
+        ...normalizedRecord,
         pid: undefined,
         runtimeStatus: "stopped",
         updatedAt: new Date().toISOString(),
       };
     }
     if (addon.addonId === "arena" && hasRunningPid) {
-      const healthy = await waitForHealth(ARENA_SERVER_HEALTH_URL, 1_500);
-      if (!healthy) {
+      const probe = await readArenaHealth(ARENA_SERVER_HEALTH_URL, 1_500);
+      if (!(probe?.ready ?? false)) {
         return {
-          ...installed,
-          installedPath,
+          ...normalizedRecord,
           runtimeStatus: "error",
-          lastError: `Arena process is running but health check failed at ${ARENA_SERVER_HEALTH_URL}.`,
+          lastError: `Arena process is running but the health check did not report uiReady at ${ARENA_SERVER_HEALTH_URL}.`,
           updatedAt: new Date().toISOString(),
         };
       }
     }
-    return installed;
+    return normalizedRecord;
   }
 
   private requireCatalogEntry(addonId: string): AddonCatalogEntry {
@@ -557,23 +602,40 @@ function killProcessTree(pid: number): void {
   }
 }
 
-async function waitForHealth(url: string, timeoutMs: number): Promise<boolean> {
+async function readArenaHealth(url: string, timeoutMs: number): Promise<ArenaHealthProbe | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = ArenaHealthPayloadSchema.safeParse(await response.json());
+    if (!payload.success) {
+      return null;
+    }
+    return {
+      ready: payload.data.status === "ok" && payload.data.uiReady === true,
+      statusOk: payload.data.status === "ok",
+      uiReady: payload.data.uiReady === true,
+      uiEntryPath: payload.data.uiEntryPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function waitForArenaReady(url: string, timeoutMs: number): Promise<ArenaHealthProbe | null> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1_000);
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (response.ok) {
-        return true;
-      }
-    } catch {
-      // Retry until timeout.
+    const probe = await readArenaHealth(url, 1_000);
+    if (probe?.ready) {
+      return probe;
     }
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  return false;
+  return null;
 }
 
 function assertAddonPathWithinRoot(installedPath: string, addonsRootDir: string): string {

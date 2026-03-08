@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,16 +21,20 @@ import { AddonsService, __internal } from "./addons-service.js";
 describe("AddonsService", () => {
   let tempDir: string;
   let goatHome: string;
+  const fetchMock = vi.fn();
 
   beforeEach(async () => {
     execFileSyncMock.mockReset();
     spawnMock.mockClear();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "goatcitadel-addons-"));
     goatHome = path.join(tempDir, ".GoatCitadel");
     process.env.GOATCITADEL_HOME = goatHome;
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     delete process.env.GOATCITADEL_HOME;
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -72,7 +75,8 @@ describe("AddonsService", () => {
             sameOwnerAsGoatCitadel: true,
             trustTier: "restricted",
             runtimeType: "separate_repo_app",
-            webEntryMode: "none",
+            webEntryMode: "external_local_url",
+            launchUrl: "http://127.0.0.1:3099/",
             installedAt: "2026-03-06T00:00:00.000Z",
             updatedAt: "2026-03-06T00:00:00.000Z",
             consentedAt: "2026-03-06T00:00:00.000Z",
@@ -105,7 +109,8 @@ describe("AddonsService", () => {
             sameOwnerAsGoatCitadel: true,
             trustTier: "restricted",
             runtimeType: "separate_repo_app",
-            webEntryMode: "none",
+            webEntryMode: "external_local_url",
+            launchUrl: "http://127.0.0.1:3099/",
             installRef: "abc123",
             installedAt: "2026-03-06T00:00:00.000Z",
             updatedAt: "2026-03-06T00:00:00.000Z",
@@ -153,5 +158,139 @@ describe("AddonsService", () => {
     expect(manifest.items.arena).toBeDefined();
     expect(manifest.items.arena!.installRef).toBe("abc123");
     expect(manifest.items.arena!.lastError).toContain("pnpm install failed");
+  });
+
+  it("publishes Arena as an external local app with a launch URL", () => {
+    const service = new AddonsService(tempDir);
+
+    expect(service.listCatalog()).toEqual([
+      expect.objectContaining({
+        addonId: "arena",
+        webEntryMode: "external_local_url",
+        launchUrl: "http://127.0.0.1:3099/",
+      }),
+    ]);
+  });
+
+  it("launches Arena with the local web origin and persists the launch URL when uiReady is true", async () => {
+    const addonsRoot = path.join(goatHome, "addons");
+    const addonPath = path.join(addonsRoot, "arena");
+    await fs.mkdir(path.join(addonPath, "apps", "server", "dist"), { recursive: true });
+    await fs.mkdir(path.join(addonPath, "apps", "web", "dist"), { recursive: true });
+    await fs.writeFile(path.join(addonPath, "apps", "server", "dist", "index.js"), "console.log('arena');\n", "utf8");
+    await fs.writeFile(path.join(addonPath, "apps", "web", "dist", "index.html"), "<!doctype html>\n", "utf8");
+    await fs.writeFile(
+      path.join(addonsRoot, "manifest.json"),
+      `${JSON.stringify({
+        items: {
+          arena: {
+            addonId: "arena",
+            installedPath: addonPath,
+            repoUrl: "https://github.com/spurnout/goatcitadel-arena",
+            owner: "spurnout",
+            sameOwnerAsGoatCitadel: true,
+            trustTier: "restricted",
+            runtimeType: "separate_repo_app",
+            webEntryMode: "external_local_url",
+            installedAt: "2026-03-06T00:00:00.000Z",
+            updatedAt: "2026-03-06T00:00:00.000Z",
+            consentedAt: "2026-03-06T00:00:00.000Z",
+            consentedBy: "operator",
+            runtimeStatus: "installed",
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    fetchMock.mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          uiReady: true,
+          uiEntryPath: "/",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ));
+    spawnMock.mockImplementationOnce(() => ({
+      pid: process.pid,
+      unref: vi.fn(),
+    }));
+
+    const service = new AddonsService(tempDir);
+    const result = await service.launch("arena");
+
+    expect(result.status.status).toBe("running");
+    expect(result.status.installed?.launchUrl).toBe("http://127.0.0.1:3099/");
+    expect(result.status.healthChecks).toContainEqual(
+      expect.objectContaining({
+        key: "web_build",
+        status: "pass",
+      }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      "cmd.exe",
+      expect.any(Array),
+      expect.objectContaining({
+        cwd: addonPath,
+        env: expect.objectContaining({
+          ARENA_HOST: "127.0.0.1",
+          ARENA_PORT: "3099",
+          CORS_ORIGIN: "http://127.0.0.1:3099",
+          GOATCITADEL_BASE_URL: "http://127.0.0.1:8787",
+        }),
+      }),
+    );
+  });
+
+  it("marks Arena unhealthy when the server is up but the UI is not ready", async () => {
+    const addonsRoot = path.join(goatHome, "addons");
+    const addonPath = path.join(addonsRoot, "arena");
+    await fs.mkdir(addonPath, { recursive: true });
+    await fs.writeFile(
+      path.join(addonsRoot, "manifest.json"),
+      `${JSON.stringify({
+        items: {
+          arena: {
+            addonId: "arena",
+            installedPath: addonPath,
+            repoUrl: "https://github.com/spurnout/goatcitadel-arena",
+            owner: "spurnout",
+            sameOwnerAsGoatCitadel: true,
+            trustTier: "restricted",
+            runtimeType: "separate_repo_app",
+            webEntryMode: "external_local_url",
+            launchUrl: "http://127.0.0.1:3099/",
+            installedAt: "2026-03-06T00:00:00.000Z",
+            updatedAt: "2026-03-06T00:00:00.000Z",
+            consentedAt: "2026-03-06T00:00:00.000Z",
+            consentedBy: "operator",
+            runtimeStatus: "running",
+            pid: process.pid,
+          },
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    fetchMock.mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          uiReady: false,
+          uiEntryPath: "/",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ));
+
+    const service = new AddonsService(tempDir);
+    const status = await service.getStatus("arena");
+
+    expect(status.status).toBe("error");
+    expect(status.installed?.lastError).toContain("did not report uiReady");
   });
 });

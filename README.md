@@ -252,7 +252,8 @@ Mission Control default local URLs:
 ### Optional Ecosystem
 
 - Add-ons live outside the GoatCitadel app checkout under `~/.GoatCitadel/addons`
-- Arena is planned as the first optional extra and always requires an explicit separate-repo download confirmation
+- Arena is the first optional extra and always requires an explicit separate-repo download confirmation
+- Arena launches as a separate local app from the Add-ons page and opens at `http://127.0.0.1:3099/` when running
 - MCP and Skills pages now include external discovery directories with trust labels so users can find more ecosystem extensions safely
 
 ## Communication Channels
@@ -341,6 +342,7 @@ Break-glass env vars are supported but should stay off in shared/public environm
 ## Optional Add-Ons
 
 - Add-ons are separate from the GoatCitadel app checkout and require explicit install confirmation before any code is downloaded.
+- Arena is currently display-ready through an external local URL rather than an embedded GoatCitadel surface.
 - The current trust model and runtime expectations are documented here:
   - [Add-ons Trust Policy](docs/ADDONS_TRUST_POLICY.md)
   - [Arena Integration Contract](docs/ARENA_INTEGRATION_CONTRACT.md)

@@ -133,6 +133,10 @@ export function AddonsPage() {
     }
   }, [reloadAfterAction]);
 
+  const openExternalAddon = useCallback((launchUrl: string) => {
+    window.open(launchUrl, "_blank", "noopener,noreferrer");
+  }, []);
+
   return (
     <section className="card stack-page">
       {pageCopy.addons.guide ? <PageGuideCard {...pageCopy.addons.guide} /> : null}
@@ -143,7 +147,9 @@ export function AddonsPage() {
           const addonStatus = statusByAddonId[addon.addonId];
           const installedRecord = installed[addon.addonId];
           const effectiveStatus = addonStatus?.status ?? (installedRecord ? installedRecord.runtimeStatus : "not_installed");
+          const effectiveLaunchUrl = addonStatus?.installed?.launchUrl ?? installedRecord?.launchUrl ?? addon.launchUrl;
           const busy = busyAddonId === addon.addonId;
+          const canOpenExternally = effectiveStatus === "running" && Boolean(effectiveLaunchUrl);
           return (
             <article key={addon.addonId} className="stack-card">
               <div className="stack-card-header">
@@ -181,11 +187,19 @@ export function AddonsPage() {
                 <div>
                   <strong>Display mode</strong>
                   <p className="office-subtitle">
-                    {addon.webEntryMode === "none"
-                      ? "Not display-ready yet; GoatCitadel will show diagnostics until Arena exposes a stable web surface."
-                      : addon.webEntryMode.replaceAll("_", " ")}
+                    {addon.webEntryMode === "external_local_url"
+                      ? "Display-ready through a separate local browser tab once the add-on is running."
+                      : addon.webEntryMode === "embedded_proxy"
+                        ? "Display-ready through a GoatCitadel-managed embedded proxy surface."
+                        : "Runtime-only add-on with no stable web entry."}
                   </p>
                 </div>
+                {effectiveLaunchUrl ? (
+                  <div>
+                    <strong>Launch URL</strong>
+                    <p className="office-subtitle">{effectiveLaunchUrl}</p>
+                  </div>
+                ) : null}
               </div>
 
               <div className="action-row">
@@ -213,6 +227,13 @@ export function AddonsPage() {
                       }}
                       disabled={busy}
                     />
+                    {canOpenExternally && effectiveLaunchUrl ? (
+                      <ActionButton
+                        label={`Open ${addon.label}`}
+                        onClick={() => openExternalAddon(effectiveLaunchUrl)}
+                        disabled={busy}
+                      />
+                    ) : null}
                     <ActionButton
                       label="Uninstall"
                       onClick={() => setConfirmUninstallAddon(addon)}
