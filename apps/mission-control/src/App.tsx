@@ -1,11 +1,10 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import { memo, Suspense, lazy, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import {
   connectEventStream,
   fetchWorkspaces,
   fetchOnboardingState,
-  type EventStreamConnectionState,
-  type EventStreamStatus,
   type RealtimeEvent,
+  type EventStreamConnectionState,
 } from "./api/client";
 import { CommandPalette } from "./components/CommandPalette";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
@@ -17,6 +16,9 @@ import { StatusChip } from "./components/StatusChip";
 import { appCopy } from "./content/copy";
 import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
 import { useUiPreferences } from "./state/ui-preferences";
+import { resolveEffectiveEffectsMode } from "./state/effects-mode";
+import { publishEventStreamStatus, resetEventStreamStatus } from "./state/event-stream-status-store";
+import { useEventStreamStatus } from "./hooks/useEventStreamStatus";
 import { GCSelect, GCSwitch } from "./components/ui";
 
 function lazyPage(loader: () => Promise<Record<string, unknown>>, exportName: string) {
@@ -151,10 +153,6 @@ function deriveRefreshTopics(event: RealtimeEvent): RefreshTopic[] {
     }
   }
 
-  if (topics.size === 0) {
-    topics.add("system");
-  }
-
   return [...topics];
 }
 
@@ -186,12 +184,105 @@ function readTabFromLocation(): Tab {
   return "dashboard";
 }
 
+const SidebarStatusFooter = memo(function SidebarStatusFooter({
+  streamState,
+  onboardingComplete,
+  uiMode,
+  setUiMode,
+  showTechnicalDetails,
+  setShowTechnicalDetails,
+}: {
+  streamState: EventStreamConnectionState;
+  onboardingComplete: boolean | null;
+  uiMode: "simple" | "advanced";
+  setUiMode: (mode: "simple" | "advanced") => void;
+  showTechnicalDetails: boolean;
+  setShowTechnicalDetails: (enabled: boolean) => void;
+}) {
+  const streamStatus = useEventStreamStatus();
+
+  return (
+    <footer className="sidebar-footer">
+      <div className="sidebar-footer-grid">
+        <div className="sidebar-footer-item">
+          <span className="sidebar-footer-label">{appCopy.sidebar.stream}</span>
+          <StatusChip tone={streamStatus.state === "open" ? "live" : streamStatus.state === "error" ? "critical" : "warning"}>
+            {streamState}
+          </StatusChip>
+        </div>
+        <div className="sidebar-footer-item">
+          <span className="sidebar-footer-label">{appCopy.sidebar.onboarding}</span>
+          <span className="sidebar-footer-value">
+            {onboardingComplete === null
+              ? appCopy.sidebar.unknown
+              : onboardingComplete
+                ? appCopy.sidebar.complete
+                : appCopy.sidebar.required}
+          </span>
+        </div>
+        <div className="sidebar-footer-item">
+          <span className="sidebar-footer-label">{appCopy.sidebar.reconnects}</span>
+          <span className="sidebar-footer-value">{streamStatus.reconnectAttempts}</span>
+        </div>
+        <div className="sidebar-footer-item">
+          <span className="sidebar-footer-label">{appCopy.sidebar.lastEvent}</span>
+          <span className="sidebar-footer-value">
+            {streamStatus.lastEventAt
+              ? new Date(streamStatus.lastEventAt).toLocaleTimeString()
+              : appCopy.sidebar.notAvailable}
+          </span>
+        </div>
+      </div>
+      <div className="sidebar-systems">
+        <div className="sidebar-system-block">
+          <span className="sidebar-footer-label">Experience</span>
+          <div className="ui-experience-switch sidebar-experience-switch">
+            <button
+              type="button"
+              className={uiMode === "simple" ? "active" : ""}
+              onClick={() => setUiMode("simple")}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              className={uiMode === "advanced" ? "active" : ""}
+              onClick={() => setUiMode("advanced")}
+            >
+              Advanced
+            </button>
+          </div>
+          <span className="sidebar-footer-value sidebar-system-note">
+            {uiMode === "simple" ? "Guided defaults" : "Full controls"}
+          </span>
+        </div>
+        <div className="sidebar-system-block">
+          <span className="sidebar-footer-label">Citadel systems</span>
+          <label className="ui-technical-toggle sidebar-technical-toggle">
+            <GCSwitch
+              checked={showTechnicalDetails}
+              onCheckedChange={setShowTechnicalDetails}
+              label="Technical details"
+            />
+          </label>
+        </div>
+      </div>
+      <div className="sidebar-footer-meta">
+        <span>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</span>
+        <ClockBadge />
+      </div>
+    </footer>
+  );
+});
+
 export function App() {
   const {
     mode: uiMode,
     setMode: setUiMode,
     density,
     setDensity,
+    effectsMode,
+    setEffectsMode,
     showTechnicalDetails,
     setShowTechnicalDetails,
     activeWorkspaceId,
@@ -199,16 +290,13 @@ export function App() {
   } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
   const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
-  const [streamStatus, setStreamStatus] = useState<EventStreamStatus>({
-    state: "connecting",
-    reconnectAttempts: 0,
-  });
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [showBrandMark, setShowBrandMark] = useState(true);
   const [showBrandWordmark, setShowBrandWordmark] = useState(true);
   const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const effectiveEffectsMode = useMemo(() => resolveEffectiveEffectsMode(effectsMode), [effectsMode]);
 
   const loadWorkspaceOptions = useCallback(async () => {
     try {
@@ -263,11 +351,12 @@ export function App() {
           pushNotification("success", "Live updates connected.", "stream-connection");
         }
       },
-      setStreamStatus,
+      publishEventStreamStatus,
     );
 
     return () => {
       close();
+      resetEventStreamStatus();
     };
   }, [pushNotification]);
 
@@ -454,7 +543,9 @@ export function App() {
 
   return (
     <div
-      className={`layout-shell theme-signal-noir ui-mode-${uiMode} ui-density-${density}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
+      data-effects-mode={effectsMode}
+      data-effective-effects-mode={effectiveEffectsMode}
+      className={`layout-shell theme-signal-noir ui-mode-${uiMode} ui-density-${density} ui-effects-${effectiveEffectsMode}${showTechnicalDetails ? "" : " ui-hide-technical"}`}
       data-density={density}
     >
       <aside className="sidebar">
@@ -507,76 +598,14 @@ export function App() {
             </div>
           ))}
         </nav>
-        <footer className="sidebar-footer">
-          <div className="sidebar-footer-grid">
-            <div className="sidebar-footer-item">
-              <span className="sidebar-footer-label">{appCopy.sidebar.stream}</span>
-              <StatusChip tone={streamStatus.state === "open" ? "live" : streamStatus.state === "error" ? "critical" : "warning"}>
-                {streamState}
-              </StatusChip>
-            </div>
-            <div className="sidebar-footer-item">
-              <span className="sidebar-footer-label">{appCopy.sidebar.onboarding}</span>
-              <span className="sidebar-footer-value">
-                {onboardingComplete === null
-                  ? appCopy.sidebar.unknown
-                  : onboardingComplete
-                    ? appCopy.sidebar.complete
-                    : appCopy.sidebar.required}
-              </span>
-            </div>
-            <div className="sidebar-footer-item">
-              <span className="sidebar-footer-label">{appCopy.sidebar.reconnects}</span>
-              <span className="sidebar-footer-value">{streamStatus.reconnectAttempts}</span>
-            </div>
-            <div className="sidebar-footer-item">
-              <span className="sidebar-footer-label">{appCopy.sidebar.lastEvent}</span>
-              <span className="sidebar-footer-value">
-                {streamStatus.lastEventAt
-                  ? new Date(streamStatus.lastEventAt).toLocaleTimeString()
-                  : appCopy.sidebar.notAvailable}
-              </span>
-            </div>
-          </div>
-          <div className="sidebar-systems">
-            <div className="sidebar-system-block">
-              <span className="sidebar-footer-label">Experience</span>
-              <div className="ui-experience-switch sidebar-experience-switch">
-                <button
-                  type="button"
-                  className={uiMode === "simple" ? "active" : ""}
-                  onClick={() => setUiMode("simple")}
-                >
-                  Simple
-                </button>
-                <button
-                  type="button"
-                  className={uiMode === "advanced" ? "active" : ""}
-                  onClick={() => setUiMode("advanced")}
-                >
-                  Advanced
-                </button>
-              </div>
-              <span className="sidebar-footer-value sidebar-system-note">
-                {uiMode === "simple" ? "Guided defaults" : "Full controls"}
-              </span>
-            </div>
-            <div className="sidebar-system-block">
-              <span className="sidebar-footer-label">Citadel systems</span>
-              <label className="ui-technical-toggle sidebar-technical-toggle">
-                <GCSwitch
-                  checked={showTechnicalDetails}
-                  onCheckedChange={setShowTechnicalDetails}
-                  label="Technical details"
-                />
-              </label>
-            </div>
-          </div>
-          <div className="sidebar-footer-meta">
-            <span>{appCopy.sidebar.mode}: {appCopy.sidebar.localMode}</span>
-            <ClockBadge />
-          </div>
-        </footer>
+        <SidebarStatusFooter
+          streamState={streamState}
+          onboardingComplete={onboardingComplete}
+          uiMode={uiMode}
+          setUiMode={setUiMode}
+          showTechnicalDetails={showTechnicalDetails}
+          setShowTechnicalDetails={setShowTechnicalDetails}
+        />
       </aside>
       <main className="content shell-content">
         <header className="app-topbar shell-topbar">
@@ -594,7 +623,7 @@ export function App() {
               <button type="button" className="shell-quick-action shell-command-trigger-topbar" onClick={() => setPaletteOpen(true)}>
                 Command Palette
               </button>
-              <GlobalFreshnessPill streamState={streamState} streamStatus={streamStatus} />
+              <GlobalFreshnessPill streamState={streamState} />
             </div>
             <div className="shell-topbar-actions-right">
               <ShellActionGroup className="shell-toggle-group">
@@ -608,6 +637,20 @@ export function App() {
                   </button>
                   <button type="button" className={density === "compact" ? "active" : ""} onClick={() => setDensity("compact")}>
                     Compact
+                  </button>
+                </div>
+              </ShellActionGroup>
+              <ShellActionGroup className="shell-toggle-group">
+                <span className="shell-action-label">Effects</span>
+                <div className="ui-experience-switch ui-density-switch">
+                  <button type="button" className={effectsMode === "auto" ? "active" : ""} onClick={() => setEffectsMode("auto")}>
+                    Auto
+                  </button>
+                  <button type="button" className={effectsMode === "full" ? "active" : ""} onClick={() => setEffectsMode("full")}>
+                    Full
+                  </button>
+                  <button type="button" className={effectsMode === "reduced" ? "active" : ""} onClick={() => setEffectsMode("reduced")}>
+                    Reduced
                   </button>
                 </div>
               </ShellActionGroup>

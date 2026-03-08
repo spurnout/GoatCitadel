@@ -1,9 +1,6 @@
-import type { EventStreamConnectionState, EventStreamStatus } from "../api/client";
-
-interface GlobalFreshnessPillProps {
-  streamState: EventStreamConnectionState;
-  streamStatus: EventStreamStatus;
-}
+import { memo } from "react";
+import type { EventStreamConnectionState } from "../api/client";
+import { useEventStreamStatus } from "../hooks/useEventStreamStatus";
 
 function mapStateToLabel(state: EventStreamConnectionState): "Live" | "Degraded" | "Reconnecting" | "Offline" {
   if (state === "open") {
@@ -18,7 +15,8 @@ function mapStateToLabel(state: EventStreamConnectionState): "Live" | "Degraded"
   return "Offline";
 }
 
-export function GlobalFreshnessPill({ streamState, streamStatus }: GlobalFreshnessPillProps) {
+function GlobalFreshnessPillInner({ streamState }: { streamState: EventStreamConnectionState }) {
+  const streamStatus = useEventStreamStatus();
   const label = mapStateToLabel(streamState);
   const freshnessClass = label.toLowerCase();
   const lastUpdated = streamStatus.lastEventAt
@@ -41,3 +39,4 @@ export function GlobalFreshnessPill({ streamState, streamStatus }: GlobalFreshne
   );
 }
 
+export const GlobalFreshnessPill = memo(GlobalFreshnessPillInner);

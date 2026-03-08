@@ -88,6 +88,6 @@ Search order:
 2. Prefer embedded textures or a minimal texture set.
 3. Record source URL, author, license URL, attribution text, and download date before commit.
 4. Keep shipped runtime assets under `apps/mission-control/public/assets/office/`.
-5. Keep extracted source binaries under `assets/source/office/` and track large binary source files with Git LFS.
-6. Keep ad-hoc download caches under `assets/source/office/_downloads/`; that folder is intentionally ignored and should not be committed.
+5. Keep shipped runtime assets under `apps/mission-control/public/assets/office/`, but publish the full source provenance as an optional release bundle referenced by `docs/office-source-manifest.json` instead of committing the heavy source kits to the main repo.
+6. Keep ad-hoc download caches local-only; do not commit them to the main repo.
 7. Do not ship anything with unclear or unverifiable provenance.

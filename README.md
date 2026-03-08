@@ -164,15 +164,13 @@ Use this path if you want the raw repo, contributor workflow, or a clean install
 ```bash
 git clone https://github.com/spurnout/GoatCitadel.git
 cd GoatCitadel
-git lfs install
-git lfs pull
 corepack enable
-corepack prepare pnpm@10.29.3 --activate
+corepack prepare pnpm@10.31.0 --activate
 pnpm install --frozen-lockfile
 pnpm config:sync
 ```
 
-If you are only working on code and docs, the repo will still clone without `git lfs pull`, but Office source-asset provenance under `assets/source/office/` is tracked with Git LFS and should be pulled before editing those source assets.
+The default code clone keeps the shipped Office runtime assets in-repo, but the full Office source provenance bundle is now published separately. See [docs/office-source-manifest.json](/f:/code/personal-ai/docs/office-source-manifest.json) and the release attachments if you need to reproduce or edit the original Office source kits.
 
 If you want browser research/automation from a raw source clone, install Playwright Chromium once:
 

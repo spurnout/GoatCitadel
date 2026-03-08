@@ -1,7 +1,22 @@
 import { create } from "react-test-renderer";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ChatThreadResponse } from "@goatcitadel/contracts";
 import { ChatThreadView } from "./ChatThreadView";
+
+vi.mock("react-virtuoso", () => ({
+  Virtuoso: (props: {
+    data?: unknown[];
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    components?: { Footer?: () => React.ReactNode };
+  }) => (
+    <div data-testid="virtuoso-mock">
+      {(props.data ?? []).map((item, index) => (
+        <div key={index}>{props.itemContent ? props.itemContent(index, item) : null}</div>
+      ))}
+      {props.components?.Footer ? <props.components.Footer /> : null}
+    </div>
+  ),
+}));
 
 function makeThread(): ChatThreadResponse {
   return {
@@ -67,6 +82,8 @@ describe("ChatThreadView", () => {
       <ChatThreadView
         loading={false}
         notices={[]}
+        followOutput={false}
+        onBottomStateChange={() => {}}
         onEditTurn={() => {}}
         onRetryTurn={() => {}}
         onSelectTurn={() => {}}

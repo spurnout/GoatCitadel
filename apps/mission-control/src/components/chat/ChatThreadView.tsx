@@ -1,4 +1,5 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Virtuoso } from "react-virtuoso";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -213,7 +214,7 @@ function ChatTurnCard({
   }
 
   return (
-    <li className={`chat-v11-turn-card${selected ? " selected" : ""}`}>
+    <article className={`chat-v11-turn-card${selected ? " selected" : ""}`}>
       <div
         aria-pressed={selected}
         className="chat-v11-turn-surface"
@@ -242,7 +243,7 @@ function ChatTurnCard({
         onRetryTurn={onRetryTurn}
         onEditTurn={onEditTurn}
       />
-    </li>
+    </article>
   );
 }
 
@@ -251,6 +252,8 @@ export function ChatThreadView({
   thread,
   selectedTurnId,
   notices,
+  followOutput,
+  onBottomStateChange,
   onSelectTurn,
   onSwitchBranch,
   onRetryTurn,
@@ -260,6 +263,8 @@ export function ChatThreadView({
   thread: ChatThreadResponse | null;
   selectedTurnId: string | null;
   notices: ChatThreadNotice[];
+  followOutput: boolean;
+  onBottomStateChange: (atBottom: boolean) => void;
   onSelectTurn: (turnId: string) => void;
   onSwitchBranch: (turnId: string) => void;
   onRetryTurn: (turnId: string) => void;
@@ -280,10 +285,14 @@ export function ChatThreadView({
 
   return (
     <div className="chat-v11-thread-view">
-      <ul className="chat-v11-turn-listing">
-        {thread.turns.map((turn) => (
+      <Virtuoso
+        className="chat-v11-thread-virtuoso"
+        data={thread.turns}
+        computeItemKey={(_index, turn) => turn.turnId}
+        followOutput={followOutput ? "auto" : false}
+        atBottomStateChange={onBottomStateChange}
+        itemContent={(_index, turn) => (
           <ChatTurnCard
-            key={turn.turnId}
             turn={turn}
             selected={selectedTurnId === turn.turnId}
             onSelect={onSelectTurn}
@@ -291,18 +300,22 @@ export function ChatThreadView({
             onRetryTurn={onRetryTurn}
             onEditTurn={onEditTurn}
           />
-        ))}
-      </ul>
-      {notices.length > 0 ? (
-        <ul className="chat-v11-thread-notices">
-          {notices.map((notice) => (
-            <li key={notice.id} className={`tone-${formatTone(notice.tone)}`}>
-              <p className="chat-v11-message-meta"><strong>Notice</strong> · {formatActorTimestamp(notice.timestamp)}</p>
-              <p>{notice.content}</p>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+        )}
+        components={{
+          Footer: notices.length > 0
+            ? () => (
+              <ul className="chat-v11-thread-notices">
+                {notices.map((notice) => (
+                  <li key={notice.id} className={`tone-${formatTone(notice.tone)}`}>
+                    <p className="chat-v11-message-meta"><strong>Notice</strong> · {formatActorTimestamp(notice.timestamp)}</p>
+                    <p>{notice.content}</p>
+                  </li>
+                ))}
+              </ul>
+            )
+            : undefined,
+        }}
+      />
     </div>
   );
 }

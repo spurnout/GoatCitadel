@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 export interface NotificationItem {
   id: string;
   tone: "info" | "success" | "warning" | "error";
@@ -43,7 +45,7 @@ interface NotificationStackProps {
   onDismiss: (id: string) => void;
 }
 
-export function NotificationStack({ items, onDismiss }: NotificationStackProps) {
+function NotificationStackInner({ items, onDismiss }: NotificationStackProps) {
   if (items.length === 0) {
     return null;
   }
@@ -79,3 +81,5 @@ export function NotificationStack({ items, onDismiss }: NotificationStackProps) 
     </div>
   );
 }
+
+export const NotificationStack = memo(NotificationStackInner);

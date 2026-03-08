@@ -80,6 +80,7 @@ import { ActionButton } from "../components/ActionButton";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { ChatPlanningPill } from "../components/chat/ChatPlanningPill";
 import { ChatQueueBar, type ChatQueueItemView } from "../components/chat/ChatQueueBar";
+import { ChatSessionRail } from "../components/chat/ChatSessionRail";
 import {
   isThreadMutatingStreamChunk,
   type PendingStreamTurnSeed,
@@ -103,6 +104,7 @@ import { GCCombobox, GCSelect, GCSwitch } from "../components/ui";
 import { useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
+import "../styles/chat.css";
 
 const STREAM_PREF_KEY = "goatcitadel.chat.agent.stream.enabled";
 
@@ -331,14 +333,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   const [commandIndex, setCommandIndex] = useState(0);
   const [approvalPending, setApprovalPending] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [followThreadOutput, setFollowThreadOutput] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const messageListRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
   const initializedRef = useRef(false);
   const lastLoadedSessionIdRef = useRef<string | null>(null);
-  const shouldFollowMessagesRef = useRef(true);
-  const previousMessageCountRef = useRef(0);
   const messageMutationVersionRef = useRef(0);
   const lastLocalPrefMutationAtRef = useRef(0);
   const latestMessagesRef = useRef<ChatMessagesResponse["items"]>([]);
@@ -667,8 +667,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   }, [loadSessionState, selectedSessionId]);
 
   useEffect(() => {
-    shouldFollowMessagesRef.current = true;
-    previousMessageCountRef.current = 0;
+    setFollowThreadOutput(true);
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -784,6 +783,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     () => visibleSessions.filter((item) => item.scope === "external"),
     [visibleSessions],
   );
+  const visibleSessionLabelById = useMemo(() => new Map(
+    visibleSessions.map((session) => [session.sessionId, formatSessionLabel(session)]),
+  ), [visibleSessions]);
 
   const providerOptions = useMemo<ChatModelProviderOption[]>(() => {
     const activeProviderId = runtimeLlmConfig?.activeProviderId ?? settings?.llm.activeProviderId;
@@ -1150,32 +1152,6 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     const files = Array.from(event.dataTransfer.files ?? []);
     if (files.length > 0) void uploadAttachments(files);
   }, [uploadAttachments]);
-
-  const handleMessageListScroll = useCallback(() => {
-    const list = messageListRef.current;
-    if (!list) return;
-    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-    shouldFollowMessagesRef.current = distanceFromBottom <= 56;
-  }, []);
-
-  useEffect(() => {
-    const list = messageListRef.current;
-    if (!list || messagesLoading) return;
-
-    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-    const nearBottom = distanceFromBottom <= 56;
-    const shouldFollow = shouldFollowMessagesRef.current || nearBottom;
-    const appendedMessage = messages.length > previousMessageCountRef.current;
-
-    if (shouldFollow) {
-      list.scrollTo({
-        top: list.scrollHeight,
-        behavior: appendedMessage ? "smooth" : "auto",
-      });
-    }
-
-    previousMessageCountRef.current = messages.length;
-  }, [messages, messagesLoading]);
 
   const applyDraftCommand = useCallback((command: string) => {
     setDraft(`${command} `);
@@ -1798,42 +1774,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <button type="button" className={selectedProjectId === "all" ? "active" : ""} onClick={() => setSelectedProjectId("all")}>All projects</button>
             <button type="button" className={selectedProjectId === "none" ? "active" : ""} onClick={() => setSelectedProjectId("none")}>Unassigned</button>
           </div>
-          <div className="chat-v11-session-groups">
-            <div className="chat-v11-rail-section">
-              <div className="chat-v11-rail-title">
-                <h4>Mission</h4>
-                <StatusChip tone="success">{missionSessions.length}</StatusChip>
-              </div>
-            <ul>
-              {missionSessions.map((session) => (
-                <li key={session.sessionId}>
-                  <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
-                    {formatSessionLabel(session)}
-                  </button>
-                  <p>{session.projectName ?? "No project yet"}</p>
-                </li>
-              ))}
-              {missionSessions.length === 0 ? <li className="chat-v11-empty-item">No mission chats match this filter yet.</li> : null}
-            </ul>
-            </div>
-            <div className="chat-v11-rail-section">
-            <div className="chat-v11-rail-title">
-              <h4>External</h4>
-              <StatusChip tone="warning">{externalSessions.length}</StatusChip>
-            </div>
-            <ul>
-              {externalSessions.map((session) => (
-                <li key={session.sessionId}>
-                  <button type="button" className={selectedSessionId === session.sessionId ? "active" : ""} onClick={() => setSelectedSessionId(session.sessionId)}>
-                    {formatSessionLabel(session)}
-                  </button>
-                  <p>{session.channel}/{session.account}</p>
-                </li>
-              ))}
-              {externalSessions.length === 0 ? <li className="chat-v11-empty-item">No external chats are connected right now.</li> : null}
-            </ul>
-            </div>
-          </div>
+          <ChatSessionRail
+            missionSessions={missionSessions}
+            externalSessions={externalSessions}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={setSelectedSessionId}
+            renderSessionLabel={(sessionId) => visibleSessionLabelById.get(sessionId) ?? `Chat ${sessionId.slice(-6)}`}
+          />
         </aside>
 
         <div className="chat-v11-main">
@@ -1841,16 +1788,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
             <div className="chat-v11-conversation-shell">
               <div className={`chat-v11-main-grid ${messageMode === "cowork" ? "with-cowork" : ""}`}>
                 <article className={`card chat-v11-thread mode-${messageMode}`}>
-                  <div
-                    ref={messageListRef}
-                    className="chat-v11-thread-scroll"
-                    onScroll={handleMessageListScroll}
-                  >
+                  <div className="chat-v11-thread-scroll">
                     <ChatThreadView
                       loading={messagesLoading}
                       thread={thread}
                       selectedTurnId={selectedTurnId}
                       notices={localNotices}
+                      followOutput={followThreadOutput}
+                      onBottomStateChange={setFollowThreadOutput}
                       onSelectTurn={setSelectedTurnId}
                       onSwitchBranch={(turnId) => void handleSelectBranchTurn(turnId)}
                       onRetryTurn={(turnId) => void handleRetryTurn(turnId)}

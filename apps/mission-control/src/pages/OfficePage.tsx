@@ -38,6 +38,7 @@ import { SelectOrCustom } from "../components/SelectOrCustom";
 import { StatusChip } from "../components/StatusChip";
 import { CardSkeleton } from "../components/CardSkeleton";
 import { pageCopy } from "../content/copy";
+import "../styles/office.css";
 import { GCSelect } from "../components/ui";
 import { OFFICE_ZONE_ORDER, inferOfficeZone, officeZoneLabel, type OfficeZoneId } from "../data/office-zones";
 

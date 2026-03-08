@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "generatedAt": "2026-03-08",
+  "policy": {
+    "runtimeAssetsPath": "apps/mission-control/public/assets/office/",
+    "sourceBundleDistribution": "release-attachment",
+    "notes": "Full Office source provenance is intentionally not kept in the default repo clone. Use this manifest with the optional release bundle when reproducing or editing source assets."
+  },
+  "bundleRoot": "office-source/",
+  "assets": [
+    {
+      "assetId": "central-operator",
+      "runtimePath": "apps/mission-control/public/assets/office/models/central-operator.glb",
+      "runtimeSha256": "7AD18F1E5BB03BA01E3E9FCC37CB9020F5C657CEB09856147E59CC3EC5362D9C",
+      "sourcePackageName": "Quaternius Universal Base Characters",
+      "sourceUrl": "https://quaternius.itch.io/universal-base-characters",
+      "license": "CC0",
+      "releaseBundlePath": "office-source/central-operator/runtime-source-male/",
+      "reproductionNotes": "Source subset contains the selected Superhero_Male_FullBody operator mesh used to export the shipped single-file GLB with embedded textures."
+    },
+    {
+      "assetId": "goat-subagent",
+      "runtimePath": "apps/mission-control/public/assets/office/models/goat-subagent.glb",
+      "runtimeSha256": "0C10C2AC85D2ADD2AD9ACC3B40B9B29E492FCDF81CEF35784F213CA56F9CF9BD",
+      "sourcePackageName": "Sketchfab Goat by hendrikReyneke",
+      "sourceUrl": "https://skfb.ly/osEZ8",
+      "license": "CC BY 4.0",
+      "releaseBundlePath": "office-source/goat-subagent/",
+      "reproductionNotes": "Release bundle contains the original source model and attribution metadata used to produce the shipped embedded-texture GLB."
+    },
+    {
+      "assetId": "goat-subagent-animated",
+      "runtimePath": "apps/mission-control/public/assets/office/models/goat-subagent-animated.glb",
+      "runtimeSha256": "C730D6D84193D10D566064856240CE97D6319D5D98CABEF5800408DADA06BAAA",
+      "sourcePackageName": "Sketchfab Animated Goat by 3D_Tech",
+      "sourceUrl": "https://skfb.ly/pGW7u",
+      "license": "CC BY 4.0",
+      "releaseBundlePath": "office-source/goat-subagent-animated/",
+      "reproductionNotes": "Release bundle preserves the original animated goat package and attribution metadata for the 4-idle runtime GLB."
+    },
+    {
+      "assetId": "office-kit-quaternius-modular-scifi-megakit",
+      "runtimePath": "apps/mission-control/public/assets/office/kits/quaternius-modular-scifi-megakit/",
+      "runtimeSha256": "8DB71EF36973E1DEF65557D20BB350DEAA8510862984A208EEEA963096A7A01D",
+      "sourcePackageName": "Quaternius Modular Sci-Fi Megakit",
+      "sourceUrl": "https://quaternius.itch.io/modular-scifi-megakit",
+      "license": "CC0",
+      "releaseBundlePath": "office-source/quaternius-modular-scifi-megakit/",
+      "reproductionNotes": "Runtime ships only the Office V5 subset. The release bundle retains the original source kit used to extract the shared environment assets and textures."
+    },
+    {
+      "assetId": "office-kit-quaternius-scifi-essentials",
+      "runtimePath": "apps/mission-control/public/assets/office/kits/quaternius-scifi-essentials-kit/",
+      "runtimeSha256": "AF6989B4A4953BE5D59E355EAA712703783F328FADEA438619BBD9CBDB96462F",
+      "sourcePackageName": "Quaternius Sci-Fi Essentials Kit",
+      "sourceUrl": "https://quaternius.itch.io/sci-fi-essentials-kit",
+      "license": "CC0",
+      "releaseBundlePath": "office-source/quaternius-scifi-essentials-kit/",
+      "reproductionNotes": "Runtime ships only the Office V5 furniture subset. The release bundle preserves the original source kit for provenance and future re-exports."
+    }
+  ]
+}

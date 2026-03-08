@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString([], {
@@ -7,7 +7,7 @@ function nowLabel(): string {
   });
 }
 
-export function ClockBadge(): JSX.Element {
+function ClockBadgeInner(): JSX.Element {
   const [label, setLabel] = useState(nowLabel);
 
   useEffect(() => {
@@ -23,3 +23,4 @@ export function ClockBadge(): JSX.Element {
   return <p>{label}</p>;
 }
 
+export const ClockBadge = memo(ClockBadgeInner);
