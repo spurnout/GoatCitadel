@@ -5,25 +5,36 @@
 
 Current release line: `0.6.0-beta.2`
 
-GoatCitadel is a local-first AI operations platform for people who want more than a chat box: guardrails, approvals, traces, recoverability, prompt testing, runtime visibility, and channel integrations under one roof.
+GoatCitadel is the local-first command deck for serious AI operations: chat, approvals, traces, prompt testing, runtime visibility, integrations, and expansion surfaces in one operator-first system.
+
+![GoatCitadel Mission Control](docs/screenshots/mission-control/dashboard.png)
 
 ## What GoatCitadel Is
 
-GoatCitadel is an operator system for serious AI workflows:
+GoatCitadel is built for people who want AI systems they can actually run, inspect, and trust day to day:
 
-- agentic chat with tool orchestration
-- explicit tool policy and approval gates
-- Mission Control web UI and a native TUI
-- prompt testing and benchmark workflows
-- MCP, skills, integrations, workspace guidance, and optional add-ons
+- Mission Control for live oversight, fast triage, and operator guidance
+- agentic chat with session context, project organization, and tool orchestration
+- Gatehouse approvals and policy controls before risky work runs
+- Prompt Lab for regression checks, score review, and provider comparison
+- Herd HQ for visual live awareness of sub-agents, workload, and event pace
+- MCP, Skills, integrations, workspace guidance, and optional add-ons
 - local-first runtime with your data on your machine or infrastructure
 
 ## Who It Is For
 
 - builders running local or self-hosted AI workflows
-- operators who need auditability and explicit control
-- technical users who want a TUI as well as a browser UI
-- teams experimenting with guarded automation before wider rollout
+- operators who need auditability, approvals, and explicit control
+- technical users who want a TUI as well as a browser command surface
+- teams proving out guarded automation before wider rollout
+
+## Why It Feels Different
+
+- operator-first instead of chat-box-first
+- local-first by default, with clear runtime boundaries
+- traces, approvals, and policy built into the main workflow
+- benchmark and prompt testing in the same product as daily operations
+- extensibility through MCP, Skills, integrations, and optional add-ons without hiding the risk surface
 
 ## Public Beta Scope
 
@@ -35,6 +46,7 @@ Current strengths:
 - strict validation gates and coverage gate in place
 - installer-first docs plus manual/developer path
 - web Mission Control plus terminal workflows
+- Command Deck, Chat Workspace, Gatehouse, and Herd HQ ready for daily operator use
 - Discord and Slack are viable first external channels
 
 Still evolving:
@@ -188,12 +200,20 @@ Mission Control default local URLs:
 
 ## Key Capabilities
 
+### Mission Control
+
+- Command Deck for system triage and quick action routing
+- Herd HQ for live visual awareness of sub-agents and stream activity
+- Gatehouse for high-signal approval review with replay context
+- page-level guidance that teaches the surface while you use it
+
 ### Chat + Operator Control
 
 - chat, cowork, and code modes
 - tool-aware traces and approval handling
 - workspace-aware guidance injection
-- session/project organization
+- session and project organization
+- browser-first control with terminal workflows still first-class
 
 ### Prompt Lab
 
@@ -218,6 +238,13 @@ Mission Control default local URLs:
 - integrations and channel connections
 - TUI operator workflows for local-first users
 
+### Beta-Ready Workflow
+
+- guided onboarding for first-time setup
+- quick actions and command palette for fast navigation
+- explicit settings, provider configuration, and safety posture
+- local runtime visibility instead of black-box "trust us" automation
+
 ### Optional Ecosystem
 
 - Add-ons live outside the GoatCitadel app checkout under `~/.GoatCitadel/addons`
@@ -239,19 +266,41 @@ Beginner walkthroughs live here:
 
 ## Screenshots
 
-| View | Screenshot |
+Mission Control is designed as a full operator surface, not a single conversation pane. These captures were refreshed from the current build.
+
+### First Launch And Orientation
+
+| Onboarding | Command Deck |
 |---|---|
-| Dashboard | ![Dashboard](docs/screenshots/mission-control/dashboard.png) |
-| Chat Workspace | ![Chat Workspace](docs/screenshots/mission-control/chat.png) |
-| Prompt Lab | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
-| Sessions | ![Sessions](docs/screenshots/mission-control/sessions.png) |
-| Tool Access | ![Tool Access](docs/screenshots/mission-control/tools.png) |
-| Skills | ![Skills](docs/screenshots/mission-control/skills.png) |
-| Integrations | ![Integrations](docs/screenshots/mission-control/integrations.png) |
-| MCP Servers | ![MCP Servers](docs/screenshots/mission-control/mcp.png) |
-| Workspaces | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
+| ![Onboarding](docs/screenshots/mission-control/onboarding.png) | ![Command Deck](docs/screenshots/mission-control/dashboard.png) |
+
+### Run The Work
+
+| Chat Workspace | Prompt Lab |
+|---|---|
+| ![Chat Workspace](docs/screenshots/mission-control/chat.png) | ![Prompt Lab](docs/screenshots/mission-control/prompt-lab.png) |
+
+### Keep Humans In The Loop
+
+| Gatehouse (Approvals) | Herd HQ (Office) |
+|---|---|
+| ![Gatehouse Approvals](docs/screenshots/mission-control/approvals.png) | ![Herd HQ Office](docs/screenshots/mission-control/office.png) |
+
+### Expand The Stack
+
+| Skills | Integrations |
+|---|---|
+| ![Skills](docs/screenshots/mission-control/skills.png) | ![Integrations](docs/screenshots/mission-control/integrations.png) |
+
+### Wire The Platform
+
+| MCP Servers | Workspaces |
+|---|---|
+| ![MCP Servers](docs/screenshots/mission-control/mcp.png) | ![Workspaces](docs/screenshots/mission-control/workspaces.png) |
 
 Full gallery: [docs/screenshots/mission-control](docs/screenshots/mission-control)
+
+Additional current views in the gallery include Agents, Sessions, Tool Access, Tasks, Activity, Costs, Files, Memory, Settings, and System.
 
 Refresh screenshots locally:
 
