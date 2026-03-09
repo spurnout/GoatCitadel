@@ -7,6 +7,7 @@ import {
   type EventStreamConnectionState,
 } from "./api/client";
 import { CommandPalette } from "./components/CommandPalette";
+import { DevDiagnosticsPanel } from "./components/DevDiagnosticsPanel";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
 import { NotificationStack, type NotificationItem, upsertNotificationItem } from "./components/NotificationStack";
@@ -19,6 +20,14 @@ import { useUiPreferences } from "./state/ui-preferences";
 import { resolveEffectiveEffectsMode } from "./state/effects-mode";
 import { publishEventStreamStatus, resetEventStreamStatus } from "./state/event-stream-status-store";
 import { useEventStreamStatus } from "./hooks/useEventStreamStatus";
+import {
+  isDevDiagnosticsEnabled,
+  recordClientDiagnostic,
+  setDevDiagnosticsCurrentEffectsMode,
+  setDevDiagnosticsCurrentRoute,
+  setDevDiagnosticsGatewayReachable,
+  setDevDiagnosticsSseState,
+} from "./state/dev-diagnostics-store";
 import { GCSelect, GCSwitch } from "./components/ui";
 
 function lazyPage(loader: () => Promise<Record<string, unknown>>, exportName: string) {
@@ -296,6 +305,7 @@ export function App() {
   const [showBrandWordmark, setShowBrandWordmark] = useState(true);
   const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const effectiveEffectsMode = useMemo(() => resolveEffectiveEffectsMode(effectsMode), [effectsMode]);
 
   const loadWorkspaceOptions = useCallback(async () => {
@@ -331,6 +341,16 @@ export function App() {
   useEffect(() => {
     const close = connectEventStream(
       (event) => {
+        recordClientDiagnostic({
+          level: "debug",
+          category: "refresh",
+          event: "event",
+          message: `Realtime event ${event.eventType}`,
+          context: {
+            source: event.source,
+            eventId: event.eventId,
+          },
+        });
         const topics = deriveRefreshTopics(event);
         for (const topic of topics) {
           emitRefresh(topic, {
@@ -344,6 +364,16 @@ export function App() {
       },
       (nextState) => {
         setStreamState(nextState);
+        setDevDiagnosticsSseState(nextState);
+        if (nextState === "open") {
+          setDevDiagnosticsGatewayReachable(true);
+        }
+        recordClientDiagnostic({
+          level: nextState === "error" ? "warn" : "info",
+          category: "sse",
+          event: "state_change",
+          message: `Realtime stream is now ${nextState}`,
+        });
         if (nextState === "error") {
           pushNotification("warning", "Live updates degraded. GoatCitadel is reconnecting.", "stream-connection");
         }
@@ -394,7 +424,19 @@ export function App() {
     const url = new URL(window.location.href);
     url.searchParams.set("tab", tab);
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    setDevDiagnosticsCurrentRoute(`${url.pathname}${url.search}${url.hash}`);
+    recordClientDiagnostic({
+      level: "info",
+      category: "ui",
+      event: "route.change",
+      message: `Switched to ${tab}`,
+      context: { tab },
+    });
   }, [tab]);
+
+  useEffect(() => {
+    setDevDiagnosticsCurrentEffectsMode(effectiveEffectsMode);
+  }, [effectiveEffectsMode]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -456,8 +498,16 @@ export function App() {
         keywords: ["technical", "details", "debug"],
         run: () => setShowTechnicalDetails(!showTechnicalDetails),
       },
+      ...(isDevDiagnosticsEnabled()
+        ? [{
+          id: "dev:diagnostics",
+          label: diagnosticsOpen ? "Hide developer diagnostics" : "Show developer diagnostics",
+          keywords: ["diagnostics", "dev", "logs", "debug"],
+          run: () => setDiagnosticsOpen((current) => !current),
+        }]
+        : []),
     ],
-    [setDensity, setShowTechnicalDetails, setUiMode, showTechnicalDetails],
+    [diagnosticsOpen, setDensity, setShowTechnicalDetails, setUiMode, showTechnicalDetails],
   );
 
   const content = useMemo(() => {
@@ -670,6 +720,15 @@ export function App() {
                 label="Command deck guidance"
                 text={nextStepByTab[tab]}
               />
+              {isDevDiagnosticsEnabled() ? (
+                <button
+                  type="button"
+                  className="shell-quick-action shell-command-trigger-topbar"
+                  onClick={() => setDiagnosticsOpen((current) => !current)}
+                >
+                  Diagnostics
+                </button>
+              ) : null}
             </div>
           </div>
         </header>
@@ -686,6 +745,10 @@ export function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         items={commandItems}
+      />
+      <DevDiagnosticsPanel
+        open={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
       />
       <NotificationStack
         items={notifications}

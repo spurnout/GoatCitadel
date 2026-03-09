@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { loadLocalEnvFile } from "./env-file.js";
@@ -33,6 +34,8 @@ import { secretsRoutes } from "./routes/secrets.js";
 import { chatRoutes } from "./routes/chat.js";
 import { adminRoutes } from "./routes/admin.js";
 import { docsRoutes } from "./routes/docs.js";
+import { devDiagnosticsRoutes } from "./routes/dev-diagnostics.js";
+import { devVerificationRoutes } from "./routes/dev-verification.js";
 import { mcpRoutes } from "./routes/mcp.js";
 import { addonsRoutes } from "./routes/addons.js";
 import { voiceRoutes } from "./routes/voice.js";
@@ -43,6 +46,7 @@ import { workspacesRoutes } from "./routes/workspaces.js";
 import { durableRoutes } from "./routes/durable.js";
 import { isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
 import { isSuspiciousEncodedPath } from "./path-guard.js";
+import { enterDevDiagnosticsContext } from "./dev-diagnostics/service.js";
 
 loadLocalEnvFile();
 
@@ -72,12 +76,67 @@ export async function buildApp() {
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const correlationId = readRequestHeader(request.headers["x-goatcitadel-correlation-id"]) ?? randomUUID();
+    const originSurface = readRequestHeader(request.headers["x-goatcitadel-origin-surface"]);
+    const sessionId = readRequestHeader(request.headers["x-goatcitadel-session-id"]);
+    (request as typeof request & { correlationId?: string; originSurface?: string; requestSessionId?: string }).correlationId = correlationId;
+    (request as typeof request & { correlationId?: string; originSurface?: string; requestSessionId?: string }).originSurface = originSurface;
+    (request as typeof request & { correlationId?: string; originSurface?: string; requestSessionId?: string }).requestSessionId = sessionId;
+    reply.header("x-goatcitadel-correlation-id", correlationId);
+    enterDevDiagnosticsContext({
+      correlationId,
+      route: request.routeOptions.url || request.url,
+      sessionId,
+    });
+    app.gateway?.recordDevDiagnostic({
+      level: "debug",
+      category: "api",
+      event: "request.start",
+      message: `${request.method} ${request.url}`,
+      route: request.routeOptions.url || request.url,
+      sessionId,
+      context: {
+        method: request.method,
+        url: request.url,
+        originSurface,
+      },
+    });
     const rawUrl = request.raw.url ?? request.url;
     if (isSuspiciousEncodedPath(rawUrl)) {
       return reply.code(400).send({
         error: "Rejected request path due to suspicious encoded path segments.",
       });
     }
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    app.gateway?.recordDevDiagnostic({
+      level: reply.statusCode >= 500 ? "error" : reply.statusCode >= 400 ? "warn" : "debug",
+      category: "api",
+      event: "request.finish",
+      message: `${request.method} ${request.url} -> ${reply.statusCode}`,
+      route: request.routeOptions.url || request.url,
+      sessionId: (request as typeof request & { requestSessionId?: string }).requestSessionId,
+      context: {
+        statusCode: reply.statusCode,
+        method: request.method,
+      },
+    });
+  });
+
+  app.addHook("onError", async (request, reply, error) => {
+    app.gateway?.recordDevDiagnostic({
+      level: "error",
+      category: "api",
+      event: "request.error",
+      message: `${request.method} ${request.url} failed`,
+      route: request.routeOptions.url || request.url,
+      sessionId: (request as typeof request & { requestSessionId?: string }).requestSessionId,
+      context: {
+        statusCode: reply.statusCode,
+        error: error.message,
+      },
+    });
   });
 
   if (rateLimitConfig.enabled) {
@@ -154,8 +213,22 @@ export async function buildApp() {
   await app.register(addonsRoutes);
   await app.register(adminRoutes);
   await app.register(docsRoutes);
+  await app.register(devDiagnosticsRoutes);
+  await app.register(devVerificationRoutes);
 
   return app;
+}
+
+function readRequestHeader(value: string | string[] | undefined): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    const first = value.find((item) => item.trim().length > 0);
+    return first?.trim();
+  }
+  return undefined;
 }
 
 function resolveAllowedOrigins(): Set<string> {

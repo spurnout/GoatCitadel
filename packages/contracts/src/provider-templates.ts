@@ -99,7 +99,7 @@ export const providerTemplates = [
   {
     providerId: "perplexity",
     label: "Perplexity",
-    baseUrl: "https://api.perplexity.ai/v1",
+    baseUrl: "https://api.perplexity.ai",
     defaultModel: "sonar",
   },
   {

@@ -97,6 +97,44 @@ describe("LlmService", () => {
     expect(provider?.baseUrl).toBe("https://example.com/v1");
   });
 
+  it("keeps Perplexity on the root API base without appending /v1", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "perplexity",
+      providers: [
+        {
+          providerId: "perplexity",
+          label: "Perplexity",
+          baseUrl: "https://api.perplexity.ai",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "sonar",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const provider = service.listProviders().find((item) => item.providerId === "perplexity");
+    expect(provider?.baseUrl).toBe("https://api.perplexity.ai");
+  });
+
+  it("canonicalizes legacy Perplexity /v1 endpoints back to the root API base", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "perplexity",
+      providers: [
+        {
+          providerId: "perplexity",
+          label: "Perplexity",
+          baseUrl: "https://api.perplexity.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "sonar",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const provider = service.listProviders().find((item) => item.providerId === "perplexity");
+    expect(provider?.baseUrl).toBe("https://api.perplexity.ai");
+  });
+
   it("enforces network allowlist for outbound model calls when configured", async () => {
     const config: LlmConfigFile = {
       activeProviderId: "openai",

@@ -36,3 +36,5 @@ export * from "./improvement.js";
 export * from "./workspaces.js";
 export * from "./durable.js";
 export * from "./replay.js";
+export * from "./dev-diagnostics.js";
+export * from "./verification.js";

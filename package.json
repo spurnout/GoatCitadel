@@ -33,6 +33,12 @@
     "coverage:gate": "node scripts/coverage-gate.mjs",
     "docs:check": "node scripts/validate-governance-docs.mjs && node scripts/check-button-types.mjs && node scripts/check-no-inline-sql.mjs",
     "check:buttons": "node scripts/check-button-types.mjs",
+    "verify:fast": "node scripts/verification/run.mjs fast",
+    "verify:deep:core": "node scripts/verification/run.mjs deep-core",
+    "verify:deep:ecosystem": "node scripts/verification/run.mjs deep-ecosystem",
+    "verify:soak": "node scripts/verification/run.mjs soak",
+    "verify:review": "node scripts/verification/run.mjs review",
+    "verify:all": "node scripts/verification/run.mjs all",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck"
   },
@@ -40,10 +46,12 @@
     "@vitest/coverage-v8": "^2.1.9",
     "@types/node": "^24.3.0",
     "c8": "^10.1.3",
+    "playwright": "^1.56.1",
     "sharp": "^0.34.4",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "zod": "^3.24.1"
   }
 }
 

@@ -1,0 +1,202 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { repoRoot, sanitizeFilePart, spawnVerificationProcess, writeText } from "./shared.mjs";
+
+export const defaultGatewayUrl = "http://127.0.0.1:8787";
+export const defaultUiUrl = "http://127.0.0.1:5173";
+
+export async function prepareVerificationRuntime(runId) {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `goatcitadel-verify-${sanitizeFilePart(runId)}-`));
+  await fs.mkdir(path.join(tempRoot, "data"), { recursive: true });
+  await fs.cp(path.join(repoRoot, "config"), path.join(tempRoot, "config"), { recursive: true });
+  if (existsSync(path.join(repoRoot, "skills"))) {
+    await fs.cp(path.join(repoRoot, "skills"), path.join(tempRoot, "skills"), { recursive: true });
+  }
+  if (existsSync(path.join(repoRoot, "workspaces"))) {
+    await fs.cp(path.join(repoRoot, "workspaces"), path.join(tempRoot, "workspaces"), { recursive: true });
+  }
+  return tempRoot;
+}
+
+export async function startVerificationStack(context, options = {}) {
+  const runtimeRoot = options.runtimeRoot ?? await prepareVerificationRuntime(context.runId);
+  const gatewayEnv = {
+    GOATCITADEL_ROOT_DIR: runtimeRoot,
+    GATEWAY_HOST: "127.0.0.1",
+    GATEWAY_PORT: "8787",
+    GOATCITADEL_AUTH_MODE: "none",
+    GOATCITADEL_DEV_DIAGNOSTICS_ENABLED: "true",
+    GOATCITADEL_DEV_DIAGNOSTICS_VERBOSE: "false",
+    ...options.gatewayEnv,
+  };
+  const uiEnv = {
+    VITE_GATEWAY_URL: defaultGatewayUrl,
+    VITE_GOATCITADEL_DEV_DIAGNOSTICS_ENABLED: "true",
+    VITE_GOATCITADEL_DEV_DIAGNOSTICS_VERBOSE: "false",
+    ...options.uiEnv,
+  };
+
+  const gateway = await startProcess(context, "gateway", [pnpmCommand(), "--dir", repoRoot, "dev:gateway"], gatewayEnv);
+  let ui;
+  try {
+    await waitForHttp(`${defaultGatewayUrl}/health`, "Gateway health");
+    if (options.includeUi !== false) {
+      ui = await startProcess(context, "ui", [pnpmCommand(), "--dir", repoRoot, "dev:ui"], uiEnv);
+      await waitForHttp(defaultUiUrl, "Mission Control UI");
+    }
+    return {
+      runtimeRoot,
+      gateway,
+      ui,
+      gatewayUrl: defaultGatewayUrl,
+      uiUrl: defaultUiUrl,
+    };
+  } catch (error) {
+    await stopVerificationStack({ runtimeRoot, gateway, ui });
+    throw error;
+  }
+}
+
+export async function stopVerificationStack(stack) {
+  if (stack?.ui) {
+    await stopProcess(stack.ui);
+  }
+  if (stack?.gateway) {
+    await stopProcess(stack.gateway);
+  }
+  if (stack?.runtimeRoot) {
+    await removeRuntimeRootWithRetry(stack.runtimeRoot);
+  }
+}
+
+export async function waitForHttp(url, label, timeoutMs = 180000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // keep waiting
+    }
+    await delay(1500);
+  }
+  throw new Error(`${label} did not become ready in time: ${url}`);
+}
+
+export async function startProcess(context, name, commandArgs, extraEnv) {
+  const [command, ...args] = commandArgs;
+  const stdoutPath = path.join(context.artifactRoot, "diagnostics", `${name}.stdout.log`);
+  const stderrPath = path.join(context.artifactRoot, "diagnostics", `${name}.stderr.log`);
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  const child = spawnVerificationProcess(command, args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ...extraEnv,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+  child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+  child.on("exit", async () => {
+    await writeText(stdoutPath, Buffer.concat(stdoutChunks).toString("utf8"));
+    await writeText(stderrPath, Buffer.concat(stderrChunks).toString("utf8"));
+  });
+  return {
+    child,
+    stdoutPath,
+    stderrPath,
+  };
+}
+
+export async function stopProcess(handle) {
+  if (!handle?.child || handle.child.exitCode !== null) {
+    return;
+  }
+  if (process.platform === "win32") {
+    spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "taskkill", "/PID", String(handle.child.pid), "/T", "/F"], {
+      stdio: "ignore",
+    });
+    await waitForExit(handle.child, 12000).catch(() => undefined);
+    handle.child.stdout?.destroy();
+    handle.child.stderr?.destroy();
+    return;
+  }
+  handle.child.kill("SIGTERM");
+  await waitForExit(handle.child, 8000).catch(async () => {
+    handle.child.kill("SIGKILL");
+    await waitForExit(handle.child, 4000).catch(() => undefined);
+  });
+  handle.child.stdout?.destroy();
+  handle.child.stderr?.destroy();
+}
+
+export async function requestJson(gatewayUrl, route, init = {}) {
+  const method = init.method ?? "GET";
+  const response = await fetch(`${gatewayUrl}${route}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(method !== "GET" ? { "Idempotency-Key": randomUUID() } : {}),
+      ...(init.headers ?? {}),
+    },
+    body: init.body ? JSON.stringify(init.body) : undefined,
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return {
+    ok: response.ok,
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body,
+  };
+}
+
+export function pnpmCommand() {
+  return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+}
+
+export function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeRuntimeRootWithRetry(runtimeRoot, attempts = 6) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fs.rm(runtimeRoot, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if ((error?.code !== "EBUSY" && error?.code !== "EPERM") || attempt === attempts - 1) {
+        throw error;
+      }
+      await delay(1000 * (attempt + 1));
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+}
+
+function waitForExit(child, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("process exit timeout")), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}

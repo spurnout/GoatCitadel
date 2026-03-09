@@ -17,6 +17,7 @@ export const gatewayPlugin = fp(async (fastify) => {
   const config = await loadGatewayConfig(rootDir);
   const gateway = new GatewayService(config);
   await gateway.init();
+  gateway.attachDevDiagnosticsLogger(fastify.log);
 
   fastify.decorate("gateway", gateway);
   fastify.decorate("gatewayConfig", config);

@@ -627,7 +627,8 @@ export class LlmService {
 function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
   const base = provider.baseUrl.trim().replace(/\/+$/, "");
   validateProviderBaseUrl(base);
-  const withV1 = shouldAppendV1(base) ? `${base}/v1` : base;
+  const canonicalBase = canonicalizeProviderBaseUrl(provider.providerId, base);
+  const withV1 = shouldAppendV1(provider.providerId, canonicalBase) ? `${canonicalBase}/v1` : canonicalBase;
   return {
     ...provider,
     baseUrl: withV1,
@@ -635,7 +636,23 @@ function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
   };
 }
 
-function shouldAppendV1(baseUrl: string): boolean {
+function canonicalizeProviderBaseUrl(providerId: string, baseUrl: string): string {
+  if (providerId !== "perplexity") {
+    return baseUrl;
+  }
+  const parsed = new URL(baseUrl);
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (path === "/v1" || path === "/api/v1") {
+    parsed.pathname = "/";
+    return parsed.toString().replace(/\/+$/, "");
+  }
+  return baseUrl;
+}
+
+function shouldAppendV1(providerId: string, baseUrl: string): boolean {
+  if (providerId === "perplexity") {
+    return false;
+  }
   const parsed = new URL(baseUrl);
   const path = parsed.pathname.replace(/\/+$/, "");
 

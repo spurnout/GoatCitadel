@@ -104,6 +104,11 @@ import { GCCombobox, GCSelect, GCSwitch } from "../components/ui";
 import { useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
 import { useRefreshSubscription } from "../hooks/useRefreshSubscription";
 import { pageCopy } from "../content/copy";
+import {
+  recordClientDiagnostic,
+  setDevDiagnosticsActiveChatSession,
+  setDevDiagnosticsLatestTraceSummary,
+} from "../state/dev-diagnostics-store";
 import "../styles/chat.css";
 
 const STREAM_PREF_KEY = "goatcitadel.chat.agent.stream.enabled";
@@ -357,6 +362,13 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   } = useProviderModelCatalog("chat");
 
   const loadSidebar = useCallback(async () => {
+    recordClientDiagnostic({
+      level: "debug",
+      category: "chat",
+      event: "sidebar.load",
+      message: "Refreshing chat sidebar data",
+      context: { workspaceId },
+    });
     const [nextProjects, nextSessions] = await Promise.all([
       fetchChatProjects("all", 500, workspaceId),
       fetchChatSessions({ scope: "all", view: "all", limit: 500, workspaceId }),
@@ -416,6 +428,17 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     nextThread: ChatThreadResponse,
     requestVersion: number | null,
   ) => {
+    recordClientDiagnostic({
+      level: "debug",
+      category: "chat",
+      event: "thread.reconcile",
+      message: "Applying fetched thread state",
+      sessionId: nextThread.sessionId,
+      context: {
+        requestVersion,
+        turnCount: nextThread.turns.length,
+      },
+    });
     if (requestVersion !== null && requestVersion !== messageMutationVersionRef.current) {
       return false;
     }
@@ -618,6 +641,7 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   );
 
   useEffect(() => {
+    setDevDiagnosticsActiveChatSession(selectedSessionId ?? undefined);
     if (!selectedSessionId) {
       abortActiveChatStream(activeStreamRef.current);
       activeStreamRef.current = null;
@@ -676,6 +700,23 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
 
   useEffect(() => {
     threadRef.current = thread;
+    if (!thread) {
+      setDevDiagnosticsLatestTraceSummary(undefined);
+      return;
+    }
+    const selectedTurn = thread.turns.find((turn) => turn.turnId === (thread.selectedTurnId ?? thread.activeLeafTurnId));
+    setDevDiagnosticsLatestTraceSummary(selectedTurn?.trace
+      ? {
+        sessionId: thread.sessionId,
+        turnId: selectedTurn.turnId,
+        providerId: selectedTurn.trace.routing.effectiveProviderId ?? selectedTurn.trace.routing.primaryProviderId,
+        modelId: selectedTurn.trace.routing.effectiveModel ?? selectedTurn.trace.model,
+        state: selectedTurn.trace.status,
+      }
+      : {
+        sessionId: thread.sessionId,
+        turnCount: thread.turns.length,
+      });
   }, [thread]);
 
   useEffect(() => {
@@ -1300,6 +1341,20 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     }));
     let session: ChatSessionRecord | null = null;
     try {
+      recordClientDiagnostic({
+        level: "info",
+        category: "chat",
+        event: "send.start",
+        message: `Starting ${item.action} action`,
+        sessionId: item.sessionId,
+        turnId: item.targetTurnId,
+        context: {
+          action: item.action,
+          attachmentCount: attachmentsSnapshot.length,
+          contentLength: trimmedContent.length,
+          streamEnabled,
+        },
+      });
       setError(null);
       setPendingApproval(null);
       session = await ensureSession();
@@ -1378,10 +1433,29 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
           }
           if (chunk.type === "error") {
             setError(chunk.error || "Streaming request failed.");
+            recordClientDiagnostic({
+              level: "error",
+              category: "chat",
+              event: "stream.chunk_error",
+              message: chunk.error || "Streaming request failed.",
+              sessionId: session!.sessionId,
+              turnId: chunk.turnId,
+            });
           }
           if (!isThreadMutatingStreamChunk(chunk)) {
             return;
           }
+          recordClientDiagnostic({
+            level: "debug",
+            category: "chat",
+            event: "thread.render_path",
+            message: `Applying ${chunk.type} chunk to thread`,
+            sessionId: session!.sessionId,
+            turnId: chunk.turnId,
+            context: {
+              chunkType: chunk.type,
+            },
+          });
           commitThreadUpdate((current) => updateThreadFromStreamChunk(
             current,
             chunk,
@@ -1468,8 +1542,24 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       }
       setEditingTurnId(null);
       await loadSidebar();
+      recordClientDiagnostic({
+        level: "info",
+        category: "chat",
+        event: "send.complete",
+        message: `${item.action} action completed`,
+        sessionId: session.sessionId,
+        turnId: item.targetTurnId,
+      });
     } catch (err) {
       if (isAbortError(err)) {
+        recordClientDiagnostic({
+          level: "warn",
+          category: "chat",
+          event: "send.aborted",
+          message: `${item.action} action aborted`,
+          sessionId: session?.sessionId ?? item.sessionId,
+          turnId: item.targetTurnId,
+        });
         return;
       }
       if (session) {
@@ -1486,6 +1576,17 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
         }
       }
       setError((err as Error).message);
+      recordClientDiagnostic({
+        level: "error",
+        category: "chat",
+        event: "send.failed",
+        message: `${item.action} action failed`,
+        sessionId: session?.sessionId ?? item.sessionId,
+        turnId: item.targetTurnId,
+        context: {
+          error: (err as Error).message,
+        },
+      });
     } finally {
       const activeStream = activeStreamRef.current;
       if (session && activeStream?.sessionId === session.sessionId) {
@@ -1564,6 +1665,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       return;
     }
     try {
+      recordClientDiagnostic({
+        level: "info",
+        category: "chat",
+        event: "branch.select",
+        message: "Selecting chat branch turn",
+        sessionId: selectedSessionId,
+        turnId,
+      });
       const nextThread = await selectChatBranchTurn(selectedSessionId, turnId);
       commitThreadUpdate(nextThread);
       setSelectedTurnId(nextThread.activeLeafTurnId ?? turnId);
@@ -1573,12 +1682,30 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
   }, [commitThreadUpdate, selectedSessionId]);
 
   const handleResumeQueue = useCallback(() => {
+    recordClientDiagnostic({
+      level: "info",
+      category: "chat",
+      event: "queue.resume",
+      message: "Resuming queued outbound chat items",
+      sessionId: selectedSessionId ?? undefined,
+      context: {
+        queuedCount: queuedOutbound.length,
+      },
+    });
     setQueuedOutbound((current) => current.map((item) => ({ ...item, paused: false })));
-  }, []);
+  }, [queuedOutbound.length, selectedSessionId]);
 
   const handleRemoveQueuedItem = useCallback((id: string) => {
+    recordClientDiagnostic({
+      level: "info",
+      category: "chat",
+      event: "queue.remove",
+      message: "Removed queued outbound chat item",
+      sessionId: selectedSessionId ?? undefined,
+      context: { id },
+    });
     setQueuedOutbound((current) => current.filter((item) => item.id !== id));
-  }, []);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (sendingRef.current || sending) {

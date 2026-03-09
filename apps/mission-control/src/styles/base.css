@@ -4851,3 +4851,190 @@ body {
   font-size: 14px;
 }
 
+.dev-diagnostics-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(960px, calc(100vw - 32px));
+  max-height: min(78vh, 760px);
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(115, 205, 255, 0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(10, 16, 24, 0.96), rgba(7, 11, 17, 0.98)),
+    rgba(7, 11, 17, 0.98);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  z-index: 1400;
+}
+
+.dev-diagnostics-header,
+.dev-diagnostics-toolbar,
+.dev-diagnostics-actions,
+.dev-diagnostics-status-grid,
+.dev-diagnostics-layout,
+.dev-diagnostics-item-meta,
+.dev-diagnostics-detail-meta {
+  display: flex;
+  gap: 10px;
+}
+
+.dev-diagnostics-header,
+.dev-diagnostics-toolbar,
+.dev-diagnostics-actions {
+  align-items: center;
+}
+
+.dev-diagnostics-header {
+  justify-content: space-between;
+}
+
+.dev-diagnostics-kicker {
+  margin: 0 0 4px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.72rem;
+}
+
+.dev-diagnostics-header h3,
+.dev-diagnostics-detail h4 {
+  margin: 0;
+}
+
+.dev-diagnostics-close,
+.dev-diagnostics-actions button,
+.dev-diagnostics-item {
+  border: 1px solid rgba(115, 205, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(10, 18, 27, 0.8);
+  color: var(--text);
+}
+
+.dev-diagnostics-close,
+.dev-diagnostics-actions button {
+  padding: 8px 12px;
+}
+
+.dev-diagnostics-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dev-diagnostics-status-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dev-diagnostics-status-grid span,
+.dev-diagnostics-item-meta,
+.dev-diagnostics-item-time,
+.dev-diagnostics-detail-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.dev-diagnostics-toolbar select,
+.dev-diagnostics-toolbar input {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(115, 205, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(10, 18, 27, 0.8);
+  color: var(--text);
+}
+
+.dev-diagnostics-toolbar input {
+  min-width: 220px;
+  flex: 1 1 240px;
+}
+
+.dev-diagnostics-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.1fr);
+  min-height: 0;
+}
+
+.dev-diagnostics-list,
+.dev-diagnostics-detail {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.dev-diagnostics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-diagnostics-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.dev-diagnostics-item.active {
+  border-color: rgba(115, 205, 255, 0.36);
+  background: rgba(18, 32, 45, 0.92);
+}
+
+.dev-diagnostics-item strong {
+  font-size: 0.92rem;
+}
+
+.dev-diagnostics-item-meta,
+.dev-diagnostics-detail-meta {
+  flex-wrap: wrap;
+}
+
+.dev-diagnostics-detail {
+  padding: 12px;
+  border: 1px solid rgba(115, 205, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.dev-diagnostics-detail p {
+  margin: 8px 0 12px;
+}
+
+.dev-diagnostics-detail pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(4, 8, 14, 0.95);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dev-diagnostics-empty {
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
+@media (max-width: 960px) {
+  .dev-diagnostics-panel {
+    inset: auto 8px 8px 8px;
+    width: auto;
+    max-height: 82vh;
+  }
+
+  .dev-diagnostics-status-grid,
+  .dev-diagnostics-layout {
+    grid-template-columns: 1fr;
+  }
+}
+

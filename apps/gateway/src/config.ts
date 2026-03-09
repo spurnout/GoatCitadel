@@ -567,7 +567,7 @@ function defaultLlmConfig(): string {
       {
         providerId: "perplexity",
         label: "Perplexity",
-        baseUrl: "https://api.perplexity.ai/v1",
+        baseUrl: "https://api.perplexity.ai",
         apiStyle: "openai-chat-completions",
         defaultModel: "sonar",
         apiKeyEnv: "PERPLEXITY_API_KEY",

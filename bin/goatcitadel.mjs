@@ -82,6 +82,21 @@ async function main() {
     runPnpm(["--dir", appDir, "--filter", "@goatcitadel/gateway", "run", "voice:runtime", ...rest]);
     return;
   }
+  if (command === "verify") {
+    const lane = rest[0] || "fast";
+    const laneArgs = rest.slice(1);
+    const supportedLanes = new Set(["fast", "all", "review", "soak", "deep:core", "deep:ecosystem"]);
+    if (!supportedLanes.has(lane)) {
+      throw new Error(`Unsupported verify lane: ${lane}`);
+    }
+    const scriptName = lane === "deep:core"
+      ? "verify:deep:core"
+      : lane === "deep:ecosystem"
+        ? "verify:deep:ecosystem"
+        : `verify:${lane}`;
+    runPnpm(["--dir", appDir, scriptName, ...laneArgs]);
+    return;
+  }
   if (command === "admin") {
     runPnpm(["--dir", appDir, "admin", ...rest]);
     return;
@@ -447,6 +462,7 @@ Commands:
   tui        Run terminal Mission Control
   tools      Tool access CLI (catalog/grants/invoke)
   voice      Managed local voice runtime (install/status/models/select/remove)
+  verify     Unattended verification lanes (fast/all/review/soak/deep:core/deep:ecosystem)
   admin      Backup/retention admin CLI
   smoke      Run smoke tests
   npu        Run local NPU sidecar (Python)

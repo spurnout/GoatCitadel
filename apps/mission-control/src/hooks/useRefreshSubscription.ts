@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { RefreshSignal, RefreshTopic } from "../state/refresh-bus";
 import { subscribeRefresh } from "../state/refresh-bus";
+import { recordClientDiagnostic } from "../state/dev-diagnostics-store";
 
 interface UseRefreshSubscriptionOptions {
   enabled?: boolean;
@@ -54,6 +55,13 @@ export function useRefreshSubscription(
     const runLatest = async (source: "event" | "fallback") => {
       if (inFlightRef.current) {
         pendingRef.current = true;
+        recordClientDiagnostic({
+          level: "debug",
+          category: "refresh",
+          event: "queued",
+          message: `Refresh for ${topic} queued while callback was in-flight`,
+          context: { topic },
+        });
         if (debug) {
           console.debug(`[refresh:${topic}] skipped while in-flight; queued follow-up refresh`);
         }
@@ -69,6 +77,18 @@ export function useRefreshSubscription(
       };
 
       inFlightRef.current = true;
+      recordClientDiagnostic({
+        level: "debug",
+        category: "refresh",
+        event: "started",
+        message: `Refresh started for ${topic}`,
+        context: {
+          topic,
+          source,
+          reason: signal.reason,
+          eventType: signal.eventType,
+        },
+      });
       if (debug) {
         console.debug(
           `[refresh:${topic}] started`,
@@ -79,6 +99,16 @@ export function useRefreshSubscription(
       try {
         await callbackRef.current(signal);
       } catch (error) {
+        recordClientDiagnostic({
+          level: "warn",
+          category: "refresh",
+          event: "callback_failed",
+          message: `Refresh callback failed for ${topic}`,
+          context: {
+            topic,
+            error: (error as Error).message,
+          },
+        });
         if (debug) {
           console.warn(`[refresh:${topic}] callback failed`, error);
         }
@@ -90,6 +120,13 @@ export function useRefreshSubscription(
         if (debug) {
           console.debug(`[refresh:${topic}] completed`);
         }
+        recordClientDiagnostic({
+          level: "debug",
+          category: "refresh",
+          event: "completed",
+          message: `Refresh completed for ${topic}`,
+          context: { topic, source },
+        });
         if (pendingRef.current) {
           pendingRef.current = false;
           timerRef.current = window.setTimeout(() => {
@@ -104,6 +141,18 @@ export function useRefreshSubscription(
       latestSignalRef.current = signal;
       lastSignalAtRef.current = signal.timestamp;
       setFallbackActive(false);
+      recordClientDiagnostic({
+        level: "debug",
+        category: "refresh",
+        event: "event",
+        message: `Refresh signal received for ${topic}`,
+        context: {
+          topic,
+          reason: signal.reason,
+          eventType: signal.eventType,
+          source: signal.source,
+        },
+      });
       if (debug) {
         console.debug(
           `[refresh:${topic}] event`,
