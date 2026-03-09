@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalRequest,
+  LlmModelRecord,
   LlmRuntimeConfig,
   ApprovalReplayEvent,
   MemoryContextPack,
@@ -50,6 +51,9 @@ export interface TuiCostSummaryResponse {
     costUsd: number;
   }>;
 }
+
+const MAX_SSE_BUFFER_CHARS = 256_000;
+const MAX_SSE_ERROR_PREVIEW_CHARS = 180;
 
 export class TuiApiClient {
   public readonly baseUrl: string;
@@ -901,22 +905,33 @@ export class TuiApiClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      let split = buffer.indexOf("\n\n");
-      while (split >= 0) {
-        const block = buffer.slice(0, split);
-        buffer = buffer.slice(split + 2);
-        const parsed = parseSseDataRecord(block);
-        if (parsed) {
-          yield parsed;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          break;
         }
-        split = buffer.indexOf("\n\n");
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > MAX_SSE_BUFFER_CHARS) {
+          throw new Error("Streaming response exceeded the SSE buffer limit before a complete event was received.");
+        }
+        let split = buffer.indexOf("\n\n");
+        while (split >= 0) {
+          const block = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const parsed = parseSseDataRecord(block);
+          if (parsed) {
+            yield parsed;
+          }
+          split = buffer.indexOf("\n\n");
+        }
       }
+    } finally {
+      reader.releaseLock();
+    }
+    if (buffer.trim()) {
+      throw new Error(`Streaming response ended before a complete SSE event was received: ${previewSseText(buffer)}`);
     }
   }
 
@@ -962,13 +977,14 @@ function parseSseDataRecord(block: string): Record<string, unknown> | undefined 
   if (!trimmed || trimmed.startsWith(":")) {
     return undefined;
   }
-  const dataLine = trimmed
+  const dataLines = trimmed
     .split("\n")
-    .find((line) => line.startsWith("data:"));
-  if (!dataLine) {
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim());
+  if (dataLines.length === 0) {
     return undefined;
   }
-  const payload = dataLine.slice(5).trim();
+  const payload = dataLines.join("\n").trim();
   if (!payload) {
     return undefined;
   }
@@ -976,6 +992,17 @@ function parseSseDataRecord(block: string): Record<string, unknown> | undefined 
     const parsed = JSON.parse(payload) as Record<string, unknown>;
     return parsed;
   } catch {
-    return undefined;
+    throw new Error(`Malformed SSE event payload: ${previewSseText(payload)}`);
   }
+}
+
+function previewSseText(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "(empty)";
+  }
+  if (trimmed.length <= MAX_SSE_ERROR_PREVIEW_CHARS) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, MAX_SSE_ERROR_PREVIEW_CHARS)}...`;
 }

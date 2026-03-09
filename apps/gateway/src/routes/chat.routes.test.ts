@@ -214,4 +214,27 @@ describe("chat routes additional coverage", () => {
 
     expect(response.statusCode).toBe(409);
   });
+
+  it("sanitizes non-conflict agent-send failures", async () => {
+    const agentSendChatMessage = vi.fn(async () => {
+      throw new Error("database exploded");
+    });
+    app = Fastify();
+    app.decorate("gateway", {
+      agentSendChatMessage,
+    } as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/agent-send",
+      payload: {
+        content: "Hello",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("Check gateway diagnostics and retry");
+    expect(response.body).not.toContain("database exploded");
+  });
 });

@@ -111,6 +111,9 @@ vi.mock("./live-feed.js", () => ({
     public getLastEvent(): { timestamp: string } {
       return { timestamp: new Date().toISOString() };
     }
+    public getLastError(): string | null {
+      return null;
+    }
   },
 }));
 

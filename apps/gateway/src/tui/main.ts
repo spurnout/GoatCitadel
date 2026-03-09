@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       readOnly: client.readOnly,
       liveState: live.getState(),
       lastEventAt: live.getLastEvent()?.timestamp,
+      liveNote: live.getLastError() ?? undefined,
     });
 
     try {
@@ -269,6 +270,7 @@ function printHeader(input: {
   readOnly: boolean;
   liveState: string;
   lastEventAt?: string;
+  liveNote?: string;
 }): void {
   console.clear();
   console.log(renderSection("GoatCitadel Terminal Mission Control", "Operator console for local-first runtime control."));
@@ -278,6 +280,7 @@ function printHeader(input: {
     { key: "Live", value: input.liveState },
     { key: "Mode", value: input.readOnly ? "read-only" : "read+safe-write" },
     { key: "Last event", value: input.lastEventAt ? new Date(input.lastEventAt).toLocaleString() : "none yet" },
+    ...(input.liveNote ? [{ key: "Feed note", value: summarizeText(input.liveNote, 100) }] : []),
   ]));
   console.log("");
 }
@@ -476,43 +479,59 @@ async function viewChat(client: TuiApiClient): Promise<void> {
   if (!content) {
     return;
   }
-  const mode = await select<"chat" | "cowork" | "code">({
-    message: "Send mode",
+
+  let mode: "chat" | "cowork" | "code" = "chat";
+  let webMode: "auto" | "off" | "quick" | "deep" = "auto";
+  let memoryMode: "auto" | "on" | "off" = "auto";
+  let thinkingLevel: "minimal" | "standard" | "extended" = "standard";
+  let agentMode = true;
+
+  const sendStyle = await select({
+    message: "Send style",
     choices: [
-      { name: "chat", value: "chat" },
-      { name: "cowork", value: "cowork" },
-      { name: "code", value: "code" },
+      { name: "Quick send (chat/auto/standard)", value: "quick", description: "Send immediately with sensible defaults." },
+      { name: "Configure options", value: "configure", description: "Choose mode, web, memory, thinking, and agent path before sending." },
     ],
   });
-  const webMode = await select<"auto" | "off" | "quick" | "deep">({
-    message: "Web mode",
-    choices: [
-      { name: "auto", value: "auto" },
-      { name: "off", value: "off" },
-      { name: "quick", value: "quick" },
-      { name: "deep", value: "deep" },
-    ],
-  });
-  const memoryMode = await select<"auto" | "on" | "off">({
-    message: "Memory mode",
-    choices: [
-      { name: "auto", value: "auto" },
-      { name: "on", value: "on" },
-      { name: "off", value: "off" },
-    ],
-  });
-  const thinkingLevel = await select<"minimal" | "standard" | "extended">({
-    message: "Thinking level",
-    choices: [
-      { name: "minimal", value: "minimal" },
-      { name: "standard", value: "standard" },
-      { name: "extended", value: "extended" },
-    ],
-  });
-  const agentMode = await confirm({
-    message: "Use agent-send stream (tools/delegation path)?",
-    default: true,
-  });
+  if (sendStyle === "configure") {
+    mode = await select<"chat" | "cowork" | "code">({
+      message: "Send mode",
+      choices: [
+        { name: "chat", value: "chat" },
+        { name: "cowork", value: "cowork" },
+        { name: "code", value: "code" },
+      ],
+    });
+    webMode = await select<"auto" | "off" | "quick" | "deep">({
+      message: "Web mode",
+      choices: [
+        { name: "auto", value: "auto" },
+        { name: "off", value: "off" },
+        { name: "quick", value: "quick" },
+        { name: "deep", value: "deep" },
+      ],
+    });
+    memoryMode = await select<"auto" | "on" | "off">({
+      message: "Memory mode",
+      choices: [
+        { name: "auto", value: "auto" },
+        { name: "on", value: "on" },
+        { name: "off", value: "off" },
+      ],
+    });
+    thinkingLevel = await select<"minimal" | "standard" | "extended">({
+      message: "Thinking level",
+      choices: [
+        { name: "minimal", value: "minimal" },
+        { name: "standard", value: "standard" },
+        { name: "extended", value: "extended" },
+      ],
+    });
+    agentMode = await confirm({
+      message: "Use agent-send stream (tools/delegation path)?",
+      default: true,
+    });
+  }
 
   console.log(renderBox("Request", [
     `Session: ${sessionId}`,
@@ -1966,8 +1985,13 @@ async function viewSettings(
   profileName: string,
 ): Promise<void> {
   const settings = await client.runtimeSettings();
-  console.log(chalk.bold("Gateway Settings"));
-  console.log(JSON.stringify(settings, null, 2));
+  console.log(renderSection("Gateway Settings", "Current runtime configuration from the gateway."));
+  console.log(renderKeyValueSummary(
+    Object.entries(settings).map(([key, value]) => ({
+      key,
+      value: typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? ""),
+    })),
+  ));
 
   const action = await select({
     message: "Settings action",

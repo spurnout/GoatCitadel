@@ -270,4 +270,30 @@ describe("TuiApiClient coverage", () => {
       }),
     ).rejects.toThrow("Read-only mode is enabled");
   });
+
+  it("surfaces malformed SSE payloads instead of silently swallowing them", async () => {
+    const encoder = new TextEncoder();
+    const fetchMalformed = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: {\"type\":\"delta\"\n\n"));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMalformed as unknown as typeof fetch);
+
+    const client = new TuiApiClient({
+      baseUrl: "http://127.0.0.1:8787",
+      auth: { mode: "none" },
+      readOnly: false,
+    });
+
+    await expect((async () => {
+      for await (const _event of client.streamChatMessage("session-1", { content: "hi" })) {
+        // no-op
+      }
+    })()).rejects.toThrow(/Malformed SSE event payload/);
+  });
 });

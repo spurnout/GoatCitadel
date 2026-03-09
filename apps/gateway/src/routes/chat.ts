@@ -411,8 +411,11 @@ function getPublicChatSseErrorMessage(error: unknown): string {
 }
 
 function sendChatWriteError(reply: FastifyReply, error: unknown) {
-  const message = error instanceof Error ? error.message : "Chat write failed";
-  return reply.code(isChatTurnWriteConflictError(error) ? 409 : 400).send({ error: message });
+  if (isChatTurnWriteConflictError(error) && error instanceof Error) {
+    return reply.code(409).send({ error: error.message });
+  }
+  reply.log.error({ err: error }, "chat write failed");
+  return reply.code(400).send({ error: "Chat write failed. Check gateway diagnostics and retry." });
 }
 
 export const chatRoutes: FastifyPluginAsync = async (fastify) => {
