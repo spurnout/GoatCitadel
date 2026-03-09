@@ -28,7 +28,7 @@ export const providerTemplates = [
     providerId: "minimax",
     label: "MiniMax (compatible endpoint)",
     baseUrl: "https://api.minimax.io/v1",
-    defaultModel: "MiniMax-Text-01",
+    defaultModel: "MiniMax-M2.5",
   },
   {
     providerId: "vercel",

@@ -2,7 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import type { ChatMessageRecord } from "@goatcitadel/contracts";
+import type { ChatCompletionRequest, ChatMessageRecord } from "@goatcitadel/contracts";
 import { Storage } from "@goatcitadel/storage";
 
 const listDiagnosticsQuerySchema = z.object({
@@ -258,10 +258,14 @@ function buildProviderExercisePayload(
   scenario: z.infer<typeof providerExerciseSchema>["scenario"],
   providerId?: string,
   model?: string,
-) {
-  const base = {
+): ChatCompletionRequest {
+  const base: ChatCompletionRequest = {
     providerId,
     model,
+    memory: {
+      enabled: false,
+      mode: "off",
+    },
     messages: [
       {
         role: "system" as const,
@@ -312,6 +316,7 @@ function buildProviderExercisePayload(
         type: "json_schema",
         json_schema: {
           name: "verification_status",
+          ...(providerId === "anthropic" ? { strict: true } : {}),
           schema: {
             type: "object",
             properties: {

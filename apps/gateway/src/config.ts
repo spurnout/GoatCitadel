@@ -525,6 +525,14 @@ function defaultLlmConfig(): string {
         apiKeyEnv: "GOOGLE_API_KEY",
       },
       {
+        providerId: "minimax",
+        label: "MiniMax (compatible endpoint)",
+        baseUrl: "https://api.minimax.io/v1",
+        apiStyle: "openai-chat-completions",
+        defaultModel: "MiniMax-M2.5",
+        apiKeyEnv: "MINIMAX_API_KEY",
+      },
+      {
         providerId: "openrouter",
         label: "OpenRouter",
         baseUrl: "https://openrouter.ai/api/v1",

@@ -186,7 +186,7 @@ describe("LlmService", () => {
           label: "MiniMax",
           baseUrl: "https://api.minimax.chat/v1",
           apiStyle: "openai-chat-completions",
-          defaultModel: "MiniMax-Text-01",
+          defaultModel: "MiniMax-M2.5",
         },
         {
           providerId: "moonshot",

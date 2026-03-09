@@ -240,6 +240,10 @@ describe("dev verification routes", () => {
     expect(createChatCompletion).toHaveBeenCalledWith(expect.objectContaining({
       providerId: "deepseek",
       model: "deepseek-chat",
+      memory: {
+        enabled: false,
+        mode: "off",
+      },
       response_format: {
         type: "json_object",
       },
@@ -279,8 +283,58 @@ describe("dev verification routes", () => {
     expect(createChatCompletion).toHaveBeenCalledWith(expect.objectContaining({
       providerId: "openai",
       model: "gpt-4.1-mini",
+      memory: {
+        enabled: false,
+        mode: "off",
+      },
       response_format: expect.objectContaining({
         type: "json_schema",
+      }),
+    }));
+  });
+
+  it("sets strict json_schema for Anthropic structured verification payloads", async () => {
+    const createChatCompletion = vi.fn(async () => ({
+      choices: [{ message: { content: "{\"summary\":\"ok\",\"confidence\":\"high\"}" } }],
+    }));
+
+    app = Fastify();
+    app.decorate("gateway", {
+      isDevDiagnosticsEnabled: () => true,
+      createChatCompletion,
+      createChatCompletionStream: vi.fn(),
+    } as never);
+    app.decorate("gatewayConfig", {
+      rootDir: "f:/tmp/goatcitadel-dev",
+    } as never);
+    await app.register(devVerificationRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/verification/provider-exercise",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      payload: JSON.stringify({
+        scenario: "structured",
+        providerId: "anthropic",
+        model: "claude-sonnet-4-6",
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(createChatCompletion).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "anthropic",
+      model: "claude-sonnet-4-6",
+      memory: {
+        enabled: false,
+        mode: "off",
+      },
+      response_format: expect.objectContaining({
+        type: "json_schema",
+        json_schema: expect.objectContaining({
+          strict: true,
+        }),
       }),
     }));
   });
