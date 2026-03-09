@@ -141,6 +141,8 @@ export interface BankrActionAuditRecord {
 export type SkillSourceProvider = "agentskill" | "skillsmp" | "github" | "local";
 
 export type SkillImportSourceType = "local_path" | "local_zip" | "git_url";
+export type SkillSourceKind = "marketplace_listing" | "upstream_repo" | "reference" | "local";
+export type SkillSourceInstallability = "direct" | "review_only" | "not_installable";
 
 export interface SkillImportCandidate {
   sourceProvider: SkillSourceProvider;
@@ -165,10 +167,18 @@ export interface SkillSourceResultRecord {
   sourceProvider: SkillSourceProvider;
   sourceUrl: string;
   repositoryUrl?: string;
+  upstreamUrl?: string;
   name: string;
   description: string;
   tags: string[];
   updatedAt?: string;
+  sourceKind?: SkillSourceKind;
+  skillFamily?: string;
+  installability?: SkillSourceInstallability;
+  installHint?: string;
+  matchReason?: string;
+  matchedTerms?: string[];
+  alreadyInstalled?: boolean;
 }
 
 export interface SkillMergedSourceResult extends SkillSourceResultRecord {
@@ -184,6 +194,24 @@ export interface SkillSourceListResponse {
   query?: string;
   generatedAt: string;
   providers: SkillSourceSearchRecord[];
+  items: SkillMergedSourceResult[];
+}
+
+export interface SkillSourceLookupParsedSource {
+  sourceProvider: SkillSourceProvider;
+  sourceKind: SkillSourceKind;
+  sourceUrl: string;
+  installability: SkillSourceInstallability;
+  upstreamUrl?: string;
+  repositoryUrl?: string;
+}
+
+export interface SkillSourceLookupResponse {
+  query: string;
+  generatedAt: string;
+  providers: SkillSourceSearchRecord[];
+  parsedSource?: SkillSourceLookupParsedSource;
+  bestMatch?: SkillMergedSourceResult;
   items: SkillMergedSourceResult[];
 }
 

@@ -11,6 +11,8 @@ import type {
   SkillImportHistoryRecord,
   SkillImportSourceType,
   SkillImportValidationResult,
+  SkillSourceLookupParsedSource,
+  SkillSourceLookupResponse,
   SkillMergedSourceResult,
   SkillSourceListResponse,
   SkillSourceProvider,
@@ -49,6 +51,9 @@ const FALLBACK_SOURCE_ITEMS: SkillSourceResultRecord[] = [
     name: "AgentSkill Catalog",
     description: "Marketplace index and docs for SKILL.md style assets.",
     tags: ["catalog", "docs", "skills"],
+    sourceKind: "reference",
+    installability: "review_only",
+    installHint: "Review the catalog and copy the upstream repository or source path before installing.",
   },
   {
     sourceProvider: "agentskill",
@@ -56,6 +61,9 @@ const FALLBACK_SOURCE_ITEMS: SkillSourceResultRecord[] = [
     name: "AgentSkill Install Guide",
     description: "Installation and bootstrap guidance for marketplace skills.",
     tags: ["install", "guide"],
+    sourceKind: "reference",
+    installability: "review_only",
+    installHint: "Review the guide and use the upstream skill repository or local path for install.",
   },
   {
     sourceProvider: "skillsmp",
@@ -63,6 +71,9 @@ const FALLBACK_SOURCE_ITEMS: SkillSourceResultRecord[] = [
     name: "SkillsMP Docs",
     description: "Reference docs for SkillsMP marketplace integration.",
     tags: ["docs", "skills"],
+    sourceKind: "reference",
+    installability: "review_only",
+    installHint: "Use the upstream repository or validated local source instead of the listing page itself.",
   },
   {
     sourceProvider: "skillsmp",
@@ -70,7 +81,20 @@ const FALLBACK_SOURCE_ITEMS: SkillSourceResultRecord[] = [
     name: "SkillsMP Catalog",
     description: "Marketplace listings for reusable agent skills.",
     tags: ["catalog", "marketplace"],
+    sourceKind: "reference",
+    installability: "review_only",
+    installHint: "Search for the skill, then review the upstream repository before installing.",
   },
+];
+
+const LOOKUP_FAMILY_TERMS: Array<{ family: string; tokens: string[] }> = [
+  { family: "browser_automation", tokens: ["browser", "playwright", "automation", "web", "e2e", "screenshot", "testing"] },
+  { family: "figma_design", tokens: ["figma", "design", "ui", "frontend", "implementation", "prototype"] },
+  { family: "notebook_research", tokens: ["notebooklm", "notes", "research", "study", "knowledge", "source-grounded"] },
+  { family: "messaging_notifications", tokens: ["discord", "slack", "notification", "notifications", "alert", "messaging", "channel"] },
+  { family: "presentations", tokens: ["slides", "presentation", "deck", "ppt", "powerpoint"] },
+  { family: "docs_authoring", tokens: ["docs", "documentation", "doc", "writing", "authoring"] },
+  { family: "mcp_integrations", tokens: ["mcp", "integration", "server", "template", "connector"] },
 ];
 
 export class SkillImportService {
@@ -81,45 +105,69 @@ export class SkillImportService {
 
   public async listSources(query?: string, limit = 25): Promise<SkillSourceListResponse> {
     const normalizedQuery = query?.trim().toLowerCase() || undefined;
-    const providerResults = await Promise.all([
-      this.searchProvider("agentskill", normalizedQuery, limit),
-      this.searchProvider("skillsmp", normalizedQuery, limit),
-    ]);
-
-    const providerStatus: SkillSourceSearchRecord[] = providerResults.map((item) => item.providerStatus);
-    providerStatus.push(
-      {
-        provider: "local",
-        providerLabel: "Local",
-        available: true,
-        status: "ok",
-      },
-      {
-        provider: "github",
-        providerLabel: "GitHub",
-        available: true,
-        status: "ok",
-      },
-    );
-
-    const combined = [
-      ...providerResults.flatMap((item) => item.items),
-      ...FALLBACK_SOURCE_ITEMS.filter((item) => {
-        if (!normalizedQuery) {
-          return true;
-        }
-        const haystack = `${item.name} ${item.description} ${item.tags.join(" ")}`.toLowerCase();
-        return haystack.includes(normalizedQuery);
-      }),
-    ];
-
-    const merged = mergeSourceItems(combined).slice(0, Math.max(1, Math.min(limit, 100)));
+    const { providers, items } = await this.collectSourceCatalog(Math.max(50, limit * 4));
+    const merged = normalizedQuery
+      ? rankSkillSourceItems(mergeSourceItems(items), normalizedQuery).slice(0, Math.max(1, Math.min(limit, 100)))
+      : mergeSourceItems(items).slice(0, Math.max(1, Math.min(limit, 100)));
+    const installedCanonicalKeys = this.readInstalledSourceCanonicalKeys();
 
     return {
       query: normalizedQuery,
       generatedAt: new Date().toISOString(),
-      providers: providerStatus,
-      items: merged,
+      providers,
+      items: merged.map((item) => ({
+        ...item,
+        alreadyInstalled: installedCanonicalKeys.has(item.canonicalKey),
+      })),
+    };
+  }
+
+  public async lookupSources(queryOrUrl: string, limit = 10): Promise<SkillSourceLookupResponse> {
+    const query = queryOrUrl.trim();
+    const boundedLimit = Math.max(1, Math.min(limit, 100));
+    const generatedAt = new Date().toISOString();
+    const installedCanonicalKeys = this.readInstalledSourceCanonicalKeys();
+    if (!query) {
+      return {
+        query,
+        generatedAt,
+        providers: defaultLookupProviders(),
+        items: [],
+      };
+    }
+
+    const parsedSource = await resolveDirectSourceReference(query);
+    if (parsedSource) {
+      const item = mergeSourceItems([parsedSource.item]).map((candidate) => ({
+        ...candidate,
+        matchReason: candidate.matchReason ?? "Direct source match",
+        matchedTerms: candidate.matchedTerms ?? [query],
+        alreadyInstalled: installedCanonicalKeys.has(candidate.canonicalKey),
+      }))[0];
+      return {
+        query,
+        generatedAt,
+        providers: defaultLookupProviders(),
+        parsedSource: parsedSource.parsedSource,
+        bestMatch: item,
+        items: item ? [item] : [],
+      };
+    }
+
+    const { providers, items } = await this.collectSourceCatalog(Math.max(60, boundedLimit * 5));
+    const ranked = rankSkillSourceItems(mergeSourceItems(items), query)
+      .slice(0, boundedLimit)
+      .map((item) => ({
+        ...item,
+        alreadyInstalled: installedCanonicalKeys.has(item.canonicalKey),
+      }));
+
+    return {
+      query,
+      generatedAt,
+      providers,
+      bestMatch: ranked[0],
+      items: ranked,
     };
   }
 
@@ -309,9 +357,65 @@ export class SkillImportService {
     this.systemSettings.set(IMPORT_HISTORY_KEY, [record, ...rows].slice(0, MAX_IMPORT_HISTORY));
   }
 
+  private async collectSourceCatalog(limit: number): Promise<{
+    providers: SkillSourceSearchRecord[];
+    items: SkillSourceResultRecord[];
+  }> {
+    const boundedLimit = Math.max(25, Math.min(limit, 250));
+    const providerResults = await Promise.all([
+      this.searchProvider("agentskill", boundedLimit),
+      this.searchProvider("skillsmp", boundedLimit),
+    ]);
+    return {
+      providers: [
+        ...providerResults.map((item) => item.providerStatus),
+        ...defaultLookupProviders(),
+      ],
+      items: [
+        ...providerResults.flatMap((item) => item.items),
+        ...FALLBACK_SOURCE_ITEMS,
+      ],
+    };
+  }
+
+  private readInstalledSourceCanonicalKeys(): Set<string> {
+    const keys = new Set<string>();
+    const extraRoot = path.resolve(this.rootDir, "skills", "extra");
+    if (!fsSync.existsSync(extraRoot)) {
+      return keys;
+    }
+    for (const entry of fsSync.readdirSync(extraRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const sourceManifestPath = path.join(extraRoot, entry.name, "source.json");
+      if (!fsSync.existsSync(sourceManifestPath)) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(fsSync.readFileSync(sourceManifestPath, "utf8")) as {
+          candidate?: { canonicalKey?: string; sourceRef?: string; repositoryUrl?: string; sourceUrl?: string };
+        };
+        const candidate = parsed.candidate;
+        if (candidate?.canonicalKey) {
+          keys.add(candidate.canonicalKey);
+        }
+        const repoRef = candidate?.repositoryUrl ?? candidate?.sourceUrl ?? candidate?.sourceRef;
+        if (repoRef) {
+          const normalized = normalizeRepoReference(repoRef);
+          if (normalized) {
+            keys.add(normalized);
+          }
+        }
+      } catch {
+        // Ignore malformed import manifests during source lookup.
+      }
+    }
+    return keys;
+  }
+
   private async searchProvider(
     provider: "agentskill" | "skillsmp",
-    query: string | undefined,
     limit: number,
   ): Promise<{ providerStatus: SkillSourceSearchRecord; items: SkillSourceResultRecord[] }> {
     const started = Date.now();
@@ -337,15 +441,12 @@ export class SkillImportService {
           sourceUrl: url,
           name: humanizeSkillName(url),
           description: `${providerLabel} listing candidate`,
-          tags: provider === "agentskill" ? ["agentskill"] : ["skillsmp"],
+          tags: deriveListingTags(url, provider),
+          sourceKind: "marketplace_listing" as const,
+          installability: "review_only" as const,
+          installHint: "Review the listing provenance and use the upstream repository or validated local source for installation.",
+          skillFamily: deriveSkillFamilyFromUrl(url),
         }))
-        .filter((item) => {
-          if (!query) {
-            return true;
-          }
-          const haystack = `${item.name} ${item.description}`.toLowerCase();
-          return haystack.includes(query);
-        })
         .slice(0, Math.max(1, Math.min(limit, 100)));
 
       return {
@@ -360,13 +461,6 @@ export class SkillImportService {
       };
     } catch (error) {
       const fallbackItems = FALLBACK_SOURCE_ITEMS.filter((item) => item.sourceProvider === provider)
-        .filter((item) => {
-          if (!query) {
-            return true;
-          }
-          const haystack = `${item.name} ${item.description} ${item.tags.join(" ")}`.toLowerCase();
-          return haystack.includes(query);
-        })
         .slice(0, Math.max(1, Math.min(limit, 100)));
       return {
         providerStatus: {
@@ -388,6 +482,11 @@ export class SkillImportService {
     const sourceRef = input.sourceRef.trim();
     if (!sourceRef) {
       throw new Error("sourceRef is required");
+    }
+    if (isMarketplaceListingUrl(sourceRef)) {
+      throw new Error(
+        "Marketplace listing URLs are reference-only. Use skill lookup to find the upstream repository or validated source before importing.",
+      );
     }
 
     if (sourceType === "local_path") {
@@ -556,6 +655,198 @@ export class SkillImportService {
       instructionPreview,
     };
   }
+}
+
+function defaultLookupProviders(): SkillSourceSearchRecord[] {
+  return [
+    {
+      provider: "local",
+      providerLabel: "Local",
+      available: true,
+      status: "ok",
+    },
+    {
+      provider: "github",
+      providerLabel: "GitHub",
+      available: true,
+      status: "ok",
+    },
+  ];
+}
+
+function rankSkillSourceItems(items: SkillMergedSourceResult[], query: string): SkillMergedSourceResult[] {
+  const normalizedQuery = normalizeLookupText(query);
+  const queryTokens = tokenizeLookupText(query);
+  const ranked: SkillMergedSourceResult[] = [];
+  for (const item of items) {
+    const index = buildLookupIndex(item);
+    const matchedTerms = queryTokens.filter((token) => index.expandedTokens.has(token));
+    let score = item.combinedScore * 100;
+    let matchReason = "";
+    if ([item.sourceUrl, item.repositoryUrl, item.upstreamUrl]
+      .filter((value): value is string => Boolean(value))
+      .some((value) => normalizeLookupText(value) === normalizedQuery)) {
+      score += 1000;
+      matchReason = "Direct source match";
+    } else if (index.normalizedName === normalizedQuery || index.slug === normalizedQuery) {
+      score += 800;
+      matchReason = "Exact name match";
+    } else if (queryTokens.length > 0 && queryTokens.every((token) => index.expandedTokens.has(token))) {
+      score += 500;
+      matchReason = "Capability match";
+    } else if (matchedTerms.length > 0) {
+      const nameHits = matchedTerms.filter((token) => index.nameTokens.has(token)).length;
+      const tagHits = matchedTerms.filter((token) => index.tagTokens.has(token)).length;
+      if (nameHits > 0) {
+        score += 250 + nameHits * 25;
+        matchReason = "Name match";
+      } else if (tagHits > 0) {
+        score += 180 + tagHits * 20;
+        matchReason = "Tag/capability match";
+      } else {
+        score += 120 + matchedTerms.length * 15;
+        matchReason = "Description match";
+      }
+    }
+    if (!matchReason) {
+      continue;
+    }
+    ranked.push({
+      ...item,
+      skillFamily: item.skillFamily ?? index.skillFamily,
+      matchReason,
+      matchedTerms: matchedTerms.slice(0, 8),
+      combinedScore: Number((score / 1000).toFixed(3)),
+    });
+  }
+
+  return ranked.sort((a, b) => {
+    if (b.combinedScore !== a.combinedScore) {
+      return b.combinedScore - a.combinedScore;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+async function resolveDirectSourceReference(query: string): Promise<{
+  parsedSource: SkillSourceLookupParsedSource;
+  item: SkillSourceResultRecord;
+} | undefined> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (isGitHubUrl(trimmed)) {
+    const provider: SkillSourceProvider = "github";
+    return {
+      parsedSource: {
+        sourceProvider: provider,
+        sourceKind: "upstream_repo",
+        sourceUrl: trimmed,
+        repositoryUrl: trimmed,
+        upstreamUrl: trimmed,
+        installability: "direct",
+      },
+      item: {
+        sourceProvider: provider,
+        sourceUrl: trimmed,
+        repositoryUrl: trimmed,
+        upstreamUrl: trimmed,
+        name: humanizeSkillName(trimmed),
+        description: "Direct GitHub skill source.",
+        tags: deriveListingTags(trimmed, provider),
+        sourceKind: "upstream_repo",
+        installability: "direct",
+        installHint: "Validate this repository directly before installing.",
+        matchReason: "Direct source match",
+        matchedTerms: [trimmed],
+        skillFamily: deriveSkillFamilyFromUrl(trimmed),
+      },
+    };
+  }
+
+  if (isMarketplaceListingUrl(trimmed)) {
+    const provider = inferSourceProvider(trimmed);
+    const providerLabel = provider === "agentskill" ? "AgentSkill" : "SkillsMP";
+    const upstreamUrl = await resolveMarketplaceUpstream(trimmed);
+    return {
+      parsedSource: {
+        sourceProvider: provider,
+        sourceKind: "marketplace_listing",
+        sourceUrl: trimmed,
+        upstreamUrl,
+        repositoryUrl: upstreamUrl,
+        installability: "review_only",
+      },
+      item: {
+        sourceProvider: provider,
+        sourceUrl: trimmed,
+        repositoryUrl: upstreamUrl,
+        upstreamUrl,
+        name: humanizeSkillName(trimmed),
+        description: `${providerLabel} listing reference.`,
+        tags: deriveListingTags(trimmed, provider),
+        sourceKind: "marketplace_listing",
+        installability: "review_only",
+        installHint: upstreamUrl
+          ? "Review the listing provenance, then validate the upstream repository before installing."
+          : "Review the listing and resolve the upstream repository before installing.",
+        matchReason: "Direct listing match",
+        matchedTerms: [trimmed],
+        skillFamily: deriveSkillFamilyFromUrl(trimmed),
+      },
+    };
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return {
+      parsedSource: {
+        sourceProvider: inferSourceProvider(trimmed),
+        sourceKind: "reference",
+        sourceUrl: trimmed,
+        installability: "review_only",
+      },
+      item: {
+        sourceProvider: inferSourceProvider(trimmed),
+        sourceUrl: trimmed,
+        name: humanizeSkillName(trimmed),
+        description: "Reference-only skill source URL.",
+        tags: ["reference"],
+        sourceKind: "reference",
+        installability: "review_only",
+        installHint: "Review the source provenance and use a direct repository, local path, or zip before installing.",
+        matchReason: "Direct source match",
+        matchedTerms: [trimmed],
+      },
+    };
+  }
+
+  if (looksLikeLocalSource(trimmed)) {
+    const sourceType = inferSourceType(trimmed);
+    const sourceUrl = trimmed.replaceAll("\\", "/");
+    return {
+      parsedSource: {
+        sourceProvider: "local",
+        sourceKind: "local",
+        sourceUrl,
+        installability: "direct",
+      },
+      item: {
+        sourceProvider: "local",
+        sourceUrl,
+        name: sourceType === "local_zip" ? "Local zip skill source" : "Local skill source",
+        description: "Local skill import source.",
+        tags: sourceType === "local_zip" ? ["local", "zip"] : ["local", "path"],
+        sourceKind: "local",
+        installability: "direct",
+        installHint: "Validate this local source directly before installing.",
+        matchReason: "Direct source match",
+        matchedTerms: [trimmed],
+      },
+    };
+  }
+
+  return undefined;
 }
 
 function inferSourceType(sourceRef: string, explicit?: SkillImportSourceType): SkillImportSourceType {
@@ -729,6 +1020,110 @@ function humanizeSkillName(url: string): string {
   } catch {
     return "Skill";
   }
+}
+
+function deriveListingTags(url: string, provider: SkillSourceProvider): string[] {
+  const tokens = new Set<string>([provider]);
+  for (const token of tokenizeLookupText(humanizeSkillName(url))) {
+    tokens.add(token);
+  }
+  const family = deriveSkillFamilyFromUrl(url);
+  if (family) {
+    tokens.add(family);
+    const familyTerms = LOOKUP_FAMILY_TERMS.find((item) => item.family === family)?.tokens ?? [];
+    for (const token of familyTerms) {
+      tokens.add(token);
+    }
+  }
+  return [...tokens];
+}
+
+function deriveSkillFamilyFromUrl(url: string): string | undefined {
+  const normalized = normalizeLookupText(url);
+  return LOOKUP_FAMILY_TERMS.find((family) => family.tokens.some((token) => normalized.includes(token)))?.family;
+}
+
+function normalizeLookupText(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function tokenizeLookupText(value: string): string[] {
+  return normalizeLookupText(value).split(" ").filter(Boolean);
+}
+
+function buildLookupIndex(item: SkillSourceResultRecord): {
+  normalizedName: string;
+  slug: string;
+  nameTokens: Set<string>;
+  tagTokens: Set<string>;
+  expandedTokens: Set<string>;
+  skillFamily?: string;
+} {
+  const nameTokens = new Set(tokenizeLookupText(item.name));
+  const descriptionTokens = tokenizeLookupText(item.description);
+  const tagTokens = new Set(item.tags.flatMap((tag) => tokenizeLookupText(tag)));
+  const urlTokens = [
+    ...tokenizeLookupText(item.sourceUrl),
+    ...tokenizeLookupText(item.repositoryUrl ?? ""),
+    ...tokenizeLookupText(item.upstreamUrl ?? ""),
+  ];
+  const expandedTokens = new Set<string>([
+    ...nameTokens,
+    ...descriptionTokens,
+    ...tagTokens,
+    ...urlTokens,
+  ]);
+  let skillFamily = item.skillFamily;
+  for (const family of LOOKUP_FAMILY_TERMS) {
+    if (family.tokens.some((token) => expandedTokens.has(token))) {
+      skillFamily ??= family.family;
+      for (const token of family.tokens) {
+        expandedTokens.add(token);
+      }
+    }
+  }
+  return {
+    normalizedName: normalizeLookupText(item.name),
+    slug: humanizeSkillName(item.sourceUrl).toLowerCase().replace(/\s+/g, " "),
+    nameTokens,
+    tagTokens,
+    expandedTokens,
+    skillFamily,
+  };
+}
+
+async function resolveMarketplaceUpstream(sourceUrl: string): Promise<string | undefined> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 9000);
+    const response = await fetch(sourceUrl, {
+      signal: controller.signal,
+      headers: {
+        "user-agent": "GoatCitadel/0.1",
+      },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      return undefined;
+    }
+    const html = await response.text();
+    const match = html.match(/https?:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/tree\/[^\s"'<>]+)?/i);
+    return match?.[0];
+  } catch {
+    return undefined;
+  }
+}
+
+function isGitHubUrl(value: string): boolean {
+  return /github\.com\//i.test(value) || /^git@github\.com:/i.test(value);
+}
+
+function isMarketplaceListingUrl(value: string): boolean {
+  return /https?:\/\/(?:www\.)?(?:skillsmp\.com|agentskill\.sh)\//i.test(value);
+}
+
+function looksLikeLocalSource(value: string): boolean {
+  return value.endsWith(".zip") || /^[a-z]:\\/i.test(value) || value.startsWith("./") || value.startsWith(".\\") || value.startsWith("/") || value.startsWith("..\\") || value.startsWith("../");
 }
 
 function extractMarketplaceLinks(provider: "agentskill" | "skillsmp", html: string): string[] {

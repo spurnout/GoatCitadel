@@ -106,6 +106,16 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(await fastify.gateway.listSkillSources(parsed.data.q, parsed.data.limit));
   });
 
+  fastify.get("/api/v1/skills/lookup", async (request, reply) => {
+    const parsed = sourceQuerySchema.extend({
+      q: z.string().trim().min(1),
+    }).safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+    return reply.send(await fastify.gateway.lookupSkillSources(parsed.data.q, parsed.data.limit));
+  });
+
   fastify.post("/api/v1/skills/import/validate", async (request, reply) => {
     const parsed = validateImportSchema.safeParse(request.body);
     if (!parsed.success) {

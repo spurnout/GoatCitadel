@@ -124,6 +124,7 @@ import type {
   SkillActivationPolicy,
   SkillListItem,
   SkillSourceListResponse,
+  SkillSourceLookupResponse,
   SkillImportValidationResult,
   SkillImportHistoryRecord,
   SkillSourceProvider,
@@ -139,7 +140,17 @@ import type {
   WorkspaceCreateInput,
   WorkspaceRecord,
   WorkspaceUpdateInput,
+  DevDiagnosticsEvent,
+  DevDiagnosticsLevel,
+  DevDiagnosticsListResponse,
 } from "@goatcitadel/contracts";
+import {
+  createCorrelationId,
+  recordClientDiagnostic,
+  setDevDiagnosticsActiveCorrelationId,
+  setDevDiagnosticsGatewayReachable,
+  setDevDiagnosticsLastRequestError,
+} from "../state/dev-diagnostics-store";
 
 export type { GuidanceDocumentRecord };
 export type { SessionSummary, SessionTimelineItem };
@@ -245,21 +256,82 @@ function isPrivateOrCarrierGradeIpv4(host: string): boolean {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const authHeaders = readGatewayAuthHeaders(path);
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.method && init.method !== "GET" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
-      ...authHeaders,
-      ...(init?.headers ?? {}),
-    },
-    ...init,
+  const method = init?.method ?? "GET";
+  const correlationId = createCorrelationId();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(method !== "GET" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
+    ...authHeaders,
+    "x-goatcitadel-correlation-id": correlationId,
+    "x-goatcitadel-origin-surface": inferOriginSurface(path),
+    ...(init?.headers ?? {}),
+  };
+  recordClientDiagnostic({
+    level: "info",
+    category: "api",
+    event: "request.start",
+    message: `${method} ${path}`,
+    correlationId,
+    route: path,
   });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        ...headers,
+      },
+      ...init,
+    });
+  } catch (error) {
+    setDevDiagnosticsGatewayReachable(false);
+    setDevDiagnosticsLastRequestError(`${method} ${path}: network error`);
+    recordClientDiagnostic({
+      level: "error",
+      category: "api",
+      event: "request.network_error",
+      message: `${method} ${path} failed before a response was received`,
+      correlationId,
+      route: path,
+      context: {
+        error: (error as Error).message,
+      },
+    });
+    throw error;
+  }
+  const responseCorrelationId = res.headers.get("x-goatcitadel-correlation-id") ?? correlationId;
+  setDevDiagnosticsActiveCorrelationId(responseCorrelationId);
+  setDevDiagnosticsGatewayReachable(true);
 
   if (!res.ok) {
     const text = await res.text();
+    setDevDiagnosticsLastRequestError(`${method} ${path}: ${res.status}`);
+    recordClientDiagnostic({
+      level: "error",
+      category: "api",
+      event: "request.error",
+      message: `${method} ${path} failed (${res.status})`,
+      correlationId: responseCorrelationId,
+      route: path,
+      context: {
+        status: res.status,
+        body: text.slice(0, 600),
+      },
+    });
     throw new Error(`API error ${res.status}: ${text}`);
   }
 
+  setDevDiagnosticsLastRequestError(undefined);
+  recordClientDiagnostic({
+    level: "info",
+    category: "api",
+    event: "request.finish",
+    message: `${method} ${path} completed`,
+    correlationId: responseCorrelationId,
+    route: path,
+    context: {
+      status: res.status,
+    },
+  });
   return unwrapApiResponse<T>(await res.json());
 }
 
@@ -1024,22 +1096,69 @@ export async function streamAgentChatMessage(
   onChunk: (chunk: ChatStreamChunk) => void,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
-  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`);
-  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`, {
+  const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/agent-send/stream`;
+  const authHeaders = readGatewayAuthHeaders(path);
+  const correlationId = createCorrelationId();
+  recordClientDiagnostic({
+    level: "info",
+    category: "chat",
+    event: "stream.start",
+    message: "Agent chat stream started",
+    correlationId,
+    sessionId,
+    route: path,
+  });
+  const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
+      "x-goatcitadel-correlation-id": correlationId,
+      "x-goatcitadel-origin-surface": "chat",
+      "x-goatcitadel-session-id": sessionId,
       ...authHeaders,
     },
     body: JSON.stringify(input),
   });
   if (!response.ok || !response.body) {
     const text = await response.text();
+    recordClientDiagnostic({
+      level: "error",
+      category: "chat",
+      event: "stream.error",
+      message: `Agent chat stream failed (${response.status})`,
+      correlationId,
+      sessionId,
+      route: path,
+      context: { status: response.status, body: text.slice(0, 600) },
+    });
     throw new Error(`API error ${response.status}: ${text}`);
   }
-  await consumeSseResponse(response.body, onChunk, options.signal);
+  await consumeSseResponse(response.body, (chunk) => {
+    if (chunk.type === "error") {
+      recordClientDiagnostic({
+        level: "error",
+        category: "chat",
+        event: "stream.chunk_error",
+        message: "Agent chat stream emitted an error chunk",
+        correlationId,
+        sessionId,
+        route: path,
+        turnId: chunk.turnId,
+      });
+    }
+    onChunk(chunk);
+  }, options.signal);
+  recordClientDiagnostic({
+    level: "info",
+    category: "chat",
+    event: "stream.complete",
+    message: "Agent chat stream completed",
+    correlationId,
+    sessionId,
+    route: path,
+  });
 }
 
 export async function selectChatBranchTurn(sessionId: string, turnId: string): Promise<ChatThreadResponse> {
@@ -1075,12 +1194,16 @@ export async function streamRetryChatTurn(
 ): Promise<void> {
   const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/retry/stream`;
   const authHeaders = readGatewayAuthHeaders(path);
+  const correlationId = createCorrelationId();
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
+      "x-goatcitadel-correlation-id": correlationId,
+      "x-goatcitadel-origin-surface": "chat",
+      "x-goatcitadel-session-id": sessionId,
       ...authHeaders,
     },
     body: JSON.stringify(input),
@@ -1115,12 +1238,16 @@ export async function streamEditChatTurn(
 ): Promise<void> {
   const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/edit/stream`;
   const authHeaders = readGatewayAuthHeaders(path);
+  const correlationId = createCorrelationId();
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     signal: options.signal,
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
+      "x-goatcitadel-correlation-id": correlationId,
+      "x-goatcitadel-origin-surface": "chat",
+      "x-goatcitadel-session-id": sessionId,
       ...authHeaders,
     },
     body: JSON.stringify(input),
@@ -1347,12 +1474,17 @@ export async function streamChatDelegation(
   input: ChatDelegateRequest,
   onChunk: (chunk: ChatDelegationStreamChunk) => void,
 ): Promise<void> {
-  const authHeaders = readGatewayAuthHeaders(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/stream`);
-  const response = await fetch(`${API_BASE}/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/stream`, {
+  const path = `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/delegate/stream`;
+  const authHeaders = readGatewayAuthHeaders(path);
+  const correlationId = createCorrelationId();
+  const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Idempotency-Key": crypto.randomUUID(),
+      "x-goatcitadel-correlation-id": correlationId,
+      "x-goatcitadel-origin-surface": "chat",
+      "x-goatcitadel-session-id": sessionId,
       ...authHeaders,
     },
     body: JSON.stringify(input),
@@ -2523,6 +2655,18 @@ export async function fetchSkillSources(query?: {
   return request<SkillSourceListResponse>(`/api/v1/skills/sources${suffix}`);
 }
 
+export async function fetchSkillLookup(query: {
+  q: string;
+  limit?: number;
+}): Promise<SkillSourceLookupResponse> {
+  const params = new URLSearchParams();
+  params.set("q", query.q.trim());
+  if (query.limit) {
+    params.set("limit", String(Math.max(1, Math.min(query.limit, 100))));
+  }
+  return request<SkillSourceLookupResponse>(`/api/v1/skills/lookup?${params.toString()}`);
+}
+
 export async function validateSkillImport(input: {
   sourceRef: string;
   sourceType?: SkillImportSourceType;
@@ -3454,6 +3598,12 @@ async function ensureEventStreamConnected(): Promise<void> {
   eventConnectInFlight = true;
   const connectAttempt = ++eventConnectAttempt;
   setEventConnectionState("connecting");
+  recordClientDiagnostic({
+    level: "info",
+    category: "sse",
+    event: "connect",
+    message: "Connecting to realtime events",
+  });
 
   let streamUrl = "";
   try {
@@ -3484,6 +3634,12 @@ async function ensureEventStreamConnected(): Promise<void> {
     clearReconnectTimer();
     reconnectAttempts = 0;
     setEventConnectionState("open");
+    recordClientDiagnostic({
+      level: "info",
+      category: "sse",
+      event: "open",
+      message: "Realtime event stream connected",
+    });
   };
 
   source.onmessage = (evt) => {
@@ -3493,6 +3649,16 @@ async function ensureEventStreamConnected(): Promise<void> {
     try {
       const event = JSON.parse(evt.data) as RealtimeEvent;
       lastEventAt = event.timestamp || new Date().toISOString();
+      recordClientDiagnostic({
+        level: "debug",
+        category: "sse",
+        event: "freshness",
+        message: event.eventType,
+        context: {
+          source: event.source,
+          eventId: event.eventId,
+        },
+      });
       notifyEventStreamStatusToAll();
       for (const subscriber of eventStreamSubscribers) {
         subscriber.onEvent(event);
@@ -3513,6 +3679,12 @@ async function ensureEventStreamConnected(): Promise<void> {
     }
     lastErrorAt = new Date().toISOString();
     setEventConnectionState("error");
+    recordClientDiagnostic({
+      level: "warn",
+      category: "sse",
+      event: "error",
+      message: "Realtime event stream encountered an error",
+    });
     scheduleReconnect();
   };
 }
@@ -3524,6 +3696,15 @@ function scheduleReconnect(): void {
 
   reconnectAttempts += 1;
   setEventConnectionState("retrying");
+  recordClientDiagnostic({
+    level: "warn",
+    category: "sse",
+    event: "retry",
+    message: "Scheduling realtime event reconnect",
+    context: {
+      reconnectAttempts,
+    },
+  });
   const delay = computeReconnectDelay(reconnectAttempts);
 
   eventReconnectTimer = window.setTimeout(() => {
@@ -3537,8 +3718,76 @@ function closeSharedEventSource(): void {
   if (!sharedEventSource) {
     return;
   }
+  recordClientDiagnostic({
+    level: "info",
+    category: "sse",
+    event: "close",
+    message: "Realtime event stream closed",
+  });
   sharedEventSource.close();
   sharedEventSource = null;
+}
+
+export async function fetchDevDiagnostics(params: {
+  level?: DevDiagnosticsLevel;
+  category?: string;
+  correlationId?: string;
+  limit?: number;
+} = {}): Promise<DevDiagnosticsListResponse> {
+  const query = new URLSearchParams();
+  if (params.level) {
+    query.set("level", params.level);
+  }
+  if (params.category) {
+    query.set("category", params.category);
+  }
+  if (params.correlationId) {
+    query.set("correlationId", params.correlationId);
+  }
+  if (params.limit) {
+    query.set("limit", String(params.limit));
+  }
+  return request<DevDiagnosticsListResponse>(`/api/v1/dev/diagnostics${query.size > 0 ? `?${query.toString()}` : ""}`);
+}
+
+export function connectDevDiagnosticsStream(onEvent: (event: DevDiagnosticsEvent) => void): () => void {
+  if (typeof window === "undefined") {
+    return () => undefined;
+  }
+  const url = `${API_BASE}/api/v1/dev/diagnostics/stream?replay=50`;
+  const source = new EventSource(url);
+  source.onmessage = (event) => {
+    try {
+      onEvent(JSON.parse(event.data) as DevDiagnosticsEvent);
+      setDevDiagnosticsGatewayReachable(true);
+    } catch {
+      // ignore malformed diagnostics
+    }
+  };
+  source.onerror = () => {
+    setDevDiagnosticsGatewayReachable(false);
+    source.close();
+  };
+  return () => source.close();
+}
+
+function inferOriginSurface(path: string): string {
+  if (path.startsWith("/api/v1/chat")) {
+    return "chat";
+  }
+  if (path.startsWith("/api/v1/addons")) {
+    return "addons";
+  }
+  if (path.startsWith("/api/v1/voice")) {
+    return "voice";
+  }
+  if (path.startsWith("/api/v1/mcp")) {
+    return "mcp";
+  }
+  if (path.startsWith("/api/v1/integrations")) {
+    return "integrations";
+  }
+  return "app";
 }
 
 function clearReconnectTimer(): void {

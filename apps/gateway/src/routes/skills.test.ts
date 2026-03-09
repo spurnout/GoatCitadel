@@ -68,4 +68,53 @@ describe("skills routes bankr migration", () => {
       mode: "read_only",
     });
   });
+
+  it("delegates skill lookup queries to the gateway", async () => {
+    const lookup = vi.fn(async () => ({
+      query: "notebooklm",
+      generatedAt: new Date().toISOString(),
+      providers: [],
+      bestMatch: {
+        canonicalKey: "github.com/example/notebooklm-skill",
+        sourceProvider: "skillsmp",
+        sourceUrl: "https://skillsmp.com/skills/example-notebooklm-skill",
+        upstreamUrl: "https://github.com/example/notebooklm-skill",
+        name: "NotebookLM Skill",
+        description: "NotebookLM lookup",
+        tags: ["notebooklm", "research"],
+        alternateProviders: [],
+        qualityScore: 0.8,
+        freshnessScore: 0.7,
+        trustScore: 0.7,
+        combinedScore: 0.9,
+        sourceKind: "marketplace_listing",
+        installability: "review_only",
+        matchReason: "Direct listing match",
+      },
+      items: [],
+    }));
+
+    app = Fastify();
+    app.decorate("gateway", {
+      isFeatureEnabled: vi.fn(() => true),
+      getBankrOptionalMigrationMessage: vi.fn(() => ""),
+      lookupSkillSources: lookup,
+    } as never);
+    await app.register(skillsRoutes);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/skills/lookup?q=notebooklm",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(lookup).toHaveBeenCalledWith("notebooklm", undefined);
+    expect(response.json()).toMatchObject({
+      query: "notebooklm",
+      bestMatch: {
+        name: "NotebookLM Skill",
+        matchReason: "Direct listing match",
+      },
+    });
+  });
 });

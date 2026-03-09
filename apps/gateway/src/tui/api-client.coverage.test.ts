@@ -154,6 +154,7 @@ describe("TuiApiClient coverage", () => {
       listTaskActivities: ["task-1"],
       appendTaskActivity: ["task-1", { message: "ok" }],
       listSkills: [],
+      lookupSkillSources: ["browser automation", 10],
       reloadSkills: [],
       resolveSkills: ["help"],
       integrationCatalog: [],

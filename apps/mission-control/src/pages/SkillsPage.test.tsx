@@ -18,5 +18,7 @@ describe("SkillsPage Bankr migration card", () => {
     expect(source).not.toContain("Save Bankr policy");
     expect(source).not.toContain("Preview a Bankr action before execution");
     expect(source).toContain(BANKR_MIGRATION_CARD_TITLE);
+    expect(source).toContain("Best fit:");
+    expect(source).toContain("fetchSkillLookup");
   });
 });

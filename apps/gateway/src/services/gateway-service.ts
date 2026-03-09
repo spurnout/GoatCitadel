@@ -174,6 +174,7 @@ import type {
   SkillImportValidationResult,
   SkillListItem,
   SkillSourceListResponse,
+  SkillSourceLookupResponse,
   SkillSourceProvider,
   SkillRuntimeState,
   SkillStateRecord,
@@ -284,6 +285,12 @@ import { ResearchService } from "./research-service.js";
 import { ObsidianVaultService } from "./obsidian-vault-service.js";
 import { SkillImportService } from "./skill-import-service.js";
 import { AddonsService } from "./addons-service.js";
+import {
+  GatewayDevDiagnosticsService,
+  resolveDevDiagnosticsBufferSize,
+  resolveDevDiagnosticsEnabled,
+  resolveDevDiagnosticsVerbose,
+} from "../dev-diagnostics/service.js";
 import {
   installManagedVoiceRuntime,
   removeManagedVoiceModel,
@@ -805,6 +812,7 @@ export class GatewayService {
   private readonly skillImportService: SkillImportService;
   private readonly cronAutomationService: CronAutomationService;
   private readonly addonsService: AddonsService;
+  private readonly devDiagnostics: GatewayDevDiagnosticsService;
   private readonly realtime = new EventEmitter();
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
@@ -836,6 +844,12 @@ export class GatewayService {
       config.rootDir,
       config.assistant.dataDir,
       "onboarding-state.json",
+    );
+    this.devDiagnostics = new GatewayDevDiagnosticsService(
+      resolveDevDiagnosticsEnabled(),
+      undefined,
+      resolveDevDiagnosticsVerbose(),
+      resolveDevDiagnosticsBufferSize(process.env.GOATCITADEL_DEV_DIAGNOSTICS_GATEWAY_BUFFER),
     );
 
     this.eventIngestService = new EventIngestService(this.storage);
@@ -926,6 +940,31 @@ export class GatewayService {
         },
       },
     });
+  }
+
+  public isDevDiagnosticsEnabled(): boolean {
+    return this.devDiagnostics.isEnabled();
+  }
+
+  public listDevDiagnostics(input?: {
+    level?: "debug" | "info" | "warn" | "error";
+    category?: string;
+    correlationId?: string;
+    limit?: number;
+  }) {
+    return this.devDiagnostics.list(input);
+  }
+
+  public subscribeDevDiagnostics(listener: Parameters<GatewayDevDiagnosticsService["subscribe"]>[0]): () => void {
+    return this.devDiagnostics.subscribe(listener);
+  }
+
+  public recordDevDiagnostic(input: Parameters<GatewayDevDiagnosticsService["record"]>[0]): void {
+    this.devDiagnostics.record(input);
+  }
+
+  public attachDevDiagnosticsLogger(logger: { debug: Function; info: Function; warn: Function; error: Function }): void {
+    this.devDiagnostics.setLogger(logger as never);
   }
 
   public async init(): Promise<void> {
@@ -2613,6 +2652,7 @@ export class GatewayService {
       { command: "/skills", usage: "/skills", description: "List installed skills and their runtime state." },
       { command: "/skill", usage: "/skill enable|sleep|disable <skillId>", description: "Change an installed skill's runtime state." },
       { command: "/skill", usage: "/skill search <query>", description: "Search skill import sources." },
+      { command: "/skill", usage: "/skill lookup <query-or-url>", description: "Resolve the best-fit skill source or listing." },
       { command: "/skill", usage: "/skill install <sourceRef> [--confirm-high-risk]", description: "Validate and install a skill, disabled by default." },
       { command: "/mcp", usage: "/mcp", description: "List configured MCP servers and connection state." },
       { command: "/mcp", usage: "/mcp connect|disconnect <serverId>", description: "Connect or disconnect a configured MCP server." },
@@ -2945,8 +2985,41 @@ export class GatewayService {
           args,
           message: results.items
             .slice(0, 5)
-            .map((item) => `- ${item.name} (${item.sourceProvider}) - ${item.sourceUrl}`)
+            .map((item) => {
+              const reason = item.matchReason ? ` - ${item.matchReason}` : "";
+              const installability = item.installability ? ` [${item.installability}]` : "";
+              return `- ${item.name} (${item.sourceProvider}${installability})${reason} - ${item.sourceUrl}`;
+            })
             .join("\n"),
+        };
+      }
+      if (action === "lookup") {
+        const query = args.slice(1).join(" ").trim();
+        if (!query) {
+          return { ok: false, command, args, message: "Usage: /skill lookup <query-or-url>" };
+        }
+        const result = await this.lookupSkillSources(query, 5);
+        const bestMatch = result.bestMatch ?? result.items[0];
+        if (!bestMatch) {
+          return { ok: true, command, args, message: `No skill source resolution found for "${query}".` };
+        }
+        const lines = [
+          `Best match: ${bestMatch.name} (${bestMatch.sourceProvider})`,
+          `Why: ${bestMatch.matchReason ?? "best ranked match"}`,
+          `Installability: ${bestMatch.installability ?? "review_only"}`,
+          `Source: ${bestMatch.sourceUrl}`,
+        ];
+        if (bestMatch.upstreamUrl && bestMatch.upstreamUrl !== bestMatch.sourceUrl) {
+          lines.push(`Upstream: ${bestMatch.upstreamUrl}`);
+        }
+        if (bestMatch.installHint) {
+          lines.push(`Next step: ${bestMatch.installHint}`);
+        }
+        return {
+          ok: true,
+          command,
+          args,
+          message: lines.join("\n"),
         };
       }
       if (action === "install") {
@@ -2993,7 +3066,7 @@ export class GatewayService {
         ok: false,
         command,
         args,
-        message: "Usage: /skill enable|sleep|disable <skillId> | /skill search <query> | /skill install <sourceRef> [--confirm-high-risk]",
+        message: "Usage: /skill enable|sleep|disable <skillId> | /skill search <query> | /skill lookup <query-or-url> | /skill install <sourceRef> [--confirm-high-risk]",
       };
     }
 
@@ -7181,6 +7254,22 @@ export class GatewayService {
     }
     const runId = randomUUID();
     const runMode = orchestration.plan.routeDecision.parallelism === "parallel" ? "parallel" : "sequential";
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "orchestration",
+      event: "orchestration.run.start",
+      message: "Starting chat orchestration run",
+      sessionId: prepared.session.sessionId,
+      turnId: prepared.turnId,
+      providerId: orchestration.plan.steps.at(0)?.providerId,
+      modelId: orchestration.plan.steps.at(0)?.model,
+      context: {
+        workflowTemplate: orchestration.plan.workflowTemplate,
+        visibility: orchestration.plan.routeDecision.visibility,
+        roles: orchestration.plan.routeDecision.selectedRoles,
+        parallelism: runMode,
+      },
+    });
     const runTrace = {
       primaryProviderId: input.providerId ?? prepared.prefs.providerId,
       primaryModel: input.model ?? prepared.prefs.model,
@@ -7234,6 +7323,22 @@ export class GatewayService {
         createChatCompletion: (request) => this.createChatCompletion(request),
         onStepResult: async (step, allSteps) => {
           currentSteps = [...allSteps];
+          this.recordDevDiagnostic({
+            level: step.status === "failed" ? "warn" : "info",
+            category: "orchestration",
+            event: "orchestration.step.complete",
+            message: `Completed orchestration step ${step.role}`,
+            sessionId: prepared.session.sessionId,
+            turnId: prepared.turnId,
+            providerId: step.providerId,
+            modelId: step.model,
+            context: {
+              stepId: step.stepId,
+              role: step.role,
+              status: step.status,
+              index: step.index,
+            },
+          });
           this.storage.chatDelegationSteps.patch(step.stepId, {
             status: step.status,
             providerId: step.providerId,
@@ -7282,6 +7387,20 @@ export class GatewayService {
       finishedAt: new Date().toISOString(),
     });
     await onProgress?.(summary);
+    this.recordDevDiagnostic({
+      level: summary.status === "failed" ? "warn" : "info",
+      category: "orchestration",
+      event: "orchestration.run.complete",
+      message: "Completed chat orchestration run",
+      sessionId: prepared.session.sessionId,
+      turnId: prepared.turnId,
+      providerId: result.stepResults.at(-1)?.providerId,
+      modelId: result.stepResults.at(-1)?.model,
+      context: {
+        status: summary.status,
+        workflowTemplate: summary.workflowTemplate,
+      },
+    });
     return {
       ...result,
       summary,
@@ -7699,6 +7818,20 @@ export class GatewayService {
     input: ChatSendMessageRequest,
   ): Promise<ChatSendMessageResponse> {
     return this.withChatTurnWriteLease(sessionId, "agent-send", async () => {
+      this.recordDevDiagnostic({
+        level: "info",
+        category: "chat",
+        event: "chat.turn.start",
+        message: "Starting mission chat turn",
+        sessionId,
+        providerId: input.providerId,
+        modelId: input.model,
+        context: {
+          mode: input.mode,
+          webMode: input.webMode,
+          thinkingLevel: input.thinkingLevel,
+        },
+      });
       const prepared = await this.prepareAgentChatTurn(sessionId, input, {
         branchKind: "append",
       });
@@ -7718,6 +7851,14 @@ export class GatewayService {
         );
       }
       if (this.resolvePreparedTurnOrchestration(prepared)) {
+        this.recordDevDiagnostic({
+          level: "info",
+          category: "orchestration",
+          event: "chat.orchestration.selected",
+          message: "Routing mission chat turn through orchestration",
+          sessionId,
+          turnId: prepared.turnId,
+        });
         return this.consumePreparedAgentChatTurn(
           sessionId,
           input,
@@ -7967,6 +8108,20 @@ export class GatewayService {
     yield* this.withChatTurnWriteLeaseStream(sessionId, "agent-send/stream", () => {
       const self = this;
       return (async function* (): AsyncGenerator<ChatStreamChunk> {
+        self.recordDevDiagnostic({
+          level: "info",
+          category: "chat",
+          event: "chat.stream.start",
+          message: "Starting streamed mission chat turn",
+          sessionId,
+          providerId: input.providerId,
+          modelId: input.model,
+          context: {
+            mode: input.mode,
+            webMode: input.webMode,
+            thinkingLevel: input.thinkingLevel,
+          },
+        });
         const prepared = await self.prepareAgentChatTurn(sessionId, input, {
           branchKind: "append",
         });
@@ -10481,6 +10636,10 @@ export class GatewayService {
     return this.skillImportService.listSources(query, limit);
   }
 
+  public async lookupSkillSources(queryOrUrl: string, limit = 10): Promise<SkillSourceLookupResponse> {
+    return this.skillImportService.lookupSources(queryOrUrl, limit);
+  }
+
   public listAddonsCatalog(): AddonCatalogEntry[] {
     return this.addonsService.listCatalog();
   }
@@ -10494,7 +10653,21 @@ export class GatewayService {
   }
 
   public async installAddon(addonId: string, input: AddonInstallRequest): Promise<AddonActionResponse> {
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "addons",
+      event: "addon.install.start",
+      message: `Installing addon ${addonId}`,
+      context: { actorId: input.actorId },
+    });
     const result = await this.addonsService.install(addonId, input);
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "addons",
+      event: "addon.install.complete",
+      message: `Installed addon ${addonId}`,
+      context: { status: result.status.status },
+    });
     this.publishRealtime("addon_installed", "system", {
       addonId,
       status: result.status.status,
@@ -10512,7 +10685,23 @@ export class GatewayService {
   }
 
   public async launchAddon(addonId: string): Promise<AddonActionResponse> {
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "addons",
+      event: "addon.launch.start",
+      message: `Launching addon ${addonId}`,
+    });
     const result = await this.addonsService.launch(addonId);
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "addons",
+      event: "addon.launch.complete",
+      message: `Launched addon ${addonId}`,
+      context: {
+        status: result.status.status,
+        launchUrl: result.status.installed?.launchUrl ?? result.status.addon.launchUrl,
+      },
+    });
     this.publishRealtime("addon_runtime_changed", "system", {
       addonId,
       status: result.status.status,
@@ -11060,6 +11249,17 @@ export class GatewayService {
     if (bytes.length === 0) {
       throw new Error("Audio payload is empty.");
     }
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "voice",
+      event: "voice.transcribe.start",
+      message: "Starting voice transcription",
+      context: {
+        bytes: bytes.length,
+        mimeType: input.mimeType,
+        language: input.language,
+      },
+    });
     return this.transcribeAudioBytes(bytes, input.mimeType, input.language);
   }
 
@@ -11106,7 +11306,29 @@ export class GatewayService {
   }
 
   public async installVoiceRuntime(input: VoiceRuntimeInstallRequest = {}): Promise<VoiceRuntimeStatus> {
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "voice",
+      event: "voice.runtime.install.start",
+      message: "Installing managed voice runtime",
+      context: {
+        modelId: input.modelId,
+        activate: input.activate,
+        repair: input.repair,
+      },
+    });
     const status = await installManagedVoiceRuntime(this.storage.systemSettings, input);
+    this.recordDevDiagnostic({
+      level: status.readiness === "ready" ? "info" : "warn",
+      category: "voice",
+      event: "voice.runtime.install.complete",
+      message: "Managed voice runtime install finished",
+      context: {
+        readiness: status.readiness,
+        selectedModelId: status.selectedModelId,
+        lastError: status.lastError,
+      },
+    });
     this.storage.systemSettings.set(VOICE_STATUS_SETTING_KEY, {
       ...(this.storage.systemSettings.get<VoiceStatus["stt"]>(VOICE_STATUS_SETTING_KEY)?.value ?? {
         state: "stopped" as const,
@@ -11767,6 +11989,19 @@ export class GatewayService {
   }
 
   public async createChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    this.recordDevDiagnostic({
+      level: "debug",
+      category: "chat",
+      event: "chat.completion.start",
+      message: "Starting chat completion",
+      sessionId: request.memory?.sessionId,
+      providerId: request.providerId,
+      modelId: request.model,
+      context: {
+        messageCount: request.messages.length,
+        stream: request.stream ?? false,
+      },
+    });
     let response: ChatCompletionResponse | undefined;
     let memoryContext: MemoryContextPack | undefined;
     const memoryInput = request.memory;
@@ -11848,6 +12083,19 @@ export class GatewayService {
         break;
       } catch (error) {
         lastError = error as Error;
+        this.recordDevDiagnostic({
+          level: "warn",
+          category: "chat",
+          event: "chat.completion.attempt_failed",
+          message: "Chat completion attempt failed",
+          sessionId: request.memory?.sessionId,
+          providerId: attemptRequest.providerId ?? primaryProviderId,
+          modelId: attemptRequest.model ?? primaryModel,
+          context: {
+            error: lastError.message,
+            retryIndex: index,
+          },
+        });
         if (index < retryAttempts.length - 1 && shouldRetryToolProtocolError(lastError)) {
           continue;
         }
@@ -11866,6 +12114,18 @@ export class GatewayService {
             providerId: fallback.providerId,
             model: fallback.model,
           });
+          this.recordDevDiagnostic({
+            level: "info",
+            category: "chat",
+            event: "chat.completion.fallback_applied",
+            message: "Applied cross-provider fallback",
+            sessionId: request.memory?.sessionId,
+            providerId: fallback.providerId,
+            modelId: fallback.model,
+            context: {
+              reason: lastError?.message,
+            },
+          });
           routing.fallbackUsed = true;
           routing.fallbackProviderId = fallback.providerId;
           routing.fallbackModel = response.model ?? fallback.model;
@@ -11880,8 +12140,32 @@ export class GatewayService {
     }
 
     if (!response) {
+      this.recordDevDiagnostic({
+        level: "error",
+        category: "chat",
+        event: "chat.completion.failed",
+        message: "Chat completion failed",
+        sessionId: request.memory?.sessionId,
+        providerId: primaryProviderId,
+        modelId: primaryModel,
+        context: {
+          error: lastError?.message,
+        },
+      });
       throw lastError ?? new Error("chat completion failed");
     }
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "chat",
+      event: "chat.completion.complete",
+      message: "Chat completion completed",
+      sessionId: request.memory?.sessionId,
+      providerId: routing.effectiveProviderId ?? primaryProviderId,
+      modelId: routing.effectiveModel ?? primaryModel,
+      context: {
+        fallbackUsed: routing.fallbackUsed,
+      },
+    });
 
     this.publishRealtime("system", "llm", {
       type: "chat_completion",

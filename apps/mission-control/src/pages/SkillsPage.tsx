@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  SkillMergedSourceResult,
   SkillListItem,
   SkillRuntimeState,
+  SkillSourceLookupParsedSource,
+  SkillSourceSearchRecord,
 } from "@goatcitadel/contracts";
 import {
+  fetchSkillLookup,
   fetchSkillImportHistory,
   fetchSkillSources,
   fetchSkills,
@@ -50,29 +54,12 @@ export function SkillsPage() {
   const [stateFilter, setStateFilter] = useState<"all" | SkillRuntimeState>("all");
   const [sourceQuery, setSourceQuery] = useState("");
   const [sourcesLoading, setSourcesLoading] = useState(false);
-  const [sourceItems, setSourceItems] = useState<Array<{
-    canonicalKey: string;
-    sourceProvider: "agentskill" | "skillsmp" | "github" | "local";
-    sourceUrl: string;
-    repositoryUrl?: string;
-    name: string;
-    description: string;
-    tags: string[];
-    updatedAt?: string;
-    alternateProviders: Array<"agentskill" | "skillsmp" | "github" | "local">;
-    qualityScore: number;
-    freshnessScore: number;
-    trustScore: number;
-    combinedScore: number;
-  }>>([]);
-  const [sourceProviders, setSourceProviders] = useState<Array<{
-    provider: "agentskill" | "skillsmp" | "github" | "local";
-    providerLabel: string;
-    available: boolean;
-    status: "ok" | "degraded" | "unavailable";
-    error?: string;
-    latencyMs?: number;
-  }>>([]);
+  const [sourceItems, setSourceItems] = useState<SkillMergedSourceResult[]>([]);
+  const [sourceProviders, setSourceProviders] = useState<SkillSourceSearchRecord[]>([]);
+  const [sourceLookupMeta, setSourceLookupMeta] = useState<{
+    bestMatch?: SkillMergedSourceResult;
+    parsedSource?: SkillSourceLookupParsedSource;
+  } | null>(null);
   const [importSourceRef, setImportSourceRef] = useState("");
   const [importSourceType, setImportSourceType] = useState<"local_path" | "local_zip" | "git_url">("local_path");
   const [importSourceProvider, setImportSourceProvider] = useState<"local" | "github" | "agentskill" | "skillsmp">("local");
@@ -191,12 +178,26 @@ export function SkillsPage() {
   const onLoadSources = useCallback(async () => {
     setSourcesLoading(true);
     try {
-      const response = await fetchSkillSources({
-        q: sourceQuery.trim() || undefined,
-        limit: 25,
-      });
-      setSourceItems(response.items);
-      setSourceProviders(response.providers);
+      const query = sourceQuery.trim();
+      if (query) {
+        const response = await fetchSkillLookup({
+          q: query,
+          limit: 25,
+        });
+        setSourceItems(response.items);
+        setSourceProviders(response.providers);
+        setSourceLookupMeta({
+          bestMatch: response.bestMatch,
+          parsedSource: response.parsedSource,
+        });
+      } else {
+        const response = await fetchSkillSources({
+          limit: 25,
+        });
+        setSourceItems(response.items);
+        setSourceProviders(response.providers);
+        setSourceLookupMeta(null);
+      }
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -211,6 +212,7 @@ export function SkillsPage() {
       .then((response) => {
         setSourceItems(response.items);
         setSourceProviders(response.providers);
+        setSourceLookupMeta(null);
       })
       .catch((err) => {
         setError((err as Error).message);
@@ -347,7 +349,7 @@ export function SkillsPage() {
                 placeholder="browser, github, playwright..."
               />
               <button type="button" onClick={() => void onLoadSources()} disabled={sourcesLoading}>
-                {sourcesLoading ? "Searching..." : "Search"}
+                {sourcesLoading ? "Searching..." : sourceQuery.trim() ? "Lookup" : "Browse"}
               </button>
             </div>
           )}
@@ -365,6 +367,20 @@ export function SkillsPage() {
             </div>
           ) : undefined}
         />
+        {sourceLookupMeta?.bestMatch ? (
+          <div className="status-banner">
+            <strong>Best fit:</strong> {sourceLookupMeta.bestMatch.name} ({sourceLookupMeta.bestMatch.sourceProvider})
+            {sourceLookupMeta.bestMatch.matchReason ? ` · ${sourceLookupMeta.bestMatch.matchReason}` : ""}
+            {sourceLookupMeta.bestMatch.installability ? ` · ${sourceLookupMeta.bestMatch.installability}` : ""}
+            {sourceLookupMeta.bestMatch.alreadyInstalled ? " · already installed" : ""}
+          </div>
+        ) : null}
+        {sourceLookupMeta?.parsedSource && !sourceLookupMeta.bestMatch ? (
+          <div className="status-banner">
+            <strong>Lookup:</strong> {sourceLookupMeta.parsedSource.sourceProvider} {sourceLookupMeta.parsedSource.sourceKind}
+            {sourceLookupMeta.parsedSource.installability ? ` · ${sourceLookupMeta.parsedSource.installability}` : ""}
+          </div>
+        ) : null}
         <details className="advanced-panel">
           <summary>Marketplace results</summary>
           {sourceItems.length === 0 ? (
@@ -375,6 +391,8 @@ export function SkillsPage() {
                 <tr>
                   <th>Name</th>
                   <th>Source</th>
+                  <th>Why</th>
+                  <th>Install</th>
                   <th>Description</th>
                   <th>Score</th>
                 </tr>
@@ -383,7 +401,14 @@ export function SkillsPage() {
                 {sourceItems.map((item) => (
                   <tr key={item.canonicalKey}>
                     <td>{item.name}</td>
-                    <td>{item.sourceProvider}{item.alternateProviders.length > 0 ? ` (+${item.alternateProviders.join(",")})` : ""}</td>
+                    <td>
+                      {item.sourceProvider}
+                      {item.alternateProviders.length > 0 ? ` (+${item.alternateProviders.join(",")})` : ""}
+                      {item.sourceKind ? ` · ${item.sourceKind}` : ""}
+                      {item.alreadyInstalled ? " · installed" : ""}
+                    </td>
+                    <td>{item.matchReason ?? "ranked source result"}</td>
+                    <td>{item.installability ?? "review_only"}</td>
                     <td>{item.description}</td>
                     <td>{item.combinedScore.toFixed(2)}</td>
                   </tr>

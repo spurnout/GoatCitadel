@@ -21,6 +21,7 @@ import type {
   SkillImportValidationResult,
   SkillRuntimeState,
   SkillSourceListResponse,
+  SkillSourceLookupResponse,
   SkillSourceProvider,
   SkillStateRecord,
   ToolAccessEvaluateResponse,
@@ -306,6 +307,13 @@ export class TuiApiClient {
     }
     params.set("limit", String(Math.max(1, Math.min(limit, 100))));
     return this.request(`/api/v1/skills/sources?${params.toString()}`, { method: "GET" });
+  }
+
+  public async lookupSkillSources(query: string, limit = 10): Promise<SkillSourceLookupResponse> {
+    const params = new URLSearchParams();
+    params.set("q", query.trim());
+    params.set("limit", String(Math.max(1, Math.min(limit, 100))));
+    return this.request(`/api/v1/skills/lookup?${params.toString()}`, { method: "GET" });
   }
 
   public async installSkillImport(input: {
