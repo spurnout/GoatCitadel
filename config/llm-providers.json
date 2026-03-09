@@ -14,21 +14,21 @@
       "label": "Anthropic (compatible endpoint)",
       "baseUrl": "https://api.anthropic.com/v1",
       "apiStyle": "openai-chat-completions",
-      "defaultModel": "claude-3-7-sonnet-latest",
+      "defaultModel": "claude-sonnet-4-6",
       "apiKeyEnv": "ANTHROPIC_API_KEY"
     },
     {
       "providerId": "google",
       "label": "Google (compatible endpoint)",
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/v1",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
       "apiStyle": "openai-chat-completions",
-      "defaultModel": "gemini-2.0-flash",
+      "defaultModel": "models/gemini-2.5-flash",
       "apiKeyEnv": "GOOGLE_API_KEY"
     },
     {
       "providerId": "minimax",
       "label": "MiniMax (compatible endpoint)",
-      "baseUrl": "https://api.minimax.chat/v1",
+      "baseUrl": "https://api.minimax.io/v1",
       "apiStyle": "openai-chat-completions",
       "defaultModel": "MiniMax-Text-01",
       "apiKeyEnv": "MINIMAX_API_KEY"
@@ -84,7 +84,7 @@
     {
       "providerId": "perplexity",
       "label": "Perplexity",
-      "baseUrl": "https://api.perplexity.ai/v1",
+      "baseUrl": "https://api.perplexity.ai",
       "apiStyle": "openai-chat-completions",
       "defaultModel": "sonar",
       "apiKeyEnv": "PERPLEXITY_API_KEY"

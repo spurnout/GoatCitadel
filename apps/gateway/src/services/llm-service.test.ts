@@ -116,6 +116,48 @@ describe("LlmService", () => {
     expect(provider?.baseUrl).toBe("https://api.perplexity.ai");
   });
 
+  it("normalizes bare Google model ids to the models/ form at request time", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "google",
+      providers: [
+        {
+          providerId: "google",
+          label: "Google",
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "gemini-2.5-flash",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    let payloadBody: Record<string, unknown> | undefined;
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      payloadBody = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      return new Response(
+        JSON.stringify({
+          id: "cmpl_google",
+          choices: [{ index: 0, message: { role: "assistant", content: "ok" } }],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      await service.chatCompletions({
+        providerId: "google",
+        messages: [{ role: "user", content: "hello" }],
+      });
+      expect(payloadBody?.model).toBe("models/gemini-2.5-flash");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("canonicalizes legacy Perplexity /v1 endpoints back to the root API base", () => {
     const config: LlmConfigFile = {
       activeProviderId: "perplexity",
@@ -133,6 +175,114 @@ describe("LlmService", () => {
     const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
     const provider = service.listProviders().find((item) => item.providerId === "perplexity");
     expect(provider?.baseUrl).toBe("https://api.perplexity.ai");
+  });
+
+  it("canonicalizes legacy MiniMax and Moonshot endpoints to current official bases", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "minimax",
+      providers: [
+        {
+          providerId: "minimax",
+          label: "MiniMax",
+          baseUrl: "https://api.minimax.chat/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "MiniMax-Text-01",
+        },
+        {
+          providerId: "moonshot",
+          label: "Moonshot",
+          baseUrl: "https://api.moonshot.ai/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "kimi-k2.5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const minimax = service.listProviders().find((item) => item.providerId === "minimax");
+    const moonshot = service.listProviders().find((item) => item.providerId === "moonshot");
+
+    expect(minimax?.baseUrl).toBe("https://api.minimax.io/v1");
+    expect(moonshot?.baseUrl).toBe("https://api.moonshot.ai/v1");
+  });
+
+  it("uses Anthropic-native auth headers for model discovery", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "anthropic",
+      providers: [
+        {
+          providerId: "anthropic",
+          label: "Anthropic",
+          baseUrl: "https://api.anthropic.com/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "claude-sonnet-4-6",
+          apiKeyEnv: "ANTHROPIC_API_KEY",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, {
+      ...process.env,
+      ANTHROPIC_API_KEY: "anthropic-secret",
+    }, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    let receivedHeaders: Headers | undefined;
+
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      receivedHeaders = new Headers(init?.headers);
+      return new Response(
+        JSON.stringify({
+          data: [{ id: "claude-sonnet-4-6" }],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const models = await service.listModels("anthropic");
+      expect(models.map((model) => model.id)).toEqual(["claude-sonnet-4-6"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(receivedHeaders?.get("x-api-key")).toBe("anthropic-secret");
+    expect(receivedHeaders?.get("anthropic-version")).toBe("2023-06-01");
+    expect(receivedHeaders?.get("authorization")).toBeNull();
+  });
+
+  it("falls back to known Perplexity models when model listing is unsupported", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "perplexity",
+      providers: [
+        {
+          providerId: "perplexity",
+          label: "Perplexity",
+          baseUrl: "https://api.perplexity.ai",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "sonar",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = vi.fn(async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+
+    try {
+      const models = await service.listModels("perplexity");
+      expect(models.map((model) => model.id)).toEqual([
+        "sonar",
+        "sonar-pro",
+        "sonar-reasoning-pro",
+        "sonar-deep-research",
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("enforces network allowlist for outbound model calls when configured", async () => {

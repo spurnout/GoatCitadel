@@ -25,6 +25,7 @@
     "admin": "pnpm --filter @goatcitadel/gateway admin",
     "brand:derive": "node scripts/brand/derive-assets.mjs",
     "config:sync": "pnpm --filter @goatcitadel/gateway config:sync",
+    "llm:sync-models": "node scripts/sync-llm-models.mjs",
     "prompt:gates": "pnpm tsx scripts/run-prompt-pack-gates.ts",
     "prompt:gates:targeted": "pnpm tsx scripts/run-prompt-pack-gates.ts --target-only",
     "screenshots:capture": "pnpm --filter @goatcitadel/policy-engine exec node scripts/capture-mission-control-screenshots.mjs",

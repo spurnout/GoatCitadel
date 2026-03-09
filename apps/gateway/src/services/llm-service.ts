@@ -349,8 +349,11 @@ export class LlmService {
 
     const resolved = this.resolveProvider(request.providerId);
     this.assertProviderHostAllowed(resolved.provider.baseUrl);
-    const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
-    const normalizedMessages = normalizeProviderMessages(request.messages, model);
+      const model = normalizeRequestedModel(
+        resolved.provider.providerId,
+        request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel),
+      );
+      const normalizedMessages = normalizeProviderMessages(request.messages, model);
 
     const payload: Record<string, unknown> = {
       model,
@@ -367,7 +370,7 @@ export class LlmService {
     if (request.metadata !== undefined) payload.metadata = request.metadata;
 
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
-    const headers = this.buildHeaders(resolved);
+    const headers = this.buildHeaders(resolved, "chat");
     let response = await postChatCompletionsRequest(endpoint, headers, payload, 60000);
 
     if (isRedirect(response.status)) {
@@ -401,8 +404,11 @@ export class LlmService {
 
     const resolved = this.resolveProvider(request.providerId);
     this.assertProviderHostAllowed(resolved.provider.baseUrl);
-    const model = request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel);
-    const normalizedMessages = normalizeProviderMessages(request.messages, model);
+      const model = normalizeRequestedModel(
+        resolved.provider.providerId,
+        request.model ?? (resolved.provider.providerId === this.activeProviderId ? this.activeModel : resolved.provider.defaultModel),
+      );
+      const normalizedMessages = normalizeProviderMessages(request.messages, model);
 
     const payload: Record<string, unknown> = {
       model,
@@ -420,7 +426,7 @@ export class LlmService {
     if (request.metadata !== undefined) payload.metadata = request.metadata;
 
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
-    const headers = this.buildHeaders(resolved);
+    const headers = this.buildHeaders(resolved, "chat");
     let response = await postChatCompletionsRequest(endpoint, headers, payload, 120000);
 
     if (isRedirect(response.status)) {
@@ -538,11 +544,23 @@ export class LlmService {
     assertHostAllowed(baseUrl, this.networkAllowlist);
   }
 
-  private buildHeaders(resolved: ResolvedProvider): Record<string, string> {
+  private buildHeaders(
+    resolved: ResolvedProvider,
+    purpose: "chat" | "models" = "chat",
+  ): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...(resolved.provider.headers ?? {}),
     };
+
+    if (purpose === "models" && resolved.provider.providerId === "anthropic") {
+      delete headers.Authorization;
+      if (resolved.apiKey) {
+        headers["x-api-key"] = resolved.apiKey;
+      }
+      headers["anthropic-version"] = "2023-06-01";
+      return headers;
+    }
 
     if (resolved.apiKey) {
       headers.Authorization = `Bearer ${resolved.apiKey}`;
@@ -602,7 +620,7 @@ export class LlmService {
     this.assertProviderHostAllowed(resolved.provider.baseUrl);
     const response = await fetch(`${resolved.provider.baseUrl}/models`, {
       method: "GET",
-      headers: this.buildHeaders(resolved),
+      headers: this.buildHeaders(resolved, "models"),
       signal: AbortSignal.timeout(15000),
       redirect: "manual",
     });
@@ -612,6 +630,14 @@ export class LlmService {
     }
 
     if (!response.ok) {
+      const fallback = fallbackModelCatalog(
+        resolved.provider.providerId,
+        resolved.provider.defaultModel,
+        response.status,
+      );
+      if (fallback) {
+        return fallback;
+      }
       throw new Error(await buildHttpError("model listing", response));
     }
 
@@ -636,7 +662,36 @@ function normalizeProvider(provider: LlmProviderConfig): LlmProviderConfig {
   };
 }
 
+function normalizeRequestedModel(providerId: string, model: string): string {
+  const trimmed = model.trim();
+  if (providerId !== "google") {
+    return trimmed;
+  }
+
+  if (!trimmed || trimmed.startsWith("models/")) {
+    return trimmed;
+  }
+
+  if (/^(gemini|gemma)-/i.test(trimmed)) {
+    return `models/${trimmed}`;
+  }
+
+  return trimmed;
+}
+
 function canonicalizeProviderBaseUrl(providerId: string, baseUrl: string): string {
+  if (providerId === "google" && /\/v1beta\/openai\/v1$/i.test(baseUrl)) {
+    return baseUrl.replace(/\/v1$/i, "");
+  }
+
+  if (providerId === "moonshot" && /api\.moonshot\.cn/i.test(baseUrl)) {
+    return baseUrl.replace(/api\.moonshot\.cn/i, "api.moonshot.ai");
+  }
+
+  if (providerId === "minimax" && /api\.minimax\.chat/i.test(baseUrl)) {
+    return baseUrl.replace(/api\.minimax\.chat/i, "api.minimax.io");
+  }
+
   if (providerId !== "perplexity") {
     return baseUrl;
   }
@@ -647,6 +702,31 @@ function canonicalizeProviderBaseUrl(providerId: string, baseUrl: string): strin
     return parsed.toString().replace(/\/+$/, "");
   }
   return baseUrl;
+}
+
+function fallbackModelCatalog(
+  providerId: string,
+  defaultModel: string,
+  status: number,
+): LlmModelRecord[] | undefined {
+  if (status !== 404 && status !== 405) {
+    return undefined;
+  }
+
+  if (providerId === "perplexity") {
+    return [
+      { id: "sonar" },
+      { id: "sonar-pro" },
+      { id: "sonar-reasoning-pro" },
+      { id: "sonar-deep-research" },
+    ];
+  }
+
+  if (providerId === "minimax" && defaultModel) {
+    return [{ id: defaultModel }];
+  }
+
+  return undefined;
 }
 
 function shouldAppendV1(providerId: string, baseUrl: string): boolean {
@@ -862,9 +942,9 @@ function defaultModelForProvider(providerId: string): string {
     case "openai":
       return "gpt-4.1-mini";
     case "anthropic":
-      return "claude-3-7-sonnet-latest";
+      return "claude-sonnet-4-6";
     case "google":
-      return "gemini-2.0-flash";
+      return "models/gemini-2.5-flash";
     case "glm":
       return "glm-5";
     case "moonshot":

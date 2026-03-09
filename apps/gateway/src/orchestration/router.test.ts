@@ -58,7 +58,7 @@ function createRuntime(): LlmRuntimeConfig {
         label: "Anthropic",
         baseUrl: "https://api.anthropic.com/v1",
         apiStyle: "openai-chat-completions",
-        defaultModel: "claude-3-7-sonnet-latest",
+        defaultModel: "claude-sonnet-4-6",
         hasApiKey: true,
         apiKeySource: "env",
       },

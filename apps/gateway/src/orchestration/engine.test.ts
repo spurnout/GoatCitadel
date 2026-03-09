@@ -76,7 +76,7 @@ function createPlan(): OrchestrationPlan {
       selectedProviders: [
         { role: "researcher", providerId: "perplexity", model: "sonar" },
         { role: "researcher", providerId: "openai", model: "gpt-4.1-mini" },
-        { role: "synthesizer", providerId: "anthropic", model: "claude-3-7-sonnet-latest" },
+        { role: "synthesizer", providerId: "anthropic", model: "claude-sonnet-4-6" },
         { role: "critic", providerId: "openai", model: "gpt-4.1-mini" },
       ],
       triggerReason: "cowork_explicit_orchestration",
@@ -84,7 +84,7 @@ function createPlan(): OrchestrationPlan {
     steps: [
       { stepId: "step-1", role: "researcher", stage: 1, providerId: "perplexity", model: "sonar" },
       { stepId: "step-2", role: "researcher", stage: 1, providerId: "openai", model: "gpt-4.1-mini" },
-      { stepId: "step-3", role: "synthesizer", stage: 2, providerId: "anthropic", model: "claude-3-7-sonnet-latest" },
+      { stepId: "step-3", role: "synthesizer", stage: 2, providerId: "anthropic", model: "claude-sonnet-4-6" },
       { stepId: "step-4", role: "critic", stage: 3, providerId: "openai", model: "gpt-4.1-mini" },
     ],
   };

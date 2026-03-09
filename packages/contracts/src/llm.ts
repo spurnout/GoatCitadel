@@ -1,4 +1,7 @@
-export type LlmApiStyle = "openai-chat-completions";
+export type LlmApiStyle =
+  | "openai-chat-completions"
+  | "openai-responses"
+  | "anthropic-messages";
 
 export interface LlmProviderCapabilities {
   vision: boolean;

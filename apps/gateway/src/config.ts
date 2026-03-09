@@ -513,7 +513,7 @@ function defaultLlmConfig(): string {
         label: "Anthropic (compatible endpoint)",
         baseUrl: "https://api.anthropic.com/v1",
         apiStyle: "openai-chat-completions",
-        defaultModel: "claude-3-7-sonnet-latest",
+        defaultModel: "claude-sonnet-4-6",
         apiKeyEnv: "ANTHROPIC_API_KEY",
       },
       {
@@ -521,7 +521,7 @@ function defaultLlmConfig(): string {
         label: "Google (compatible endpoint)",
         baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
         apiStyle: "openai-chat-completions",
-        defaultModel: "gemini-2.0-flash",
+        defaultModel: "models/gemini-2.5-flash",
         apiKeyEnv: "GOOGLE_API_KEY",
       },
       {

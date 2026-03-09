@@ -16,18 +16,18 @@ export const providerTemplates = [
     providerId: "anthropic",
     label: "Anthropic (compatible endpoint)",
     baseUrl: "https://api.anthropic.com/v1",
-    defaultModel: "claude-3-7-sonnet-latest",
+    defaultModel: "claude-sonnet-4-6",
   },
   {
     providerId: "google",
     label: "Google (compatible endpoint)",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    defaultModel: "gemini-2.0-flash",
+    defaultModel: "models/gemini-2.5-flash",
   },
   {
     providerId: "minimax",
     label: "MiniMax (compatible endpoint)",
-    baseUrl: "https://api.minimax.chat/v1",
+    baseUrl: "https://api.minimax.io/v1",
     defaultModel: "MiniMax-Text-01",
   },
   {
