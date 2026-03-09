@@ -4,12 +4,30 @@ function border(width: number, left: string, fill: string, right: string): strin
   return `${left}${fill.repeat(Math.max(0, width - 2))}${right}`;
 }
 
-function pad(text: string, width: number): string {
-  return ` ${text}${" ".repeat(Math.max(0, width - text.length - 2))} `;
+function pad(text: string, contentWidth: number): string {
+  return ` ${text}${" ".repeat(Math.max(0, contentWidth - text.length))} `;
 }
 
 function textWidth(lines: string[]): number {
   return Math.max(...lines.map((line) => line.length), 0) + 4;
+}
+
+function wrapLine(text: string, width: number): string[] {
+  if (!text) {
+    return [""];
+  }
+  const lines: string[] = [];
+  let remaining = text;
+  while (remaining.length > width) {
+    let split = remaining.lastIndexOf(" ", width);
+    if (split <= 0 || split < Math.floor(width * 0.6)) {
+      split = width;
+    }
+    lines.push(remaining.slice(0, split).trimEnd());
+    remaining = remaining.slice(split).trimStart();
+  }
+  lines.push(remaining);
+  return lines;
 }
 
 export function renderBox(title: string, lines: string[], tone: "info" | "success" | "warning" | "danger" = "info"): string {
@@ -22,10 +40,13 @@ export function renderBox(title: string, lines: string[], tone: "info" | "succes
         : tuiTheme.info;
   const titledLines = [`${title}`, ...lines];
   const width = Math.min(Math.max(textWidth(titledLines), 40), 108);
+  const contentWidth = width - 4;
+  const wrappedTitle = wrapLine(title, contentWidth);
+  const wrappedLines = lines.flatMap((line) => wrapLine(line, contentWidth));
   return [
     color(border(width, "┌", "─", "┐")),
-    color(`│${pad(title, width - 2)}│`),
-    ...lines.map((line) => color(`│${pad(line, width - 2)}│`)),
+    ...wrappedTitle.map((line) => color(`│${pad(line, contentWidth)}│`)),
+    ...wrappedLines.map((line) => color(`│${pad(line, contentWidth)}│`)),
     color(border(width, "└", "─", "┘")),
   ].join("\n");
 }

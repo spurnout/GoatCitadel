@@ -164,4 +164,59 @@ describe("isTrustedGatewayHost", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(chunks).toEqual([{ type: "message_start" }]);
   });
+
+  it("fails chat streams on malformed SSE payloads instead of swallowing them", async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("data: {\"type\":\"message_start\"\n\n"));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+
+    await expect(streamAgentChatMessage(
+      "sess-1",
+      { content: "coverage" },
+      () => undefined,
+    )).rejects.toThrow(/Malformed SSE event payload/);
+  });
+
+  it("fails chat streams when an SSE event grows past the client buffer limit", async () => {
+    const encoder = new TextEncoder();
+    const oversizedChunk = `data: ${"x".repeat(300_000)}`;
+    const fetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(oversizedChunk));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+
+    await expect(streamAgentChatMessage(
+      "sess-1",
+      { content: "coverage" },
+      () => undefined,
+    )).rejects.toThrow(/buffer limit/);
+  });
 });

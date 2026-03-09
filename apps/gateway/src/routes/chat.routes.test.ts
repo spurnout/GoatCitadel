@@ -100,6 +100,8 @@ describe("chat routes additional coverage", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("\"type\":\"error\"");
+    expect(response.body).toContain("Check gateway diagnostics and retry");
+    expect(response.body).not.toContain("stream exploded");
     expect(response.body).not.toContain("\"type\":\"done\"");
   });
 

@@ -117,3 +117,47 @@ describe("SkillImportService lookup", () => {
     });
   });
 });
+
+describe("SkillImportService validation", () => {
+  let rootDir: string;
+
+  beforeEach(() => {
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "goat-skill-validate-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it("warns when the security scan skips oversized files", async () => {
+    const skillDir = path.join(rootDir, "oversized-skill");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: Oversized Audit Skill",
+      "description: Valid fixture for security scan coverage.",
+      "---",
+      "",
+      "Use this skill to validate import scanning.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(skillDir, "LICENSE"), "MIT\n");
+    fs.writeFileSync(path.join(skillDir, "bundle.js"), "a".repeat(230_000));
+
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    const result = await service.validateImport({
+      sourceRef: skillDir,
+      sourceType: "local_path",
+      sourceProvider: "local",
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.riskLevel).toBe("medium");
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Security scan skipped large files"),
+      expect.stringContaining("bundle.js"),
+    ]));
+  });
+});

@@ -11,6 +11,7 @@ import type {
   LlmProviderSummary,
   LlmRuntimeConfig,
 } from "@goatcitadel/contracts";
+import { findProviderTemplate } from "@goatcitadel/contracts";
 import { SecretStoreService, SecretStoreUnavailableError } from "./secret-store-service.js";
 
 export interface LlmRuntimeUpdateInput {
@@ -152,7 +153,7 @@ export class LlmService {
         label: input.upsertProvider.label ?? existing?.label ?? input.upsertProvider.providerId,
         baseUrl: input.upsertProvider.baseUrl ?? existing?.baseUrl ?? "http://127.0.0.1:1234/v1",
         apiStyle: "openai-chat-completions",
-        defaultModel: input.upsertProvider.defaultModel ?? existing?.defaultModel ?? "gpt-4o-mini",
+        defaultModel: input.upsertProvider.defaultModel ?? existing?.defaultModel ?? defaultModelForProvider(input.upsertProvider.providerId),
         apiKey: submittedApiKey ? undefined : (input.upsertProvider.apiKey ?? existing?.apiKey),
         apiKeyEnv: input.upsertProvider.apiKeyEnv ?? existing?.apiKeyEnv,
         headers: input.upsertProvider.headers ?? existing?.headers,
@@ -938,25 +939,5 @@ function inferProviderCapabilities(provider: LlmProviderConfig): {
 }
 
 function defaultModelForProvider(providerId: string): string {
-  switch (providerId.trim().toLowerCase()) {
-    case "openai":
-      return "gpt-4.1-mini";
-    case "anthropic":
-      return "claude-sonnet-4-6";
-    case "google":
-      return "models/gemini-2.5-flash";
-    case "glm":
-      return "glm-5";
-    case "moonshot":
-      return "kimi-k2.5";
-    case "openrouter":
-      return "openai/gpt-4.1-mini";
-    case "lmstudio":
-    case "localai":
-      return "local-model";
-    case "ollama":
-      return "llama3.1";
-    default:
-      return "gpt-4.1-mini";
-  }
+  return findProviderTemplate(providerId.trim().toLowerCase())?.defaultModel ?? "gpt-4.1-mini";
 }

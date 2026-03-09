@@ -612,12 +612,19 @@ export class SkillImportService {
     const suspiciousScripts = scan.suspiciousSignals.length > 0;
     const networkIndicators = scan.networkSignals.length > 0;
     const licenseDetected = scan.licenseFiles.length > 0;
+    const scanIncomplete = scan.skippedLargeFiles.length > 0 || scan.truncated;
 
     if (suspiciousScripts) {
       warnings.push("Potentially risky script indicators detected.");
     }
     if (networkIndicators) {
       warnings.push("Network usage indicators detected in skill files.");
+    }
+    if (scan.skippedLargeFiles.length > 0) {
+      warnings.push(`Security scan skipped large files: ${summarizePathList(scan.skippedLargeFiles)}.`);
+    }
+    if (scan.truncated) {
+      warnings.push("Security scan reached the file inspection limit; review the remaining files manually.");
     }
     if (!licenseDetected) {
       warnings.push("No license file detected.");
@@ -627,6 +634,7 @@ export class SkillImportService {
     const riskLevel = deriveRiskLevel({
       suspiciousScripts,
       networkIndicators,
+      scanIncomplete,
       descriptionQuality,
       valid,
     });
@@ -1223,12 +1231,16 @@ async function scanSkillDirectory(dir: string): Promise<{
   suspiciousSignals: string[];
   networkSignals: string[];
   licenseFiles: string[];
+  skippedLargeFiles: string[];
+  truncated: boolean;
 }> {
   const suspiciousSignals = new Set<string>();
   const networkSignals = new Set<string>();
   const licenseFiles = new Set<string>();
+  const skippedLargeFiles = new Set<string>();
   const queue = [dir];
   let scannedFiles = 0;
+  let truncated = false;
 
   while (queue.length > 0 && scannedFiles < 220) {
     const current = queue.shift();
@@ -1258,12 +1270,17 @@ async function scanSkillDirectory(dir: string): Promise<{
         licenseFiles.add(path.relative(dir, fullPath).replaceAll("\\", "/"));
       }
       if (scannedFiles > 220) {
+        truncated = true;
         break;
       }
-      const text = await tryReadFileText(fullPath);
-      if (!text) {
+      const readResult = await tryReadFileText(fullPath);
+      if (readResult.skippedLargeFile) {
+        skippedLargeFiles.add(path.relative(dir, fullPath).replaceAll("\\", "/"));
+      }
+      if (!readResult.text) {
         continue;
       }
+      const text = readResult.text;
       if (/(rm\s+-rf|del\s+\/f|powershell\s+-enc|invoke-webrequest\s+.*\|\s*iex)/i.test(text)) {
         suspiciousSignals.add(path.relative(dir, fullPath).replaceAll("\\", "/"));
       }
@@ -1272,40 +1289,54 @@ async function scanSkillDirectory(dir: string): Promise<{
       }
     }
   }
+  if (queue.length > 0) {
+    truncated = true;
+  }
 
   return {
     suspiciousSignals: [...suspiciousSignals],
     networkSignals: [...networkSignals],
     licenseFiles: [...licenseFiles],
+    skippedLargeFiles: [...skippedLargeFiles],
+    truncated,
   };
 }
 
-async function tryReadFileText(filePath: string): Promise<string> {
+async function tryReadFileText(filePath: string): Promise<{ text: string; skippedLargeFile: boolean }> {
   try {
     const stat = await fs.stat(filePath);
     if (stat.size > 220_000) {
-      return "";
+      return { text: "", skippedLargeFile: true };
     }
     const content = await fs.readFile(filePath, "utf8");
-    return content;
+    return { text: content, skippedLargeFile: false };
   } catch {
-    return "";
+    return { text: "", skippedLargeFile: false };
   }
 }
 
 function deriveRiskLevel(input: {
   suspiciousScripts: boolean;
   networkIndicators: boolean;
+  scanIncomplete: boolean;
   descriptionQuality: boolean;
   valid: boolean;
 }): "low" | "medium" | "high" {
   if (!input.valid || input.suspiciousScripts) {
     return "high";
   }
-  if (input.networkIndicators || !input.descriptionQuality) {
+  if (input.networkIndicators || input.scanIncomplete || !input.descriptionQuality) {
     return "medium";
   }
   return "low";
+}
+
+function summarizePathList(paths: string[], limit = 3): string {
+  const preview = paths.slice(0, limit).join(", ");
+  if (paths.length <= limit) {
+    return preview;
+  }
+  return `${preview}, +${paths.length - limit} more`;
 }
 
 function normalizeSkillId(name: string): string {

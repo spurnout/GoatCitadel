@@ -29,4 +29,13 @@ describe("renderBox", () => {
     expect(new Set(widths).size).toBe(1);
     expect(widths[0]).toBe(40);
   });
+
+  it("wraps oversized content without breaking the box border width", () => {
+    const lines = renderBox("Long", [
+      "This is a deliberately oversized line that should wrap instead of pushing the right border out of alignment in the terminal renderer.",
+    ], "info").split("\n");
+    const widths = lines.map(visibleWidth);
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBeLessThanOrEqual(108);
+  });
 });

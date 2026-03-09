@@ -479,6 +479,11 @@ export class TuiApiClient {
     return this.request("/api/v1/llm/config", { method: "GET" });
   }
 
+  public async listLlmModels(providerId?: string): Promise<{ items: LlmModelRecord[] }> {
+    const query = providerId ? `?providerId=${encodeURIComponent(providerId)}` : "";
+    return this.request(`/api/v1/llm/models${query}`, { method: "GET" });
+  }
+
   public async fetchLlmModels(providerId?: string): Promise<{ items: Array<{ id: string; ownedBy?: string; created?: number }> }> {
     const query = providerId ? `?providerId=${encodeURIComponent(providerId)}` : "";
     return this.request(`/api/v1/llm/models${query}`, { method: "GET" });

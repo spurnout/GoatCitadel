@@ -387,10 +387,11 @@ async function streamSseReply(
       send(chunk);
     }
   } catch (error) {
+    reply.log.error({ err: error, sessionId }, "chat SSE stream failed");
     send({
       type: "error",
       sessionId,
-      error: (error as Error).message,
+      error: getPublicChatSseErrorMessage(error),
     });
   } finally {
     raw.end();
@@ -400,6 +401,13 @@ async function streamSseReply(
 
 function isChatTurnWriteConflictError(error: unknown): boolean {
   return error instanceof Error && error.name === "ChatTurnWriteConflictError";
+}
+
+function getPublicChatSseErrorMessage(error: unknown): string {
+  if (isChatTurnWriteConflictError(error) && error instanceof Error) {
+    return error.message;
+  }
+  return "Chat stream failed before completion. Check gateway diagnostics and retry.";
 }
 
 function sendChatWriteError(reply: FastifyReply, error: unknown) {

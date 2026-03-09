@@ -285,6 +285,65 @@ describe("LlmService", () => {
     }
   });
 
+  it("uses provider-template defaults for preview fallbacks when no provider is stored yet", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "openai",
+      providers: [
+        {
+          providerId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "gpt-4.1-mini",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("preview failed");
+    }) as unknown as typeof fetch;
+
+    try {
+      await expect(service.previewModels({
+        providerId: "minimax",
+        baseUrl: "https://api.minimax.io/v1",
+      })).resolves.toMatchObject({
+        source: "fallback",
+        items: [{ id: "MiniMax-M2.5" }],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses provider-template defaults when upserting a new provider without an explicit default model", () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "openai",
+      providers: [
+        {
+          providerId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "gpt-4.1-mini",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const updated = service.updateRuntimeConfig({
+      upsertProvider: {
+        providerId: "deepseek",
+        label: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+      },
+    });
+
+    expect(updated.providers.find((provider) => provider.providerId === "deepseek")?.defaultModel).toBe("deepseek-chat");
+  });
+
   it("enforces network allowlist for outbound model calls when configured", async () => {
     const config: LlmConfigFile = {
       activeProviderId: "openai",

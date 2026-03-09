@@ -160,6 +160,8 @@ const DEFAULT_GATEWAY_HOST = "127.0.0.1";
 const DEFAULT_GATEWAY_PORT = 8787;
 const DEFAULT_GATEWAY_HOST_ALLOWLIST: string[] = [];
 const API_BASE = import.meta.env.VITE_GATEWAY_URL ?? inferDefaultGatewayBaseUrl();
+const MAX_SSE_BUFFER_CHARS = 256_000;
+const MAX_SSE_EVENT_PREVIEW_CHARS = 180;
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 const AUTH_STORAGE_MODE_KEY = "goatcitadel.gateway.auth.storageMode";
 
@@ -1493,37 +1495,16 @@ export async function streamChatDelegation(
     const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
+  let streamError: string | null = null;
+  for await (const dataText of iterateSsePayloads(response.body)) {
+    const chunk = parseSseJson<ChatDelegationStreamChunk>(dataText);
+    onChunk(chunk);
+    if (chunk.type === "error") {
+      streamError = chunk.error || "Streaming request failed.";
     }
-    buffer += decoder.decode(value, { stream: true });
-    while (true) {
-      const separatorIndex = buffer.indexOf("\n\n");
-      if (separatorIndex < 0) {
-        break;
-      }
-      const rawEvent = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      const dataLines = rawEvent
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
-      if (dataLines.length === 0) {
-        continue;
-      }
-      const dataText = dataLines.join("\n");
-      try {
-        onChunk(JSON.parse(dataText) as ChatDelegationStreamChunk);
-      } catch {
-        // ignore SSE parse noise
-      }
-    }
+  }
+  if (streamError) {
+    throw new Error(streamError);
   }
 }
 
@@ -1963,10 +1944,26 @@ async function consumeSseResponse(
   onChunk: (chunk: ChatStreamChunk) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  let streamError: string | null = null;
+  for await (const dataText of iterateSsePayloads(body, signal)) {
+    const parsed = parseSseJson<ChatStreamChunk>(dataText);
+    onChunk(parsed);
+    if (parsed.type === "error") {
+      streamError = parsed.error || "Streaming request failed.";
+    }
+  }
+  if (streamError) {
+    throw new Error(streamError);
+  }
+}
+
+async function* iterateSsePayloads(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let streamError: string | null = null;
   try {
     while (true) {
       if (signal?.aborted) {
@@ -1974,9 +1971,10 @@ async function consumeSseResponse(
       }
       const { value, done } = await reader.read();
       if (done) {
+        buffer = appendSseBuffer(buffer, decoder.decode());
         break;
       }
-      buffer += decoder.decode(value, { stream: true });
+      buffer = appendSseBuffer(buffer, decoder.decode(value, { stream: true }));
       while (true) {
         const separatorIndex = buffer.indexOf("\n\n");
         if (separatorIndex < 0) {
@@ -1984,22 +1982,9 @@ async function consumeSseResponse(
         }
         const rawEvent = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + 2);
-        const dataLines = rawEvent
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trim());
-        if (dataLines.length === 0) {
-          continue;
-        }
-        const dataText = dataLines.join("\n");
-        try {
-          const parsed = JSON.parse(dataText) as ChatStreamChunk;
-          onChunk(parsed);
-          if (parsed.type === "error") {
-            streamError = parsed.error || "Streaming request failed.";
-          }
-        } catch {
-          // ignore parse noise
+        const dataText = extractSseDataText(rawEvent);
+        if (dataText) {
+          yield dataText;
         }
       }
     }
@@ -2011,9 +1996,50 @@ async function consumeSseResponse(
   } finally {
     reader.releaseLock();
   }
-  if (streamError) {
-    throw new Error(streamError);
+  if (buffer.trim()) {
+    throw new Error(`Streaming response ended before a complete SSE event was received: ${previewSseText(buffer)}`);
   }
+}
+
+function appendSseBuffer(buffer: string, chunk: string): string {
+  if (!chunk) {
+    return buffer;
+  }
+  const next = buffer + chunk;
+  if (next.length > MAX_SSE_BUFFER_CHARS) {
+    throw new Error("Streaming response exceeded the SSE buffer limit before a complete event was received.");
+  }
+  return next;
+}
+
+function extractSseDataText(rawEvent: string): string | null {
+  const dataLines = rawEvent
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim());
+  if (dataLines.length === 0) {
+    return null;
+  }
+  return dataLines.join("\n");
+}
+
+function parseSseJson<T>(dataText: string): T {
+  try {
+    return JSON.parse(dataText) as T;
+  } catch {
+    throw new Error(`Malformed SSE event payload: ${previewSseText(dataText)}`);
+  }
+}
+
+function previewSseText(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "(empty)";
+  }
+  if (trimmed.length <= MAX_SSE_EVENT_PREVIEW_CHARS) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, MAX_SSE_EVENT_PREVIEW_CHARS)}...`;
 }
 
 function createAbortError(): Error {

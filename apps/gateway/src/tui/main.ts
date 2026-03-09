@@ -32,6 +32,9 @@ type HomeView =
   | "settings"
   | "exit";
 
+const MANUAL_SESSION_ENTRY = "__manual_session__";
+const MAX_TUI_SESSION_CHOICES = 14;
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const resolved = await loadResolvedProfile({
@@ -323,16 +326,20 @@ async function viewDashboard(client: TuiApiClient): Promise<void> {
     `Active subagents: ${state.activeSubagents}`,
     `Daily cost (USD): ${Number(state.dailyCostUsd ?? 0).toFixed(4)}`,
   ], "info"));
-  console.log(tuiTheme.heading("\nTask Status Counts"));
-  console.table(taskStatusCounts);
-  console.log(tuiTheme.heading("Recent Events"));
-  console.table(
-    recentEvents.slice(0, 12).map((event) => ({
-      timestamp: event.timestamp,
-      eventType: event.eventType,
-      source: event.source,
-    })),
-  );
+  console.log(renderBox(
+    "Task status",
+    taskStatusCounts.length > 0
+      ? taskStatusCounts.map((item) => `${toText(item.status) || "unknown"}: ${Number(item.count ?? 0)}`)
+      : ["No task counters reported."],
+    taskStatusCounts.length > 0 ? "info" : "warning",
+  ));
+  console.log(renderBox(
+    "Recent events",
+    recentEvents.length > 0
+      ? recentEvents.slice(0, 8).map((event) => `${formatTimestamp(toText(event.timestamp))} · ${toText(event.eventType)} · ${toText(event.source)}`)
+      : ["No recent realtime events reported."],
+    recentEvents.length > 0 ? "info" : "warning",
+  ));
   await pause();
 }
 
@@ -349,19 +356,20 @@ async function viewChat(client: TuiApiClient): Promise<void> {
       "New chats fall back to this runtime selection when session prefs are blank.",
     ], "info"));
   }
-  console.log(tuiTheme.heading("Chat Sessions"));
   const sessionItems = sessions.items ?? [];
   if (sessionItems.length > 0) {
-    console.table(
-      sessionItems.map((session) => ({
-        sessionId: toText(session.sessionId),
-        title: toText(session.title),
-        kind: toText(session.kind),
-        updatedAt: toText(session.updatedAt),
-      })),
-    );
+    console.log(renderBox(
+      "Active sessions",
+      sessionItems.slice(0, MAX_TUI_SESSION_CHOICES).map((session, index) => (
+        `${index + 1}. ${formatSessionSummary(session)}`
+      )),
+      "info",
+    ));
+    if (sessionItems.length > MAX_TUI_SESSION_CHOICES) {
+      console.log(tuiTheme.muted(`Showing ${MAX_TUI_SESSION_CHOICES} of ${sessionItems.length} active sessions.`));
+    }
   } else {
-    console.log("No active chat sessions.");
+    console.log(renderBox("Active sessions", ["No active chat sessions."], "warning"));
   }
 
   const action = await select({
@@ -387,7 +395,10 @@ async function viewChat(client: TuiApiClient): Promise<void> {
       "You can chat immediately. Creating a separate project is optional.",
     ], "success"));
   } else {
-    sessionId = (await input({ message: "Session ID" })).trim();
+    sessionId = await chooseSessionId(
+      sessionItems,
+      action === "prefs" ? "Choose session to patch" : "Choose session to open",
+    );
   }
   if (!sessionId) {
     await pause();
@@ -438,7 +449,13 @@ async function viewChat(client: TuiApiClient): Promise<void> {
       memoryMode,
       thinkingLevel,
     });
-    console.log(JSON.stringify(patched, null, 2));
+    console.log(renderBox("Session prefs updated", [
+      `Session: ${sessionId}`,
+      `Mode: ${toText(patched.mode ?? mode)}`,
+      `Web: ${toText(patched.webMode ?? webMode)}`,
+      `Memory: ${toText(patched.memoryMode ?? memoryMode)}`,
+      `Thinking: ${toText(patched.thinkingLevel ?? thinkingLevel)}`,
+    ], "success"));
     await pause();
     return;
   }
@@ -446,15 +463,13 @@ async function viewChat(client: TuiApiClient): Promise<void> {
   const messages = await client.listChatMessages(sessionId, 30);
   const messageItems = messages.items ?? [];
   if (messageItems.length > 0) {
-    console.log(tuiTheme.heading(`Recent messages for ${sessionId}`));
-    console.table(
-      messageItems.slice(-20).map((msg) => ({
-        messageId: toText(msg.messageId),
-        role: toText(msg.role),
-        at: toText(msg.createdAt),
-        content: toText(msg.content).slice(0, 120),
-      })),
-    );
+    console.log(renderBox(
+      `Recent messages for ${sessionId}`,
+      messageItems.slice(-8).map((msg) => (
+        `${toText(msg.role) || "unknown"} · ${formatTimestamp(toText(msg.createdAt))} · ${summarizeText(toText(msg.content), 140)}`
+      )),
+      "info",
+    ));
   }
 
   const content = (await input({ message: "Message (blank to return)" })).trim();
@@ -1837,16 +1852,53 @@ async function viewNpu(client: TuiApiClient): Promise<void> {
 
 async function viewOnboarding(client: TuiApiClient): Promise<void> {
   const state = await client.onboardingState();
-  console.log(chalk.bold("Onboarding State"));
-  console.log(`Completed: ${state.completed ? "yes" : "no"}`);
-  console.table(
-    (state.checklist ?? []).map((item) => ({
-      id: item.id,
-      label: item.label,
-      status: item.status,
-      detail: item.detail,
-    })),
-  );
+  const activeProviderId = state.settings?.llm?.activeProviderId?.trim();
+  const providerProbe = activeProviderId
+    ? await client.listLlmModels(activeProviderId)
+      .then((result) => ({
+        ok: true as const,
+        items: result.items ?? [],
+      }))
+      .catch((error) => ({
+        ok: false as const,
+        message: (error as Error).message,
+      }))
+    : null;
+  console.log(renderSection("Onboarding", "Configuration readiness for first-run setup and operator handoff."));
+  console.log(renderBox("Current state", [
+    `Completed: ${state.completed ? "yes" : "no"}`,
+    `Completed at: ${state.completedAt ? formatTimestamp(state.completedAt) : "not yet"}`,
+    `Completed by: ${state.completedBy || "n/a"}`,
+    `Provider: ${state.settings?.llm?.activeProviderId || "unset"} / ${state.settings?.llm?.activeModel || "unset"}`,
+    `Runtime defaults: ${state.settings?.defaultToolProfile || "unset"} / ${state.settings?.budgetMode || "unset"}`,
+  ], state.completed ? "success" : "warning"));
+  console.log(renderBox(
+    "Checklist",
+    (state.checklist ?? []).length > 0
+      ? state.checklist.map((item) => `${item.label}: ${item.status}${item.detail ? ` (${item.detail})` : ""}`)
+      : ["No onboarding checklist items were returned."],
+    "info",
+  ));
+  if (providerProbe) {
+    console.log(renderBox(
+      "Provider probe",
+      providerProbe.ok
+        ? [
+          `Provider ${activeProviderId} responded to live model discovery.`,
+          `Models returned: ${providerProbe.items.length}`,
+          providerProbe.items[0]?.id ? `First model: ${providerProbe.items[0].id}` : "The provider responded but returned no models.",
+        ]
+        : [
+          `Provider ${activeProviderId} did not complete a live model lookup.`,
+          summarizeText(providerProbe.message, 180),
+        ],
+      providerProbe.ok ? "success" : "warning",
+    ));
+  }
+  console.log(renderBox("Readiness note", [
+    "This checklist is configuration-based. It can read as complete even when a provider endpoint is currently unreachable.",
+    "Run the guided onboarding wizard or `goat doctor --deep` before public testing if you need a live provider check.",
+  ], "warning"));
 
   const action = await select({
     message: "Onboarding action",
@@ -1862,7 +1914,10 @@ async function viewOnboarding(client: TuiApiClient): Promise<void> {
       return;
     }
     const result = await client.onboardingComplete("tui-operator");
-    console.log(`Onboarding completed: ${result.state?.completed ? "yes" : "no"}`);
+    console.log(renderBox("Onboarding updated", [
+      `Completed: ${result.state?.completed ? "yes" : "no"}`,
+      "The onboarding marker was updated for this gateway.",
+    ], "success"));
     await pause();
     return;
   }
@@ -1896,7 +1951,11 @@ async function viewOnboarding(client: TuiApiClient): Promise<void> {
       markComplete: false,
       completedBy: "tui-operator",
     });
-    console.log(`Bootstrap applied at ${result.appliedAt}`);
+    console.log(renderBox("Bootstrap applied", [
+      `Applied at: ${formatTimestamp(result.appliedAt)}`,
+      `Profile: ${defaultToolProfile}`,
+      `Budget: ${budgetMode}`,
+    ], "success"));
     await pause();
   }
 }
@@ -2165,6 +2224,65 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
+}
+
+async function chooseSessionId(
+  sessionItems: Array<Record<string, unknown>>,
+  message: string,
+): Promise<string> {
+  const available = sessionItems
+    .map((session) => ({
+      sessionId: toText(session.sessionId),
+      summary: formatSessionSummary(session),
+    }))
+    .filter((session) => session.sessionId);
+
+  if (available.length === 0) {
+    return (await input({ message: "Session ID" })).trim();
+  }
+
+  const selected = await select<string>({
+    message,
+    choices: [
+      ...available.slice(0, MAX_TUI_SESSION_CHOICES).map((session) => ({
+        name: session.summary,
+        value: session.sessionId,
+      })),
+      { name: "Enter session ID manually", value: MANUAL_SESSION_ENTRY },
+    ],
+  });
+
+  if (selected === MANUAL_SESSION_ENTRY) {
+    return (await input({ message: "Session ID" })).trim();
+  }
+  return selected.trim();
+}
+
+function formatSessionSummary(session: Record<string, unknown>): string {
+  const sessionId = toText(session.sessionId) || "unknown";
+  const title = toText(session.title) || "(untitled)";
+  const kind = toText(session.kind) || "chat";
+  const updatedAt = formatTimestamp(toText(session.updatedAt));
+  return `${title} [${sessionId}] · ${kind} · updated ${updatedAt}`;
+}
+
+function formatTimestamp(value: string): string {
+  if (!value) {
+    return "unknown";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString();
+}
+
+function summarizeText(value: string, limit = 120): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) {
+    return compact || "(empty)";
+  }
+  return `${compact.slice(0, limit - 3)}...`;
 }
 
 main().catch((error) => {
