@@ -86,6 +86,7 @@ Herd HQ is GoatCitadel's visual operations room:
 
 - live floor view of the Goatherder and active goat stations
 - office zones for command, build, research, security, and operations
+- deterministic low-poly station silhouettes so agents stay individually recognizable without turning the office into mascot chaos
 - collaboration overlays, alert states, and event pace visible at a glance
 - inspector and dock views that let you move between atmosphere and concrete detail
 
@@ -228,7 +229,7 @@ Mission Control is a full operator surface, not a single-pane chat demo. The gal
 
 | Gatehouse | Herd HQ |
 | --- | --- |
-| ![Gatehouse Approvals](docs/screenshots/mission-control/approvals.png) | ![Herd HQ Office](docs/screenshots/mission-control/office.png) |
+| ![Gatehouse Approvals](docs/screenshots/mission-control/approvals.png) | ![Herd HQ Office With Distinct Agent Silhouettes](docs/screenshots/mission-control/office.png) |
 
 ### Expand The Stack
 

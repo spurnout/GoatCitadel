@@ -118,6 +118,22 @@ interface SeatLayout extends OfficeDeskAgent {
   zoneLabel: string;
 }
 
+type AgentSilhouette =
+  | "beacon"
+  | "ring"
+  | "stack"
+  | "drone"
+  | "prism"
+  | "capsule";
+
+interface AgentShapeProfile {
+  silhouette: AgentSilhouette;
+  height: number;
+  width: number;
+  topper: "halo" | "antenna" | "fin" | "sensor";
+  accentCount: 1 | 2;
+}
+
 function buildCircularLayout(agents: OfficeDeskAgent[]): SeatLayout[] {
   if (agents.length === 0) {
     return [];
@@ -161,6 +177,56 @@ function buildCircularLayout(agents: OfficeDeskAgent[]): SeatLayout[] {
       zoneLabel: agent.zoneLabel ?? officeZoneLabel(zoneId),
     };
   });
+}
+
+function hashToken(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function getAgentShapeProfile(seat: SeatLayout): AgentShapeProfile {
+  const variantsByZone: Record<OfficeZoneId, AgentSilhouette[]> = {
+    command: ["beacon", "prism", "stack"],
+    build: ["stack", "capsule", "drone"],
+    research: ["ring", "beacon", "drone"],
+    security: ["prism", "beacon", "capsule"],
+    operations: ["capsule", "drone", "stack"],
+  };
+  const topByZone: Record<OfficeZoneId, Array<AgentShapeProfile["topper"]>> = {
+    command: ["antenna", "halo", "sensor"],
+    build: ["fin", "sensor", "antenna"],
+    research: ["halo", "sensor", "antenna"],
+    security: ["fin", "antenna", "sensor"],
+    operations: ["sensor", "halo", "fin"],
+  };
+
+  const token = `${seat.roleId}:${seat.title}:${seat.zoneId}`;
+  const hash = hashToken(token);
+  const silhouettes = variantsByZone[seat.zoneId];
+  const toppers = topByZone[seat.zoneId];
+  const silhouette = silhouettes[hash % silhouettes.length] ?? "capsule";
+  const topper = toppers[(hash >>> 3) % toppers.length] ?? "sensor";
+  const accentCount = ((hash >>> 7) & 1) === 0 ? 1 : 2;
+
+  if (silhouette === "beacon") {
+    return { silhouette, height: 0.46, width: 0.13, topper, accentCount };
+  }
+  if (silhouette === "ring") {
+    return { silhouette, height: 0.34, width: 0.16, topper, accentCount };
+  }
+  if (silhouette === "stack") {
+    return { silhouette, height: 0.38, width: 0.15, topper, accentCount };
+  }
+  if (silhouette === "drone") {
+    return { silhouette, height: 0.28, width: 0.14, topper, accentCount };
+  }
+  if (silhouette === "prism") {
+    return { silhouette, height: 0.4, width: 0.15, topper, accentCount };
+  }
+  return { silhouette: "capsule", height: 0.36, width: 0.14, topper, accentCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +556,7 @@ function OperatorSeat(props: {
   motionScalar: number;
 }) {
   const [hovered, setHovered] = useState(false);
-  const glowRef = useRef<Mesh>(null);
+  const glowRef = useRef<Group>(null);
   const preset = operatorPresetPalette(props.operator.preset);
 
   // Operator sits at angle 0 (top of circle, +Z direction)
@@ -537,15 +603,13 @@ function OperatorSeat(props: {
         </mesh>
       ))}
 
-      {/* Operator avatar indicator */}
-      <mesh ref={glowRef} position={[0, 1.0, 0]}>
-        <sphereGeometry args={[0.18, 16, 16]} />
-        <meshStandardMaterial
-          color={preset.accent}
-          emissive={preset.accent}
-          emissiveIntensity={props.selected ? 0.8 : 0.5}
-        />
-      </mesh>
+      <OperatorAvatar
+        glowRef={glowRef}
+        accent={preset.accent}
+        body={preset.body}
+        selected={props.selected}
+        preset={props.operator.preset}
+      />
 
       {/* Selection ring */}
       <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -558,15 +622,15 @@ function OperatorSeat(props: {
         />
       </mesh>
 
-      {/* Overhead status hologram */}
-      <mesh position={[0, 1.5, 0]}>
-        <sphereGeometry args={[0.08, 12, 12]} />
+      <mesh position={[0, 1.52, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.06, 0.1, 28]} />
         <meshStandardMaterial
           color={preset.accent}
           emissive={preset.accent}
           emissiveIntensity={0.7}
           transparent
-          opacity={0.6}
+          opacity={0.7}
+          side={2}
         />
       </mesh>
 
@@ -604,12 +668,13 @@ function AgentSeat(props: {
   motionScalar: number;
 }) {
   const [hovered, setHovered] = useState(false);
-  const glowRef = useRef<Mesh>(null);
+  const glowRef = useRef<Group>(null);
   const { seat } = props;
   const zoneColor = ZONE_COLORS[seat.zoneId];
   const isActive = seat.status === "active";
   const isAlert = seat.activityState === "alert_response";
   const isBlocked = seat.risk === "blocked" || seat.risk === "error";
+  const shapeProfile = useMemo(() => getAgentShapeProfile(seat), [seat]);
 
   useFrame((state) => {
     if (!glowRef.current) {
@@ -619,10 +684,6 @@ function AgentSeat(props: {
     const amp = props.reducedMotion ? 0.01 : (isAlert ? 0.1 : 0.04) * props.motionScalar;
     glowRef.current.scale.setScalar(1 + Math.sin(t * (isAlert ? 4 : 1.8)) * amp);
 
-    if (isAlert && !props.reducedMotion) {
-      const flash = Math.sin(t * 6) > 0 ? 0.9 : 0.4;
-      (glowRef.current.material as { emissiveIntensity?: number }).emissiveIntensity = flash;
-    }
   });
 
   const onClick = (event: ThreeEvent<MouseEvent>) => {
@@ -657,19 +718,19 @@ function AgentSeat(props: {
         <meshStandardMaterial color={zoneColor} emissive={zoneColor} emissiveIntensity={0.5} />
       </mesh>
 
-      {/* Agent avatar (sphere) */}
-      <mesh ref={glowRef} position={[0, 0.82, 0]}>
-        <sphereGeometry args={[0.14, 14, 14]} />
-        <meshStandardMaterial
-          color={avatarColor}
-          emissive={avatarColor}
-          emissiveIntensity={avatarEmissive}
-        />
-      </mesh>
+      <AgentAvatar
+        glowRef={glowRef}
+        profile={shapeProfile}
+        color={avatarColor}
+        zoneColor={zoneColor}
+        emissiveIntensity={avatarEmissive}
+        blocked={isBlocked}
+        active={isActive}
+      />
 
       {/* Status hologram above seat */}
-      <mesh position={[0, 1.25, 0]}>
-        <sphereGeometry args={[0.05, 10, 10]} />
+      <mesh position={[0, 1.26, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.028, 0.052, 22]} />
         <meshStandardMaterial
           color={statusHoloColor(seat.status, seat.risk)}
           emissive={statusHoloColor(seat.status, seat.risk)}
@@ -723,6 +784,147 @@ function AgentSeat(props: {
           </div>
         </Html>
       ) : null}
+    </group>
+  );
+}
+
+function AgentAvatar(props: {
+  glowRef: { current: Group | null };
+  profile: AgentShapeProfile;
+  color: string;
+  zoneColor: string;
+  emissiveIntensity: number;
+  blocked: boolean;
+  active: boolean;
+}) {
+  const accentColor = props.blocked ? "#ffd2cb" : props.zoneColor;
+
+  return (
+    <group ref={props.glowRef} position={[0, 0.82, 0]}>
+      <mesh castShadow>
+        {props.profile.silhouette === "beacon" ? (
+          <cylinderGeometry args={[props.profile.width * 0.58, props.profile.width, props.profile.height, 6]} />
+        ) : props.profile.silhouette === "ring" ? (
+          <torusGeometry args={[props.profile.width, props.profile.width * 0.33, 10, 20]} />
+        ) : props.profile.silhouette === "stack" ? (
+          <boxGeometry args={[props.profile.width * 1.25, props.profile.height * 0.82, props.profile.width * 1.25]} />
+        ) : props.profile.silhouette === "drone" ? (
+          <octahedronGeometry args={[props.profile.width * 1.08, 0]} />
+        ) : props.profile.silhouette === "prism" ? (
+          <coneGeometry args={[props.profile.width, props.profile.height, 4]} />
+        ) : (
+          <capsuleGeometry args={[props.profile.width * 0.68, props.profile.height * 0.46, 6, 10]} />
+        )}
+        <meshStandardMaterial
+          color={props.color}
+          emissive={props.color}
+          emissiveIntensity={props.emissiveIntensity}
+          metalness={0.42}
+          roughness={0.32}
+        />
+      </mesh>
+
+      {props.profile.silhouette === "stack" ? (
+        <mesh position={[0, props.profile.height * 0.35, 0]} castShadow>
+          <boxGeometry args={[props.profile.width * 0.84, props.profile.height * 0.24, props.profile.width * 0.84]} />
+          <meshStandardMaterial color="#dbe7ff" emissive="#dbe7ff" emissiveIntensity={0.2} metalness={0.2} roughness={0.4} />
+        </mesh>
+      ) : null}
+
+      {props.profile.silhouette === "drone" ? (
+        <>
+          {[-1, 1].map((direction) => (
+            <mesh key={`arm-${direction}`} position={[direction * props.profile.width * 0.95, 0, 0]} rotation={[0, 0, direction * 0.4]} castShadow>
+              <boxGeometry args={[props.profile.width * 0.85, 0.03, 0.03]} />
+              <meshStandardMaterial color="#8aa5bf" metalness={0.38} roughness={0.48} />
+            </mesh>
+          ))}
+        </>
+      ) : null}
+
+      {props.profile.accentCount >= 1 ? (
+        <mesh position={[0, -props.profile.height * 0.22, props.profile.width * 0.72]}>
+          <boxGeometry args={[props.profile.width * 1.1, 0.03, 0.03]} />
+          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={props.active ? 0.7 : 0.35} />
+        </mesh>
+      ) : null}
+
+      {props.profile.accentCount === 2 ? (
+        <mesh position={[0, 0, -props.profile.width * 0.72]}>
+          <boxGeometry args={[props.profile.width * 0.92, 0.024, 0.024]} />
+          <meshStandardMaterial color="#b8cae6" emissive="#b8cae6" emissiveIntensity={0.22} />
+        </mesh>
+      ) : null}
+
+      {props.profile.topper === "halo" ? (
+        <mesh position={[0, props.profile.height * 0.52, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[props.profile.width * 0.56, 0.015, 8, 18]} />
+          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.6} />
+        </mesh>
+      ) : null}
+      {props.profile.topper === "antenna" ? (
+        <group position={[0, props.profile.height * 0.5, 0]}>
+          <mesh position={[0, 0.06, 0]}>
+            <cylinderGeometry args={[0.01, 0.01, 0.14, 8]} />
+            <meshStandardMaterial color="#a6bad1" metalness={0.42} roughness={0.34} />
+          </mesh>
+          <mesh position={[0, 0.14, 0]}>
+            <sphereGeometry args={[0.024, 8, 8]} />
+            <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.85} />
+          </mesh>
+        </group>
+      ) : null}
+      {props.profile.topper === "fin" ? (
+        <mesh position={[0, props.profile.height * 0.46, -props.profile.width * 0.18]} rotation={[0.45, 0, 0]}>
+          <boxGeometry args={[props.profile.width * 0.18, props.profile.height * 0.28, 0.03]} />
+          <meshStandardMaterial color="#d7e3f5" metalness={0.22} roughness={0.42} />
+        </mesh>
+      ) : null}
+      {props.profile.topper === "sensor" ? (
+        <mesh position={[0, props.profile.height * 0.4, props.profile.width * 0.3]}>
+          <boxGeometry args={[props.profile.width * 0.46, props.profile.height * 0.13, 0.03]} />
+          <meshStandardMaterial color="#dff3ff" emissive="#dff3ff" emissiveIntensity={0.28} metalness={0.18} roughness={0.36} />
+        </mesh>
+      ) : null}
+    </group>
+  );
+}
+
+function OperatorAvatar(props: {
+  glowRef: { current: Group | null };
+  accent: string;
+  body: string;
+  selected: boolean;
+  preset: OperatorPreset;
+}) {
+  const crownColor = props.preset === "nightwatch" ? "#9ee6ff" : props.preset === "strategist" ? "#d8f0a6" : "#ffd29c";
+
+  return (
+    <group ref={props.glowRef} position={[0, 1.02, 0]}>
+      <mesh castShadow>
+        <capsuleGeometry args={[0.14, 0.28, 8, 12]} />
+        <meshStandardMaterial
+          color={props.body}
+          emissive={props.accent}
+          emissiveIntensity={props.selected ? 0.34 : 0.2}
+          metalness={0.3}
+          roughness={0.38}
+        />
+      </mesh>
+      <mesh position={[0, 0.16, 0]} castShadow>
+        <coneGeometry args={[0.1, 0.18, 5]} />
+        <meshStandardMaterial color={props.accent} emissive={props.accent} emissiveIntensity={props.selected ? 0.95 : 0.62} metalness={0.34} roughness={0.28} />
+      </mesh>
+      <mesh position={[0, -0.08, 0.12]}>
+        <boxGeometry args={[0.16, 0.03, 0.03]} />
+        <meshStandardMaterial color={crownColor} emissive={crownColor} emissiveIntensity={0.42} />
+      </mesh>
+      {[-1, 1].map((direction) => (
+        <mesh key={`fin-${direction}`} position={[direction * 0.13, 0.05, 0]} rotation={[0, 0, direction * 0.35]} castShadow>
+          <boxGeometry args={[0.04, 0.16, 0.03]} />
+          <meshStandardMaterial color="#d7e5f8" metalness={0.22} roughness={0.4} />
+        </mesh>
+      ))}
     </group>
   );
 }
