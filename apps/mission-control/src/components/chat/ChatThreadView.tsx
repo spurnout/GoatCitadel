@@ -102,15 +102,10 @@ function ChatTurnRunStrip({ turn }: { turn: ChatThreadTurnRecord }) {
       <StatusChip tone={turn.trace.status === "completed" ? "success" : turn.trace.status === "failed" ? "critical" : "warning"}>
         {turn.trace.status}
       </StatusChip>
-      <span>{turn.trace.mode}</span>
-      <span>{turn.trace.webMode}</span>
-      <span>{turn.trace.thinkingLevel}</span>
-      {turn.trace.effectiveToolAutonomy ? <span>{turn.trace.effectiveToolAutonomy === "manual" ? "manual tools" : "safe auto tools"}</span> : null}
-      <span>{turn.toolRuns.length} tool{turn.toolRuns.length === 1 ? "" : "s"}</span>
-      <span>{turn.citations.length} citation{turn.citations.length === 1 ? "" : "s"}</span>
-      {turn.trace.orchestration ? <span>{turn.trace.orchestration.workflowTemplate}</span> : null}
-      {turn.trace.orchestration ? <span>{turn.trace.orchestration.steps.length} roles</span> : null}
       {routing.map((item) => <span key={item}>{item}</span>)}
+      {turn.toolRuns.length > 0 ? <span>{turn.toolRuns.length} tool{turn.toolRuns.length === 1 ? "" : "s"}</span> : null}
+      {turn.citations.length > 0 ? <span>{turn.citations.length} citation{turn.citations.length === 1 ? "" : "s"}</span> : null}
+      {turn.trace.orchestration ? <span>orchestrated</span> : null}
       {turn.trace.routing.fallbackUsed ? <span>fallback used</span> : null}
     </div>
   );

@@ -165,7 +165,7 @@ const MAX_SSE_EVENT_PREVIEW_CHARS = 180;
 const AUTH_STORAGE_KEY = "goatcitadel.gateway.auth";
 const AUTH_STORAGE_MODE_KEY = "goatcitadel.gateway.auth.storageMode";
 
-interface GatewayAuthState {
+export interface GatewayAuthState {
   mode?: "none" | "token" | "basic";
   token?: string;
   username?: string;
@@ -174,6 +174,77 @@ interface GatewayAuthState {
 }
 
 export type GatewayAuthStorageMode = "session" | "persistent";
+export type GatewayAccessPreflightStatus = "ready" | "needs-auth" | "unreachable" | "misconfigured";
+
+export interface GatewayBootstrapResult {
+  consumed: boolean;
+  source?: "fragment";
+}
+
+export interface GatewayAccessPreflightResult {
+  status: GatewayAccessPreflightStatus;
+  message: string;
+  healthDetail: string;
+  authMode?: GatewayAuthState["mode"];
+  onboardingState?: OnboardingState;
+  rejectedStoredAuth?: boolean;
+  bootstrapTokenRejected?: boolean;
+}
+
+interface ParsedApiError {
+  body?: unknown;
+  authMode?: GatewayAuthState["mode"];
+}
+
+interface ApiRequestErrorOptions {
+  kind: "http" | "network";
+  method: string;
+  path: string;
+  status?: number;
+  body?: unknown;
+  bodyText?: string;
+  authMode?: GatewayAuthState["mode"];
+  cause?: unknown;
+}
+
+export class ApiRequestError extends Error {
+  public readonly kind: "http" | "network";
+
+  public readonly method: string;
+
+  public readonly path: string;
+
+  public readonly status?: number;
+
+  public readonly body?: unknown;
+
+  public readonly bodyText?: string;
+
+  public readonly authMode?: GatewayAuthState["mode"];
+
+  public constructor(message: string, options: ApiRequestErrorOptions) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.kind = options.kind;
+    this.method = options.method;
+    this.path = options.path;
+    this.status = options.status;
+    this.body = options.body;
+    this.bodyText = options.bodyText;
+    this.authMode = options.authMode;
+    if (options.cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+export function isApiRequestError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError;
+}
+
+export function getGatewayApiBaseUrl(): string {
+  return API_BASE;
+}
 
 function unwrapApiResponse<T>(payload: unknown): T {
   if (
@@ -298,7 +369,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         error: (error as Error).message,
       },
     });
-    throw error;
+    throw new ApiRequestError(`Network error ${method} ${path}: ${(error as Error).message}`, {
+      kind: "network",
+      method,
+      path,
+      cause: error,
+    });
   }
   const responseCorrelationId = res.headers.get("x-goatcitadel-correlation-id") ?? correlationId;
   setDevDiagnosticsActiveCorrelationId(responseCorrelationId);
@@ -306,6 +382,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const text = await res.text();
+    const parsed = parseApiError(text);
     setDevDiagnosticsLastRequestError(`${method} ${path}: ${res.status}`);
     recordClientDiagnostic({
       level: "error",
@@ -319,7 +396,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         body: text.slice(0, 600),
       },
     });
-    throw new Error(`API error ${res.status}: ${text}`);
+    throw new ApiRequestError(`API error ${res.status}: ${text}`, {
+      kind: "http",
+      method,
+      path,
+      status: res.status,
+      body: parsed.body,
+      bodyText: text,
+      authMode: parsed.authMode,
+    });
   }
 
   setDevDiagnosticsLastRequestError(undefined);
@@ -471,6 +556,117 @@ export function readStoredGatewayAuthState(): GatewayAuthState | undefined {
   return readGatewayAuthState();
 }
 
+export function consumeGatewayAccessBootstrapFromLocation(): GatewayBootstrapResult {
+  if (typeof window === "undefined") {
+    return { consumed: false };
+  }
+
+  const rawHash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  if (!rawHash || !rawHash.includes("=")) {
+    return { consumed: false };
+  }
+
+  const hashParams = new URLSearchParams(rawHash);
+  const token = hashParams.get("access_token")?.trim();
+  if (!token) {
+    return { consumed: false };
+  }
+
+  persistGatewayAuthState({
+    mode: "token",
+    token,
+    tokenQueryParam: "access_token",
+  }, "session");
+
+  hashParams.delete("access_token");
+  const nextHash = hashParams.toString();
+  const nextUrl = new URL(window.location.href);
+  nextUrl.hash = nextHash ? `#${nextHash}` : "";
+  window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+  return {
+    consumed: true,
+    source: "fragment",
+  };
+}
+
+export async function preflightGatewayAccess(
+  options: { bootstrap?: GatewayBootstrapResult } = {},
+): Promise<GatewayAccessPreflightResult> {
+  const health = await probeGatewayHealth();
+  if (!health.ok) {
+    return {
+      status: "unreachable",
+      message: "Mission Control cannot reach the gateway yet.",
+      healthDetail: health.detail,
+    };
+  }
+
+  const hadStoredAuth = Boolean(readStoredGatewayAuthState());
+  const usedBootstrap = Boolean(options.bootstrap?.consumed);
+
+  try {
+    const onboardingState = await request<OnboardingState>("/api/v1/onboarding/state");
+    return {
+      status: "ready",
+      message: "Gateway reachability and access checks passed.",
+      healthDetail: health.detail,
+      onboardingState,
+    };
+  } catch (error) {
+    if (isApiRequestError(error)) {
+      if (error.status === 401 || error.status === 403) {
+        if (hadStoredAuth || usedBootstrap) {
+          clearGatewayAuthState();
+        }
+        return {
+          status: "needs-auth",
+          message: usedBootstrap
+            ? "The remote access link token was rejected. Enter the current gateway credentials."
+            : hadStoredAuth
+              ? "Saved gateway credentials were rejected. Enter the current gateway credentials."
+              : "Gateway credentials are required to continue.",
+          healthDetail: health.detail,
+          authMode: error.authMode,
+          rejectedStoredAuth: hadStoredAuth,
+          bootstrapTokenRejected: usedBootstrap,
+        };
+      }
+
+      if (error.status === 503) {
+        return {
+          status: "misconfigured",
+          message: readApiErrorMessage(error.body) || "Gateway auth is configured incorrectly on the server.",
+          healthDetail: health.detail,
+          authMode: error.authMode,
+        };
+      }
+
+      if (error.kind === "network") {
+        return {
+          status: "unreachable",
+          message: "Gateway health responded, but authenticated API access still failed.",
+          healthDetail: error.message,
+        };
+      }
+
+      return {
+        status: "misconfigured",
+        message: readApiErrorMessage(error.body) || error.message,
+        healthDetail: health.detail,
+        authMode: error.authMode,
+      };
+    }
+
+    return {
+      status: "misconfigured",
+      message: (error as Error).message,
+      healthDetail: health.detail,
+    };
+  }
+}
+
 function migrateLegacyGatewayAuthStorage(): void {
   if (typeof window === "undefined") {
     return;
@@ -483,6 +679,125 @@ function migrateLegacyGatewayAuthStorage(): void {
   window.sessionStorage.setItem(AUTH_STORAGE_KEY, localRaw);
   if (getGatewayAuthStorageMode() !== "persistent") {
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  }
+}
+
+function parseApiError(text: string): ParsedApiError {
+  if (!text) {
+    return {};
+  }
+  try {
+    const body = JSON.parse(text) as unknown;
+    return {
+      body,
+      authMode: normalizeAuthMode(body),
+    };
+  } catch {
+    return {
+      body: text,
+    };
+  }
+}
+
+function normalizeAuthMode(value: unknown): GatewayAuthState["mode"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const authMode = (value as { authMode?: unknown }).authMode;
+  return authMode === "none" || authMode === "token" || authMode === "basic"
+    ? authMode
+    : undefined;
+}
+
+function readApiErrorMessage(body: unknown): string | undefined {
+  if (typeof body === "string") {
+    return body;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return undefined;
+  }
+  const candidate = (body as { error?: unknown }).error;
+  return typeof candidate === "string" && candidate.trim()
+    ? candidate.trim()
+    : undefined;
+}
+
+async function probeGatewayHealth(): Promise<{ ok: boolean; detail: string }> {
+  const correlationId = createCorrelationId();
+  recordClientDiagnostic({
+    level: "info",
+    category: "api",
+    event: "request.start",
+    message: "GET /health",
+    correlationId,
+    route: "/health",
+  });
+
+  try {
+    const response = await fetch(`${API_BASE}/health`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "x-goatcitadel-correlation-id": correlationId,
+        "x-goatcitadel-origin-surface": "app",
+      },
+    });
+    const responseCorrelationId = response.headers.get("x-goatcitadel-correlation-id") ?? correlationId;
+    setDevDiagnosticsActiveCorrelationId(responseCorrelationId);
+
+    if (!response.ok) {
+      const detail = `Health probe failed with HTTP ${response.status}.`;
+      setDevDiagnosticsGatewayReachable(false);
+      setDevDiagnosticsLastRequestError(`GET /health: ${response.status}`);
+      recordClientDiagnostic({
+        level: "error",
+        category: "api",
+        event: "request.error",
+        message: `GET /health failed (${response.status})`,
+        correlationId: responseCorrelationId,
+        route: "/health",
+        context: {
+          status: response.status,
+        },
+      });
+      return { ok: false, detail };
+    }
+
+    setDevDiagnosticsGatewayReachable(true);
+    setDevDiagnosticsLastRequestError(undefined);
+    recordClientDiagnostic({
+      level: "info",
+      category: "api",
+      event: "request.finish",
+      message: "GET /health completed",
+      correlationId: responseCorrelationId,
+      route: "/health",
+      context: {
+        status: response.status,
+      },
+    });
+    return {
+      ok: true,
+      detail: `Gateway health check OK (${response.status}).`,
+    };
+  } catch (error) {
+    setDevDiagnosticsGatewayReachable(false);
+    setDevDiagnosticsLastRequestError("GET /health: network error");
+    recordClientDiagnostic({
+      level: "error",
+      category: "api",
+      event: "request.network_error",
+      message: "GET /health failed before a response was received",
+      correlationId,
+      route: "/health",
+      context: {
+        error: (error as Error).message,
+      },
+    });
+    return {
+      ok: false,
+      detail: `Gateway health probe failed: ${(error as Error).message}`,
+    };
   }
 }
 
@@ -1016,6 +1331,12 @@ export async function updateChatSession(sessionId: string, input: { title?: stri
   return request<ChatSessionRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function deleteChatSession(sessionId: string): Promise<{ deleted: boolean; sessionId: string }> {
+  return request<{ deleted: boolean; sessionId: string }>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
   });
 }
 
@@ -3606,7 +3927,7 @@ async function buildEventStreamUrl(): Promise<string> {
       });
       url.searchParams.set("sse_token", issued.token);
     } catch (error) {
-      if ((error as Error).message.includes("API error 400")) {
+      if (isApiRequestError(error) && error.status === 400) {
         return url.toString();
       }
       throw error;

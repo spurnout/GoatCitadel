@@ -16,12 +16,21 @@ import type {
   ToolInvokeResult,
 } from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
+import { hasLiveDataKeywords } from "../orchestration/live-data-detect.js";
 
 const MAX_TOOL_LOOPS = 6;
 const MAX_TOOL_RUNS_PER_TURN = 12;
 const TOOL_FAILURE_CIRCUIT_BREAKER_THRESHOLD = 2;
 const SAFE_WRITE_FALLBACK_DIR = "./workspace/goatcitadel_out";
 const QUERY_TOOL_NAMES = new Set(["browser.search", "memory.search", "embeddings.query"]);
+const WEB_TOOL_NAMES = new Set([
+  "browser.search",
+  "browser.navigate",
+  "browser.extract",
+  "browser.interact",
+  "http.get",
+  "http.post",
+]);
 const TOOL_REQUIRED_ARGS: Record<string, string[]> = {
   "browser.search": ["query"],
   "browser.navigate": ["url"],
@@ -204,6 +213,30 @@ export class ChatAgentOrchestrator {
     if (!assistantContent && localFileIntent && detectLocalFileAccessCheckIntent(input.content)) {
       assistantContent = buildLocalFileAccessFallback(input.content);
     }
+    if (!assistantContent) {
+      const clarificationFollowUp = buildClarificationFollowUpIfNeeded(input.content, input.historyMessages);
+      if (clarificationFollowUp) {
+        assistantContent = clarificationFollowUp;
+      }
+    }
+    if (!assistantContent) {
+      const clarificationPrompt = buildClarificationPromptIfNeeded(input.content);
+      if (clarificationPrompt) {
+        assistantContent = clarificationPrompt;
+      }
+    }
+    if (!assistantContent) {
+      const settingsConflict = buildLiveDataSettingsConflictMessage({
+        liveDataIntent: intents.liveData,
+        timeIntent: intents.time,
+        localFileIntent,
+        webMode: input.webMode,
+        toolAutonomy: input.toolAutonomy,
+      });
+      if (settingsConflict) {
+        assistantContent = settingsConflict;
+      }
+    }
 
     // Deterministic live-time helper for simple queries.
     if (!assistantContent && intents.time && canUseTimeTool) {
@@ -363,6 +396,13 @@ export class ChatAgentOrchestrator {
           reason: "Approval required by policy.",
         });
       }
+    }
+
+    if (intents.liveData && toolRuns.length > 0) {
+      conversationMessages.push({
+        role: "system",
+        content: buildEvidenceGroundingInstruction(),
+      } as ChatCompletionMessage);
     }
 
     if (!assistantContent) {
@@ -651,7 +691,7 @@ export class ChatAgentOrchestrator {
     };
   }
 
-  private async buildToolSchema(input: Pick<ChatAgentTurnInput, "sessionId">): Promise<{
+  private async buildToolSchema(input: Pick<ChatAgentTurnInput, "sessionId" | "webMode">): Promise<{
     tools: Array<Record<string, unknown>>;
     modelToCanonical: Map<string, string>;
     canonicalToModel: Map<string, string>;
@@ -659,6 +699,9 @@ export class ChatAgentOrchestrator {
     const catalog = this.deps.listToolCatalog();
     const filteredCatalog: ToolCatalogEntry[] = [];
     for (const tool of catalog) {
+      if (input.webMode === "off" && isWebToolName(tool.toolName)) {
+        continue;
+      }
       if (!this.deps.evaluateToolAccess) {
         filteredCatalog.push(tool);
         continue;
@@ -721,6 +764,7 @@ export class ChatAgentOrchestrator {
       toolName: input.toolName,
       rawArgs: input.rawArgs,
       userContent: input.input.content,
+      webMode: input.input.webMode,
       localFileIntent: input.localFileIntent,
       priorToolRuns: input.priorToolRuns,
     });
@@ -929,6 +973,7 @@ export class ChatAgentOrchestrator {
     toolName: string;
     rawArgs: Record<string, unknown>;
     userContent: string;
+    webMode: ChatWebMode;
     localFileIntent?: boolean;
     priorToolRuns?: ChatToolRunRecord[];
   }): {
@@ -939,6 +984,19 @@ export class ChatAgentOrchestrator {
   } {
     const args = { ...input.rawArgs };
     let effectiveToolName = input.toolName;
+    if (input.webMode === "off" && isWebToolName(input.toolName)) {
+      return {
+        toolName: effectiveToolName,
+        args,
+        blockedReason: "execution skipped: live web access is disabled because Web is set to Off for this chat",
+      };
+    }
+    if (input.toolName === "browser.navigate" && typeof args.url === "string") {
+      const promotedUrl = redirectSearchPortalNavigateUrl(args.url, input.userContent, input.priorToolRuns);
+      if (promotedUrl && promotedUrl !== args.url) {
+        args.url = promotedUrl;
+      }
+    }
     if (input.toolName === "browser.search") {
       const promotedUrl = inferBrowserNavigateUrlFromRepeatedSearches(input.userContent, input.priorToolRuns);
       if (promotedUrl) {
@@ -1087,9 +1145,12 @@ export class ChatAgentOrchestrator {
             content: [
               "You are the final response synthesizer for an agent runtime.",
               "Tools are unavailable for this final pass. Do not claim new tool execution.",
-              "Produce a concise, structured answer with these sections:",
-              "Summary, Constraints, What I did instead, What I need from you next.",
-              "If partial tool evidence exists, include it.",
+              "Write like a normal helpful chat response, not an incident report.",
+              "Start with the direct answer or the single most important limitation.",
+              "If key information is missing, ask at most two crisp follow-up questions.",
+              "Mention tool limitations briefly in plain language.",
+              "Do not use headings like Summary, Constraints, What I did instead, or What I need from you next unless the user explicitly asked for a structured report.",
+              "If partial tool evidence exists, include only the most decision-useful parts.",
             ].join("\n"),
           },
           {
@@ -1256,6 +1317,17 @@ function readUsageNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function buildEvidenceGroundingInstruction(): string {
+  return [
+    "Evidence grounding rules for this turn:",
+    "- Base your answer strictly on the tool results provided. Do not add claims, statistics, or details not present in the retrieved data.",
+    "- If the search results are shallow or only partially answer the question, say so explicitly. Keep the answer proportional to the evidence.",
+    "- If you cannot verify a specific claim from the tool results, do not present it as verified. Use hedging language or omit it.",
+    "- Cite only the few URLs that directly support the key claims you make. Do not append long source inventories.",
+    "- If the results are insufficient to answer the question well, tell the user what was found and what is missing.",
+  ].join("\n");
+}
+
 function detectTimeIntent(content: string): boolean {
   const normalized = content.toLowerCase();
   if (!normalized.includes("time")) {
@@ -1270,26 +1342,11 @@ function detectTimeIntent(content: string): boolean {
 }
 
 function detectLiveDataIntent(content: string): boolean {
-  const normalized = content.toLowerCase();
-  return (
-    /\b(latest|today|current|right now|news|price|weather|recent|recently|lately)\b/.test(normalized)
-    || normalized.includes("what's going on with")
-    || normalized.includes("whats going on with")
-    || normalized.includes("look online")
-    || normalized.includes("search web")
-  );
+  return hasLiveDataKeywords(content.toLowerCase());
 }
 
 function detectExplicitWebLookupIntent(content: string): boolean {
-  const normalized = content.toLowerCase();
-  return (
-    normalized.includes("search web")
-    || normalized.includes("search online")
-    || normalized.includes("look online")
-    || normalized.includes("browse the web")
-    || normalized.includes("use internet")
-    || normalized.includes("web search")
-  );
+  return hasLiveDataKeywords(content.toLowerCase());
 }
 
 function deriveLiveDataQuery(content: string): string {
@@ -1304,10 +1361,18 @@ function deriveLiveDataQuery(content: string): string {
   if (clauses.length === 0) {
     return normalized;
   }
-  const keywordRegex = /\b(latest|today|current|right now|news|price|weather|recent|recently|lately)\b/i;
+  const keywordRegex = /\b(latest|today|right now|news|price|weather|recent|recently|lately)\b/i;
   const matching = clauses.filter((clause) => keywordRegex.test(clause));
   const selected = matching.at(-1) ?? clauses.at(-1) ?? normalized;
-  return selected.replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "").trim() || normalized;
+  const cleaned = selected
+    .replace(/^(hi|hello|hey)\b[^a-zA-Z0-9]*/i, "")
+    .replace(/^(?:please\s+)?(?:look|search|browse)\s+(?:online|the web|web|internet)\b(?:\s+(?:for|about|on))?(?:\s+and)?\s*/i, "")
+    .replace(/^(?:please\s+)?(?:tell|show|give)\s+me\b(?:\s+the)?\s*/i, "")
+    .trim();
+  if (/\b(?:what|which)\s+happened\s+today\b/i.test(cleaned) || /\b(?:things|stories|events)\s+that\s+happened\s+today\b/i.test(cleaned)) {
+    return "top news headlines today";
+  }
+  return cleaned || normalized;
 }
 
 function inferMemoryQueryFromPrompt(userContent: string): string | undefined {
@@ -1369,23 +1434,169 @@ function detectLocalFileAccessCheckIntent(content: string): boolean {
 
 function buildLocalFileAccessFallback(userPrompt: string): string {
   const composeHint = /\bdocker[-\s]?compose\b/i.test(userPrompt)
-    ? "If you share `docker-compose.yml`, I can list services and rank operational risk by exposure, privilege, and data sensitivity."
-    : "If you share the relevant local file content, I can provide a concrete analysis instead of a generic answer.";
+    ? "If you share your `docker-compose.yml` contents, I can list services and rank operational risk by exposure, privilege, and data sensitivity."
+    : "If you share the relevant file content, I can give you a concrete analysis instead of a generic answer.";
   return [
-    "Summary",
-    "- I cannot directly access your local project files from this runtime.",
+    "I can't directly access your local project files from this runtime -- no filesystem read path was available for this turn.",
     "",
-    "Confirmed limits",
-    "- No filesystem read access to your local machine path was available in this turn.",
-    "- I avoided guessing specific file contents.",
+    "To help, I'd need you to either paste the file contents (or key sections) or run a local command to print the file and share the output.",
     "",
-    "What I need from you",
-    "- Paste the file contents (or key sections).",
-    "- Or run a local command to print the file and share output.",
-    "",
-    "Next safe action",
-    `- ${composeHint}`,
+    composeHint,
   ].join("\n");
+}
+
+function buildClarificationPromptIfNeeded(userPrompt: string): string | undefined {
+  const normalized = userPrompt.toLowerCase();
+  const questions: string[] = [];
+
+  // Detect estimation prompts with ambiguous scope.
+  const isEstimate = /\b(estimate|estimation|how many|count|number of|size of)\b/.test(normalized);
+  const hasVagueGeography = /\b(the|this|my|our)\s+(area|region|city|county|metro|state|country|neighborhood)\b/.test(normalized)
+    || /\b(here|near me|locally|nearby)\b/.test(normalized);
+  if (isEstimate && hasVagueGeography) {
+    questions.push("What geographic area do you mean exactly: city, metro, county, state, or country?");
+  }
+
+  // Detect subjective/qualitative terms that need an operational definition.
+  const hasSubjectiveTerm = /\b(genuinely|chronic(?:ally)?|true|real|actual)\s+\w+/.test(normalized)
+    && /\b(lonely|isolated|engaged|active|committed|poor|wealthy|healthy)\b/.test(normalized);
+  if (isEstimate && hasSubjectiveTerm) {
+    questions.push("How are you defining that qualifier -- what threshold or criteria should I use?");
+  }
+
+  // Detect timeframe ambiguity for trend or comparison prompts.
+  const isTrend = /\b(trend|growth|change|decline|increase|decrease|over time)\b/.test(normalized);
+  const hasVagueTimeframe = /\b(recent|recently|lately|last few|past few)\b/.test(normalized)
+    && !/\b(last|past)\s+\d+\s+(year|month|week|day|quarter)/i.test(normalized);
+  if (isTrend && hasVagueTimeframe) {
+    questions.push("What timeframe should I use -- last 12 months, 5 years, or something else?");
+  }
+
+  if (questions.length === 0) {
+    return undefined;
+  }
+  return [
+    "I need a quick clarification before answering that responsibly:",
+    ...questions.map((question) => `- ${question}`),
+    "Once you answer, I can give you a grounded response.",
+  ].join("\n");
+}
+
+function buildClarificationFollowUpIfNeeded(
+  userPrompt: string,
+  historyMessages: ChatCompletionRequest["messages"],
+): string | undefined {
+  const pending = readPendingClarification(historyMessages);
+  if (!pending || pending.length === 0) {
+    return undefined;
+  }
+  const normalizedAnswer = userPrompt.toLowerCase();
+  const answeredAny = pending.some((question) => looksLikeClarificationAnswer(normalizedAnswer, question));
+  if (!answeredAny) {
+    return looksLikeFreshStandalonePrompt(userPrompt) ? undefined : [
+      "I still need a quick clarification before answering that responsibly:",
+      ...pending.map((question) => `- ${question}`),
+      "Once you answer, I can give you a grounded response.",
+    ].join("\n");
+  }
+  const remaining = pending.filter((question) => !looksLikeClarificationAnswer(normalizedAnswer, question));
+  if (remaining.length === 0) {
+    return undefined;
+  }
+  return [
+    remaining.length < pending.length
+      ? "Got it. I still need one more detail before answering that responsibly:"
+      : "I still need a quick clarification before answering that responsibly:",
+    ...remaining.map((question) => `- ${question}`),
+    "Once you answer, I can give you a grounded response.",
+  ].join("\n");
+}
+
+function readPendingClarification(
+  historyMessages: ChatCompletionRequest["messages"],
+): string[] | undefined {
+  for (let index = historyMessages.length - 1; index >= 0; index -= 1) {
+    const message = historyMessages[index] as unknown as Record<string, unknown>;
+    if (message.role !== "assistant") {
+      continue;
+    }
+    const content = extractMessageContent(message);
+    if (!content.includes("answering that responsibly")) {
+      return undefined;
+    }
+    // Extract the bullet-point questions from our prior clarification.
+    const questions = content
+      .split("\n")
+      .filter((line) => line.startsWith("- ") && line.endsWith("?"))
+      .map((line) => line.slice(2));
+    if (questions.length > 0) {
+      return questions;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function looksLikeFreshStandalonePrompt(userPrompt: string): boolean {
+  const trimmed = userPrompt.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (/^(never mind|nevermind|ignore that|different question)\b/i.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.endsWith("?")) {
+    return true;
+  }
+  return /^(what|who|when|where|why|how|compare|explain|summarize|estimate|tell me|look online|search online|browse the web|use internet|give me|write|draft|analyze|analyse|review|help me|find)\b/i.test(trimmed);
+}
+
+function buildLiveDataSettingsConflictMessage(input: {
+  liveDataIntent: boolean;
+  timeIntent: boolean;
+  localFileIntent: boolean;
+  webMode: ChatWebMode;
+  toolAutonomy: ChatAgentTurnInput["toolAutonomy"];
+}): string | undefined {
+  if (!input.liveDataIntent || input.timeIntent || input.localFileIntent) {
+    return undefined;
+  }
+  if (input.webMode === "off") {
+    return [
+      "I can't fetch live web data for that because Web is set to Off for this chat.",
+      "Switch Web to Auto, Quick, or Deep and resend if you want a grounded current-events answer, or ask for a non-live summary instead.",
+    ].join(" ");
+  }
+  if (input.toolAutonomy === "manual") {
+    return [
+      "I can't fetch live web data for that because tool autonomy is set to Manual for this chat, so I can't run the browser tools needed to verify current information.",
+      "Switch tool autonomy to Safe Auto and resend, or ask a non-live question instead.",
+    ].join(" ");
+  }
+  return undefined;
+}
+
+function isWebToolName(toolName: string): boolean {
+  return WEB_TOOL_NAMES.has(toolName);
+}
+
+function looksLikeClarificationAnswer(answer: string, question: string): boolean {
+  // Geography questions
+  if (question.includes("geographic area")) {
+    return /\b(city|metro|county|state|country|region|neighborhood|borough|district|zip|postal)\b/.test(answer)
+      || /\b(in|for|around|within|near)\s+[A-Z]/i.test(answer);
+  }
+  // Definition/qualifier questions
+  if (question.includes("threshold") || question.includes("criteria") || question.includes("defining")) {
+    return /\b(defined as|definition|means|self-reported|threshold|criteria|measured)\b/.test(answer)
+      || /["""]/.test(answer);
+  }
+  // Timeframe questions
+  if (question.includes("timeframe")) {
+    return /\b(year|month|week|day|quarter|since|from|period|window)\b/.test(answer)
+      || /\d+\s*(year|month|week|day|quarter)/i.test(answer);
+  }
+  return false;
 }
 
 function inferCitationsFromToolResult(toolRun: ChatToolRunRecord): ChatCitationRecord[] {
@@ -1510,10 +1721,31 @@ function inferBrowserNavigateUrlFromRepeatedSearches(
     return undefined;
   }
   const alreadyOpenedContent = toolRuns.some((run) => (
-    (run.toolName === "browser.navigate" || run.toolName === "browser.extract" || run.toolName === "http.get")
-    && run.status === "executed"
+    ((run.toolName === "browser.extract" || run.toolName === "http.get") && run.status === "executed")
+    || (run.toolName === "browser.navigate" && run.status === "executed" && hasUsefulVisitedBrowserUrl(run))
   ));
   if (alreadyOpenedContent) {
+    return undefined;
+  }
+  return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3);
+}
+
+function redirectSearchPortalNavigateUrl(
+  requestedUrl: string,
+  userContent: string,
+  toolRuns: ChatToolRunRecord[] | undefined,
+): string | undefined {
+  if (!toolRuns || toolRuns.length === 0) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(requestedUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    if (!isSearchPortalHost(hostname) && !isLikelyLandingOrResultsPath(pathname)) {
+      return undefined;
+    }
+  } catch {
     return undefined;
   }
   return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3);
@@ -1564,8 +1796,7 @@ const SEARCH_PORTAL_HOST_PATTERNS = [
   /^www\.google\./i,
   /^bing\.com$/i,
   /^www\.bing\.com$/i,
-  /^duckduckgo\.com$/i,
-  /^www\.duckduckgo\.com$/i,
+  /^([a-z0-9-]+\.)?duckduckgo\.com$/i,
   /^search\.yahoo\.com$/i,
   /^www\.search\.yahoo\.com$/i,
 ];
@@ -1638,12 +1869,34 @@ function inferRecentBrowserVisitedUrl(toolRuns: ChatToolRunRecord[]): string | u
     if (!run || run.status !== "executed" || !run.result || typeof run.result !== "object") {
       continue;
     }
-    const result = run.result as Record<string, unknown>;
-    if (typeof result.finalUrl === "string" && /^https?:\/\//i.test(result.finalUrl)) {
-      return result.finalUrl;
+    const usefulUrl = extractUsefulVisitedBrowserUrl(run.result as Record<string, unknown>);
+    if (usefulUrl) {
+      return usefulUrl;
     }
-    if (typeof result.url === "string" && /^https?:\/\//i.test(result.url)) {
-      return result.url;
+  }
+  return undefined;
+}
+
+function hasUsefulVisitedBrowserUrl(run: ChatToolRunRecord): boolean {
+  return Boolean(run.result && typeof run.result === "object" && extractUsefulVisitedBrowserUrl(run.result as Record<string, unknown>));
+}
+
+function extractUsefulVisitedBrowserUrl(result: Record<string, unknown>): string | undefined {
+  const candidateValues = [result.finalUrl, result.url];
+  for (const value of candidateValues) {
+    if (typeof value !== "string" || !/^https?:\/\//i.test(value)) {
+      continue;
+    }
+    try {
+      const parsed = new URL(value);
+      const hostname = parsed.hostname.toLowerCase();
+      const pathname = parsed.pathname.toLowerCase();
+      if (isSearchPortalHost(hostname) || isLikelyLandingOrResultsPath(pathname)) {
+        continue;
+      }
+      return value;
+    } catch {
+      continue;
     }
   }
   return undefined;
@@ -1690,7 +1943,8 @@ function isLikelyLandingOrResultsPath(pathname: string): boolean {
 
 function isLikelyNewsOrCurrentEventsQuery(value: string): boolean {
   const normalized = value.toLowerCase();
-  return /\b(latest|today|current|right now|news|recent|recently|lately)\b/.test(normalized)
+  return /\b(latest|today|right now|news|recent|recently|lately)\b/.test(normalized)
+    || /\bcurrent\s+(news|events|headlines?|score|scores|markets?)\b/.test(normalized)
     || normalized.includes("what's going on with")
     || normalized.includes("whats going on with");
 }
@@ -1807,7 +2061,10 @@ function scoreQueryCandidate(value: string): number {
   if (/\b(what|which|who|when|where|why|how)\b/i.test(text)) {
     score += 24;
   }
-  if (/\b(latest|current|today|news|price|weather|summarize|summary|extract|analyze)\b/i.test(text)) {
+  if (/\b(latest|today|news|price|weather|summarize|summary|extract|analyze)\b/i.test(text)) {
+    score += 20;
+  }
+  if (/\bcurrent\s+(news|events|weather|forecast|temperature|price|prices|stock|stocks|market|markets|headlines?|score|scores|conditions?|traffic)\b/i.test(text)) {
     score += 20;
   }
   if (/\b(json|markdown|format|bullet|score|rubric)\b/i.test(text)) {
@@ -1838,23 +2095,16 @@ function detectMissingLogPayloadIntent(content: string): boolean {
 
 function buildMissingLogInputTemplate(): string {
   return [
-    "Summary",
-    "- I cannot determine a real root cause yet because the log blob was not pasted.",
-    "- Below is a deterministic triage scaffold so you can continue immediately.",
+    "I can't determine a root cause yet because the log blob wasn't pasted. Here's what I'd look for once you share it:",
     "",
-    "Root cause candidates",
-    "- Timeout or retry storm (if logs show repeated timeout/429/503 patterns).",
-    "- Auth/session mismatch (if logs show 401/403, token refresh, or session invalidation).",
-    "- Schema/config drift after deploy (if logs show parse errors, unknown fields, or migration mismatches).",
+    "Common root-cause patterns: timeout/retry storms (repeated 429/503), auth mismatches (401/403 or token refresh), or schema drift after a deploy (parse errors, unknown fields).",
     "",
-    "Top 3 next actions",
-    "1. Paste the first fatal/exception block and the last fatal/exception block from the same incident window.",
-    "2. Include 20 lines before and after the first fatal/exception line.",
-    "3. Confirm timezone + service name so timestamps can be correlated accurately.",
+    "To triage quickly, I need:",
+    "1. The first and last fatal/exception blocks from the same incident window.",
+    "2. About 20 lines of context before and after the first exception.",
+    "3. The service name and timezone so I can correlate timestamps.",
     "",
-    "Exact next log line I need",
-    "- `2026-03-03T12:48:01.234Z service=<service> level=ERROR request_id=<id> error_code=<code> message=<message>`",
-    "- If no request_id exists, paste the first exception line plus the line immediately above it.",
+    "Ideal format: `<timestamp> service=<name> level=ERROR request_id=<id> error_code=<code> message=<msg>` -- or just paste the first exception line plus the line immediately above it.",
   ].join("\n");
 }
 
@@ -1891,24 +2141,22 @@ function buildDeterministicToolSynthesisFallback(
   const evidence = toolRuns
     .filter((item) => item.status === "executed" && item.result)
     .slice(-3)
-    .map((item) => `- ${item.toolName}: ${truncateJson(item.result, 260)}`);
+    .map((item) => `${item.toolName}: ${truncateJson(item.result, 180)}`);
   const lines = [
-    "Summary",
-    "- I reached a tool-execution limit/constraint before a full answer could be completed.",
-    "",
-    "Constraints",
-    `- ${reason ?? "Tool flow did not converge to a complete response."}`,
-    ...(failures.length > 0 ? failures : ["- No explicit tool failure detail was captured."]),
-    "",
-    "What I did instead",
-    ...(evidence.length > 0 ? evidence : ["- Preserved available context and avoided guessing missing data."]),
-    "",
-    "What I need from you next",
-    `- Confirm whether you want me to retry with explicit arguments (query/url/path).`,
-    `- If this is a local-file request, share the file/path content directly.`,
-    `- Query seed: ${inferQueryFromPrompt(userPrompt) ?? deriveLiveDataQuery(userPrompt)}`,
+    `I couldn't finish that cleanly because ${reason ?? "the tool flow did not converge to a complete answer"}.`,
   ];
-  return lines.join("\n");
+  if (failures.length > 0) {
+    lines.push(`Latest tool issue: ${failures[0]?.replace(/^- /, "")}`);
+  }
+  if (evidence.length > 0) {
+    lines.push(`Useful partial result: ${evidence[0]}`);
+  }
+  lines.push("If you want me to retry, send explicit query, URL, or file details.");
+  const querySeed = inferQueryFromPrompt(userPrompt) ?? deriveLiveDataQuery(userPrompt);
+  if (querySeed) {
+    lines.push(`Best retry seed: ${querySeed}`);
+  }
+  return lines.join("\n\n");
 }
 
 function buildExtractionFailureFallback(
@@ -2023,21 +2271,17 @@ function appendToolFailureConstraints(content: string, toolRuns: ChatToolRunReco
     return content;
   }
   const trimmed = content.trim();
-  if (mentionsToolFailureConstraints(trimmed)) {
+  if (mentionsToolFailureConstraints(trimmed, failedOrBlocked)) {
     return trimmed;
   }
   const details = failedOrBlocked
     .slice(-4)
-    .map((run) => `- ${run.toolName}: ${run.error ?? run.status}`);
+    .map((run) => `${run.toolName}: ${run.error ?? run.status}`);
   const appendix = [
-    "Constraints",
-    ...details,
+    "Limitations:",
+    ...details.map((detail) => `- ${detail}`),
     "",
-    "What I did instead",
-    "- Continued with available context and avoided unsupported claims.",
-    "",
-    "What I need from you next",
-    "- Provide explicit tool arguments or additional source data to continue.",
+    "If you want me to continue, send explicit tool arguments or additional source data.",
   ].join("\n");
   if (!trimmed) {
     return appendix;
@@ -2045,15 +2289,27 @@ function appendToolFailureConstraints(content: string, toolRuns: ChatToolRunReco
   return `${trimmed}\n\n${appendix}`;
 }
 
-function mentionsToolFailureConstraints(content: string): boolean {
+function mentionsToolFailureConstraints(content: string, failedRuns: ChatToolRunRecord[]): boolean {
   const normalized = content.toLowerCase();
-  return (
-    normalized.includes("\nconstraints")
+  const hasGenericMention = normalized.includes("\nconstraints")
     || normalized.includes("## constraints")
     || normalized.includes("constraints:")
     || normalized.includes("tool failures")
-    || normalized.includes("what i need from you next")
-  );
+    || normalized.includes("what i need from you next");
+  if (hasGenericMention) {
+    return true;
+  }
+  // If the LLM already referenced every failed tool by name, skip the appendix.
+  if (failedRuns.length > 0) {
+    const allToolsMentioned = failedRuns.every((run) => {
+      const toolBaseName = run.toolName.split(".").pop() ?? run.toolName;
+      return normalized.includes(toolBaseName.toLowerCase());
+    });
+    if (allToolsMentioned) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function truncateJson(value: unknown, maxChars: number): string {
@@ -2138,14 +2394,11 @@ function buildToolFailureFallbackMessage(
   const lines = [
     intro,
     "",
-    "Constraints:",
-    `- ${reason}`,
+    `Reason: ${reason}`,
     ...(failures.length > 0 ? failures : ["- Tool failure details unavailable."]),
     "",
-    "Fallback:",
-    "- I can continue with a best-effort answer from current context.",
-    "- If you want another tool attempt, provide explicit arguments (for example: query/url/path).",
-    `- Suggested query seed: ${fallbackQuery}`,
+    "If you want another tool attempt, provide explicit arguments (for example: query/url/path).",
+    `Suggested query seed: ${fallbackQuery}`,
   ];
   return lines.join("\n");
 }

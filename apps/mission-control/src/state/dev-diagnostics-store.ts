@@ -67,7 +67,9 @@ let state: DevDiagnosticsState = {
   enabled: diagnosticsEnabled,
   verbose: verboseDiagnostics,
   items: [],
-  currentRoute: typeof window === "undefined" ? "" : window.location.pathname + window.location.search + window.location.hash,
+  currentRoute: typeof window === "undefined"
+    ? ""
+    : sanitizeDiagnosticRoute(window.location.pathname + window.location.search + window.location.hash),
 };
 
 if (typeof window !== "undefined" && diagnosticsEnabled) {
@@ -97,12 +99,13 @@ export function getCurrentDiagnosticsRoute(): string {
 }
 
 export function setDevDiagnosticsCurrentRoute(route: string): void {
-  if (!state.enabled || state.currentRoute === route) {
+  const sanitized = sanitizeDiagnosticRoute(route);
+  if (!state.enabled || state.currentRoute === sanitized) {
     return;
   }
   state = {
     ...state,
-    currentRoute: route,
+    currentRoute: sanitized,
   };
   notify();
 }
@@ -212,7 +215,7 @@ export function recordClientDiagnostic(input: {
     sessionId: input.sessionId ?? state.activeChatSessionId,
     chatId: input.chatId,
     turnId: input.turnId,
-    route: input.route ?? state.currentRoute,
+    route: sanitizeDiagnosticRoute(input.route ?? state.currentRoute),
     providerId: input.providerId,
     modelId: input.modelId,
     source: "client",
@@ -227,6 +230,29 @@ export function recordClientDiagnostic(input: {
   }
   notify();
   return event;
+}
+
+function sanitizeDiagnosticRoute(route: string): string {
+  if (!route) {
+    return route;
+  }
+
+  try {
+    const url = new URL(route, "http://goatcitadel.local");
+    url.searchParams.delete("access_token");
+
+    const rawHash = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
+    if (rawHash.includes("=")) {
+      const hashParams = new URLSearchParams(rawHash);
+      hashParams.delete("access_token");
+      const nextHash = hashParams.toString();
+      url.hash = nextHash ? `#${nextHash}` : "";
+    }
+
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return route.replace(/([?#&])access_token=[^&#]*/giu, "$1").replace(/[?#&]$/u, "");
+  }
 }
 
 export function setDevDiagnosticsActiveCorrelationId(correlationId: string | undefined): void {

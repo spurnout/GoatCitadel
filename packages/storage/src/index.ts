@@ -1,3 +1,4 @@
+import type { ChatAttachmentRecord } from "@goatcitadel/contracts";
 import { createDatabase, type SqliteOptions } from "./sqlite.js";
 import { SessionRepository } from "./session-repo.js";
 import { IdempotencyRepository } from "./idempotency-repo.js";
@@ -50,6 +51,13 @@ import { GatewaySqlRepository } from "./gateway-sql-repo.js";
 export interface StorageOptions extends SqliteOptions {
   transcriptsDir: string;
   auditDir: string;
+}
+
+export interface DeleteChatSessionDataResult {
+  sessionId: string;
+  deleted: boolean;
+  cleanupRelPaths: string[];
+  attachments: ChatAttachmentRecord[];
 }
 
 export class Storage {
@@ -159,6 +167,156 @@ export class Storage {
   public close(): void {
     this.db.close();
   }
+
+  public deleteChatSessionData(sessionId: string): DeleteChatSessionDataResult {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      throw new Error("sessionId is required");
+    }
+
+    const attachments = this.chatAttachments.listBySession(normalizedSessionId, 10_000);
+    const cleanupRelPaths = dedupeStrings([
+      ...attachments.map((record) => record.storageRelPath),
+      ...attachments.map((record) => record.thumbnailRelPath),
+      ...this.listMediaArtifactPathsForSession(normalizedSessionId, attachments),
+    ]);
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`
+        DELETE FROM media_artifacts
+        WHERE job_id IN (
+          SELECT job_id
+          FROM media_jobs
+          WHERE session_id = @sessionId
+             OR attachment_id IN (SELECT value FROM json_each(@attachmentIdsJson))
+        )
+      `).run({
+        sessionId: normalizedSessionId,
+        attachmentIdsJson: JSON.stringify(attachments.map((record) => record.attachmentId)),
+      });
+      this.db.prepare(`
+        DELETE FROM media_jobs
+        WHERE session_id = @sessionId
+           OR attachment_id IN (SELECT value FROM json_each(@attachmentIdsJson))
+      `).run({
+        sessionId: normalizedSessionId,
+        attachmentIdsJson: JSON.stringify(attachments.map((record) => record.attachmentId)),
+      });
+      this.db.prepare(`
+        DELETE FROM research_sources
+        WHERE run_id IN (
+          SELECT run_id
+          FROM research_runs
+          WHERE session_id = ?
+        )
+      `).run(normalizedSessionId);
+      this.db.prepare("DELETE FROM research_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare(`
+        DELETE FROM chat_delegation_steps
+        WHERE run_id IN (
+          SELECT run_id
+          FROM chat_delegation_runs
+          WHERE session_id = ?
+        )
+      `).run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_delegation_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM proactive_actions WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM proactive_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare(`
+        DELETE FROM learned_memory_sources
+        WHERE item_id IN (
+          SELECT item_id
+          FROM learned_memory_items
+          WHERE session_id = ?
+        )
+      `).run(normalizedSessionId);
+      this.db.prepare("DELETE FROM learned_memory_conflicts WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM learned_memory_items WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_reflection_attempts WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare(`
+        DELETE FROM prompt_pack_scores
+        WHERE run_id IN (
+          SELECT run_id
+          FROM prompt_pack_runs
+          WHERE session_id = ?
+        )
+      `).run(normalizedSessionId);
+      this.db.prepare("DELETE FROM prompt_pack_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM memory_context_packs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM memory_qmd_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM tool_access_decisions WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM tool_invocations WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM policy_blocks WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM cost_ledger WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM bankr_action_audit WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM voice_sessions WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM mesh_session_owners WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_inline_approvals WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_tool_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_turn_traces WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM session_autonomy_prefs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_session_prefs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_session_branch_state WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_session_bindings WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_session_projects WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_attachments WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_session_meta WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare(`
+        DELETE FROM tool_grants
+        WHERE scope = 'session'
+          AND scope_ref = ?
+      `).run(normalizedSessionId);
+      const deleted = Number(
+        this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(normalizedSessionId).changes ?? 0,
+      ) > 0;
+      this.db.exec("COMMIT");
+      return {
+        sessionId: normalizedSessionId,
+        deleted,
+        cleanupRelPaths,
+        attachments,
+      };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private listMediaArtifactPathsForSession(sessionId: string, attachments: ChatAttachmentRecord[]): string[] {
+    const rows = this.db.prepare(`
+      SELECT storage_rel_path
+      FROM media_artifacts
+      WHERE storage_rel_path IS NOT NULL
+        AND job_id IN (
+          SELECT job_id
+          FROM media_jobs
+          WHERE session_id = @sessionId
+             OR attachment_id IN (SELECT value FROM json_each(@attachmentIdsJson))
+        )
+    `).all({
+      sessionId,
+      attachmentIdsJson: JSON.stringify(attachments.map((record) => record.attachmentId)),
+    }) as Array<{ storage_rel_path?: string | null }>;
+    return rows
+      .map((row) => row.storage_rel_path?.trim())
+      .filter((value): value is string => Boolean(value));
+  }
+}
+
+function dedupeStrings(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped;
 }
 
 export * from "./sqlite.js";

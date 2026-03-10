@@ -34,6 +34,11 @@ export interface DoctorSummary {
   exitCode: number;
 }
 
+export interface DoctorOperatorLinks {
+  remoteMissionControlUrl?: string;
+  notes?: string[];
+}
+
 export interface DoctorReport {
   startedAt: string;
   finishedAt: string;
@@ -49,6 +54,7 @@ export interface DoctorReport {
   };
   checks: DoctorCheckResult[];
   repairs: DoctorRepairResult[];
+  operatorLinks?: DoctorOperatorLinks;
   summary: DoctorSummary;
 }
 
@@ -67,4 +73,3 @@ export interface DoctorRunOptions {
   authMode?: "none" | "token" | "basic";
   promptConfirm?: (message: string) => Promise<boolean>;
 }
-

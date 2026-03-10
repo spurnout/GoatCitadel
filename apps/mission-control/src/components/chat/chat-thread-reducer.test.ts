@@ -254,6 +254,43 @@ describe("chat-thread-reducer", () => {
     expect(withTrace?.turns[0]?.trace.capabilityUpgradeSuggestions).toHaveLength(1);
   });
 
+  it("dedupes repeated citations by URL", () => {
+    const current = makeThread();
+    const citation = makeCitation();
+    const duplicate = {
+      ...makeCitation(),
+      citationId: "citation-2",
+      title: "Example duplicate",
+    };
+    const withFirst = updateThreadFromStreamChunk(
+      current,
+      {
+        type: "citation",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        citation,
+      },
+      null,
+      "sess-1",
+      null,
+    );
+    const withSecond = updateThreadFromStreamChunk(
+      withFirst,
+      {
+        type: "citation",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        citation: duplicate,
+      },
+      null,
+      "sess-1",
+      null,
+    );
+
+    expect(withSecond?.turns[0]?.citations).toHaveLength(1);
+    expect(withSecond?.turns[0]?.citations[0]?.url).toBe("https://example.com");
+  });
+
   it("preserves prior capability suggestions when trace updates omit them", () => {
     const current = makeThread({
       turns: [makeTurn({

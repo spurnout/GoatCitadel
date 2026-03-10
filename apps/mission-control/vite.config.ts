@@ -1,10 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
 const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "::1", ".ts.net"];
 const configDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(configDir, "../..");
 
 export function resolveViteAllowedHosts(env: Record<string, string | undefined> = process.env): string[] {
   const raw = env.GOATCITADEL_VITE_ALLOWED_HOSTS?.trim();
@@ -19,63 +20,71 @@ export function resolveViteAllowedHosts(env: Record<string, string | undefined> 
   return [...merged];
 }
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    // Fresh installer-based copies may not have workspace package dist output yet.
-    // Resolve contracts from source so Mission Control stays bootable in dev mode.
-    alias: [
-      {
-        find: "@goatcitadel/contracts",
-        replacement: path.resolve(configDir, "../../packages/contracts/src/index.ts"),
-      },
-    ],
-  },
-  server: {
-    host: "0.0.0.0",
-    port: 5173,
-    // Keep Tailnet/MagicDNS support while preserving explicit host checks.
-    allowedHosts: resolveViteAllowedHosts(),
-  },
-  build: {
-    // The remaining heavy payload is the Office/Herd HQ Three.js bundle, which is
-    // lazily loaded and no longer part of the main application path.
-    chunkSizeWarningLimit: 800,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          const normalized = id.replaceAll("\\", "/");
-          if (!normalized.includes("/node_modules/")) {
-            return undefined;
-          }
+export default defineConfig(({ mode }) => {
+  const env = {
+    ...process.env,
+    ...loadEnv(mode, repoRoot, ""),
+  };
 
-          if (normalized.includes("/node_modules/@react-three/fiber/")) {
-            return "vendor-r3f";
-          }
-          if (normalized.includes("/node_modules/@react-three/drei/")) {
-            return "vendor-drei";
-          }
-          if (normalized.includes("/node_modules/react-dom/") || normalized.includes("/node_modules/react/")) {
-            return "vendor-react";
-          }
-          if (normalized.includes("/node_modules/@radix-ui/")) {
-            return "vendor-radix";
-          }
-          if (normalized.includes("/node_modules/cmdk/")) {
-            return "vendor-cmdk";
-          }
-          if (normalized.includes("/node_modules/react-virtuoso/")) {
-            return "vendor-virtuoso";
-          }
-          if (normalized.includes("/node_modules/three-stdlib/")) {
-            return "vendor-three-stdlib";
-          }
-          if (normalized.includes("/node_modules/three/build/")) {
-            return "vendor-three-build";
-          }
-          return undefined;
+  return {
+    envDir: repoRoot,
+    plugins: [react()],
+    resolve: {
+      // Fresh installer-based copies may not have workspace package dist output yet.
+      // Resolve contracts from source so Mission Control stays bootable in dev mode.
+      alias: [
+        {
+          find: "@goatcitadel/contracts",
+          replacement: path.resolve(configDir, "../../packages/contracts/src/index.ts"),
+        },
+      ],
+    },
+    server: {
+      host: "0.0.0.0",
+      port: 5173,
+      // Keep Tailnet/MagicDNS support while preserving explicit host checks.
+      allowedHosts: resolveViteAllowedHosts(env),
+    },
+    build: {
+      // The remaining heavy payload is the Office/Herd HQ Three.js bundle, which is
+      // lazily loaded and no longer part of the main application path.
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            const normalized = id.replaceAll("\\", "/");
+            if (!normalized.includes("/node_modules/")) {
+              return undefined;
+            }
+
+            if (normalized.includes("/node_modules/@react-three/fiber/")) {
+              return "vendor-r3f";
+            }
+            if (normalized.includes("/node_modules/@react-three/drei/")) {
+              return "vendor-drei";
+            }
+            if (normalized.includes("/node_modules/react-dom/") || normalized.includes("/node_modules/react/")) {
+              return "vendor-react";
+            }
+            if (normalized.includes("/node_modules/@radix-ui/")) {
+              return "vendor-radix";
+            }
+            if (normalized.includes("/node_modules/cmdk/")) {
+              return "vendor-cmdk";
+            }
+            if (normalized.includes("/node_modules/react-virtuoso/")) {
+              return "vendor-virtuoso";
+            }
+            if (normalized.includes("/node_modules/three-stdlib/")) {
+              return "vendor-three-stdlib";
+            }
+            if (normalized.includes("/node_modules/three/build/")) {
+              return "vendor-three-build";
+            }
+            return undefined;
+          },
         },
       },
     },
-  },
+  };
 });

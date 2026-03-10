@@ -1,13 +1,17 @@
 import { memo, Suspense, lazy, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
 import {
+  consumeGatewayAccessBootstrapFromLocation,
   connectEventStream,
   fetchWorkspaces,
-  fetchOnboardingState,
+  getGatewayApiBaseUrl,
+  preflightGatewayAccess,
+  type GatewayAccessPreflightResult,
   type RealtimeEvent,
   type EventStreamConnectionState,
 } from "./api/client";
 import { CommandPalette } from "./components/CommandPalette";
 import { DevDiagnosticsPanel } from "./components/DevDiagnosticsPanel";
+import { GatewayAccessGate } from "./components/GatewayAccessGate";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
 import { NotificationStack, type NotificationItem, upsertNotificationItem } from "./components/NotificationStack";
@@ -151,6 +155,14 @@ const refreshTopicRules: Array<{ topic: RefreshTopic; keywords: string[] }> = [
   { topic: "integrations", keywords: ["integration", "plugin", "connection"] },
   { topic: "npu", keywords: ["npu", "runtime", "sidecar", "model", "voice", "llm", "provider"] },
 ];
+
+type GatewayAccessViewState =
+  | GatewayAccessPreflightResult
+  | {
+    status: "checking";
+    message: string;
+    healthDetail?: string;
+  };
 
 function deriveRefreshTopics(event: RealtimeEvent): RefreshTopic[] {
   const haystack = `${event.eventType} ${event.source}`.toLowerCase();
@@ -298,7 +310,7 @@ export function App() {
     setActiveWorkspaceId,
   } = useUiPreferences();
   const [tab, setTab] = useState<Tab>(() => readTabFromLocation());
-  const [streamState, setStreamState] = useState<EventStreamConnectionState>("connecting");
+  const [streamState, setStreamState] = useState<EventStreamConnectionState>("closed");
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [showBrandMark, setShowBrandMark] = useState(true);
@@ -306,6 +318,12 @@ export function App() {
   const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [gatewayAccess, setGatewayAccess] = useState<GatewayAccessViewState>({
+    status: "checking",
+    message: "Verifying gateway reachability and access policy.",
+  });
+  const [gatewayAccessBusy, setGatewayAccessBusy] = useState(true);
+  const [gatewayAccessRunId, setGatewayAccessRunId] = useState(0);
   const effectiveEffectsMode = useMemo(() => resolveEffectiveEffectsMode(effectsMode), [effectsMode]);
 
   const loadWorkspaceOptions = useCallback(async () => {
@@ -338,7 +356,68 @@ export function App() {
     void loadWorkspaceOptions();
   }, [loadWorkspaceOptions]);
 
+  const retryGatewayAccess = useCallback(() => {
+    setGatewayAccessRunId((current) => current + 1);
+  }, []);
+
   useEffect(() => {
+    let cancelled = false;
+    setGatewayAccessBusy(true);
+    setGatewayAccess({
+      status: "checking",
+      message: "Verifying gateway reachability and access policy.",
+    });
+
+    const bootstrap = consumeGatewayAccessBootstrapFromLocation();
+    void preflightGatewayAccess({ bootstrap })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        setGatewayAccess(result);
+        if (result.status !== "ready") {
+          setStreamState("closed");
+          setOnboardingComplete(null);
+          setWorkspaceOptions([]);
+          return;
+        }
+        setOnboardingComplete(result.onboardingState?.completed ?? null);
+        if (!result.onboardingState?.completed) {
+          setTab((current) => (current === "dashboard" ? "onboarding" : current));
+        }
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setGatewayAccess({
+          status: "misconfigured",
+          message: (error as Error).message,
+          healthDetail: "Gateway access preflight crashed before Mission Control could finish startup.",
+        });
+        setStreamState("closed");
+        setOnboardingComplete(null);
+        setWorkspaceOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setGatewayAccessBusy(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayAccessRunId]);
+
+  useEffect(() => {
+    if (gatewayAccess.status !== "ready") {
+      setStreamState("closed");
+      setDevDiagnosticsSseState("closed");
+      resetEventStreamStatus();
+      return;
+    }
+
     const close = connectEventStream(
       (event) => {
         recordClientDiagnostic({
@@ -388,34 +467,15 @@ export function App() {
       close();
       resetEventStreamStatus();
     };
-  }, [pushNotification]);
+  }, [gatewayAccess.status, pushNotification]);
 
   useEffect(() => {
-    let cancelled = false;
-    void fetchOnboardingState()
-      .then((state) => {
-        if (cancelled) {
-          return;
-        }
-        setOnboardingComplete(state.completed);
-        if (!state.completed) {
-          setTab((current) => (current === "dashboard" ? "onboarding" : current));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOnboardingComplete(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
+    if (gatewayAccess.status !== "ready") {
+      setWorkspaceOptions([]);
+      return;
+    }
     void loadWorkspaceOptions();
-  }, [loadWorkspaceOptions]);
+  }, [gatewayAccess.status, loadWorkspaceOptions]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -590,6 +650,17 @@ export function App() {
     }
     return <IntegrationsPage />;
   }, [activeWorkspaceId, tab, handleOnboardingCompleted, setActiveWorkspaceId]);
+
+  if (gatewayAccess.status !== "ready") {
+    return (
+      <GatewayAccessGate
+        gatewayBaseUrl={getGatewayApiBaseUrl()}
+        access={gatewayAccess}
+        busy={gatewayAccessBusy}
+        onRetry={retryGatewayAccess}
+      />
+    );
+  }
 
   return (
     <div

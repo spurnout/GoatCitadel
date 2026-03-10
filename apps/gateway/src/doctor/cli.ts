@@ -1,6 +1,9 @@
 import { confirm } from "@inquirer/prompts";
+import { loadLocalEnvFile } from "../env-file.js";
 import { loadResolvedProfile } from "../tui/profile.js";
 import { renderDoctorReport, runDoctor } from "./engine.js";
+
+loadLocalEnvFile();
 
 interface DoctorCliArgs {
   profile?: string;
@@ -109,4 +112,3 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 2;
 });
-

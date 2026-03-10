@@ -23,6 +23,10 @@ vi.mock("node:fs/promises", () => ({
   readdir: readdirMock,
 }));
 
+vi.mock("./env-file.js", () => ({
+  loadLocalEnvFile: () => {},
+}));
+
 function createSocketMock(): {
   once: (event: string, callback: () => void) => unknown;
   setTimeout: (_ms: number, callback: () => void) => unknown;
@@ -56,6 +60,9 @@ describe("dev supervisor coverage", () => {
     process.env.GOATCITADEL_GATEWAY_WATCH_POLL_MS = "999999";
     process.env.GATEWAY_HOST = "127.0.0.1";
     process.env.GATEWAY_PORT = "8787";
+    delete process.env.GOATCITADEL_AUTH_MODE;
+    delete process.env.GOATCITADEL_AUTH_TOKEN;
+    delete process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK;
 
     statMock.mockImplementation(async () => {
       throw new Error("not found");
@@ -84,6 +91,9 @@ describe("dev supervisor coverage", () => {
     delete process.env.GOATCITADEL_GATEWAY_WATCH_POLL_MS;
     delete process.env.GATEWAY_HOST;
     delete process.env.GATEWAY_PORT;
+    delete process.env.GOATCITADEL_AUTH_MODE;
+    delete process.env.GOATCITADEL_AUTH_TOKEN;
+    delete process.env.GOATCITADEL_ALLOW_UNAUTH_NETWORK;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });

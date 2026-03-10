@@ -121,7 +121,7 @@ describe("orchestration router", () => {
   it("enables orchestration for research-heavy chat prompts", () => {
     const input = createInput({
       mode: "chat",
-      objective: "Research the latest OpenClaw features, compare them, and critique tradeoffs.",
+      objective: "Compare OpenClaw features, critique the tradeoffs, and recommend the strongest option.",
       prefs: createPrefs({
         mode: "chat",
         orchestrationIntensity: "balanced",
@@ -133,6 +133,94 @@ describe("orchestration router", () => {
     expect(plan.workflowTemplate).toBe("chat.answer.review");
     expect(plan.routeDecision.visibility).toBe("summarized");
     expect(plan.steps.map((step) => step.role)).toEqual(["answerer", "reviewer", "synthesizer"]);
+  });
+
+  it("keeps explicit web lookups on the tool-backed single-agent path", () => {
+    const input = createInput({
+      mode: "chat",
+      objective: "Look online and tell me the 5 most interesting things that happened today.",
+      prefs: createPrefs({
+        mode: "chat",
+        webMode: "quick",
+        orchestrationIntensity: "balanced",
+      }),
+    });
+
+    expect(shouldUseModeOrchestration(input)).toBe(false);
+  });
+
+  it("keeps live-data chat prompts off orchestration when web access is available", () => {
+    const input = createInput({
+      mode: "chat",
+      objective: "What are the latest news headlines about OpenAI today?",
+      prefs: createPrefs({
+        mode: "chat",
+        webMode: "auto",
+        orchestrationIntensity: "balanced",
+      }),
+    });
+
+    expect(shouldUseModeOrchestration(input)).toBe(false);
+  });
+
+  it("keeps explicit web search phrases off orchestration", () => {
+    for (const phrase of [
+      "web search for recent AI breakthroughs",
+      "use internet to find the top news",
+    ]) {
+      const input = createInput({
+        mode: "chat",
+        objective: phrase,
+        prefs: createPrefs({
+          mode: "chat",
+          webMode: "auto",
+          orchestrationIntensity: "balanced",
+        }),
+      });
+      expect(shouldUseModeOrchestration(input)).toBe(false);
+    }
+  });
+
+  it("does not let web mode suppress orchestration for normal research prompts", () => {
+    const input = createInput({
+      mode: "chat",
+      objective: "Compare React and Vue tradeoffs for a small internal tool and recommend one.",
+      prefs: createPrefs({
+        mode: "chat",
+        webMode: "quick",
+        orchestrationIntensity: "balanced",
+      }),
+    });
+
+    expect(shouldUseModeOrchestration(input)).toBe(true);
+  });
+
+  it("does not treat generic current-state prompts as live web requests", () => {
+    const input = createInput({
+      mode: "chat",
+      objective: "Summarize the current architecture of the app.",
+      prefs: createPrefs({
+        mode: "chat",
+        webMode: "auto",
+        orchestrationIntensity: "balanced",
+      }),
+    });
+
+    expect(shouldUseModeOrchestration(input)).toBe(false);
+  });
+
+  it("keeps live-data prompts off orchestration even when webMode is off", () => {
+    const input = createInput({
+      mode: "chat",
+      objective: "What are the latest news headlines about OpenAI today?",
+      prefs: createPrefs({
+        mode: "chat",
+        webMode: "off",
+        orchestrationIntensity: "balanced",
+      }),
+    });
+
+    expect(shouldUseModeOrchestration(input)).toBe(false);
   });
 
   it("routes cowork research to parallel researchers with explicit visibility", () => {

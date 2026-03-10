@@ -37,6 +37,18 @@ describe("TranscriptLog", () => {
     const sorted = [...offsets].sort((a, b) => a - b);
     assert.deepEqual(offsets, sorted);
   });
+
+  it("deletes a session transcript file", async () => {
+    const root = path.join(os.tmpdir(), `goatcitadel-transcripts-${randomUUID()}`);
+    createdDirs.push(root);
+    const log = new TranscriptLog(root);
+    const sessionId = "session-delete-test";
+
+    await log.append(buildEvent(sessionId, 0));
+    await log.delete(sessionId);
+
+    await assert.rejects(() => log.read(sessionId));
+  });
 });
 
 function buildEvent(sessionId: string, index: number): TranscriptEvent {

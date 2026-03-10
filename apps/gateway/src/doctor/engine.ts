@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { syncUnifiedConfig } from "../config-sync-lib.js";
 import type {
   DoctorCheckResult,
+  DoctorOperatorLinks,
   DoctorRepairResult,
   DoctorReport,
   DoctorRunOptions,
@@ -44,6 +45,7 @@ interface DoctorRuntimeContext {
   authToken?: string;
   authMode?: "none" | "token" | "basic";
   tokenQueryParam?: string;
+  missionControlOrigin?: string;
   promptConfirm?: (message: string) => Promise<boolean>;
 }
 
@@ -74,6 +76,7 @@ export async function runDoctor(options: DoctorRunOptions = {}): Promise<DoctorR
     authToken: options.authToken ?? process.env.GOATCITADEL_AUTH_TOKEN?.trim(),
     authMode: options.authMode,
     tokenQueryParam: options.tokenQueryParam,
+    missionControlOrigin: process.env.MISSION_CONTROL_ORIGIN?.trim(),
     promptConfirm: options.promptConfirm,
   };
 
@@ -92,6 +95,7 @@ export async function runDoctor(options: DoctorRunOptions = {}): Promise<DoctorR
 
   const finishedAt = new Date().toISOString();
   const summary = summarizeDoctor(checks, repairs);
+  const operatorLinks = await resolveDoctorOperatorLinks(context);
   return {
     startedAt,
     finishedAt,
@@ -107,12 +111,14 @@ export async function runDoctor(options: DoctorRunOptions = {}): Promise<DoctorR
     },
     checks,
     repairs,
+    operatorLinks,
     summary,
   };
 }
 
 export function renderDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
+  const operatorLinks = report.operatorLinks;
   lines.push("GoatCitadel Doctor");
   lines.push(`Root: ${report.rootDir}`);
   lines.push(`Gateway: ${report.gatewayBaseUrl}`);
@@ -145,6 +151,16 @@ export function renderDoctorReport(report: DoctorReport): string {
           lines.push(`  - ${change}`);
         }
       }
+    }
+  }
+  if (operatorLinks && (operatorLinks.remoteMissionControlUrl || (operatorLinks.notes?.length ?? 0) > 0)) {
+    lines.push("");
+    lines.push("Operator links");
+    if (operatorLinks.remoteMissionControlUrl) {
+      lines.push(`- Mission Control: ${operatorLinks.remoteMissionControlUrl}`);
+    }
+    for (const note of operatorLinks.notes ?? []) {
+      lines.push(`- Note: ${note}`);
     }
   }
   lines.push("");
@@ -913,6 +929,61 @@ async function checkDeepRuntime(
     detail: details.join(" "),
     repairable: false,
   };
+}
+
+async function resolveDoctorOperatorLinks(context: DoctorRuntimeContext): Promise<DoctorOperatorLinks | undefined> {
+  const notes: string[] = [];
+  const origin = context.missionControlOrigin?.trim();
+  if (!origin) {
+    return {
+      notes: ["MISSION_CONTROL_ORIGIN is not set, so the remote Mission Control link was omitted."],
+    };
+  }
+
+  let normalizedOrigin = "";
+  try {
+    const url = new URL(origin);
+    normalizedOrigin = url.toString();
+  } catch {
+    return {
+      notes: [`MISSION_CONTROL_ORIGIN is invalid (${origin}), so the remote Mission Control link was omitted.`],
+    };
+  }
+
+  const assistantState = await readJsonFile<Record<string, unknown>>(path.join(context.configDir, "assistant.config.json"));
+  if (!assistantState.valid || !assistantState.value) {
+    return {
+      notes: ["assistant.config.json is unavailable, so the remote Mission Control link was omitted."],
+    };
+  }
+
+  const auth = asRecord(assistantState.value.auth) ?? {};
+  const configMode = (context.authMode ?? asString(auth.mode) ?? "none") as "none" | "token" | "basic";
+  if (configMode !== "token") {
+    return {
+      notes: [`Gateway auth mode is ${configMode}, so a token bootstrap link was not emitted.`],
+    };
+  }
+
+  const configuredToken = context.authToken
+    ?? process.env.GOATCITADEL_AUTH_TOKEN?.trim()
+    ?? asString(asRecord(auth.token)?.value)?.trim();
+  if (!configuredToken) {
+    return {
+      notes: ["Gateway token is not configured, so the remote Mission Control link was omitted."],
+    };
+  }
+
+  return {
+    remoteMissionControlUrl: buildRemoteMissionControlUrl(normalizedOrigin, configuredToken),
+    notes,
+  };
+}
+
+function buildRemoteMissionControlUrl(origin: string, token: string): string {
+  const url = new URL(origin);
+  url.searchParams.set("tab", "dashboard");
+  return `${url.toString()}#access_token=${encodeURIComponent(token)}`;
 }
 
 function collectConfigIssues(

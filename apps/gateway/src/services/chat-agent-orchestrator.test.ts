@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
+import type { ChatCompletionRequest, ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
 import { ChatAgentOrchestrator } from "./chat-agent-orchestrator.js";
 
 function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalogEntry[] {
@@ -353,6 +353,8 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(invokeTool).toHaveBeenCalledTimes(2);
     expect(result.assistantContent).toContain("I stopped retrying tool calls because the same failure repeated.");
+    expect(result.assistantContent).not.toContain("What I did instead");
+    expect(result.assistantContent).not.toContain("What I need from you next");
   });
 
   it("does not trip circuit breaker at two attempts for retryable failures", async () => {
@@ -384,6 +386,8 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(invokeTool.mock.calls.length).toBeGreaterThan(2);
     expect(result.assistantContent).not.toContain("I stopped retrying tool calls because the same failure repeated.");
+    expect(result.assistantContent).not.toContain("What I did instead");
+    expect(result.assistantContent).not.toContain("What I need from you next");
   });
 
   it("grounds browser.navigate from the most recent browser.search results", async () => {
@@ -453,6 +457,62 @@ describe("ChatAgentOrchestrator", () => {
       toolName: "browser.search",
     }));
     expect(result.assistantContent).toContain("Grounded answer");
+  });
+
+  it("normalizes generic live-news prompts into a cleaner search query", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "I found some headlines.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-search-cleanup",
+        result: {
+          results: [
+            { title: "Headline", url: "https://example.com/news/today", snippet: "top stories" },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-live-cleanup-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-live-cleanup-1",
+      content: "Look online and tell me the 5 most interesting things that happened today.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "quick",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Look online and tell me the 5 most interesting things that happened today." }],
+    });
+
+    expect(invokeTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      toolName: "browser.search",
+      args: expect.objectContaining({
+        query: "top news headlines today",
+      }),
+    }));
   });
 
   it("recovers missing http.get url from the most recent visited page", async () => {
@@ -609,6 +669,69 @@ describe("ChatAgentOrchestrator", () => {
     });
   });
 
+  it("ignores search-portal navigations when grounding a follow-up http.get", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.get"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+        failureReason?: string;
+      };
+    }).preflightToolInvocation({
+      toolName: "http.get",
+      rawArgs: {},
+      userContent: "what's the latest news on Kristi Noem?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-http-portal",
+          turnId: "turn-http-portal",
+          sessionId: "sess-http-portal",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "latest news on Kristi Noem" },
+          result: {
+            results: [
+              { title: "Kristi Noem latest news", url: "https://example.com/news/kristi-noem", snippet: "snippet" },
+            ],
+          },
+          startedAt: "2026-03-06T23:10:00.000Z",
+          finishedAt: "2026-03-06T23:10:01.000Z",
+        },
+        {
+          toolRunId: "tool-nav-http-portal",
+          turnId: "turn-http-portal",
+          sessionId: "sess-http-portal",
+          toolName: "browser.navigate",
+          status: "executed",
+          args: { url: "https://lite.duckduckgo.com/lite/?q=latest+news+on+kristi+noem" },
+          result: {
+            finalUrl: "https://lite.duckduckgo.com/lite/?q=latest+news+on+kristi+noem",
+            title: "DuckDuckGo",
+            textSnippet: "Please complete the challenge to confirm this search was made by a human.",
+          },
+          startedAt: "2026-03-06T23:10:02.000Z",
+          finishedAt: "2026-03-06T23:10:03.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.failureReason).toBeUndefined();
+    expect(preflight.args).toMatchObject({
+      url: "https://example.com/news/kristi-noem",
+    });
+  });
+
   it("does not infer recent-run urls for http.post", async () => {
     const orchestrator = new ChatAgentOrchestrator({
       storage: createMockStorage() as never,
@@ -745,6 +868,54 @@ describe("ChatAgentOrchestrator", () => {
       url: "https://example.com/news/kristi-noem-1",
       maxChars: 6000,
     });
+  });
+
+  it("rewrites search-portal browser.navigate urls to a grounded result url", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+      };
+    }).preflightToolInvocation({
+      toolName: "browser.navigate",
+      rawArgs: {
+        url: "https://lite.duckduckgo.com/lite/?q=top+news+headlines+today",
+      },
+      userContent: "Look online and tell me the 5 most interesting things that happened today.",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-nav-redirect",
+          turnId: "turn-nav-redirect",
+          sessionId: "sess-nav-redirect",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "top news headlines today" },
+          result: {
+            results: [
+              { title: "Google News - Headlines", url: "https://news.google.com/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRFZxYUdjU0JXVnVMVWRDR2dKVFJ5Z0FQAQ", snippet: "Headlines topic" },
+              { title: "Reuters Top News", url: "https://www.reuters.com/world/", snippet: "Top stories from Reuters" },
+            ],
+          },
+          startedAt: "2026-03-06T22:30:00.000Z",
+          finishedAt: "2026-03-06T22:30:01.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.toolName).toBe("browser.navigate");
+    expect(preflight.args.url).toBe("https://news.google.com/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRFZxYUdjU0JXVnVMVWRDR2dKVFJ5Z0FQAQ");
   });
 
   it("does not inject browser.search for generic duration prompts containing time", async () => {
@@ -921,5 +1092,544 @@ describe("ChatAgentOrchestrator", () => {
     expect(invokeTool).not.toHaveBeenCalled();
     expect(result.assistantContent).toContain("I stopped tool execution because the next step could not be safely recovered.");
     expect(result.assistantContent).toContain("execution error: url is required");
+  });
+
+  it("injects evidence grounding instruction when live-data intent triggers a proactive search", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here are headlines based on search results.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-grounding",
+        result: {
+          results: [
+            { title: "Top story", url: "https://example.com/top-story", snippet: "Important news" },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-grounding-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-grounding-1",
+      content: "What are the latest news headlines today?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "quick",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What are the latest news headlines today?" }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const completionCall = (createChatCompletion as any).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    const messages = completionCall?.messages as Array<{ role: string; content?: unknown }> | undefined;
+    const systemMessages = messages?.filter((msg) => msg.role === "system") ?? [];
+    const groundingMsg = systemMessages.find(
+      (msg) => typeof msg.content === "string" && msg.content.includes("Evidence grounding"),
+    );
+    expect(groundingMsg).toBeDefined();
+    expect(groundingMsg?.content as string).toContain("strictly on the tool results");
+  });
+
+  it("detects explicit web lookup phrases like 'search online' as live-data intent", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Search results found.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-search-online",
+        result: {
+          results: [{ title: "Result", url: "https://example.com", snippet: "snippet" }],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-search-online-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-search-online-1",
+      content: "Search online for the best project management tools",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Search online for the best project management tools" }],
+    });
+
+    expect(result.turnTrace.routing?.liveDataIntent).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "browser.search",
+    }));
+  });
+
+  it("does not trigger proactive web search for generic current-state prompts", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here is a local summary.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-current-architecture-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-current-architecture-1",
+      content: "Summarize the current architecture of the app.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Summarize the current architecture of the app." }],
+    });
+
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
+  });
+
+  it("asks for clarification instead of faking an estimate for ambiguous local-area prompts", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-lonely-area-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-lonely-area-1",
+      content: "Estimate the number of genuinely lonely singles in the area by combining demographic data, social indicators, and digital behavior patterns.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "auto",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Estimate the number of genuinely lonely singles in the area by combining demographic data, social indicators, and digital behavior patterns." }],
+    });
+
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("answering that responsibly");
+    expect(result.assistantContent).toContain("geographic area");
+    expect(result.assistantContent).toContain("threshold");
+  });
+
+  it("still asks about subjective qualifier when geography is named but definition is ambiguous", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-lonely-seattle-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-lonely-seattle-1",
+      content: "Estimate the number of genuinely lonely singles in Seattle by combining demographic data, social indicators, and digital behavior patterns.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Estimate the number of genuinely lonely singles in Seattle by combining demographic data, social indicators, and digital behavior patterns." }],
+    });
+
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("answering that responsibly");
+    expect(result.assistantContent).toContain("threshold");
+    expect(result.assistantContent).not.toContain("geographic area");
+  });
+
+  it("does not force clarification when both geography and qualifier are concrete", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "I can estimate that for Seattle with stated assumptions.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-seattle-concrete-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-seattle-concrete-1",
+      content: "Estimate the number of single adults in Seattle by combining demographic data and digital behavior patterns.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Estimate the number of single adults in Seattle by combining demographic data and digital behavior patterns." }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(result.assistantContent).toContain("Seattle");
+  });
+
+  it("carries clarification context forward instead of searching on a partial follow-up answer", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-lonely-followup-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-lonely-followup-1",
+      content: "Suburbs generally lonely is defined as \"I cry myself to sleep all alone\".",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "auto",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [
+        {
+          role: "user",
+          content: "Estimate the number of genuinely lonely singles in the area by combining demographic data, social indicators, and digital behavior patterns.",
+        },
+        {
+          role: "assistant",
+          content: [
+            "I need a quick clarification before answering that responsibly:",
+            "- What geographic area do you mean exactly: city, metro, county, state, or country?",
+            "- How are you defining that qualifier — what threshold or criteria should I use?",
+            "Once you answer, I can give you a grounded response.",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("answering that responsibly");
+    expect(result.assistantContent).toContain("geographic area");
+    expect(result.assistantContent).not.toContain("threshold");
+  });
+
+  it("returns a deterministic settings note for live-data prompts when web mode is off", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-web-off-live-data-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-web-off-live-data-1",
+      content: "What are the latest news headlines about OpenAI today?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "off",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What are the latest news headlines about OpenAI today?" }],
+    });
+
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("Web is set to Off");
+    expect(result.assistantContent).toContain("Auto, Quick, or Deep");
+  });
+
+  it("strips web tools from normal turns when web mode is off", async () => {
+    const createChatCompletion = vi
+      .fn<(request: ChatCompletionRequest) => Promise<ChatCompletionResponse>>()
+      .mockImplementationOnce(async (request) => {
+        const toolNames = (request.tools ?? [])
+          .map((tool) => (tool.function as { name?: string } | undefined)?.name)
+          .filter((name): name is string => Boolean(name));
+        expect(toolNames).not.toContain("browser_search");
+        expect(toolNames).toContain("time_now");
+        return {
+          model: "glm-5",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "Local-only answer.",
+              },
+            },
+          ],
+        };
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "time.now"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-web-off-local-only-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-web-off-local-only-1",
+      content: "Explain HTTP status codes for an internal API.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "off",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Explain HTTP status codes for an internal API." }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("Local-only answer");
+  });
+
+  it("returns a deterministic settings note for live-data prompts when tool autonomy is manual", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-manual-live-data-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-manual-live-data-1",
+      content: "Look online and tell me the 5 most interesting things that happened today.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "manual",
+      historyMessages: [{ role: "user", content: "Look online and tell me the 5 most interesting things that happened today." }],
+    });
+
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("tool autonomy is set to Manual");
+    expect(result.assistantContent).toContain("Safe Auto");
+  });
+
+  it("does not trap a fresh standalone prompt in an old clarification exchange", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "The capital of France is Paris.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-clarification-reset-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-clarification-reset-1",
+      content: "What is the capital of France?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [
+        {
+          role: "user",
+          content: "Estimate the number of genuinely lonely singles in the area by combining demographic data, social indicators, and digital behavior patterns.",
+        },
+        {
+          role: "assistant",
+          content: [
+            "I need a quick clarification before answering that responsibly:",
+            "- What geographic area do you mean exactly: city, metro, county, state, or country?",
+            "- How are you defining that qualifier — what threshold or criteria should I use?",
+            "Once you answer, I can give you a grounded response.",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("Paris");
+  });
+
+  it("ignores stale clarifications once a later assistant turn has moved on", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "The capital of France is Paris.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-clarification-reset-2",
+      turnId: randomUUID(),
+      userMessageId: "msg-clarification-reset-2",
+      content: "What is the capital of France?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [
+        {
+          role: "user",
+          content: "Estimate the number of genuinely lonely singles in the area by combining demographic data, social indicators, and digital behavior patterns.",
+        },
+        {
+          role: "assistant",
+          content: [
+            "I need a quick clarification before answering that responsibly:",
+            "- What geographic area do you mean exactly: city, metro, county, state, or country?",
+            "- How are you defining that qualifier — what threshold or criteria should I use?",
+            "Once you answer, I can give you a grounded response.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: "Never mind.",
+        },
+        {
+          role: "assistant",
+          content: "Okay, we can drop that one.",
+        },
+      ],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("Paris");
   });
 });

@@ -547,6 +547,18 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
+  fastify.delete("/api/v1/chat/sessions/:sessionId", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      return reply.code(400).send({ error: params.error.flatten() });
+    }
+    try {
+      return reply.send(await fastify.gateway.deleteChatSession(params.data.sessionId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.post("/api/v1/chat/sessions/:sessionId/pin", async (request, reply) => {
     const params = sessionParamsSchema.safeParse(request.params);
     if (!params.success) {

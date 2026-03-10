@@ -55,6 +55,30 @@ describe("chat routes additional coverage", () => {
     expect(createChatSession).toHaveBeenCalledWith({ title: "Fresh chat" });
   });
 
+  it("deletes chat sessions through the gateway", async () => {
+    const deleteChatSession = vi.fn(async () => ({
+      deleted: true,
+      sessionId: "sess-1",
+    }));
+    app = Fastify();
+    app.decorate("gateway", {
+      deleteChatSession,
+    } as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/v1/chat/sessions/sess-1",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      deleted: true,
+      sessionId: "sess-1",
+    });
+    expect(deleteChatSession).toHaveBeenCalledWith("sess-1");
+  });
+
   it("streams branch-aware chat message chunks over SSE", async () => {
     const agentSendChatMessageStream = vi.fn(async function* () {
       yield { type: "delta", value: "Hello" };

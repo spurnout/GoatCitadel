@@ -1464,6 +1464,44 @@ export class GatewayService {
     return updated;
   }
 
+  public async deleteChatSession(sessionId: string): Promise<{ deleted: boolean; sessionId: string }> {
+    this.getSession(sessionId);
+    const result = this.storage.deleteChatSessionData(sessionId);
+    this.activeChatTurnWrites.delete(sessionId);
+    this.operatorSummaryCache.invalidate();
+    const cleanupResults = await Promise.allSettled([
+      this.storage.transcripts.delete(sessionId),
+      ...result.cleanupRelPaths.map((storageRelPath) => this.removeChatSessionStoredFile(storageRelPath)),
+    ]);
+    for (const cleanupResult of cleanupResults) {
+      if (cleanupResult.status === "rejected") {
+        console.warn("[goatcitadel] chat session delete cleanup failed", {
+          sessionId,
+          error: cleanupResult.reason instanceof Error ? cleanupResult.reason.message : String(cleanupResult.reason),
+        });
+      }
+    }
+    this.publishRealtime("chat_session_deleted", "chat", {
+      type: "chat_session_deleted",
+      sessionId,
+      mode: "hard",
+    });
+    return {
+      deleted: result.deleted,
+      sessionId,
+    };
+  }
+
+  private async removeChatSessionStoredFile(storageRelPath: string): Promise<void> {
+    const normalized = storageRelPath.trim();
+    if (!normalized) {
+      return;
+    }
+    const fullPath = path.resolve(this.config.rootDir, this.config.assistant.workspaceDir, normalized);
+    assertWritePathInJail(fullPath, this.config.toolPolicy.sandbox.writeJailRoots);
+    await fs.rm(fullPath, { force: true });
+  }
+
   public assignChatSessionProject(sessionId: string, projectId?: string): ChatSessionRecord {
     this.getSession(sessionId);
     const meta = this.storage.chatSessionMeta.ensure(sessionId);
@@ -7293,9 +7331,12 @@ export class GatewayService {
       trace: runTrace,
     });
 
+    const persistedStepIds = new Map<string, string>();
     for (const [index, step] of orchestration.plan.steps.entries()) {
+      const persistedStepId = `${runId}:${step.stepId}`;
+      persistedStepIds.set(step.stepId, persistedStepId);
       this.storage.chatDelegationSteps.create({
-        stepId: step.stepId,
+        stepId: persistedStepId,
         runId,
         role: step.role,
         index,
@@ -7339,7 +7380,7 @@ export class GatewayService {
               index: step.index,
             },
           });
-          this.storage.chatDelegationSteps.patch(step.stepId, {
+          this.storage.chatDelegationSteps.patch(persistedStepIds.get(step.stepId) ?? step.stepId, {
             status: step.status,
             providerId: step.providerId,
             model: step.model,
@@ -7641,7 +7682,9 @@ export class GatewayService {
         }
       }
       if (chunk.type === "citation") {
-        streamCitations.push(chunk.citation);
+        const nextCitations = dedupeChatCitations([...streamCitations, chunk.citation]);
+        streamCitations.length = 0;
+        streamCitations.push(...nextCitations);
         yield chunk;
       }
       if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "error") {
@@ -7696,7 +7739,7 @@ export class GatewayService {
           workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
           truncated: prepared.resolvedGuidance.truncated,
         },
-        citations: streamCitations,
+        citations: dedupeChatCitations(streamCitations),
       });
       yield {
         type: "trace_update",
@@ -7751,7 +7794,7 @@ export class GatewayService {
             workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
             truncated: prepared.resolvedGuidance.truncated,
           },
-          citations: streamCitations,
+          citations: dedupeChatCitations(streamCitations),
         }),
         toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
       };
@@ -7957,6 +8000,7 @@ export class GatewayService {
       }
     }
 
+    const dedupedTurnCitations = dedupeChatCitations(turnResult.turnTrace.citations ?? []);
     if (turnResult.requiresApproval) {
       const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
         retrieval: prepared.retrievalTrace,
@@ -7971,7 +8015,7 @@ export class GatewayService {
           workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
           truncated: prepared.resolvedGuidance.truncated,
         },
-        citations: turnResult.turnTrace.citations,
+        citations: dedupedTurnCitations,
       });
       this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       this.publishRealtime("chat_thread_updated", "chat", {
@@ -7989,10 +8033,10 @@ export class GatewayService {
         turnId,
         trace: {
           ...traceWithMeta,
-          citations: turnResult.turnTrace.citations,
+          citations: dedupedTurnCitations,
           toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
         },
-        citations: turnResult.turnTrace.citations,
+        citations: dedupedTurnCitations,
         routing: turnResult.turnTrace.routing,
       };
     }
@@ -8041,11 +8085,11 @@ export class GatewayService {
         workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
         truncated: prepared.resolvedGuidance.truncated,
       },
-      citations: turnResult.turnTrace.citations,
+      citations: dedupedTurnCitations,
     });
     let hydratedTrace: ChatTurnTraceRecord = {
       ...trace,
-      citations: turnResult.turnTrace.citations,
+      citations: dedupedTurnCitations,
       toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
     };
     const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
@@ -8351,9 +8395,10 @@ export class GatewayService {
       } else if (chunk.type === "trace_update") {
         trace = chunk.trace;
       } else if (chunk.type === "citation") {
-        citations = [...citations, chunk.citation];
+        citations = dedupeChatCitations([...citations, chunk.citation]);
       }
     }
+    const dedupedTraceCitations = dedupeChatCitations(trace?.citations ?? []);
     return {
       sessionId,
       userMessage: prepared.userMessage,
@@ -8361,8 +8406,8 @@ export class GatewayService {
       transport: "llm",
       model: trace?.model ?? input.model ?? prepared.prefs.model,
       turnId: prepared.turnId,
-      trace,
-      citations,
+      trace: trace ? { ...trace, citations: dedupedTraceCitations } : trace,
+      citations: dedupeChatCitations(citations),
       routing: trace?.routing,
     };
   }
@@ -16973,8 +17018,38 @@ function readCompletionCitations(response: ChatCompletionResponse): ChatCitation
   if (!Array.isArray(raw)) {
     return [];
   }
-  return raw
-    .filter((item): item is ChatCitationRecord => typeof item === "object" && item !== null && typeof (item as ChatCitationRecord).url === "string");
+  return dedupeChatCitations(
+    raw.filter((item): item is ChatCitationRecord => typeof item === "object" && item !== null && typeof (item as ChatCitationRecord).url === "string"),
+  );
+}
+
+function dedupeChatCitations(citations: ChatCitationRecord[]): ChatCitationRecord[] {
+  const deduped: ChatCitationRecord[] = [];
+  const seen = new Map<string, number>();
+  for (const citation of citations) {
+    const key = citation.url.trim().toLowerCase();
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) {
+      seen.set(key, deduped.length);
+      deduped.push(citation);
+      continue;
+    }
+    const existing = deduped[existingIndex];
+    if (!existing) {
+      seen.set(key, deduped.length);
+      deduped.push(citation);
+      continue;
+    }
+    deduped[existingIndex] = {
+      ...existing,
+      citationId: existing.citationId,
+      url: existing.url,
+      title: existing.title ?? citation.title,
+      snippet: existing.snippet ?? citation.snippet,
+      sourceType: existing.sourceType ?? citation.sourceType,
+    };
+  }
+  return deduped;
 }
 
 function shouldRetryToolProtocolError(error: Error): boolean {

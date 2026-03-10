@@ -4,6 +4,7 @@ import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
 import { renderDoctorReport, runDoctor as runSharedDoctor } from "../doctor/engine.js";
+import { loadLocalEnvFile } from "../env-file.js";
 import { TuiApiClient } from "./api-client.js";
 import { TuiLiveFeed } from "./live-feed.js";
 import { loadResolvedProfile, saveProfile, type TuiResolvedAuth } from "./profile.js";
@@ -34,6 +35,8 @@ type HomeView =
 
 const MANUAL_SESSION_ENTRY = "__manual_session__";
 const MAX_TUI_SESSION_CHOICES = 14;
+
+loadLocalEnvFile();
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));

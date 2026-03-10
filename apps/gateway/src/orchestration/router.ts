@@ -12,6 +12,7 @@ import type {
 import { CHAT_MODE_POLICY } from "./policies/chat-policy.js";
 import { CODE_MODE_POLICY } from "./policies/code-policy.js";
 import { COWORK_MODE_POLICY } from "./policies/cowork-policy.js";
+import { hasLiveDataKeywords, shouldPreferToolBackedChatPath } from "./live-data-detect.js";
 import type {
   ModeOrchestrationPolicy,
   OrchestrationPlan,
@@ -40,6 +41,14 @@ export function shouldUseModeOrchestration(input: OrchestrationRouterInput): boo
     return true;
   }
   const text = input.task.objective.toLowerCase();
+  if (shouldPreferToolBackedChatPath(text, input.task.prefs)) {
+    return false;
+  }
+  // When webMode is off but the prompt clearly wants live data, don't route
+  // into orchestration either — it would silently answer without evidence.
+  if (hasLiveDataKeywords(text)) {
+    return false;
+  }
   const triggerKeywords = [
     "compare",
     "research",
@@ -48,14 +57,11 @@ export function shouldUseModeOrchestration(input: OrchestrationRouterInput): boo
     "analyze",
     "tradeoff",
     "plan",
-    "latest",
-    "look online",
   ];
   return input.task.prefs.orchestrationIntensity !== "minimal"
     && (
       text.length > 220
       || triggerKeywords.some((keyword) => text.includes(keyword))
-      || input.task.prefs.webMode === "deep"
       || input.task.prefs.planningMode === "advisory"
     );
 }

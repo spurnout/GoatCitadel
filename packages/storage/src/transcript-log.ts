@@ -50,4 +50,17 @@ export class TranscriptLog {
       .map((line) => safeJsonParse<TranscriptEvent | undefined>(line, undefined))
       .filter((event): event is TranscriptEvent => Boolean(event));
   }
+
+  public async delete(sessionId: string): Promise<void> {
+    const pending = this.writeQueues.get(sessionId);
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        // Ignore write failures and continue cleanup.
+      }
+    }
+    const filePath = path.join(this.transcriptsDir, `${sessionId}.jsonl`);
+    await fs.rm(filePath, { force: true });
+  }
 }
