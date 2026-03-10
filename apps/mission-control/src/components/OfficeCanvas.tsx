@@ -119,18 +119,22 @@ interface SeatLayout extends OfficeDeskAgent {
 }
 
 type AgentSilhouette =
-  | "beacon"
-  | "ring"
-  | "stack"
-  | "drone"
-  | "prism"
-  | "capsule";
+  | "spire"
+  | "citadel"
+  | "foundry"
+  | "crawler"
+  | "halo"
+  | "probe"
+  | "sentinel"
+  | "bastion"
+  | "relay"
+  | "skipper";
 
 interface AgentShapeProfile {
   silhouette: AgentSilhouette;
   height: number;
   width: number;
-  topper: "halo" | "antenna" | "fin" | "sensor";
+  detailVariant: 0 | 1 | 2;
   accentCount: 1 | 2;
 }
 
@@ -189,44 +193,48 @@ function hashToken(value: string): number {
 
 function getAgentShapeProfile(seat: SeatLayout): AgentShapeProfile {
   const variantsByZone: Record<OfficeZoneId, AgentSilhouette[]> = {
-    command: ["beacon", "prism", "stack"],
-    build: ["stack", "capsule", "drone"],
-    research: ["ring", "beacon", "drone"],
-    security: ["prism", "beacon", "capsule"],
-    operations: ["capsule", "drone", "stack"],
-  };
-  const topByZone: Record<OfficeZoneId, Array<AgentShapeProfile["topper"]>> = {
-    command: ["antenna", "halo", "sensor"],
-    build: ["fin", "sensor", "antenna"],
-    research: ["halo", "sensor", "antenna"],
-    security: ["fin", "antenna", "sensor"],
-    operations: ["sensor", "halo", "fin"],
+    command: ["spire", "citadel"],
+    build: ["foundry", "crawler"],
+    research: ["halo", "probe"],
+    security: ["sentinel", "bastion"],
+    operations: ["relay", "skipper"],
   };
 
   const token = `${seat.roleId}:${seat.title}:${seat.zoneId}`;
   const hash = hashToken(token);
   const silhouettes = variantsByZone[seat.zoneId];
-  const toppers = topByZone[seat.zoneId];
-  const silhouette = silhouettes[hash % silhouettes.length] ?? "capsule";
-  const topper = toppers[(hash >>> 3) % toppers.length] ?? "sensor";
+  const silhouette = silhouettes[hash % silhouettes.length] ?? "relay";
+  const detailVariant = ((hash >>> 3) % 3) as 0 | 1 | 2;
   const accentCount = ((hash >>> 7) & 1) === 0 ? 1 : 2;
 
-  if (silhouette === "beacon") {
-    return { silhouette, height: 0.46, width: 0.13, topper, accentCount };
+  if (silhouette === "spire") {
+    return { silhouette, height: 0.54, width: 0.12, detailVariant, accentCount };
   }
-  if (silhouette === "ring") {
-    return { silhouette, height: 0.34, width: 0.16, topper, accentCount };
+  if (silhouette === "citadel") {
+    return { silhouette, height: 0.44, width: 0.18, detailVariant, accentCount };
   }
-  if (silhouette === "stack") {
-    return { silhouette, height: 0.38, width: 0.15, topper, accentCount };
+  if (silhouette === "foundry") {
+    return { silhouette, height: 0.34, width: 0.21, detailVariant, accentCount };
   }
-  if (silhouette === "drone") {
-    return { silhouette, height: 0.28, width: 0.14, topper, accentCount };
+  if (silhouette === "crawler") {
+    return { silhouette, height: 0.26, width: 0.24, detailVariant, accentCount };
   }
-  if (silhouette === "prism") {
-    return { silhouette, height: 0.4, width: 0.15, topper, accentCount };
+  if (silhouette === "halo") {
+    return { silhouette, height: 0.34, width: 0.19, detailVariant, accentCount };
   }
-  return { silhouette: "capsule", height: 0.36, width: 0.14, topper, accentCount };
+  if (silhouette === "probe") {
+    return { silhouette, height: 0.3, width: 0.18, detailVariant, accentCount };
+  }
+  if (silhouette === "sentinel") {
+    return { silhouette, height: 0.42, width: 0.16, detailVariant, accentCount };
+  }
+  if (silhouette === "bastion") {
+    return { silhouette, height: 0.36, width: 0.21, detailVariant, accentCount };
+  }
+  if (silhouette === "relay") {
+    return { silhouette, height: 0.3, width: 0.22, detailVariant, accentCount };
+  }
+  return { silhouette: "skipper", height: 0.34, width: 0.18, detailVariant, accentCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -638,7 +646,7 @@ function OperatorSeat(props: {
 
       {/* Label */}
       {(props.selected || hovered) ? (
-        <Html position={[0, 2.0, 0]} center distanceFactor={12} transform={false} occlude={false}>
+        <Html position={[0, 2.34, 0]} center distanceFactor={12} transform={false} occlude={false}>
           <div className={`office-thought-html ${props.selected ? "selected" : ""}`}>
             <p className="name">{props.operator.name}</p>
             <p className="meta">Operator | Command Bridge</p>
@@ -753,7 +761,7 @@ function AgentSeat(props: {
 
       {/* Status badge */}
       {(props.selected || hovered || isActive || seat.attentionLevel !== "stable") ? (
-        <Html position={[0, 1.48, 0]} center distanceFactor={11} transform={false} occlude={false}>
+        <Html position={[0, 1.62, 0]} center distanceFactor={11} transform={false} occlude={false}>
           <div className={`office-status-chip office-status-${statusBadge(seat.status, seat.risk, seat.activityState).kind}`}>
             {statusBadge(seat.status, seat.risk, seat.activityState).label}
           </div>
@@ -762,7 +770,7 @@ function AgentSeat(props: {
 
       {/* Thought overlay */}
       {(props.selected || isActive || hovered) ? (
-        <Html position={[0, 1.8, 0]} center distanceFactor={11} transform={false} occlude={false}>
+        <Html position={[0, 2.16, 0]} center distanceFactor={11} transform={false} occlude={false}>
           <div className={`office-thought-html ${props.selected ? "selected" : ""}`}>
             <p className="name">{seat.name}</p>
             <p className="meta">{seat.title} | {seat.zoneLabel}</p>
@@ -798,92 +806,222 @@ function AgentAvatar(props: {
   active: boolean;
 }) {
   const accentColor = props.blocked ? "#ffd2cb" : props.zoneColor;
+  const paleMetal = props.blocked ? "#f0b9b1" : "#dbe7ff";
+  const coolMetal = props.blocked ? "#ffdfd8" : "#9db5cc";
+  const brightPanel = props.blocked ? "#ffe8e4" : "#dff3ff";
 
   return (
     <group ref={props.glowRef} position={[0, 0.82, 0]}>
-      <mesh castShadow>
-        {props.profile.silhouette === "beacon" ? (
-          <cylinderGeometry args={[props.profile.width * 0.58, props.profile.width, props.profile.height, 6]} />
-        ) : props.profile.silhouette === "ring" ? (
-          <torusGeometry args={[props.profile.width, props.profile.width * 0.33, 10, 20]} />
-        ) : props.profile.silhouette === "stack" ? (
-          <boxGeometry args={[props.profile.width * 1.25, props.profile.height * 0.82, props.profile.width * 1.25]} />
-        ) : props.profile.silhouette === "drone" ? (
-          <octahedronGeometry args={[props.profile.width * 1.08, 0]} />
-        ) : props.profile.silhouette === "prism" ? (
-          <coneGeometry args={[props.profile.width, props.profile.height, 4]} />
-        ) : (
-          <capsuleGeometry args={[props.profile.width * 0.68, props.profile.height * 0.46, 6, 10]} />
-        )}
-        <meshStandardMaterial
-          color={props.color}
-          emissive={props.color}
-          emissiveIntensity={props.emissiveIntensity}
-          metalness={0.42}
-          roughness={0.32}
-        />
-      </mesh>
-
-      {props.profile.silhouette === "stack" ? (
-        <mesh position={[0, props.profile.height * 0.35, 0]} castShadow>
-          <boxGeometry args={[props.profile.width * 0.84, props.profile.height * 0.24, props.profile.width * 0.84]} />
-          <meshStandardMaterial color="#dbe7ff" emissive="#dbe7ff" emissiveIntensity={0.2} metalness={0.2} roughness={0.4} />
-        </mesh>
+      {props.profile.silhouette === "spire" ? (
+        <>
+          <mesh position={[0, -0.03, 0]} castShadow>
+            <cylinderGeometry args={[props.profile.width * 0.78, props.profile.width * 1.08, 0.08, 6]} />
+            <meshStandardMaterial color="#182331" metalness={0.28} roughness={0.46} />
+          </mesh>
+          <mesh castShadow>
+            <cylinderGeometry args={[props.profile.width * 0.52, props.profile.width * 0.95, props.profile.height, 5]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.46} roughness={0.26} />
+          </mesh>
+          <mesh position={[0, props.profile.height * 0.46, 0]} castShadow>
+            <octahedronGeometry args={[props.profile.width * 0.42, 0]} />
+            <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.7} metalness={0.24} roughness={0.3} />
+          </mesh>
+          {props.profile.detailVariant !== 1 ? (
+            <mesh position={[0, props.profile.height * 0.12, props.profile.width * 0.6]}>
+              <boxGeometry args={[props.profile.width * 0.9, 0.026, 0.028]} />
+              <meshStandardMaterial color={brightPanel} emissive={brightPanel} emissiveIntensity={0.32} />
+            </mesh>
+          ) : null}
+        </>
       ) : null}
 
-      {props.profile.silhouette === "drone" ? (
+      {props.profile.silhouette === "citadel" ? (
         <>
+          <mesh castShadow>
+            <boxGeometry args={[props.profile.width * 1.3, props.profile.height * 0.82, props.profile.width * 1.08]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.4} roughness={0.32} />
+          </mesh>
+          <mesh position={[0, props.profile.height * 0.36, 0]} castShadow>
+            <boxGeometry args={[props.profile.width * 0.74, props.profile.height * 0.24, props.profile.width * 0.72]} />
+            <meshStandardMaterial color={paleMetal} emissive={paleMetal} emissiveIntensity={0.18} metalness={0.18} roughness={0.44} />
+          </mesh>
           {[-1, 1].map((direction) => (
-            <mesh key={`arm-${direction}`} position={[direction * props.profile.width * 0.95, 0, 0]} rotation={[0, 0, direction * 0.4]} castShadow>
-              <boxGeometry args={[props.profile.width * 0.85, 0.03, 0.03]} />
-              <meshStandardMaterial color="#8aa5bf" metalness={0.38} roughness={0.48} />
+            <mesh key={`wing-${direction}`} position={[direction * props.profile.width * 0.78, props.profile.height * 0.04, 0]} rotation={[0, 0, direction * 0.28]} castShadow>
+              <boxGeometry args={[props.profile.width * 0.22, props.profile.height * 0.46, 0.04]} />
+              <meshStandardMaterial color={coolMetal} metalness={0.24} roughness={0.46} />
+            </mesh>
+          ))}
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "foundry" ? (
+        <>
+          <mesh position={[0, -0.02, 0]} castShadow>
+            <boxGeometry args={[props.profile.width * 1.42, props.profile.height * 0.62, props.profile.width * 1.1]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.92} metalness={0.36} roughness={0.36} />
+          </mesh>
+          {[-1, 1].map((direction) => (
+            <mesh key={`stack-${direction}`} position={[direction * props.profile.width * 0.36, props.profile.height * 0.32, -props.profile.width * 0.08]} castShadow>
+              <cylinderGeometry args={[props.profile.width * 0.16, props.profile.width * 0.18, props.profile.height * 0.58, 6]} />
+              <meshStandardMaterial color={paleMetal} metalness={0.28} roughness={0.42} />
+            </mesh>
+          ))}
+          <mesh position={[0, props.profile.height * 0.08, props.profile.width * 0.52]}>
+            <boxGeometry args={[props.profile.width * 0.92, 0.03, 0.03]} />
+            <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.54} />
+          </mesh>
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "crawler" ? (
+        <>
+          <mesh castShadow>
+            <capsuleGeometry args={[props.profile.width * 0.44, props.profile.height * 0.26, 6, 10]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.9} metalness={0.34} roughness={0.34} />
+          </mesh>
+          {[-1, 1].flatMap((xDirection) => [-1, 1].map((zDirection) => (
+            <mesh
+              key={`leg-${xDirection}-${zDirection}`}
+              position={[xDirection * props.profile.width * 0.7, -props.profile.height * 0.2, zDirection * props.profile.width * 0.44]}
+              rotation={[0, 0, xDirection * 0.42]}
+              castShadow
+            >
+              <boxGeometry args={[props.profile.width * 0.52, 0.04, 0.04]} />
+              <meshStandardMaterial color={coolMetal} metalness={0.32} roughness={0.5} />
+            </mesh>
+          )))}
+          <mesh position={[0, props.profile.height * 0.16, props.profile.width * 0.38]}>
+            <boxGeometry args={[props.profile.width * 0.54, props.profile.height * 0.12, 0.03]} />
+            <meshStandardMaterial color={brightPanel} emissive={brightPanel} emissiveIntensity={0.32} />
+          </mesh>
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "halo" ? (
+        <>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow>
+            <torusGeometry args={[props.profile.width * 0.94, props.profile.width * 0.18, 10, 24]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.24} roughness={0.3} />
+          </mesh>
+          <mesh position={[0, 0, 0]} castShadow>
+            <octahedronGeometry args={[props.profile.width * 0.34, 0]} />
+            <meshStandardMaterial color={brightPanel} emissive={brightPanel} emissiveIntensity={0.28} metalness={0.22} roughness={0.28} />
+          </mesh>
+          {props.profile.detailVariant !== 0 ? (
+            <mesh position={[0, props.profile.height * 0.32, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[props.profile.width * 0.46, props.profile.width * 0.58, 20]} />
+              <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.44} side={2} />
+            </mesh>
+          ) : null}
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "probe" ? (
+        <>
+          <mesh castShadow>
+            <octahedronGeometry args={[props.profile.width * 0.5, 0]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.34} roughness={0.28} />
+          </mesh>
+          {[-1, 1].map((direction) => (
+            <mesh key={`node-${direction}`} position={[direction * props.profile.width * 0.9, props.profile.detailVariant === 2 ? 0.07 : -0.02, 0]} castShadow>
+              <sphereGeometry args={[props.profile.width * 0.18, 8, 8]} />
+              <meshStandardMaterial color={paleMetal} emissive={paleMetal} emissiveIntensity={0.18} />
+            </mesh>
+          ))}
+          <mesh position={[0, props.profile.height * 0.26, 0]}>
+            <cylinderGeometry args={[0.01, 0.01, props.profile.height * 0.44, 8]} />
+            <meshStandardMaterial color={coolMetal} metalness={0.34} roughness={0.36} />
+          </mesh>
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "sentinel" ? (
+        <>
+          <mesh castShadow rotation={[0.1, 0, 0]}>
+            <coneGeometry args={[props.profile.width, props.profile.height, 3]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.96} metalness={0.42} roughness={0.24} />
+          </mesh>
+          {[-1, 1].map((direction) => (
+            <mesh key={`shield-${direction}`} position={[direction * props.profile.width * 0.64, 0.02, -props.profile.width * 0.1]} rotation={[0.18, 0, direction * 0.36]} castShadow>
+              <boxGeometry args={[props.profile.width * 0.18, props.profile.height * 0.68, 0.03]} />
+              <meshStandardMaterial color={paleMetal} metalness={0.22} roughness={0.42} />
+            </mesh>
+          ))}
+          <mesh position={[0, props.profile.height * 0.12, props.profile.width * 0.34]}>
+            <boxGeometry args={[props.profile.width * 0.5, 0.026, 0.028]} />
+            <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.62} />
+          </mesh>
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "bastion" ? (
+        <>
+          <mesh castShadow rotation={[0, Math.PI / 4, 0]}>
+            <boxGeometry args={[props.profile.width * 1.08, props.profile.height * 0.78, props.profile.width * 1.08]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.92} metalness={0.42} roughness={0.34} />
+          </mesh>
+          <mesh position={[0, props.profile.height * 0.24, -props.profile.width * 0.28]} rotation={[0.4, 0, 0]} castShadow>
+            <boxGeometry args={[props.profile.width * 0.26, props.profile.height * 0.52, 0.03]} />
+            <meshStandardMaterial color={coolMetal} metalness={0.22} roughness={0.44} />
+          </mesh>
+          {props.profile.detailVariant === 1 ? (
+            <mesh position={[0, props.profile.height * 0.32, props.profile.width * 0.22]} castShadow>
+              <octahedronGeometry args={[props.profile.width * 0.18, 0]} />
+              <meshStandardMaterial color={brightPanel} emissive={brightPanel} emissiveIntensity={0.26} />
+            </mesh>
+          ) : null}
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "relay" ? (
+        <>
+          <mesh rotation={[0, 0, Math.PI / 2]} castShadow>
+            <capsuleGeometry args={[props.profile.width * 0.34, props.profile.height * 0.38, 6, 10]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.94} metalness={0.36} roughness={0.34} />
+          </mesh>
+          {[-1, 1].map((direction) => (
+            <mesh key={`pod-${direction}`} position={[direction * props.profile.width * 0.7, 0, 0]} castShadow>
+              <cylinderGeometry args={[props.profile.width * 0.12, props.profile.width * 0.12, props.profile.width * 0.42, 10]} />
+              <meshStandardMaterial color={paleMetal} metalness={0.24} roughness={0.44} />
+            </mesh>
+          ))}
+          <mesh position={[0, props.profile.height * 0.32, 0]}>
+            <cylinderGeometry args={[0.01, 0.01, props.profile.height * 0.48, 8]} />
+            <meshStandardMaterial color={coolMetal} metalness={0.32} roughness={0.36} />
+          </mesh>
+        </>
+      ) : null}
+
+      {props.profile.silhouette === "skipper" ? (
+        <>
+          <mesh position={[0, -props.profile.height * 0.04, 0]} castShadow>
+            <capsuleGeometry args={[props.profile.width * 0.34, props.profile.height * 0.24, 6, 10]} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.9} metalness={0.34} roughness={0.34} />
+          </mesh>
+          <mesh position={[0, props.profile.height * 0.3, 0]} castShadow>
+            <capsuleGeometry args={[props.profile.width * 0.24, props.profile.height * 0.12, 6, 10]} />
+            <meshStandardMaterial color={paleMetal} emissive={paleMetal} emissiveIntensity={0.18} metalness={0.22} roughness={0.4} />
+          </mesh>
+          {[-1, 1].map((direction) => (
+            <mesh key={`fin-${direction}`} position={[direction * props.profile.width * 0.54, props.profile.height * 0.12, -props.profile.width * 0.12]} rotation={[0, 0, direction * 0.5]} castShadow>
+              <boxGeometry args={[0.03, props.profile.height * 0.44, 0.03]} />
+              <meshStandardMaterial color={coolMetal} metalness={0.24} roughness={0.44} />
             </mesh>
           ))}
         </>
       ) : null}
 
       {props.profile.accentCount >= 1 ? (
-        <mesh position={[0, -props.profile.height * 0.22, props.profile.width * 0.72]}>
-          <boxGeometry args={[props.profile.width * 1.1, 0.03, 0.03]} />
-          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={props.active ? 0.7 : 0.35} />
+        <mesh position={[0, -props.profile.height * 0.28, props.profile.width * 0.74]}>
+          <boxGeometry args={[props.profile.width * 1.12, 0.03, 0.03]} />
+          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={props.active ? 0.78 : 0.4} />
         </mesh>
       ) : null}
 
       {props.profile.accentCount === 2 ? (
-        <mesh position={[0, 0, -props.profile.width * 0.72]}>
-          <boxGeometry args={[props.profile.width * 0.92, 0.024, 0.024]} />
-          <meshStandardMaterial color="#b8cae6" emissive="#b8cae6" emissiveIntensity={0.22} />
-        </mesh>
-      ) : null}
-
-      {props.profile.topper === "halo" ? (
-        <mesh position={[0, props.profile.height * 0.52, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <torusGeometry args={[props.profile.width * 0.56, 0.015, 8, 18]} />
-          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.6} />
-        </mesh>
-      ) : null}
-      {props.profile.topper === "antenna" ? (
-        <group position={[0, props.profile.height * 0.5, 0]}>
-          <mesh position={[0, 0.06, 0]}>
-            <cylinderGeometry args={[0.01, 0.01, 0.14, 8]} />
-            <meshStandardMaterial color="#a6bad1" metalness={0.42} roughness={0.34} />
-          </mesh>
-          <mesh position={[0, 0.14, 0]}>
-            <sphereGeometry args={[0.024, 8, 8]} />
-            <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={0.85} />
-          </mesh>
-        </group>
-      ) : null}
-      {props.profile.topper === "fin" ? (
-        <mesh position={[0, props.profile.height * 0.46, -props.profile.width * 0.18]} rotation={[0.45, 0, 0]}>
-          <boxGeometry args={[props.profile.width * 0.18, props.profile.height * 0.28, 0.03]} />
-          <meshStandardMaterial color="#d7e3f5" metalness={0.22} roughness={0.42} />
-        </mesh>
-      ) : null}
-      {props.profile.topper === "sensor" ? (
-        <mesh position={[0, props.profile.height * 0.4, props.profile.width * 0.3]}>
-          <boxGeometry args={[props.profile.width * 0.46, props.profile.height * 0.13, 0.03]} />
-          <meshStandardMaterial color="#dff3ff" emissive="#dff3ff" emissiveIntensity={0.28} metalness={0.18} roughness={0.36} />
+        <mesh position={[0, props.profile.height * 0.06, -props.profile.width * 0.74]}>
+          <boxGeometry args={[props.profile.width * 0.9, 0.024, 0.024]} />
+          <meshStandardMaterial color={coolMetal} emissive={coolMetal} emissiveIntensity={0.2} />
         </mesh>
       ) : null}
     </group>

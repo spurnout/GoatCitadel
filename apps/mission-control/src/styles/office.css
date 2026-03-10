@@ -59,11 +59,11 @@
 }
 
 .office-thought-html {
-  width: min(220px, 36vw);
+  width: min(176px, 28vw);
   background: rgba(10, 14, 20, 0.94);
   border: 1px solid rgba(84, 221, 255, 0.25);
-  border-radius: 10px;
-  padding: 6px 8px;
+  border-radius: 9px;
+  padding: 5px 7px;
   box-shadow:
     0 10px 18px rgba(0, 0, 0, 0.5),
     0 0 12px rgba(84, 221, 255, 0.06);
@@ -83,7 +83,7 @@
 
 .office-thought-html .name {
   color: #54ddff;
-  font-size: 0.74rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -91,7 +91,7 @@
 .office-thought-html .meta {
   margin-top: 2px;
   color: #6a7a8e;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   letter-spacing: 0.03em;
 }
 
@@ -105,10 +105,10 @@
 .office-thought-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
-  padding: 2px 8px;
+  min-height: 18px;
+  padding: 2px 6px;
   border-radius: 999px;
-  font-size: 0.65rem;
+  font-size: 0.58rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   border: 1px solid rgba(84, 221, 255, 0.16);
@@ -164,15 +164,15 @@
 .office-thought-html .thought {
   margin-top: 3px;
   color: #d0dce8;
-  font-size: 0.8rem;
-  line-height: 1.25;
+  font-size: 0.72rem;
+  line-height: 1.22;
 }
 
 .office-thought-directive {
   margin-top: 5px;
   color: #8aa0b8;
-  font-size: 0.72rem;
-  line-height: 1.35;
+  font-size: 0.66rem;
+  line-height: 1.28;
 }
 
 .office-status-chip {
