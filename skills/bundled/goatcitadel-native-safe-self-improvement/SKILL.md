@@ -16,17 +16,15 @@ metadata:
     - memory.read
   keywords:
     - goatcitadel native safe improvement
-    - that's wrong
-    - stop doing that
-    - from now on
-    - don't assume
-    - routing gap
-    - workflow friction
+    - log this correction
+    - log this as workflow friction
+    - log this routing gap
     - durable preference
     - post-task reflection
-    - eval idea
-    - regression idea
-    - proposal draft
+    - improvement proposal draft
+    - self-improvement log
+    - eval idea for goatcitadel
+    - goatcitadel regression idea
 ---
 
 # GoatCitadel Native Safe Improvement

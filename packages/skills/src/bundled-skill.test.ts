@@ -20,7 +20,7 @@ describe("goatcitadel-native-safe-self-improvement bundled skill", () => {
     expect(parsed.frontmatter.metadata?.version).toBe("0.2.0");
     expect(parsed.frontmatter.metadata?.tags).toContain("self-improvement");
     expect(parsed.frontmatter.metadata?.tools).toEqual(["fs.read", "fs.write", "memory.read"]);
-    expect(parsed.frontmatter.metadata?.keywords).toContain("routing gap");
+    expect(parsed.frontmatter.metadata?.keywords).toContain("log this routing gap");
     expect(parsed.frontmatter.metadata?.keywords).toContain("goatcitadel native safe improvement");
   });
 
@@ -33,6 +33,7 @@ describe("goatcitadel-native-safe-self-improvement bundled skill", () => {
     expect(skill?.source).toBe("bundled");
     expect(skill?.declaredTools).toEqual(["fs.read", "fs.write", "memory.read"]);
     expect(skill?.keywords).toContain("post-task reflection");
+    expect(skill?.keywords).toContain("self-improvement log");
   });
 
   it("supports explicit-by-name text and guarded auto activation without matching unrelated coding prompts", async () => {
@@ -45,7 +46,7 @@ describe("goatcitadel-native-safe-self-improvement bundled skill", () => {
     expect(explicit.selected.map((skill) => skill.name)).toContain("GoatCitadel Native Safe Improvement");
 
     const guardedAuto = service.resolveActivation({
-      text: "That's wrong. From now on log this as workflow friction and a routing gap.",
+      text: "That's wrong. Log this as workflow friction and log this routing gap.",
     });
     expect(guardedAuto.selected.map((skill) => skill.name)).toContain("GoatCitadel Native Safe Improvement");
 
@@ -53,5 +54,10 @@ describe("goatcitadel-native-safe-self-improvement bundled skill", () => {
       text: "Fix the TypeScript error in the gateway route and add a regression test.",
     });
     expect(unrelated.selected.map((skill) => skill.name)).not.toContain("GoatCitadel Native Safe Improvement");
+
+    const casualEnglish = service.resolveActivation({
+      text: "That's wrong, from now on use strict TypeScript mode. Don't assume the type is correct.",
+    });
+    expect(casualEnglish.selected.map((skill) => skill.name)).not.toContain("GoatCitadel Native Safe Improvement");
   });
 });
