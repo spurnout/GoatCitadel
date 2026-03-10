@@ -31,6 +31,34 @@ type Transport = "stdio" | "http" | "sse";
 type McpCategory = "development" | "browser" | "automation" | "research" | "data" | "creative" | "orchestration" | "other";
 type McpTrustTier = "trusted" | "restricted" | "quarantined";
 type McpCostTier = "free" | "mixed" | "paid" | "unknown";
+type McpTemplateRecord = Awaited<ReturnType<typeof fetchMcpTemplates>>["items"][number];
+type McpTemplateDiscoveryRecord = Awaited<ReturnType<typeof fetchMcpTemplateDiscovery>>["items"][number];
+
+const FEATURED_MCP_TEMPLATE_IDS = ["github", "stripe", "microsoft-learn"] as const;
+
+const FEATURED_MCP_NOTES: Record<(typeof FEATURED_MCP_TEMPLATE_IDS)[number], {
+  why: string;
+  setup: string;
+}> = {
+  github: {
+    why: "Best first MCP for code-heavy work: repos, issues, pull requests, and code navigation.",
+    setup: "Review auth and trust policy before first live use. This is the official GitHub endpoint shape, not the older deprecated local package.",
+  },
+  stripe: {
+    why: "High-value if your site runs on Stripe and you want billing, customer, and subscription workflows inside GoatCitadel.",
+    setup: "Treat this as restricted and keep first-use approval on. Billing data and account actions deserve a tighter policy posture.",
+  },
+  "microsoft-learn": {
+    why: "Reliable live Microsoft documentation source for Code and research work without generic search sprawl.",
+    setup: "This is a read-oriented official docs endpoint, so it is a good default docs MCP when you work with Microsoft stacks.",
+  },
+};
+
+type FeaturedMcpTemplateCard = {
+  template: McpTemplateRecord;
+  discovery: McpTemplateDiscoveryRecord | undefined;
+  note: (typeof FEATURED_MCP_NOTES)[(typeof FEATURED_MCP_TEMPLATE_IDS)[number]];
+};
 
 export function McpPage() {
   const [servers, setServers] = useState<Array<{
@@ -55,18 +83,8 @@ export function McpPage() {
     verifiedAt?: string;
     lastError?: string;
   }>>([]);
-  const [templates, setTemplates] = useState<Array<Awaited<ReturnType<typeof fetchMcpTemplates>>["items"][number]>>([]);
-  const [templateDiscovery, setTemplateDiscovery] = useState<Array<{
-    templateId: string;
-    label: string;
-    installed: boolean;
-    readiness: "ready" | "needs_auth" | "needs_command" | "needs_url" | "unknown";
-    dependencyChecks: Array<{
-      key: string;
-      status: "pass" | "warn" | "fail";
-      message: string;
-    }>;
-  }>>([]);
+  const [templates, setTemplates] = useState<McpTemplateRecord[]>([]);
+  const [templateDiscovery, setTemplateDiscovery] = useState<McpTemplateDiscoveryRecord[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [tools, setTools] = useState<Array<{
     serverId: string;
@@ -202,6 +220,41 @@ export function McpPage() {
   const selected = useMemo(
     () => servers.find((item) => item.serverId === selectedServerId) ?? null,
     [selectedServerId, servers],
+  );
+  const templatesById = useMemo(
+    () => new Map(templates.map((template) => [template.templateId, template])),
+    [templates],
+  );
+  const templateDiscoveryById = useMemo(
+    () => new Map(templateDiscovery.map((item) => [item.templateId, item])),
+    [templateDiscovery],
+  );
+  const orderedTemplates = useMemo(() => {
+    const featured = new Set(FEATURED_MCP_TEMPLATE_IDS);
+    return [...templates].sort((left, right) => {
+      const leftRank = featured.has(left.templateId as (typeof FEATURED_MCP_TEMPLATE_IDS)[number]) ? 0 : 1;
+      const rightRank = featured.has(right.templateId as (typeof FEATURED_MCP_TEMPLATE_IDS)[number]) ? 0 : 1;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.label.localeCompare(right.label);
+    });
+  }, [templates]);
+  const featuredTemplates = useMemo(
+    () => FEATURED_MCP_TEMPLATE_IDS
+      .map((templateId) => {
+        const template = templatesById.get(templateId);
+        if (!template) {
+          return null;
+        }
+        return {
+          template,
+          discovery: templateDiscoveryById.get(templateId),
+          note: FEATURED_MCP_NOTES[templateId],
+        };
+      })
+      .filter((item): item is FeaturedMcpTemplateCard => item !== null),
+    [templateDiscoveryById, templatesById],
   );
   const selectedDiagnostic = selected ? diagnosticByServerId[selected.serverId] : undefined;
   const connectedServerCount = useMemo(
@@ -344,6 +397,59 @@ export function McpPage() {
       </Panel>
 
       <Panel
+        title="Recommended Stack"
+        subtitle="A practical first stack for repo work, billing operations, live docs, and local knowledge."
+      >
+        <p className="office-subtitle">
+          Start with GitHub, Stripe, and Microsoft Learn here. If you already use Obsidian locally, use the native
+          Obsidian connection in <strong>Connections</strong> instead of adding a generic notes MCP.
+        </p>
+        <div className="stack-md">
+          {featuredTemplates.map(({ template, discovery, note }) => (
+            <div key={template.templateId} className="prompt-lab-run-summary">
+              <p>
+                <strong>{template.label}</strong>
+                <span className={`token-chip ${template.installed ? "token-chip-active" : ""}`} style={{ marginLeft: 8 }}>
+                  {template.installed ? "Installed" : "Not installed"}
+                </span>
+                {discovery ? (
+                  <span className="token-chip" style={{ marginLeft: 8 }}>
+                    {discovery.readiness}
+                  </span>
+                ) : null}
+              </p>
+              <p className="office-subtitle">{note.why}</p>
+              <p className="office-subtitle">
+                {template.transport} | auth: {template.authType} | trust: {template.trustTier}
+              </p>
+              <p className="office-subtitle">{note.setup}</p>
+              {discovery?.dependencyChecks.length ? (
+                <p className="office-subtitle">
+                  {discovery.dependencyChecks.map((check) => `${check.key}:${check.status}`).join(", ")}
+                </p>
+              ) : null}
+              <ActionButton
+                label={template.installed ? "Installed" : `Add ${template.label}`}
+                pending={busy}
+                disabled={busy || template.installed}
+                onClick={() => void handleCreateFromTemplate(template.templateId)}
+              />
+            </div>
+          ))}
+          <div className="prompt-lab-run-summary">
+            <p>
+              <strong>Obsidian</strong>
+              <span className="token-chip" style={{ marginLeft: 8 }}>Native connection</span>
+            </p>
+            <p className="office-subtitle">
+              GoatCitadel already has a built-in local Obsidian path in <strong>Connections</strong>. That keeps your
+              vault local, supports read-only or read-append mode, and includes inbox capture without an extra MCP hop.
+            </p>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
         title="Template Library"
         subtitle="Known MCP templates stay disabled by default until you choose to add them."
       >
@@ -351,7 +457,7 @@ export function McpPage() {
           Start from a known MCP server template, then connect and customize policy before first use.
         </p>
         <div className="stack-md">
-          {templates.map((template) => (
+          {orderedTemplates.map((template) => (
             <div key={template.templateId} className="prompt-lab-run-summary">
               <p>
                 <strong>{template.label}</strong> - {template.description}

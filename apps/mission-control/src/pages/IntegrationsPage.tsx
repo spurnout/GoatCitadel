@@ -583,8 +583,30 @@ export function IntegrationsPage() {
       </Panel>
 
       <Panel
-        title="Obsidian (Optional)"
-        subtitle="Only enable this if you want GoatCitadel to read and append markdown in a local Obsidian vault."
+        title="Recommended Local Knowledge Setup"
+        subtitle="If you already use Obsidian, the native path below is the right notes integration for GoatCitadel."
+      >
+        <p className="office-subtitle">
+          You asked for Obsidian rather than a generic notes service. GoatCitadel already has a built-in local
+          Obsidian integration, so you do not need an extra MCP server or a third-party connector just to work with
+          your vault.
+        </p>
+        <div className="token-row">
+          <span className="token-chip token-chip-active">Local vault</span>
+          <span className="token-chip">read_append or read_only</span>
+          <span className="token-chip">Inbox capture</span>
+          <span className="token-chip">No extra daemon</span>
+        </div>
+        <ol>
+          <li>Set the vault path below and keep the integration local-only.</li>
+          <li>Use read_append if you want capture/writeback, or read_only if you just want safe retrieval.</li>
+          <li>Use MCP for adjacent capabilities like GitHub, Stripe, or Microsoft Learn, not for replacing your local vault.</li>
+        </ol>
+      </Panel>
+
+      <Panel
+        title="Obsidian (Preferred Local Notes Path)"
+        subtitle="Use this when you want GoatCitadel to read and optionally append markdown in a local Obsidian vault."
       >
         <p className="office-subtitle">
           Use this only if you want GoatCitadel to read and append markdown notes in your local Obsidian vault.

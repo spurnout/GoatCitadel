@@ -312,6 +312,45 @@ export function OfficePage() {
     () => officeAgents.find((agent) => agent.roleId === selectedEntityId),
     [officeAgents, selectedEntityId],
   );
+  const selectedZoneId = useMemo<OfficeZoneId>(
+    () => selectedEntityId === "operator" ? "command" : selectedAgent?.zoneId ?? "command",
+    [selectedAgent?.zoneId, selectedEntityId],
+  );
+  const selectedZoneTelemetry = useMemo(
+    () => zoneTelemetry.find((zone) => zone.zoneId === selectedZoneId) ?? null,
+    [selectedZoneId, zoneTelemetry],
+  );
+  const stageZoneTelemetry = useMemo(
+    () => operatorPrefs.focusMode ? zoneTelemetry.filter((zone) => zone.zoneId === selectedZoneId) : zoneTelemetry,
+    [operatorPrefs.focusMode, selectedZoneId, zoneTelemetry],
+  );
+  const focusSummary = useMemo(() => {
+    if (!operatorPrefs.focusMode) {
+      return null;
+    }
+    if (selectedEntityId === "operator") {
+      return {
+        title: `${operatorPrefs.name} focus lens`,
+        summary: "Command view tightens around the bridge while the rest of the office quiets down.",
+        detail: selectedZoneTelemetry?.focus ?? "Command pressure is stable.",
+      };
+    }
+    return {
+      title: `${selectedAgent?.name ?? "Selected desk"} focus lens`,
+      summary: `${selectedAgent?.zoneLabel ?? officeZoneLabel(selectedZoneId)} takes priority, with background desks de-emphasized.`,
+      detail: selectedAgent?.behaviorDirective ?? selectedAgent?.currentAction ?? selectedZoneTelemetry?.focus ?? "Selected desk is in focus.",
+    };
+  }, [
+    operatorPrefs.focusMode,
+    operatorPrefs.name,
+    selectedAgent?.behaviorDirective,
+    selectedAgent?.currentAction,
+    selectedAgent?.name,
+    selectedAgent?.zoneLabel,
+    selectedEntityId,
+    selectedZoneId,
+    selectedZoneTelemetry?.focus,
+  ]);
 
   useEffect(() => {
     if (selectedEntityId === "operator") {
@@ -726,7 +765,7 @@ export function OfficePage() {
 
       <div className={`office-v5-workspace${operatorPrefs.showInspectorDock || operatorPrefs.showRailDock ? "" : " office-v5-workspace-single"}`}>
         <Panel
-          className="office-stage-panel"
+          className={`office-stage-panel${operatorPrefs.focusMode ? " office-stage-panel-focus" : ""}`}
           padding="spacious"
           title="Immersive Command Stage"
           subtitle="Drag to orbit, click the Goatherder or any desk, and watch live collaboration flow."
@@ -746,6 +785,15 @@ export function OfficePage() {
             </div>
           )}
         >
+          {focusSummary ? (
+            <div className="office-focus-banner">
+              <p className="office-focus-label">Focus mode</p>
+              <p className="office-focus-title">{focusSummary.title}</p>
+              <p className="office-focus-summary">{focusSummary.summary}</p>
+              <p className="office-focus-detail">{focusSummary.detail}</p>
+            </div>
+          ) : null}
+
           <div className="office-stage-toolbar">
             <div className="office-stage-toolbar-group office-stage-toolbar-motion">
               <label htmlFor="officeMotionMode">Motion</label>
@@ -827,8 +875,8 @@ export function OfficePage() {
             </div>
           </div>
 
-          <div className="office-zone-grid">
-            {zoneTelemetry.map((zone) => {
+          <div className={`office-zone-grid${operatorPrefs.focusMode ? " office-zone-grid-focus" : ""}`}>
+            {stageZoneTelemetry.map((zone) => {
               const isSelectedZone = selectedEntityId === "operator"
                 ? zone.zoneId === "command"
                 : selectedAgent?.zoneId === zone.zoneId;
@@ -868,6 +916,8 @@ export function OfficePage() {
                   onSelect={(entityId) => handleEntitySelect(entityId as SelectedEntityId)}
                   assetPack={assetPack}
                   motionMode={effectiveMotionMode}
+                  focusMode={operatorPrefs.focusMode}
+                  focusedZoneId={selectedZoneId}
                   showCollabOverlay={operatorPrefs.showCollabOverlay}
                   idleMillingEnabled={operatorPrefs.idleMillingEnabled}
                   collaborationEdges={collaborationEdges}

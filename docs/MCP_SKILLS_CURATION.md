@@ -16,11 +16,15 @@ This document captures the curated MCP server and skill strategy for GoatCitadel
 | Server | Category | Cost posture | Default trust | Reason |
 |---|---|---|---|---|
 | GitHub MCP | development | mixed | restricted | High-value repo/PR workflows, mature ecosystem |
+| Stripe MCP | automation | mixed | restricted | High-value billing, customer, and subscription workflows when Stripe is already part of the stack |
 | Playwright MCP | browser | free | restricted | Deterministic browser automation and extraction |
 | Context7 MCP | research | unknown | restricted | Strong coding/docs context retrieval |
+| Microsoft Learn MCP | research | free | trusted | Official Microsoft documentation source with low side-effect risk |
 | n8n MCP | automation | mixed | restricted | Workflow automation hub with self-host path |
 | GPT Researcher MCP | research | mixed | restricted | Deep source synthesis workflows |
 | OpenSpec MCP | orchestration | unknown | restricted | Structured spec and planning support |
+
+Native complement: Obsidian stays a built-in local integration rather than an MCP server, which is the preferred path when the operator already uses a local Obsidian vault.
 
 ## Optional set (phase 2)
 

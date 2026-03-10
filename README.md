@@ -385,6 +385,7 @@ Use MCP when you want explicit tool gateways instead of one-off glue:
 - keep trust tiers, redaction posture, and review boundaries visible
 - add template-backed servers without pretending every connector is equally safe
 - keep external capability expansion inspectable from Mission Control
+- current first-pass operator stack: GitHub for repo workflows, Stripe for billing operations, and Microsoft Learn for live Microsoft docs
 
 ### Skills
 
@@ -402,6 +403,7 @@ GoatCitadel can connect to the systems around your work:
 - communication channels and external services
 - connector diagnostics and runtime visibility
 - explicit status instead of hidden background assumptions
+- native local integrations where that is the better fit, such as Obsidian for a local knowledge vault
 
 ### Add-ons
 

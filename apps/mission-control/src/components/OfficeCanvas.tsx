@@ -78,6 +78,8 @@ interface OfficeCanvasProps {
   onSelect: (entityId: string) => void;
   assetPack?: OfficeAssetPack;
   motionMode: OfficeMotionMode;
+  focusMode: boolean;
+  focusedZoneId?: OfficeZoneId;
   showCollabOverlay: boolean;
   idleMillingEnabled: boolean;
   collaborationEdges: OfficeCollaborationEdge[];
@@ -245,6 +247,16 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
   const layout = useMemo(() => buildCircularLayout(props.agents), [props.agents]);
   const reducedMotion = props.motionMode === "reduced";
   const motionScalar = motionScalarForMode(props.motionMode);
+  const focusRoleIds = useMemo(() => {
+    if (!props.focusMode || !props.focusedZoneId || props.selectedEntityId === "operator") {
+      return null;
+    }
+    return new Set(
+      layout
+        .filter((seat) => seat.zoneId === props.focusedZoneId)
+        .map((seat) => seat.roleId),
+    );
+  }, [layout, props.focusMode, props.focusedZoneId, props.selectedEntityId]);
 
   const positionsByRoleId = useMemo(() => {
     const map = new Map<string, [number, number, number]>();
@@ -253,11 +265,24 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
     }
     return map;
   }, [layout]);
+  const visibleEdges = useMemo(() => {
+    if (!props.focusMode || props.selectedEntityId === "operator" || !focusRoleIds) {
+      return props.collaborationEdges;
+    }
+    return props.collaborationEdges.filter((edge) => (
+      edge.fromRoleId === props.selectedEntityId
+      || edge.toRoleId === props.selectedEntityId
+      || (focusRoleIds.has(edge.fromRoleId) && focusRoleIds.has(edge.toRoleId))
+    ));
+  }, [focusRoleIds, props.collaborationEdges, props.focusMode, props.selectedEntityId]);
+  const cameraPosition: [number, number, number] = props.focusMode ? [0, 8.2, 9.4] : [0, 9.5, 12];
+  const cameraFov = props.focusMode ? 34 : 38;
+  const orbitTarget: [number, number, number] = props.focusMode ? [0, 1.15, 0] : [0, 1.0, 0];
 
   return (
     <div className="office-webgl-stage office-webgl-stage-v5">
       <Canvas
-        camera={{ position: [0, 9.5, 12], fov: 38 }}
+        camera={{ position: cameraPosition, fov: cameraFov }}
         shadows
         dpr={[1, 1.55]}
         onPointerMissed={() => props.onSelect("operator")}
@@ -307,6 +332,8 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
           operator={props.operator}
           selected={props.selectedEntityId === "operator"}
           onSelect={props.onSelect}
+          focusMode={props.focusMode}
+          focusedZoneId={props.focusedZoneId}
           reducedMotion={reducedMotion}
           motionScalar={motionScalar}
         />
@@ -318,6 +345,9 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
             seat={seat}
             selected={props.selectedEntityId === seat.roleId}
             onSelect={props.onSelect}
+            focusMode={props.focusMode}
+            focusedZoneId={props.focusedZoneId}
+            selectedEntityId={props.selectedEntityId}
             reducedMotion={reducedMotion}
             motionScalar={motionScalar}
           />
@@ -325,7 +355,7 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
 
         {/* Collaboration beams */}
         <CollaborationOverlay
-          edges={props.collaborationEdges}
+          edges={visibleEdges}
           positionsByRoleId={positionsByRoleId}
           visible={props.showCollabOverlay}
           reducedMotion={reducedMotion}
@@ -337,7 +367,9 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
           <pointLight
             key={`zone-light-${seat.roleId}`}
             position={[seat.position[0], 1.2, seat.position[2]]}
-            intensity={seat.status === "active" ? 0.4 : 0.15}
+            intensity={props.focusMode && props.selectedEntityId !== "operator" && seat.zoneId !== props.focusedZoneId
+              ? 0.05
+              : seat.status === "active" ? 0.4 : 0.15}
             color={ZONE_COLORS[seat.zoneId]}
             distance={3.5}
           />
@@ -345,11 +377,11 @@ export const OfficeCanvas = memo(function OfficeCanvas(props: OfficeCanvasProps)
 
         <OrbitControls
           makeDefault
-          target={[0, 1.0, 0]}
+          target={orbitTarget}
           maxPolarAngle={Math.PI / 2.1}
           minPolarAngle={Math.PI / 6}
-          minDistance={7}
-          maxDistance={24}
+          minDistance={props.focusMode ? 5.8 : 7}
+          maxDistance={props.focusMode ? 14 : 24}
           enablePan={false}
         />
       </Canvas>
@@ -560,6 +592,8 @@ function OperatorSeat(props: {
   operator: OfficeOperatorModel;
   selected: boolean;
   onSelect: (entityId: string) => void;
+  focusMode: boolean;
+  focusedZoneId?: OfficeZoneId;
   reducedMotion: boolean;
   motionScalar: number;
 }) {
@@ -645,7 +679,7 @@ function OperatorSeat(props: {
       <pointLight position={[0, 1.2, 0]} intensity={0.4} color={preset.accent} distance={3} />
 
       {/* Label */}
-      {(props.selected || hovered) ? (
+      {(!props.focusMode || props.selected || props.focusedZoneId === "command") && (props.selected || hovered) ? (
         <Html position={[0, 2.34, 0]} center distanceFactor={12} transform={false} occlude={false}>
           <div className={`office-thought-html ${props.selected ? "selected" : ""}`}>
             <p className="name">{props.operator.name}</p>
@@ -672,6 +706,9 @@ function AgentSeat(props: {
   seat: SeatLayout;
   selected: boolean;
   onSelect: (entityId: string) => void;
+  focusMode: boolean;
+  focusedZoneId?: OfficeZoneId;
+  selectedEntityId: string;
   reducedMotion: boolean;
   motionScalar: number;
 }) {
@@ -688,18 +725,24 @@ function AgentSeat(props: {
     [seat.status, seat.risk, seat.activityState],
   );
   const attentionLevel = seat.attentionLevel ?? "stable";
+  const deemphasized = props.focusMode
+    && props.selectedEntityId !== "operator"
+    && !props.selected
+    && seat.zoneId !== props.focusedZoneId;
   const showStatusChip =
-    props.selected ||
+    !deemphasized && (
+      props.selected ||
     hovered ||
     isAlert ||
     isBlocked ||
     seat.risk === "approval" ||
-    attentionLevel !== "stable";
+    attentionLevel !== "stable");
   const showThoughtOverlay =
-    props.selected ||
+    !deemphasized && (
+      props.selected ||
     hovered ||
     isAlert ||
-    attentionLevel === "priority";
+    attentionLevel === "priority");
 
   useFrame((state) => {
     if (!glowRef.current) {
@@ -716,8 +759,13 @@ function AgentSeat(props: {
     props.onSelect(seat.roleId);
   };
 
-  const avatarColor = isBlocked ? "#ff7466" : isAlert ? ALERT_ORANGE : isActive ? zoneColor : "#4a5568";
-  const avatarEmissive = isBlocked || isAlert ? 0.7 : isActive ? 0.5 : 0.2;
+  const avatarColor = deemphasized
+    ? "#2b3642"
+    : isBlocked ? "#ff7466" : isAlert ? ALERT_ORANGE : isActive ? zoneColor : "#4a5568";
+  const avatarEmissive = deemphasized ? 0.06 : isBlocked || isAlert ? 0.7 : isActive ? 0.5 : 0.2;
+  const chairBodyColor = deemphasized ? "#11161d" : "#161a24";
+  const chairBackColor = deemphasized ? "#10151c" : "#141822";
+  const stripColor = deemphasized ? "#263342" : zoneColor;
 
   return (
     <group
@@ -730,17 +778,17 @@ function AgentSeat(props: {
       {/* Chair */}
       <mesh position={[0, 0.25, 0]} castShadow receiveShadow>
         <boxGeometry args={[0.55, 0.5, 0.55]} />
-        <meshStandardMaterial color="#161a24" roughness={0.75} metalness={0.25} />
+        <meshStandardMaterial color={chairBodyColor} roughness={0.75} metalness={0.25} />
       </mesh>
       <mesh position={[0, 0.6, 0.25]} castShadow>
         <boxGeometry args={[0.55, 0.5, 0.06]} />
-        <meshStandardMaterial color="#141822" roughness={0.7} metalness={0.25} />
+        <meshStandardMaterial color={chairBackColor} roughness={0.7} metalness={0.25} />
       </mesh>
 
       {/* Zone accent strip on chair */}
       <mesh position={[0, 0.48, -0.28]}>
         <boxGeometry args={[0.5, 0.03, 0.02]} />
-        <meshStandardMaterial color={zoneColor} emissive={zoneColor} emissiveIntensity={0.5} />
+        <meshStandardMaterial color={stripColor} emissive={stripColor} emissiveIntensity={deemphasized ? 0.08 : 0.5} />
       </mesh>
 
       <AgentAvatar
@@ -751,6 +799,7 @@ function AgentSeat(props: {
         emissiveIntensity={avatarEmissive}
         blocked={isBlocked}
         active={isActive}
+        muted={deemphasized}
       />
 
       {/* Status hologram above seat */}
@@ -821,11 +870,13 @@ function AgentAvatar(props: {
   emissiveIntensity: number;
   blocked: boolean;
   active: boolean;
+  muted: boolean;
 }) {
-  const accentColor = props.blocked ? "#ffd2cb" : props.zoneColor;
-  const paleMetal = props.blocked ? "#f0b9b1" : "#dbe7ff";
-  const coolMetal = props.blocked ? "#ffdfd8" : "#9db5cc";
-  const brightPanel = props.blocked ? "#ffe8e4" : "#dff3ff";
+  const accentColor = props.muted ? "#475261" : props.blocked ? "#ffd2cb" : props.zoneColor;
+  const paleMetal = props.muted ? "#566170" : props.blocked ? "#f0b9b1" : "#dbe7ff";
+  const coolMetal = props.muted ? "#45505d" : props.blocked ? "#ffdfd8" : "#9db5cc";
+  const brightPanel = props.muted ? "#667382" : props.blocked ? "#ffe8e4" : "#dff3ff";
+  const bodyEmissive = props.muted ? Math.min(props.emissiveIntensity, 0.08) : props.emissiveIntensity;
 
   return (
     <group ref={props.glowRef} position={[0, 0.82, 0]}>
@@ -837,7 +888,7 @@ function AgentAvatar(props: {
           </mesh>
           <mesh castShadow>
             <cylinderGeometry args={[props.profile.width * 0.52, props.profile.width * 0.95, props.profile.height, 5]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.46} roughness={0.26} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive} metalness={0.46} roughness={0.26} />
           </mesh>
           <mesh position={[0, props.profile.height * 0.46, 0]} castShadow>
             <octahedronGeometry args={[props.profile.width * 0.42, 0]} />
@@ -856,7 +907,7 @@ function AgentAvatar(props: {
         <>
           <mesh castShadow>
             <boxGeometry args={[props.profile.width * 1.3, props.profile.height * 0.82, props.profile.width * 1.08]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.4} roughness={0.32} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive} metalness={0.4} roughness={0.32} />
           </mesh>
           <mesh position={[0, props.profile.height * 0.36, 0]} castShadow>
             <boxGeometry args={[props.profile.width * 0.74, props.profile.height * 0.24, props.profile.width * 0.72]} />
@@ -875,7 +926,7 @@ function AgentAvatar(props: {
         <>
           <mesh position={[0, -0.02, 0]} castShadow>
             <boxGeometry args={[props.profile.width * 1.42, props.profile.height * 0.62, props.profile.width * 1.1]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.92} metalness={0.36} roughness={0.36} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.92} metalness={0.36} roughness={0.36} />
           </mesh>
           {[-1, 1].map((direction) => (
             <mesh key={`stack-${direction}`} position={[direction * props.profile.width * 0.36, props.profile.height * 0.32, -props.profile.width * 0.08]} castShadow>
@@ -894,7 +945,7 @@ function AgentAvatar(props: {
         <>
           <mesh castShadow>
             <capsuleGeometry args={[props.profile.width * 0.44, props.profile.height * 0.26, 6, 10]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.9} metalness={0.34} roughness={0.34} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.9} metalness={0.34} roughness={0.34} />
           </mesh>
           {[-1, 1].flatMap((xDirection) => [-1, 1].map((zDirection) => (
             <mesh
@@ -918,7 +969,7 @@ function AgentAvatar(props: {
         <>
           <mesh rotation={[-Math.PI / 2, 0, 0]} castShadow>
             <torusGeometry args={[props.profile.width * 0.94, props.profile.width * 0.18, 10, 24]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.24} roughness={0.3} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive} metalness={0.24} roughness={0.3} />
           </mesh>
           <mesh position={[0, 0, 0]} castShadow>
             <octahedronGeometry args={[props.profile.width * 0.34, 0]} />
@@ -937,7 +988,7 @@ function AgentAvatar(props: {
         <>
           <mesh castShadow>
             <octahedronGeometry args={[props.profile.width * 0.5, 0]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity} metalness={0.34} roughness={0.28} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive} metalness={0.34} roughness={0.28} />
           </mesh>
           {[-1, 1].map((direction) => (
             <mesh key={`node-${direction}`} position={[direction * props.profile.width * 0.9, props.profile.detailVariant === 2 ? 0.07 : -0.02, 0]} castShadow>
@@ -956,7 +1007,7 @@ function AgentAvatar(props: {
         <>
           <mesh castShadow rotation={[0.1, 0, 0]}>
             <coneGeometry args={[props.profile.width, props.profile.height, 3]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.96} metalness={0.42} roughness={0.24} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.96} metalness={0.42} roughness={0.24} />
           </mesh>
           {[-1, 1].map((direction) => (
             <mesh key={`shield-${direction}`} position={[direction * props.profile.width * 0.64, 0.02, -props.profile.width * 0.1]} rotation={[0.18, 0, direction * 0.36]} castShadow>
@@ -975,7 +1026,7 @@ function AgentAvatar(props: {
         <>
           <mesh castShadow rotation={[0, Math.PI / 4, 0]}>
             <boxGeometry args={[props.profile.width * 1.08, props.profile.height * 0.78, props.profile.width * 1.08]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.92} metalness={0.42} roughness={0.34} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.92} metalness={0.42} roughness={0.34} />
           </mesh>
           <mesh position={[0, props.profile.height * 0.24, -props.profile.width * 0.28]} rotation={[0.4, 0, 0]} castShadow>
             <boxGeometry args={[props.profile.width * 0.26, props.profile.height * 0.52, 0.03]} />
@@ -994,7 +1045,7 @@ function AgentAvatar(props: {
         <>
           <mesh rotation={[0, 0, Math.PI / 2]} castShadow>
             <capsuleGeometry args={[props.profile.width * 0.34, props.profile.height * 0.38, 6, 10]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.94} metalness={0.36} roughness={0.34} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.94} metalness={0.36} roughness={0.34} />
           </mesh>
           {[-1, 1].map((direction) => (
             <mesh key={`pod-${direction}`} position={[direction * props.profile.width * 0.7, 0, 0]} castShadow>
@@ -1013,7 +1064,7 @@ function AgentAvatar(props: {
         <>
           <mesh position={[0, -props.profile.height * 0.04, 0]} castShadow>
             <capsuleGeometry args={[props.profile.width * 0.34, props.profile.height * 0.24, 6, 10]} />
-            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={props.emissiveIntensity * 0.9} metalness={0.34} roughness={0.34} />
+            <meshStandardMaterial color={props.color} emissive={props.color} emissiveIntensity={bodyEmissive * 0.9} metalness={0.34} roughness={0.34} />
           </mesh>
           <mesh position={[0, props.profile.height * 0.3, 0]} castShadow>
             <capsuleGeometry args={[props.profile.width * 0.24, props.profile.height * 0.12, 6, 10]} />
@@ -1031,14 +1082,14 @@ function AgentAvatar(props: {
       {props.profile.accentCount >= 1 ? (
         <mesh position={[0, -props.profile.height * 0.28, props.profile.width * 0.74]}>
           <boxGeometry args={[props.profile.width * 1.12, 0.03, 0.03]} />
-          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={props.active ? 0.78 : 0.4} />
+          <meshStandardMaterial color={accentColor} emissive={accentColor} emissiveIntensity={props.muted ? 0.16 : props.active ? 0.78 : 0.4} />
         </mesh>
       ) : null}
 
       {props.profile.accentCount === 2 ? (
         <mesh position={[0, props.profile.height * 0.06, -props.profile.width * 0.74]}>
           <boxGeometry args={[props.profile.width * 0.9, 0.024, 0.024]} />
-          <meshStandardMaterial color={coolMetal} emissive={coolMetal} emissiveIntensity={0.2} />
+          <meshStandardMaterial color={coolMetal} emissive={coolMetal} emissiveIntensity={props.muted ? 0.08 : 0.2} />
         </mesh>
       ) : null}
     </group>

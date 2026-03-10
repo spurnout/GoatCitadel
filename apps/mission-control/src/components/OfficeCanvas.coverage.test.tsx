@@ -69,6 +69,7 @@ describe("OfficeCanvas coverage", () => {
           onSelect={() => undefined}
           assetPack={{ operatorModelPath: "/assets/operator.glb", goatModelPath: "/assets/goat.glb" }}
           motionMode="cinematic"
+          focusMode={false}
           showCollabOverlay
           idleMillingEnabled
           collaborationEdges={edges}
@@ -92,6 +93,8 @@ describe("OfficeCanvas coverage", () => {
           selectedEntityId="operator"
           onSelect={() => undefined}
           motionMode="reduced"
+          focusMode
+          focusedZoneId="research"
           showCollabOverlay={false}
           idleMillingEnabled={false}
           collaborationEdges={[]}

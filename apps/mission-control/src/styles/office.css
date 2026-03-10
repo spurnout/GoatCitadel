@@ -269,6 +269,10 @@
   display: none;
 }
 
+.office-focus-mode .office-v5-workspace {
+  grid-template-columns: minmax(0, 1.85fr) minmax(300px, 0.78fr);
+}
+
 .office-stage-panel,
 .office-dock-panel {
   min-width: 0;
@@ -437,8 +441,58 @@
   line-height: 1.5;
 }
 
+.office-focus-banner {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(84, 221, 255, 0.22);
+  background:
+    linear-gradient(180deg, rgba(10, 14, 20, 0.94), rgba(10, 16, 24, 0.88)),
+    radial-gradient(circle at top right, rgba(84, 221, 255, 0.12), transparent 56%);
+}
+
+.office-focus-label,
+.office-focus-title,
+.office-focus-summary,
+.office-focus-detail {
+  margin: 0;
+}
+
+.office-focus-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #54ddff;
+}
+
+.office-focus-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #e6f6ff;
+}
+
+.office-focus-summary {
+  font-size: 0.9rem;
+  color: #c0dce8;
+}
+
+.office-focus-detail {
+  font-size: 0.82rem;
+  color: #7e97ad;
+}
+
 .office-webgl-stage-v5 {
   height: clamp(620px, 72vh, 980px);
+}
+
+.office-focus-mode .office-webgl-stage-v5 {
+  height: clamp(700px, 78vh, 1040px);
+}
+
+.office-zone-grid-focus {
+  grid-template-columns: minmax(220px, 1fr);
+  max-width: 460px;
 }
 
 .office-dock-tabs {
@@ -620,6 +674,10 @@
   .office-kpi-grid {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
+
+  .office-focus-mode .office-v5-workspace {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 768px) {
@@ -630,6 +688,10 @@
 
   .office-webgl-stage-v5 {
     height: clamp(460px, 58vh, 640px);
+  }
+
+  .office-focus-mode .office-webgl-stage-v5 {
+    height: clamp(520px, 64vh, 720px);
   }
 
   .office-dock-tabs {

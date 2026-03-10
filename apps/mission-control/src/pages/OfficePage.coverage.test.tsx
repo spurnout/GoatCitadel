@@ -317,6 +317,17 @@ function findButtonByText(renderer: ReactTestRenderer, label: string) {
   });
 }
 
+function findCheckboxLabel(renderer: ReactTestRenderer, label: string) {
+  return renderer.root.find((candidate) => {
+    if (candidate.type !== "label") {
+      return false;
+    }
+    return collectText(candidate.props.children as ReactTestRendererJSON | ReactTestRendererJSON[] | string | null)
+      .replace(/\s+/g, " ")
+      .includes(label);
+  });
+}
+
 describe("OfficePage coverage", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -426,6 +437,46 @@ describe("OfficePage coverage", () => {
       });
       await flush();
       expect(renderer.toJSON()).toBeTruthy();
+    } finally {
+      consoleError.mockRestore();
+      renderer.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("enables focus mode and keeps the selected desk in view", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let renderer = create(<div />);
+    try {
+      await act(async () => {
+        renderer = create(
+          <TestBoundary>
+            <OfficePage />
+          </TestBoundary>,
+        );
+      });
+      await flush();
+
+      const architectButton = findButtonByText(renderer, "Architect");
+      await clickNode(architectButton);
+      await flush();
+
+      const focusModeLabel = findCheckboxLabel(renderer, "Focus Mode");
+      await act(async () => {
+        focusModeLabel.findByType("input").props.onChange({
+          target: { checked: true },
+        });
+      });
+      await flush();
+
+      const section = renderer.root.find((candidate) =>
+        candidate.type === "section"
+        && typeof candidate.props.className === "string"
+        && candidate.props.className.includes("office-v5"));
+
+      expect(section.props.className).toContain("office-focus-mode");
+      expect(rendererText(renderer)).toContain("Architect");
+      expect(rendererText(renderer)).toContain("focus lens");
     } finally {
       consoleError.mockRestore();
       renderer.unmount();

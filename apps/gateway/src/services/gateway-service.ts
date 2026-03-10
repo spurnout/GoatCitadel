@@ -519,14 +519,31 @@ const MCP_SERVER_TEMPLATES: McpServerTemplateRecord[] = [
   {
     templateId: "github",
     label: "GitHub",
-    description: "Repository and issue automation MCP server (token required).",
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "@modelcontextprotocol/server-github"],
-    authType: "token",
+    description: "Official GitHub MCP endpoint for repositories, pull requests, issues, and code navigation.",
+    transport: "http",
+    url: "https://api.githubcopilot.com/mcp/",
+    authType: "oauth2",
     category: "development",
     trustTier: "restricted",
-    costTier: "unknown",
+    costTier: "mixed",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "strict",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "stripe",
+    label: "Stripe",
+    description: "Official Stripe remote MCP server for customers, subscriptions, invoices, and billing support workflows.",
+    transport: "http",
+    url: "https://mcp.stripe.com",
+    authType: "oauth2",
+    category: "automation",
+    trustTier: "restricted",
+    costTier: "mixed",
     policy: {
       requireFirstToolApproval: true,
       redactionMode: "strict",
@@ -545,6 +562,24 @@ const MCP_SERVER_TEMPLATES: McpServerTemplateRecord[] = [
     authType: "none",
     category: "research",
     trustTier: "restricted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: true,
+      redactionMode: "basic",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    enabledByDefault: false,
+  },
+  {
+    templateId: "microsoft-learn",
+    label: "Microsoft Learn",
+    description: "Official Microsoft Learn MCP endpoint for current Microsoft documentation, examples, and how-to guidance.",
+    transport: "http",
+    url: "https://learn.microsoft.com/api/mcp",
+    authType: "none",
+    category: "research",
+    trustTier: "trusted",
     costTier: "free",
     policy: {
       requireFirstToolApproval: true,
@@ -10877,11 +10912,15 @@ export class GatewayService {
           message: "No auth required.",
         });
       }
-      const readiness = checks.some((check) => check.status === "fail")
+      const missingCommand = checks.some((check) => check.key === "command" && check.status === "fail");
+      const missingUrl = checks.some((check) => check.key === "url" && check.status === "fail");
+      const readiness = missingCommand
         ? "needs_command"
-        : template.authType !== "none"
-          ? "needs_auth"
-          : "ready";
+        : missingUrl
+          ? "needs_url"
+          : template.authType !== "none"
+            ? "needs_auth"
+            : "ready";
       return {
         templateId: template.templateId,
         label: template.label,

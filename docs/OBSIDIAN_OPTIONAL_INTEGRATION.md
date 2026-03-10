@@ -2,6 +2,8 @@
 
 GoatCitadel can optionally read and append markdown notes in a local Obsidian vault.
 
+If you already use Obsidian locally, this is the preferred knowledge-vault path for GoatCitadel. Use MCP for adjacent capabilities like GitHub, Stripe, or Microsoft Learn, not to replace a local Obsidian workflow.
+
 This integration is:
 
 - optional
