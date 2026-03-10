@@ -88,6 +88,7 @@ import {
   updateThreadFromStreamChunk,
 } from "../components/chat/chat-thread-reducer";
 import { ChatThreadView, type ChatThreadNotice } from "../components/chat/ChatThreadView";
+import type { ChatStreamStatus } from "../components/chat/ChatStreamStatusBar";
 import { ChatComposerPlusMenu } from "../components/ChatComposerPlusMenu";
 import { ChatModeSwitch } from "../components/ChatModeSwitch";
 import { ChatModelPicker, type ChatModelProviderOption } from "../components/ChatModelPicker";
@@ -513,16 +514,23 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     if (streamReconcileTimeoutRef.current) {
       clearTimeout(streamReconcileTimeoutRef.current);
     }
+    const versionAtSchedule = messageMutationVersionRef.current;
     streamReconcileTimeoutRef.current = setTimeout(() => {
       streamReconcileTimeoutRef.current = null;
       if (selectedSessionIdRef.current !== sessionId) {
+        return;
+      }
+      if (messageMutationVersionRef.current !== versionAtSchedule) {
+        // A new stream event arrived during the reconciliation window.
+        // Re-schedule instead of applying potentially stale data.
+        scheduleStreamMessageReconciliation(sessionId);
         return;
       }
       void loadSessionCoreState(sessionId, {
         background: true,
         includeThread: true,
       }).catch((err: Error) => setError(err.message));
-    }, 300);
+    }, 400);
   }, [loadSessionCoreState]);
 
   const loadSessionSecondaryState = useCallback(async (
@@ -683,8 +691,12 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
       return;
     }
     if (lastLoadedSessionIdRef.current !== selectedSessionId) {
+      const hadActiveStream = activeStreamRef.current !== null;
       abortActiveChatStream(activeStreamRef.current);
       activeStreamRef.current = null;
+      if (hadActiveStream) {
+        pushLocalNotice("Stream interrupted - switched sessions. The previous turn may still be processing on the server.", "warning");
+      }
       setPendingAttachments([]);
       setThread(null);
       setSelectedTurnId(null);
@@ -979,6 +991,14 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
     [latestOrchestration, localNotices, messages],
   );
   const canSend = Boolean(draft.trim()) && !sending;
+
+  const streamStatus: ChatStreamStatus = useMemo(() => {
+    if (error) return "error";
+    if (sending && activeStreamRef.current) return "streaming";
+    if (sending) return "connecting";
+    if (queuedOutbound.some((item) => !item.paused)) return "queued";
+    return "idle";
+  }, [error, sending, queuedOutbound]);
 
   const tryBeginOutboundExecution = useCallback(() => {
     if (sendingRef.current) {
@@ -1940,6 +1960,9 @@ export function ChatPage({ workspaceId = "default" }: { workspaceId?: string }) 
                       selectedTurnId={selectedTurnId}
                       notices={localNotices}
                       followOutput={followThreadOutput}
+                      streamStatus={streamStatus}
+                      queuedCount={queuedOutbound.length}
+                      streamError={error}
                       onBottomStateChange={setFollowThreadOutput}
                       onSelectTurn={setSelectedTurnId}
                       onSwitchBranch={(turnId) => void handleSelectBranchTurn(turnId)}

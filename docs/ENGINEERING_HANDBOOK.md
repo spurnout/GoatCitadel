@@ -8,6 +8,8 @@ This document is the deep technical documentation for GoatCitadel. It is intende
 
 This handbook describes what is currently implemented in `F:\code\personal-ai` as of February 2026.
 
+Implementation process guidance lives in `docs/GOATCITADEL_AGENTIC_CODING_WORKFLOW.md`. Verification doctrine and verdict language live in `docs/GOATCITADEL_NATIVE_VERIFICATION_LOOP.md`. Use those docs for day-to-day execution and proof; use this handbook for architecture and system truth.
+
 ## 0. OpenClaw-Informed Hardening Deltas (Current Cycle)
 
 This cycle applied targeted patterns inspired by OpenClaw changelog themes, adapted to GoatCitadel architecture:

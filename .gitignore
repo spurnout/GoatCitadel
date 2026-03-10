@@ -32,6 +32,7 @@ data/audit/*.jsonl
 !data/audit/.gitkeep
 data/npu-runtime-state.json
 workspace/chat/
+.goatcitadel/self-improvement/
 .assistant/
 assets/source/**/*.zip
 assets/source/**/*.7z

@@ -352,6 +352,70 @@
   height: min(72vh, 980px);
 }
 
+/* Stream status bar */
+.theme-signal-noir .chat-stream-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid rgba(92, 198, 223, 0.1);
+  background: linear-gradient(180deg, rgba(8, 12, 18, 0.96), rgba(5, 8, 13, 0.98));
+}
+
+.theme-signal-noir .chat-stream-status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-idle .chat-stream-status-indicator {
+  background: rgba(113, 138, 165, 0.4);
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-pending .chat-stream-status-indicator {
+  background: #ff9a45;
+  animation: stream-status-pulse 1.5s ease-in-out infinite;
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-active .chat-stream-status-indicator {
+  background: #54ddff;
+  animation: stream-status-pulse 1s ease-in-out infinite;
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-error .chat-stream-status-indicator {
+  background: #ff5678;
+}
+
+.theme-signal-noir .chat-stream-status-label {
+  color: var(--snr-text-muted);
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-active .chat-stream-status-label {
+  color: color-mix(in srgb, var(--snr-cyan) 72%, white 28%);
+}
+
+.theme-signal-noir .chat-stream-status-bar.tone-error .chat-stream-status-label {
+  color: #ff8a9e;
+}
+
+.theme-signal-noir .chat-stream-status-error {
+  color: #ff8a9e;
+  margin-left: auto;
+  font-size: 0.78rem;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes stream-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 @media (max-width: 1280px) {
   .theme-signal-noir .chat-v11-shell {
     grid-template-columns: minmax(0, 1fr);

@@ -24,14 +24,14 @@
 
 .office-webgl-stage {
   margin-top: 10px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(84, 221, 255, 0.12);
   border-radius: 14px;
   overflow: hidden;
   height: 520px;
   background:
-    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.08), transparent 42%),
-    radial-gradient(circle at 14% 84%, rgba(0, 0, 0, 0.22), transparent 36%),
-    #171614;
+    radial-gradient(circle at 50% 40%, rgba(84, 221, 255, 0.04), transparent 60%),
+    radial-gradient(circle at 50% 100%, rgba(10, 14, 20, 0.95), transparent 50%),
+    #0a0e14;
 }
 
 .office-webgl-stage canvas {
@@ -60,16 +60,21 @@
 
 .office-thought-html {
   width: min(220px, 36vw);
-  background: rgba(20, 12, 8, 0.92);
-  border: 1px solid rgba(255, 212, 166, 0.35);
+  background: rgba(10, 14, 20, 0.94);
+  border: 1px solid rgba(84, 221, 255, 0.25);
   border-radius: 10px;
   padding: 6px 8px;
-  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    0 10px 18px rgba(0, 0, 0, 0.5),
+    0 0 12px rgba(84, 221, 255, 0.06);
   pointer-events: none;
 }
 
 .office-thought-html.selected {
-  border-color: rgba(255, 212, 166, 0.75);
+  border-color: rgba(84, 221, 255, 0.6);
+  box-shadow:
+    0 10px 18px rgba(0, 0, 0, 0.5),
+    0 0 18px rgba(84, 221, 255, 0.12);
 }
 
 .office-thought-html p {
@@ -77,7 +82,7 @@
 }
 
 .office-thought-html .name {
-  color: var(--accent-soft);
+  color: #54ddff;
   font-size: 0.74rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -85,7 +90,7 @@
 
 .office-thought-html .meta {
   margin-top: 2px;
-  color: var(--muted);
+  color: #6a7a8e;
   font-size: 0.72rem;
   letter-spacing: 0.03em;
 }
@@ -106,66 +111,66 @@
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(11, 16, 21, 0.76);
-  color: #e5eef8;
+  border: 1px solid rgba(84, 221, 255, 0.16);
+  background: rgba(10, 14, 20, 0.8);
+  color: #c0dce8;
 }
 
 .office-thought-chip-command {
-  border-color: rgba(255, 211, 160, 0.48);
+  border-color: rgba(243, 179, 106, 0.48);
   color: #ffd8ab;
 }
 
 .office-thought-chip-build {
-  border-color: rgba(102, 231, 197, 0.42);
+  border-color: rgba(87, 214, 179, 0.42);
   color: #8af0d2;
 }
 
 .office-thought-chip-research {
-  border-color: rgba(174, 163, 255, 0.42);
+  border-color: rgba(141, 136, 255, 0.42);
   color: #d0caff;
 }
 
 .office-thought-chip-security {
-  border-color: rgba(255, 133, 119, 0.42);
+  border-color: rgba(255, 116, 102, 0.42);
   color: #ffb2a8;
 }
 
 .office-thought-chip-operations {
-  border-color: rgba(115, 205, 255, 0.42);
+  border-color: rgba(94, 196, 255, 0.42);
   color: #a2ddff;
 }
 
 .office-thought-chip-active {
-  border-color: rgba(102, 231, 197, 0.42);
+  border-color: rgba(84, 221, 255, 0.42);
   color: #8af0d2;
 }
 
 .office-thought-chip-approval {
-  border-color: rgba(255, 222, 145, 0.44);
+  border-color: rgba(255, 154, 69, 0.44);
   color: #ffe095;
 }
 
 .office-thought-chip-blocked {
-  border-color: rgba(255, 133, 119, 0.42);
+  border-color: rgba(255, 116, 102, 0.42);
   color: #ffafa3;
 }
 
 .office-thought-chip-idle {
-  border-color: rgba(194, 203, 214, 0.32);
-  color: #d7dde5;
+  border-color: rgba(106, 122, 142, 0.32);
+  color: #8a9aae;
 }
 
 .office-thought-html .thought {
   margin-top: 3px;
-  color: var(--text);
+  color: #d0dce8;
   font-size: 0.8rem;
   line-height: 1.25;
 }
 
 .office-thought-directive {
   margin-top: 5px;
-  color: #c5d6e4;
+  color: #8aa0b8;
   font-size: 0.72rem;
   line-height: 1.35;
 }
@@ -177,48 +182,48 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(24, 24, 23, 0.9);
-  color: #dfd9cf;
+  border: 1px solid rgba(84, 221, 255, 0.2);
+  background: rgba(10, 14, 20, 0.92);
+  color: #8aa0b8;
   padding: 3px 8px;
-  box-shadow: 0 8px 12px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
 }
 
 .office-status-active {
-  color: #a4eac4;
-  border-color: rgba(164, 234, 196, 0.65);
+  color: #54ddff;
+  border-color: rgba(84, 221, 255, 0.6);
 }
 
 .office-status-ready {
-  color: #d8e5b7;
-  border-color: rgba(216, 229, 183, 0.55);
+  color: #8fce5f;
+  border-color: rgba(143, 206, 95, 0.5);
 }
 
 .office-status-approval {
-  color: #ffe09a;
-  border-color: rgba(255, 224, 154, 0.6);
+  color: #ff9a45;
+  border-color: rgba(255, 154, 69, 0.55);
 }
 
 .office-status-blocked {
-  color: #ff9a90;
-  border-color: rgba(255, 154, 144, 0.6);
+  color: #ff7466;
+  border-color: rgba(255, 116, 102, 0.55);
 }
 
 .office-status-idle {
-  color: #d8d2c8;
-  border-color: rgba(216, 210, 200, 0.45);
+  color: #6a7a8e;
+  border-color: rgba(106, 122, 142, 0.35);
 }
 
 .office-zone-label {
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(115, 205, 255, 0.26);
-  background: rgba(9, 16, 24, 0.78);
-  color: #c9ebff;
+  border: 1px solid rgba(84, 221, 255, 0.22);
+  background: rgba(10, 14, 20, 0.85);
+  color: #54ddff;
   font-size: 0.66rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
   pointer-events: none;
 }
 
@@ -317,16 +322,16 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--line-soft);
+  border: 1px solid rgba(84, 221, 255, 0.15);
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 0.78rem;
-  color: var(--accent-soft);
-  background: rgba(115, 205, 255, 0.08);
+  color: #8aa0b8;
+  background: rgba(84, 221, 255, 0.06);
 }
 
 .office-toggle-row input {
-  accent-color: var(--accent);
+  accent-color: #54ddff;
 }
 
 .office-zone-grid {
@@ -344,38 +349,38 @@
   gap: 8px;
   padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid rgba(108, 175, 214, 0.2);
+  border: 1px solid rgba(84, 221, 255, 0.15);
   background:
-    linear-gradient(180deg, rgba(12, 18, 27, 0.92), rgba(14, 16, 24, 0.84)),
-    radial-gradient(circle at top right, rgba(98, 185, 255, 0.14), transparent 58%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    linear-gradient(180deg, rgba(10, 14, 20, 0.94), rgba(12, 16, 22, 0.88)),
+    radial-gradient(circle at top right, rgba(84, 221, 255, 0.08), transparent 58%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .office-zone-card.active {
-  border-color: rgba(125, 211, 255, 0.5);
+  border-color: rgba(84, 221, 255, 0.45);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px rgba(115, 205, 255, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(84, 221, 255, 0.12);
 }
 
 .office-zone-card-stable {
   background:
-    linear-gradient(180deg, rgba(12, 18, 27, 0.92), rgba(14, 16, 24, 0.84)),
-    radial-gradient(circle at top right, rgba(92, 196, 255, 0.14), transparent 58%);
+    linear-gradient(180deg, rgba(10, 14, 20, 0.94), rgba(12, 16, 22, 0.88)),
+    radial-gradient(circle at top right, rgba(84, 221, 255, 0.1), transparent 58%);
 }
 
 .office-zone-card-watch {
   background:
-    linear-gradient(180deg, rgba(19, 17, 10, 0.92), rgba(21, 17, 10, 0.84)),
-    radial-gradient(circle at top right, rgba(255, 206, 116, 0.16), transparent 58%);
-  border-color: rgba(255, 204, 102, 0.22);
+    linear-gradient(180deg, rgba(20, 16, 10, 0.94), rgba(18, 14, 10, 0.88)),
+    radial-gradient(circle at top right, rgba(255, 154, 69, 0.12), transparent 58%);
+  border-color: rgba(255, 154, 69, 0.22);
 }
 
 .office-zone-card-priority {
   background:
-    linear-gradient(180deg, rgba(27, 13, 12, 0.92), rgba(22, 13, 13, 0.84)),
-    radial-gradient(circle at top right, rgba(255, 129, 112, 0.18), transparent 58%);
-  border-color: rgba(255, 120, 107, 0.24);
+    linear-gradient(180deg, rgba(22, 12, 12, 0.94), rgba(20, 12, 12, 0.88)),
+    radial-gradient(circle at top right, rgba(255, 116, 102, 0.14), transparent 58%);
+  border-color: rgba(255, 116, 102, 0.24);
 }
 
 .office-zone-card-head {
@@ -395,16 +400,16 @@
   font-size: 0.76rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #d5ecff;
+  color: #54ddff;
 }
 
 .office-zone-card-metrics {
-  color: var(--muted);
+  color: #6a7a8e;
   font-size: 0.8rem;
 }
 
 .office-zone-card-focus {
-  color: var(--text);
+  color: #c0dce8;
   font-size: 0.82rem;
   line-height: 1.4;
 }
@@ -415,9 +420,9 @@
   margin-bottom: 14px;
   padding: 12px 14px;
   border-radius: 14px;
-  border: 1px solid rgba(245, 191, 87, 0.24);
-  background: linear-gradient(180deg, rgba(35, 23, 11, 0.82), rgba(19, 17, 21, 0.88));
-  color: rgba(255, 240, 216, 0.94);
+  border: 1px solid rgba(255, 154, 69, 0.24);
+  background: linear-gradient(180deg, rgba(20, 14, 10, 0.85), rgba(10, 14, 20, 0.9));
+  color: rgba(255, 220, 180, 0.94);
 }
 
 .office-stream-banner strong {
@@ -427,7 +432,7 @@
 }
 
 .office-stream-banner span {
-  color: rgba(225, 232, 245, 0.84);
+  color: rgba(192, 220, 232, 0.84);
   font-size: 0.92rem;
   line-height: 1.5;
 }
@@ -465,8 +470,8 @@
   margin: 0;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(115, 205, 255, 0.18);
-  background: rgba(13, 18, 24, 0.72);
+  border: 1px solid rgba(84, 221, 255, 0.15);
+  background: rgba(10, 14, 20, 0.78);
 }
 
 .office-behavior-banner p {
@@ -474,22 +479,22 @@
 }
 
 .office-behavior-banner-stable {
-  border-color: rgba(115, 205, 255, 0.2);
-  background: rgba(13, 18, 24, 0.72);
+  border-color: rgba(84, 221, 255, 0.18);
+  background: rgba(10, 14, 20, 0.78);
 }
 
 .office-behavior-banner-watch {
-  border-color: rgba(255, 208, 118, 0.3);
-  background: rgba(30, 24, 12, 0.72);
+  border-color: rgba(255, 154, 69, 0.28);
+  background: rgba(20, 16, 10, 0.78);
 }
 
 .office-behavior-banner-priority {
-  border-color: rgba(255, 127, 112, 0.36);
-  background: rgba(36, 15, 14, 0.78);
+  border-color: rgba(255, 116, 102, 0.32);
+  background: rgba(22, 12, 12, 0.82);
 }
 
 .office-behavior-label {
-  color: var(--muted);
+  color: #6a7a8e;
   font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -504,23 +509,23 @@
   flex-wrap: wrap;
   gap: 12px;
   font-size: 0.8rem;
-  color: var(--muted);
-  border-top: 1px dashed var(--line-soft);
+  color: #6a7a8e;
+  border-top: 1px dashed rgba(84, 221, 255, 0.12);
   padding-top: 8px;
 }
 
 .office-collab-legend b {
-  color: var(--accent-soft);
+  color: #54ddff;
 }
 
 .office-preset-active {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 10px;
-  border: 1px solid var(--line-soft);
+  border: 1px solid rgba(84, 221, 255, 0.15);
   border-radius: 10px;
   padding: 8px;
-  background: rgba(115, 205, 255, 0.07);
+  background: rgba(84, 221, 255, 0.05);
 }
 
 .office-preset-title {
@@ -536,7 +541,7 @@
 .office-preset-bestfor {
   margin: 0;
   font-size: 0.76rem;
-  color: var(--muted);
+  color: #6a7a8e;
 }
 
 .office-preset-grid {
@@ -546,17 +551,17 @@
 }
 
 .office-preset-card {
-  border: 1px solid var(--line-soft);
+  border: 1px solid rgba(84, 221, 255, 0.12);
   border-radius: 10px;
   padding: 8px;
-  background: rgba(115, 205, 255, 0.05);
+  background: rgba(84, 221, 255, 0.04);
   display: grid;
   gap: 6px;
 }
 
 .office-preset-card.active {
-  border-color: rgba(115, 205, 255, 0.72);
-  background: rgba(115, 205, 255, 0.14);
+  border-color: rgba(84, 221, 255, 0.6);
+  background: rgba(84, 221, 255, 0.1);
 }
 
 .office-preset-card header {
@@ -571,14 +576,14 @@
 }
 
 .office-preset-card small {
-  color: var(--muted);
+  color: #6a7a8e;
 }
 
 .office-preset-swatch {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   display: inline-block;
 }
 
@@ -636,7 +641,7 @@
 .skeleton-line {
   height: 11px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08));
+  background: linear-gradient(90deg, rgba(84, 221, 255, 0.06), rgba(84, 221, 255, 0.14), rgba(84, 221, 255, 0.06));
   background-size: 220% 100%;
   animation: skeleton-pulse 1.3s linear infinite;
   margin: 7px 0;
@@ -653,19 +658,19 @@
   gap: 8px;
   padding: 6px 10px;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  background: rgba(115, 205, 255, 0.12);
-  color: var(--accent-soft);
+  border: 1px solid rgba(84, 221, 255, 0.2);
+  background: rgba(84, 221, 255, 0.08);
+  color: #8aa0b8;
   font-size: 0.78rem;
 }
 
 .stream-pill.open {
-  border-color: rgba(142, 250, 210, 0.6);
-  color: #c6ffe9;
+  border-color: rgba(84, 221, 255, 0.55);
+  color: #54ddff;
 }
 
 .stream-pill.retrying,
 .stream-pill.error {
-  border-color: rgba(255, 161, 131, 0.8);
-  color: #ffd4c3;
+  border-color: rgba(255, 116, 102, 0.6);
+  color: #ffb2a8;
 }

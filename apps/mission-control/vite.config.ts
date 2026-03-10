@@ -44,6 +44,11 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       // Keep Tailnet/MagicDNS support while preserving explicit host checks.
       allowedHosts: resolveViteAllowedHosts(env),
+      hmr: {
+        // Prevent full-page reloads by keeping HMR connection stable.
+        // overlay: false prevents the error overlay from triggering navigation.
+        overlay: false,
+      },
     },
     build: {
       // The remaining heavy payload is the Office/Herd HQ Three.js bundle, which is

@@ -8,6 +8,7 @@ import type {
   ChatThreadTurnRecord,
 } from "@goatcitadel/contracts";
 import { StatusChip } from "../StatusChip";
+import { ChatStreamStatusBar, type ChatStreamStatus } from "./ChatStreamStatusBar";
 
 export interface ChatThreadNotice {
   id: string;
@@ -266,6 +267,9 @@ export function ChatThreadView({
   selectedTurnId,
   notices,
   followOutput,
+  streamStatus = "idle",
+  queuedCount = 0,
+  streamError = null,
   onBottomStateChange,
   onSelectTurn,
   onSwitchBranch,
@@ -277,6 +281,9 @@ export function ChatThreadView({
   selectedTurnId: string | null;
   notices: ChatThreadNotice[];
   followOutput: boolean;
+  streamStatus?: ChatStreamStatus;
+  queuedCount?: number;
+  streamError?: string | null;
   onBottomStateChange: (atBottom: boolean) => void;
   onSelectTurn: (turnId: string) => void;
   onSwitchBranch: (turnId: string) => void;
@@ -298,6 +305,7 @@ export function ChatThreadView({
 
   return (
     <div className="chat-v11-thread-view">
+      <ChatStreamStatusBar status={streamStatus} queuedCount={queuedCount} error={streamError} />
       {thread.turns.length < VIRTUALIZED_THREAD_THRESHOLD ? (
         <div className="chat-v11-thread-list">
           {thread.turns.map((turn) => (

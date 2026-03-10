@@ -2,7 +2,7 @@
 
 This file defines GoatCitadel agent expectations for this repository.
 
-Last updated: 2026-03-05
+Last updated: 2026-03-10
 
 ## Scope
 
@@ -43,6 +43,18 @@ Required fallback behavior on partial failure:
 - Validate required tool arguments before invocation.
 - Do not retry identical failing tool calls repeatedly.
 - If blocked by policy/jail/approval, explain the block and provide next safe action.
+
+## GoatCitadel Coding Workflow
+
+All code changes follow the repo-native workflow in `docs/GOATCITADEL_AGENTIC_CODING_WORKFLOW.md`.
+
+Minimum expectations:
+
+- inspect the current implementation first
+- define objective, success criteria, non-goals, and constraints before editing
+- keep diffs surgical and avoid mixing unrelated cleanup into behavior work
+- validate proportionally to risk, with explicit manual proof for interactive UX changes
+- end with a handoff that states what changed, what was validated, and what still needs attention
 
 ## Long-Run Validation
 
