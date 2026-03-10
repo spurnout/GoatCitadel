@@ -109,14 +109,22 @@ async function startProcess(name, commandArgs, extraEnv) {
   });
   child.stdout.pipe(stdout);
   child.stderr.pipe(stderr);
+  let stopping = false;
   child.on("exit", (code) => {
     stdout.end();
     stderr.end();
-    if (code !== null && code !== 0) {
+    if (!stopping && code !== null && code !== 0) {
       console.error(`[screenshots] ${name} exited early with code ${code}`);
     }
   });
-  return { child, stdoutPath, stderrPath };
+  return {
+    child,
+    stdoutPath,
+    stderrPath,
+    markStopping() {
+      stopping = true;
+    },
+  };
 }
 
 async function stopProcess(handle) {
@@ -124,6 +132,7 @@ async function stopProcess(handle) {
   if (child.exitCode !== null) {
     return;
   }
+  handle.markStopping?.();
   if (process.platform === "win32") {
     spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", "taskkill", "/PID", String(child.pid), "/T", "/F"], {
       stdio: "ignore",

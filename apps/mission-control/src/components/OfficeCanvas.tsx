@@ -683,6 +683,23 @@ function AgentSeat(props: {
   const isAlert = seat.activityState === "alert_response";
   const isBlocked = seat.risk === "blocked" || seat.risk === "error";
   const shapeProfile = useMemo(() => getAgentShapeProfile(seat), [seat]);
+  const badge = useMemo(
+    () => statusBadge(seat.status, seat.risk, seat.activityState),
+    [seat.status, seat.risk, seat.activityState],
+  );
+  const attentionLevel = seat.attentionLevel ?? "stable";
+  const showStatusChip =
+    props.selected ||
+    hovered ||
+    isAlert ||
+    isBlocked ||
+    seat.risk === "approval" ||
+    attentionLevel !== "stable";
+  const showThoughtOverlay =
+    props.selected ||
+    hovered ||
+    isAlert ||
+    attentionLevel === "priority";
 
   useFrame((state) => {
     if (!glowRef.current) {
@@ -760,16 +777,16 @@ function AgentSeat(props: {
       </mesh>
 
       {/* Status badge */}
-      {(props.selected || hovered || isActive || seat.attentionLevel !== "stable") ? (
+      {showStatusChip ? (
         <Html position={[0, 1.62, 0]} center distanceFactor={11} transform={false} occlude={false}>
-          <div className={`office-status-chip office-status-${statusBadge(seat.status, seat.risk, seat.activityState).kind}`}>
-            {statusBadge(seat.status, seat.risk, seat.activityState).label}
+          <div className={`office-status-chip office-status-${badge.kind}`}>
+            {badge.label}
           </div>
         </Html>
       ) : null}
 
       {/* Thought overlay */}
-      {(props.selected || isActive || hovered) ? (
+      {showThoughtOverlay ? (
         <Html position={[0, 2.16, 0]} center distanceFactor={11} transform={false} occlude={false}>
           <div className={`office-thought-html ${props.selected ? "selected" : ""}`}>
             <p className="name">{seat.name}</p>
