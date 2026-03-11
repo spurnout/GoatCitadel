@@ -21,6 +21,28 @@ function baseAuthConfig(mode: AuthConfig["mode"]): AuthConfig {
 
 async function buildApp(mode: AuthConfig["mode"]): Promise<FastifyInstance> {
   const app = Fastify();
+  app.decorate("gateway", {
+    createDeviceAccessRequest: async () => ({
+      requestId: "request-device-1",
+      requestSecret: "request-secret-1",
+      approvalId: "approval-device-1",
+      status: "pending",
+      expiresAt: "2026-03-10T12:00:00.000Z",
+      pollAfterMs: 2500,
+      message: "Waiting for approval.",
+    }),
+    getDeviceAccessRequestStatus: async () => ({
+      requestId: "request-device-1",
+      approvalId: "approval-device-1",
+      status: "approved",
+      expiresAt: "2026-03-10T12:00:00.000Z",
+      resolvedAt: "2026-03-10T11:55:00.000Z",
+      deviceToken: "device-bearer",
+      deviceTokenExpiresAt: "2026-04-09T11:55:00.000Z",
+      message: "Access approved.",
+    }),
+    validateDeviceAccessToken: () => undefined,
+  } as never);
   app.decorate("gatewayConfig", {
     assistant: {
       auth: baseAuthConfig(mode),
@@ -68,6 +90,41 @@ describe("auth routes", () => {
       token: expect.any(String),
       expiresAt: expect.any(String),
       scope: "events:stream",
+    });
+  });
+
+  it("creates a device approval request without prior auth", async () => {
+    app = await buildApp("token");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/device-requests",
+      payload: {
+        deviceLabel: "LAN laptop",
+        deviceType: "desktop",
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      requestId: "request-device-1",
+      approvalId: "approval-device-1",
+      status: "pending",
+    });
+  });
+
+  it("returns device request status when the request secret matches", async () => {
+    app = await buildApp("basic");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/device-requests/ef7d2d5a-f19c-4aa0-b5cf-1a501928ea3f/status",
+      headers: {
+        "x-goatcitadel-device-request-secret": "request-secret-1",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      requestId: "request-device-1",
+      status: "approved",
+      deviceToken: "device-bearer",
     });
   });
 });

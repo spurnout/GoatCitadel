@@ -6,6 +6,9 @@ import {
   type OfficeCollaborationEdge,
   type OfficeDeskAgent,
   type OfficeOperatorModel,
+  type OfficeSignalRoute,
+  type OfficeZoneActivityLane,
+  type OfficeZoneSceneTelemetry,
 } from "./OfficeCanvas";
 
 vi.mock("@react-three/fiber", () => ({
@@ -21,6 +24,14 @@ vi.mock("@react-three/fiber", () => ({
   useFrame: (callback: (state: { clock: { elapsedTime: number } }) => void) => {
     callback({ clock: { elapsedTime: 1.2 } });
   },
+  useThree: () => ({
+    camera: {
+      position: {
+        lerp: () => undefined,
+      },
+      lookAt: () => undefined,
+    },
+  }),
 }));
 
 vi.mock("@react-three/drei", () => ({
@@ -57,6 +68,52 @@ const edges: OfficeCollaborationEdge[] = [
   { fromRoleId: "agent-3", toRoleId: "agent-4", strength: 0.6, risk: true },
 ];
 
+const zoneTelemetry: OfficeZoneSceneTelemetry[] = [
+  {
+    zoneId: "command",
+    label: "Command",
+    activeAgents: 1,
+    linkedAgents: 1,
+    alertAgents: 0,
+    attentionLevel: "watch",
+    workloadScore: 0.52,
+    landmark: "Command spire",
+  },
+  {
+    zoneId: "research",
+    label: "Research",
+    activeAgents: 1,
+    linkedAgents: 1,
+    alertAgents: 0,
+    attentionLevel: "stable",
+    workloadScore: 0.38,
+    landmark: "Signal halo",
+  },
+];
+
+const activityLanes: OfficeZoneActivityLane[] = [
+  {
+    fromZoneId: "command",
+    toZoneId: "research",
+    fromLabel: "Command",
+    toLabel: "Research",
+    strength: 0.72,
+    count: 3,
+    risk: false,
+    label: "Command and research are exchanging live work.",
+  },
+];
+
+const signalRoutes: OfficeSignalRoute[] = [
+  {
+    roleId: "agent-1",
+    zoneId: "command",
+    kind: "approval",
+    label: "Agent 1 needs review",
+    intensity: 0.82,
+  },
+];
+
 describe("OfficeCanvas coverage", () => {
   it("renders command bridge scene with procedural geometry", async () => {
     let renderer = create(<div />);
@@ -70,9 +127,15 @@ describe("OfficeCanvas coverage", () => {
           assetPack={{ operatorModelPath: "/assets/operator.glb", goatModelPath: "/assets/goat.glb" }}
           motionMode="cinematic"
           focusMode={false}
+          quietMode={false}
+          followSelection={false}
+          sceneBusy={false}
           showCollabOverlay
           idleMillingEnabled
           collaborationEdges={edges}
+          zoneTelemetry={zoneTelemetry}
+          activityLanes={activityLanes}
+          signalRoutes={signalRoutes}
         />,
       );
     });
@@ -95,9 +158,15 @@ describe("OfficeCanvas coverage", () => {
           motionMode="reduced"
           focusMode
           focusedZoneId="research"
+          quietMode
+          followSelection
+          sceneBusy
           showCollabOverlay={false}
           idleMillingEnabled={false}
           collaborationEdges={[]}
+          zoneTelemetry={zoneTelemetry}
+          activityLanes={activityLanes}
+          signalRoutes={signalRoutes}
         />,
       );
     });

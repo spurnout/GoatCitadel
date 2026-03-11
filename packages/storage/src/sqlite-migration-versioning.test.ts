@@ -61,6 +61,16 @@ describe("sqlite schema migrations", () => {
       .all() as Array<{ name: string }>;
     assert.ok(policyBlockIndexes.some((index) => index.name === "idx_policy_blocks_session_time"));
 
+    const authDeviceRequestColumns = db
+      .prepare("PRAGMA table_info(auth_device_requests)")
+      .all() as Array<{ name: string }>;
+    assert.ok(authDeviceRequestColumns.some((column) => column.name === "approval_id"));
+
+    const authDeviceGrantColumns = db
+      .prepare("PRAGMA table_info(auth_device_grants)")
+      .all() as Array<{ name: string }>;
+    assert.ok(authDeviceGrantColumns.some((column) => column.name === "token_hash"));
+
     db.close();
   });
 });

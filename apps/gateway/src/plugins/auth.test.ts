@@ -34,6 +34,30 @@ async function buildApp(authPatch: Partial<AuthConfig>): Promise<FastifyInstance
   } satisfies AuthConfig;
 
   const app = Fastify();
+  app.decorate("gateway", {
+    validateDeviceAccessToken: (token: string) => {
+      if (token === "device-bearer") {
+        return { actorId: "device:test-grant" };
+      }
+      return undefined;
+    },
+    createDeviceAccessRequest: async () => ({
+      requestId: "request-device-1",
+      requestSecret: "request-secret-1",
+      approvalId: "approval-device-1",
+      status: "pending",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      pollAfterMs: 2500,
+      message: "Waiting for approval.",
+    }),
+    getDeviceAccessRequestStatus: async () => ({
+      requestId: "request-device-1",
+      approvalId: "approval-device-1",
+      status: "pending",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      message: "Waiting for approval.",
+    }),
+  } as never);
   app.decorate("gatewayConfig", {
     assistant: {
       auth,
@@ -234,5 +258,48 @@ describe("auth plugin", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("accepts approved device bearer tokens across auth modes", async () => {
+    app = await buildApp({
+      mode: "basic",
+      basic: { username: "goat", password: "citadel" },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/protected",
+      headers: {
+        Authorization: "Bearer device-bearer",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      actorSource: "device",
+      actorId: "device:test-grant",
+    });
+  });
+
+  it("allows anonymous device approval request creation", async () => {
+    app = await buildApp({
+      mode: "token",
+      token: { value: "alpha-token", queryParam: "access_token" },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/device-requests",
+      payload: {
+        deviceLabel: "iPhone Safari",
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      requestId: "request-device-1",
+      approvalId: "approval-device-1",
+      status: "pending",
+    });
   });
 });

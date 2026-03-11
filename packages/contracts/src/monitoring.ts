@@ -6,6 +6,8 @@ export type RealtimeEventType =
   | "approval_created"
   | "approval_resolved"
   | "approval_explained"
+  | "auth_device_request_created"
+  | "auth_device_request_resolved"
   | "task_created"
   | "task_updated"
   | "task_deleted"

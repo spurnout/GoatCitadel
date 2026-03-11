@@ -9,7 +9,7 @@ declare module "fastify" {
 
   interface FastifyRequest {
     authActorId: string;
-    authActorSource: "none" | "token" | "basic" | "loopback" | "sse";
+    authActorSource: "none" | "token" | "basic" | "loopback" | "sse" | "device";
   }
 }
 
@@ -53,6 +53,9 @@ export const authPlugin = fp(async (fastify) => {
     if (request.url.startsWith("/health")) {
       return;
     }
+    if (request.url.startsWith("/api/v1/auth/device-requests")) {
+      return;
+    }
 
     const auth = fastify.gatewayConfig.assistant.auth;
     if (auth.mode === "none") {
@@ -80,6 +83,15 @@ export const authPlugin = fp(async (fastify) => {
       }
     }
 
+    const providedBearerToken = readBearerToken(request.headers.authorization);
+    if (providedBearerToken) {
+      const deviceGrant = fastify.gateway.validateDeviceAccessToken(providedBearerToken);
+      if (deviceGrant) {
+        setAuthActor(request, deviceGrant.actorId, "device");
+        return;
+      }
+    }
+
     if (auth.mode === "token") {
       const configuredToken = auth.token.value?.trim();
       if (!configuredToken) {
@@ -88,7 +100,7 @@ export const authPlugin = fp(async (fastify) => {
         });
       }
 
-      const provided = readBearerToken(request.headers.authorization)
+      const provided = providedBearerToken
         ?? readHeaderToken(request.headers["x-goatcitadel-token"])
         ?? readQueryToken(request.query, auth.token.queryParam);
 
@@ -247,9 +259,9 @@ function enforceSseTokenCapacity(store: Map<string, SseTokenRecord>, maxItems: n
 }
 
 function setAuthActor(
-  request: { authActorId?: string; authActorSource?: "none" | "token" | "basic" | "loopback" | "sse" },
+  request: { authActorId?: string; authActorSource?: "none" | "token" | "basic" | "loopback" | "sse" | "device" },
   actorId: string,
-  source: "none" | "token" | "basic" | "loopback" | "sse",
+  source: "none" | "token" | "basic" | "loopback" | "sse" | "device",
 ): void {
   request.authActorId = actorId;
   request.authActorSource = source;

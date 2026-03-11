@@ -7,7 +7,7 @@
   "workspaceDir": "./workspace",
   "worktreesDir": "./.worktrees",
   "auth": {
-    "mode": "none",
+    "mode": "token",
     "allowLoopbackBypass": false,
     "token": {
       "queryParam": "access_token"
@@ -53,9 +53,9 @@
     }
   },
   "mesh": {
-    "enabled": false,
+    "enabled": true,
     "mode": "lan",
-    "nodeId": "bld-258388",
+    "nodeId": "bld-main",
     "discovery": {
       "mdns": true,
       "staticPeers": []

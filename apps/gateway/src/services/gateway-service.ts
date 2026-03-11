@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { EventIngestService } from "@goatcitadel/gateway-core";
 import { MeshService } from "@goatcitadel/mesh-core";
 import { OrchestrationEngine } from "@goatcitadel/orchestration";
@@ -43,6 +43,10 @@ import type {
   BackupManifestRecord,
   AuthRuntimeSettings,
   AuthSettingsUpdateInput,
+  DeviceAccessRequestCreateInput,
+  DeviceAccessRequestCreateResponse,
+  DeviceAccessRequestStatus,
+  DeviceAccessRequestStatusResponse,
   ApprovalCreateInput,
   ApprovalReplayEvent,
   ApprovalRequest,
@@ -321,6 +325,42 @@ export interface ApprovalReplayResult {
   pendingAction?: PendingApprovalAction;
 }
 
+interface AuthDeviceRequestRecord {
+  requestId: string;
+  approvalId: string;
+  requestSecretHash: string;
+  deviceLabel: string;
+  deviceType: string;
+  platform?: string;
+  requestedOrigin?: string;
+  requestedIp?: string;
+  userAgent?: string;
+  status: DeviceAccessRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolutionNote?: string;
+  approvedTokenPlaintext?: string;
+  approvedTokenExpiresAt?: string;
+  deliveredAt?: string;
+}
+
+interface AuthDeviceGrantRecord {
+  grantId: string;
+  requestId: string;
+  tokenHash: string;
+  deviceLabel: string;
+  deviceType: string;
+  platform?: string;
+  grantedBy: string;
+  createdAt: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface FileUploadResult {
   relativePath: string;
   fullPath: string;
@@ -432,6 +472,12 @@ const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
   transcriptsDays: undefined,
   auditDays: undefined,
 };
+const DEVICE_ACCESS_APPROVAL_KIND = "auth.device_access";
+const DEVICE_ACCESS_REQUEST_POLL_AFTER_MS = 2_500;
+const DEVICE_ACCESS_REQUEST_TTL_MS = 10 * 60 * 1000;
+const DEVICE_ACCESS_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DEVICE_ACCESS_SECRET_BYTES = 24;
+const DEVICE_ACCESS_TOKEN_BYTES = 32;
 
 const MEMORY_ITEM_STATUS_VALUES = new Set(["active", "forgotten"]);
 
@@ -9052,6 +9098,11 @@ export class GatewayService {
   }
 
   public async resolveApproval(approvalId: string, input: ApprovalResolveInput): Promise<ApprovalResolveResult> {
+    const current = this.storage.approvals.get(approvalId);
+    if (current.kind === DEVICE_ACCESS_APPROVAL_KIND) {
+      return this.resolveDeviceAccessApproval(current, input);
+    }
+
     const approval = this.storage.approvals.resolve(approvalId, input);
 
     this.storage.approvalEvents.append({
@@ -9078,28 +9129,7 @@ export class GatewayService {
       }
     }
 
-    await this.storage.audit.append("approvals", {
-      event: "approval.resolve",
-      approvalId,
-      status: approval.status,
-      resolvedBy: input.resolvedBy,
-      decision: input.decision,
-      executedAction: executedAction
-        ? {
-            outcome: executedAction.outcome,
-            policyReason: executedAction.policyReason,
-            auditEventId: executedAction.auditEventId,
-          }
-        : undefined,
-    });
-
-    this.publishRealtime("approval_resolved", "approvals", {
-      approvalId,
-      status: approval.status,
-      decision: input.decision,
-      resolvedBy: input.resolvedBy,
-      executedOutcome: executedAction?.outcome,
-    });
+    await this.recordApprovalResolutionEffects(approval, input, executedAction);
 
     return {
       approval,
@@ -10473,6 +10503,191 @@ export class GatewayService {
       this.config.assistant.auth.basic.password = input.basicPassword.trim() || undefined;
     }
     return this.getAuthRuntimeSettings();
+  }
+
+  public async createDeviceAccessRequest(
+    input: DeviceAccessRequestCreateInput,
+    context: {
+      requestedOrigin?: string;
+      requestedIp?: string;
+      userAgent?: string;
+    },
+  ): Promise<DeviceAccessRequestCreateResponse> {
+    if (this.config.assistant.auth.mode === "none") {
+      throw new Error("Device approvals are not needed when gateway auth mode is none.");
+    }
+
+    const now = Date.now();
+    const createdAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + DEVICE_ACCESS_REQUEST_TTL_MS).toISOString();
+    const requestId = randomUUID();
+    const requestSecret = randomBytes(DEVICE_ACCESS_SECRET_BYTES).toString("base64url");
+    const deviceType = normalizeDeviceAccessDeviceType(input.deviceType);
+    const platform = normalizeOptionalDeviceAccessText(input.platform, 120) ?? inferPlatformFromUserAgent(context.userAgent);
+    const deviceLabel = normalizeDeviceAccessLabel(input.deviceLabel, {
+      deviceType,
+      platform,
+      userAgent: context.userAgent,
+    });
+    const requestedOrigin = normalizeOptionalDeviceAccessText(context.requestedOrigin, 240);
+    const requestedIp = normalizeOptionalDeviceAccessText(context.requestedIp, 120);
+    const userAgent = normalizeOptionalDeviceAccessText(context.userAgent, 512);
+
+    const approval = await this.createApproval({
+      kind: DEVICE_ACCESS_APPROVAL_KIND,
+      riskLevel: "danger",
+      payload: {
+        requestId,
+        deviceLabel,
+        deviceType,
+        platform,
+        requestedOrigin,
+        requestedIp,
+        userAgent,
+      },
+      preview: {
+        title: "Allow new device access",
+        requestId,
+        deviceLabel,
+        deviceType,
+        platform,
+        requestedOrigin,
+        requestedIp,
+      },
+    });
+
+    try {
+      this.gatewaySql.prepare(`
+        INSERT INTO auth_device_requests (
+          request_id, approval_id, request_secret_hash, device_label, device_type, platform,
+          requested_origin, requested_ip, user_agent, status, created_at, expires_at
+        ) VALUES (
+          @requestId, @approvalId, @requestSecretHash, @deviceLabel, @deviceType, @platform,
+          @requestedOrigin, @requestedIp, @userAgent, @status, @createdAt, @expiresAt
+        )
+      `).run({
+        requestId,
+        approvalId: approval.approvalId,
+        requestSecretHash: hashSensitiveToken(requestSecret),
+        deviceLabel,
+        deviceType,
+        platform: platform ?? null,
+        requestedOrigin: requestedOrigin ?? null,
+        requestedIp: requestedIp ?? null,
+        userAgent: userAgent ?? null,
+        status: "pending",
+        createdAt,
+        expiresAt,
+      });
+    } catch (error) {
+      try {
+        await this.resolveApproval(approval.approvalId, {
+          decision: "reject",
+          resolvedBy: "system:auth-device-request",
+          resolutionNote: "Device request registration failed.",
+        });
+      } catch {
+        // Best effort cleanup only.
+      }
+      throw error;
+    }
+
+    await this.storage.audit.append("approvals", {
+      event: "auth.device_request.create",
+      requestId,
+      approvalId: approval.approvalId,
+      deviceLabel,
+      deviceType,
+      platform,
+      requestedOrigin,
+      requestedIp,
+    });
+
+    this.publishRealtime("auth_device_request_created", "auth", {
+      requestId,
+      approvalId: approval.approvalId,
+      deviceLabel,
+      deviceType,
+      platform,
+      requestedOrigin,
+      requestedIp,
+      createdAt,
+      expiresAt,
+    });
+
+    return {
+      requestId,
+      requestSecret,
+      approvalId: approval.approvalId,
+      status: "pending",
+      expiresAt,
+      pollAfterMs: DEVICE_ACCESS_REQUEST_POLL_AFTER_MS,
+      message: "Waiting for approval from another authenticated Mission Control session.",
+    };
+  }
+
+  public async getDeviceAccessRequestStatus(
+    requestId: string,
+    requestSecret: string,
+  ): Promise<DeviceAccessRequestStatusResponse> {
+    const request = this.getAuthDeviceRequestById(requestId);
+    if (!request) {
+      throw new Error("Device access request not found.");
+    }
+    if (!requestSecret.trim() || !timingSafeStringEqual(hashSensitiveToken(requestSecret), request.requestSecretHash)) {
+      throw new Error("Device access request not found.");
+    }
+
+    const current = await this.expireDeviceAccessRequestIfNeeded(request);
+    if (current.status === "approved" && !current.deliveredAt) {
+      const deliveredAt = new Date().toISOString();
+      this.gatewaySql.prepare(`
+        UPDATE auth_device_requests
+        SET delivered_at = @deliveredAt,
+            approved_token_plaintext = NULL
+        WHERE request_id = @requestId
+          AND delivered_at IS NULL
+      `).run({
+        requestId: current.requestId,
+        deliveredAt,
+      });
+    }
+
+    return mapDeviceAccessStatusResponse(current);
+  }
+
+  public validateDeviceAccessToken(token: string): { actorId: string } | undefined {
+    const tokenHash = hashSensitiveToken(token);
+    const now = new Date().toISOString();
+    const row = this.gatewaySql.prepare(`
+      SELECT *
+      FROM auth_device_grants
+      WHERE token_hash = @tokenHash
+        AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > @now)
+      LIMIT 1
+    `).get({
+      tokenHash,
+      now,
+    }) as Record<string, unknown> | undefined;
+
+    if (!row) {
+      return undefined;
+    }
+
+    const grant = mapAuthDeviceGrantRow(row);
+    this.gatewaySql.prepare(`
+      UPDATE auth_device_grants
+      SET last_used_at = @lastUsedAt
+      WHERE grant_id = @grantId
+    `).run({
+      grantId: grant.grantId,
+      lastUsedAt: now,
+    });
+
+    return {
+      actorId: `device:${grant.grantId}`,
+    };
   }
 
   public listIntegrationCatalog(kind?: IntegrationKind): IntegrationCatalogEntry[] {
@@ -13366,6 +13581,273 @@ export class GatewayService {
       return result.result ?? {};
     }
     return result;
+  }
+
+  private async resolveDeviceAccessApproval(
+    currentApproval: ApprovalRequest,
+    input: ApprovalResolveInput,
+  ): Promise<ApprovalResolveResult> {
+    if (currentApproval.status !== "pending") {
+      throw new Error(`Approval ${currentApproval.approvalId} is already resolved`);
+    }
+    if (input.decision === "edit") {
+      throw new Error("Editing device access approvals is not supported.");
+    }
+
+    const existingRequest = this.getAuthDeviceRequestByApprovalId(currentApproval.approvalId);
+    if (!existingRequest) {
+      throw new Error("Device access request not found.");
+    }
+
+    const request = await this.expireDeviceAccessRequestIfNeeded(existingRequest);
+    if (request.status === "expired") {
+      throw new Error("Device access request expired before it could be approved.");
+    }
+    if (request.status !== "pending") {
+      throw new Error(`Approval ${currentApproval.approvalId} is already resolved`);
+    }
+
+    const resolvedAt = new Date().toISOString();
+    const requestStatus: DeviceAccessRequestStatus = input.decision === "approve" ? "approved" : "rejected";
+    const deviceToken = input.decision === "approve"
+      ? randomBytes(DEVICE_ACCESS_TOKEN_BYTES).toString("base64url")
+      : undefined;
+    const deviceTokenExpiresAt = deviceToken
+      ? new Date(Date.now() + DEVICE_ACCESS_TOKEN_TTL_MS).toISOString()
+      : undefined;
+    let approval: ApprovalRequest;
+
+    this.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (deviceToken) {
+        this.gatewaySql.prepare(`
+          INSERT INTO auth_device_grants (
+            grant_id, request_id, token_hash, device_label, device_type, platform,
+            granted_by, created_at, expires_at, metadata_json
+          ) VALUES (
+            @grantId, @requestId, @tokenHash, @deviceLabel, @deviceType, @platform,
+            @grantedBy, @createdAt, @expiresAt, @metadataJson
+          )
+        `).run({
+          grantId: randomUUID(),
+          requestId: request.requestId,
+          tokenHash: hashSensitiveToken(deviceToken),
+          deviceLabel: request.deviceLabel,
+          deviceType: request.deviceType,
+          platform: request.platform ?? null,
+          grantedBy: input.resolvedBy,
+          createdAt: resolvedAt,
+          expiresAt: deviceTokenExpiresAt ?? null,
+          metadataJson: JSON.stringify({
+            approvalId: currentApproval.approvalId,
+            requestedOrigin: request.requestedOrigin,
+            requestedIp: request.requestedIp,
+          }),
+        });
+      }
+
+      this.gatewaySql.prepare(`
+        UPDATE auth_device_requests
+        SET status = @status,
+            resolved_at = @resolvedAt,
+            resolved_by = @resolvedBy,
+            resolution_note = @resolutionNote,
+            approved_token_plaintext = @approvedTokenPlaintext,
+            approved_token_expires_at = @approvedTokenExpiresAt
+        WHERE request_id = @requestId
+          AND status = 'pending'
+      `).run({
+        requestId: request.requestId,
+        status: requestStatus,
+        resolvedAt,
+        resolvedBy: input.resolvedBy,
+        resolutionNote: input.resolutionNote ?? null,
+        approvedTokenPlaintext: deviceToken ?? null,
+        approvedTokenExpiresAt: deviceTokenExpiresAt ?? null,
+      });
+
+      approval = this.storage.approvals.resolve(currentApproval.approvalId, input);
+      this.storage.approvalEvents.append({
+        approvalId: currentApproval.approvalId,
+        eventType: "resolved",
+        actorId: input.resolvedBy,
+        payload: {
+          decision: input.decision,
+          status: approval.status,
+        },
+      });
+      this.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.storage.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    await this.recordApprovalResolutionEffects(approval!, input);
+    await this.storage.audit.append("approvals", {
+      event: "auth.device_request.resolve",
+      requestId: request.requestId,
+      approvalId: currentApproval.approvalId,
+      status: requestStatus,
+      resolvedBy: input.resolvedBy,
+      deviceLabel: request.deviceLabel,
+      deviceType: request.deviceType,
+      platform: request.platform,
+      requestedIp: request.requestedIp,
+      deviceTokenExpiresAt,
+    });
+
+    this.publishRealtime("auth_device_request_resolved", "auth", {
+      requestId: request.requestId,
+      approvalId: currentApproval.approvalId,
+      status: requestStatus,
+      resolvedAt,
+      resolvedBy: input.resolvedBy,
+      deviceLabel: request.deviceLabel,
+      deviceType: request.deviceType,
+      platform: request.platform,
+      requestedIp: request.requestedIp,
+      deviceTokenExpiresAt,
+    });
+
+    return {
+      approval: approval!,
+    };
+  }
+
+  private async expireDeviceAccessRequestIfNeeded(request: AuthDeviceRequestRecord): Promise<AuthDeviceRequestRecord> {
+    if (request.status !== "pending") {
+      return request;
+    }
+    const expiresAt = Date.parse(request.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt > Date.now()) {
+      return request;
+    }
+
+    const resolutionInput: ApprovalResolveInput = {
+      decision: "reject",
+      resolvedBy: "system:auth-device-expiry",
+      resolutionNote: "Device access request expired before approval.",
+    };
+    const resolvedAt = new Date().toISOString();
+    let approval: ApprovalRequest | undefined;
+
+    this.storage.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.gatewaySql.prepare(`
+        UPDATE auth_device_requests
+        SET status = 'expired',
+            resolved_at = @resolvedAt,
+            resolved_by = @resolvedBy,
+            resolution_note = @resolutionNote
+        WHERE request_id = @requestId
+          AND status = 'pending'
+      `).run({
+        requestId: request.requestId,
+        resolvedAt,
+        resolvedBy: resolutionInput.resolvedBy,
+        resolutionNote: resolutionInput.resolutionNote ?? null,
+      });
+
+      const currentApproval = this.storage.approvals.get(request.approvalId);
+      if (currentApproval.status === "pending") {
+        approval = this.storage.approvals.resolve(request.approvalId, resolutionInput);
+        this.storage.approvalEvents.append({
+          approvalId: request.approvalId,
+          eventType: "resolved",
+          actorId: resolutionInput.resolvedBy,
+          payload: {
+            decision: resolutionInput.decision,
+            status: approval.status,
+          },
+        });
+      }
+      this.storage.db.exec("COMMIT");
+    } catch (error) {
+      this.storage.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    if (approval) {
+      await this.recordApprovalResolutionEffects(approval, resolutionInput);
+    }
+    await this.storage.audit.append("approvals", {
+      event: "auth.device_request.expire",
+      requestId: request.requestId,
+      approvalId: request.approvalId,
+      deviceLabel: request.deviceLabel,
+      deviceType: request.deviceType,
+      platform: request.platform,
+      requestedIp: request.requestedIp,
+    });
+
+    this.publishRealtime("auth_device_request_resolved", "auth", {
+      requestId: request.requestId,
+      approvalId: request.approvalId,
+      status: "expired",
+      resolvedAt,
+      resolvedBy: resolutionInput.resolvedBy,
+      deviceLabel: request.deviceLabel,
+      deviceType: request.deviceType,
+      platform: request.platform,
+      requestedIp: request.requestedIp,
+    });
+
+    return this.getAuthDeviceRequestById(request.requestId) ?? {
+      ...request,
+      status: "expired",
+      resolvedAt,
+      resolvedBy: resolutionInput.resolvedBy,
+      resolutionNote: resolutionInput.resolutionNote,
+    };
+  }
+
+  private getAuthDeviceRequestById(requestId: string): AuthDeviceRequestRecord | undefined {
+    const row = this.gatewaySql.prepare(`
+      SELECT *
+      FROM auth_device_requests
+      WHERE request_id = @requestId
+      LIMIT 1
+    `).get({ requestId }) as Record<string, unknown> | undefined;
+    return row ? mapAuthDeviceRequestRow(row) : undefined;
+  }
+
+  private getAuthDeviceRequestByApprovalId(approvalId: string): AuthDeviceRequestRecord | undefined {
+    const row = this.gatewaySql.prepare(`
+      SELECT *
+      FROM auth_device_requests
+      WHERE approval_id = @approvalId
+      LIMIT 1
+    `).get({ approvalId }) as Record<string, unknown> | undefined;
+    return row ? mapAuthDeviceRequestRow(row) : undefined;
+  }
+
+  private async recordApprovalResolutionEffects(
+    approval: ApprovalRequest,
+    input: ApprovalResolveInput,
+    executedAction?: ToolInvokeResult,
+  ): Promise<void> {
+    await this.storage.audit.append("approvals", {
+      event: "approval.resolve",
+      approvalId: approval.approvalId,
+      status: approval.status,
+      resolvedBy: input.resolvedBy,
+      decision: input.decision,
+      executedAction: executedAction
+        ? {
+            outcome: executedAction.outcome,
+            policyReason: executedAction.policyReason,
+            auditEventId: executedAction.auditEventId,
+          }
+        : undefined,
+    });
+
+    this.publishRealtime("approval_resolved", "approvals", {
+      approvalId: approval.approvalId,
+      status: approval.status,
+      decision: input.decision,
+      resolvedBy: input.resolvedBy,
+      executedOutcome: executedAction?.outcome,
+    });
   }
 
   private publishRealtime(eventType: string, source: string, payload: Record<string, unknown>): RealtimeEvent {
@@ -17192,6 +17674,203 @@ function grantPatternMatches(pattern: string, toolName: string): boolean {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   const regex = new RegExp(`^${escaped}$`);
   return regex.test(toolName);
+}
+
+function hashSensitiveToken(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function normalizeDeviceAccessDeviceType(value?: string): string {
+  if (
+    value === "mobile"
+    || value === "desktop"
+    || value === "tablet"
+    || value === "browser"
+  ) {
+    return value;
+  }
+  return "unknown";
+}
+
+function normalizeOptionalDeviceAccessText(value: string | undefined, maxLength: number): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.slice(0, maxLength);
+}
+
+function normalizeDeviceAccessLabel(
+  value: string | undefined,
+  context: {
+    deviceType: string;
+    platform?: string;
+    userAgent?: string;
+  },
+): string {
+  const provided = normalizeOptionalDeviceAccessText(value, 120);
+  if (provided) {
+    return provided;
+  }
+  const platform = context.platform?.trim();
+  const browser = inferBrowserFromUserAgent(context.userAgent);
+  if (platform && browser) {
+    return `${platform} ${browser}`;
+  }
+  if (platform) {
+    return platform;
+  }
+  return context.deviceType === "unknown"
+    ? "New device"
+    : `${context.deviceType[0]?.toUpperCase() ?? ""}${context.deviceType.slice(1)} device`;
+}
+
+function inferPlatformFromUserAgent(userAgent?: string): string | undefined {
+  const ua = userAgent?.toLowerCase() ?? "";
+  if (!ua) {
+    return undefined;
+  }
+  if (ua.includes("iphone")) {
+    return "iPhone";
+  }
+  if (ua.includes("ipad")) {
+    return "iPad";
+  }
+  if (ua.includes("android")) {
+    return "Android";
+  }
+  if (ua.includes("windows")) {
+    return "Windows";
+  }
+  if (ua.includes("mac os x") || ua.includes("macintosh")) {
+    return "macOS";
+  }
+  if (ua.includes("linux")) {
+    return "Linux";
+  }
+  return undefined;
+}
+
+function inferBrowserFromUserAgent(userAgent?: string): string | undefined {
+  const ua = userAgent?.toLowerCase() ?? "";
+  if (!ua) {
+    return undefined;
+  }
+  if (ua.includes("edg/")) {
+    return "Edge";
+  }
+  if (ua.includes("chrome/") && !ua.includes("edg/")) {
+    return "Chrome";
+  }
+  if (ua.includes("firefox/")) {
+    return "Firefox";
+  }
+  if (ua.includes("safari/") && !ua.includes("chrome/")) {
+    return "Safari";
+  }
+  return undefined;
+}
+
+function mapAuthDeviceRequestRow(row: Record<string, unknown>): AuthDeviceRequestRecord {
+  return {
+    requestId: String(row.request_id ?? ""),
+    approvalId: String(row.approval_id ?? ""),
+    requestSecretHash: String(row.request_secret_hash ?? ""),
+    deviceLabel: String(row.device_label ?? "New device"),
+    deviceType: String(row.device_type ?? "unknown"),
+    platform: typeof row.platform === "string" ? row.platform : undefined,
+    requestedOrigin: typeof row.requested_origin === "string" ? row.requested_origin : undefined,
+    requestedIp: typeof row.requested_ip === "string" ? row.requested_ip : undefined,
+    userAgent: typeof row.user_agent === "string" ? row.user_agent : undefined,
+    status: normalizeDeviceAccessRequestStatus(row.status),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    expiresAt: String(row.expires_at ?? new Date().toISOString()),
+    resolvedAt: typeof row.resolved_at === "string" ? row.resolved_at : undefined,
+    resolvedBy: typeof row.resolved_by === "string" ? row.resolved_by : undefined,
+    resolutionNote: typeof row.resolution_note === "string" ? row.resolution_note : undefined,
+    approvedTokenPlaintext: typeof row.approved_token_plaintext === "string" ? row.approved_token_plaintext : undefined,
+    approvedTokenExpiresAt: typeof row.approved_token_expires_at === "string" ? row.approved_token_expires_at : undefined,
+    deliveredAt: typeof row.delivered_at === "string" ? row.delivered_at : undefined,
+  };
+}
+
+function mapAuthDeviceGrantRow(row: Record<string, unknown>): AuthDeviceGrantRecord {
+  return {
+    grantId: String(row.grant_id ?? ""),
+    requestId: String(row.request_id ?? ""),
+    tokenHash: String(row.token_hash ?? ""),
+    deviceLabel: String(row.device_label ?? "New device"),
+    deviceType: String(row.device_type ?? "unknown"),
+    platform: typeof row.platform === "string" ? row.platform : undefined,
+    grantedBy: String(row.granted_by ?? ""),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+    expiresAt: typeof row.expires_at === "string" ? row.expires_at : undefined,
+    lastUsedAt: typeof row.last_used_at === "string" ? row.last_used_at : undefined,
+    revokedAt: typeof row.revoked_at === "string" ? row.revoked_at : undefined,
+    metadata: safeJsonParse<Record<string, unknown>>(typeof row.metadata_json === "string" ? row.metadata_json : "{}", {}),
+  };
+}
+
+function mapDeviceAccessStatusResponse(record: AuthDeviceRequestRecord): DeviceAccessRequestStatusResponse {
+  if (record.status === "approved") {
+    return {
+      requestId: record.requestId,
+      approvalId: record.approvalId,
+      status: record.status,
+      expiresAt: record.expiresAt,
+      resolvedAt: record.resolvedAt,
+      ...(record.approvedTokenPlaintext
+        ? {
+            deviceToken: record.approvedTokenPlaintext,
+            deviceTokenExpiresAt: record.approvedTokenExpiresAt,
+          }
+        : {}),
+      message: "Access approved. Finishing secure handoff to this device.",
+    };
+  }
+  if (record.status === "rejected") {
+    return {
+      requestId: record.requestId,
+      approvalId: record.approvalId,
+      status: record.status,
+      expiresAt: record.expiresAt,
+      resolvedAt: record.resolvedAt,
+      message: "This device request was rejected from another authenticated session.",
+    };
+  }
+  if (record.status === "expired") {
+    return {
+      requestId: record.requestId,
+      approvalId: record.approvalId,
+      status: record.status,
+      expiresAt: record.expiresAt,
+      resolvedAt: record.resolvedAt,
+      message: "This device request expired before it was approved.",
+    };
+  }
+  return {
+    requestId: record.requestId,
+    approvalId: record.approvalId,
+    status: "pending",
+    expiresAt: record.expiresAt,
+    message: "Waiting for approval from another authenticated Mission Control session.",
+  };
+}
+
+function normalizeDeviceAccessRequestStatus(value: unknown): DeviceAccessRequestStatus {
+  if (value === "approved" || value === "rejected" || value === "expired") {
+    return value;
+  }
+  return "pending";
 }
 
 function normalizeRetentionPolicy(input: Partial<RetentionPolicy>): RetentionPolicy {

@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -48,8 +49,11 @@ const SNAPSHOT_INTERVAL_MS = 20_000;
 const HOT_AGENT_WINDOW_MS = 2 * 60 * 1000;
 const WARM_AGENT_WINDOW_MS = 10 * 60 * 1000;
 const EVENTS_PER_MINUTE_WINDOW_MS = 5 * 60 * 1000;
+const PLAYBACK_WINDOW_MS = 5 * 60 * 1000;
+const PLAYBACK_STEP_MS = 12_000;
 const ACTIVITY_TRANSITION_WINDOW_MS = 18_000;
 const MAX_VISIBLE_COLLAB_EDGES = 8;
+const MAX_VISIBLE_ZONE_LANES = 6;
 const OPERATOR_STORAGE_KEY = "goatcitadel.office.operator";
 const OPERATOR_NAME_OPTIONS = [
   "GoatHerder",
@@ -66,6 +70,7 @@ interface OfficeAgentModel extends AgentDirectoryRecord {
   currentThought: string;
   taskId?: string;
   sessionId?: string;
+  currentTaskLabel: string;
   lastSeenAt?: string;
   lastEventType?: string;
   risk: AgentRisk;
@@ -76,6 +81,7 @@ interface OfficeAgentModel extends AgentDirectoryRecord {
   zoneLabel: string;
   attentionLevel: OfficeAttentionLevel;
   behaviorDirective: string;
+  workloadScore: number;
 }
 
 interface OfficeZoneTelemetry {
@@ -87,6 +93,43 @@ interface OfficeZoneTelemetry {
   alertAgents: number;
   focus: string;
   attentionLevel: OfficeAttentionLevel;
+  workloadScore: number;
+  lastSignalAt?: string;
+  laneCount: number;
+  landmark: string;
+  architectureNote: string;
+}
+
+interface OfficeZoneActivityLane {
+  fromZoneId: OfficeZoneId;
+  toZoneId: OfficeZoneId;
+  fromLabel: string;
+  toLabel: string;
+  strength: number;
+  count: number;
+  risk: boolean;
+  label: string;
+}
+
+interface OfficeSignalRoute {
+  roleId: string;
+  zoneId: OfficeZoneId;
+  kind: "approval" | "blocked" | "error";
+  label: string;
+  intensity: number;
+}
+
+interface AgentHandoff {
+  label: string;
+  detail: string;
+  timestamp?: string;
+}
+
+interface PlaybackState {
+  mode: "live" | "replay";
+  playing: boolean;
+  speed: 1 | 2 | 4;
+  cursorTime?: number;
 }
 
 interface OperatorPreferences {
@@ -99,6 +142,8 @@ interface OperatorPreferences {
   showRailDock: boolean;
   idleMillingEnabled: boolean;
   focusMode: boolean;
+  quietMode: boolean;
+  followSelection: boolean;
 }
 
 export interface OfficeAssetPack {
@@ -134,6 +179,8 @@ const DEFAULT_OPERATOR_PREFS: OperatorPreferences = {
   showRailDock: true,
   idleMillingEnabled: true,
   focusMode: false,
+  quietMode: false,
+  followSelection: false,
 };
 
 const MOTION_MODE_OPTIONS: Array<{ value: OfficeMotionMode; label: string }> = [
@@ -141,6 +188,12 @@ const MOTION_MODE_OPTIONS: Array<{ value: OfficeMotionMode; label: string }> = [
   { value: "balanced", label: "Balanced" },
   { value: "subtle", label: "Subtle" },
   { value: "reduced", label: "Reduced" },
+];
+
+const PLAYBACK_SPEED_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "1", label: "1x" },
+  { value: "2", label: "2x" },
+  { value: "4", label: "4x" },
 ];
 
 const PRESET_OPTIONS: Array<{ value: OperatorPreset; label: string }> = [
@@ -189,6 +242,12 @@ export function OfficePage() {
   const [operatorPrefs, setOperatorPrefs] = useState<OperatorPreferences>(readOperatorPreferences);
   const [assetPack, setAssetPack] = useState<OfficeAssetPack>({});
   const [dockTab, setDockTab] = useState<OfficeDockTab>("inspector");
+  const [focusedZoneOverride, setFocusedZoneOverride] = useState<OfficeZoneId | null>(null);
+  const [playback, setPlayback] = useState<PlaybackState>({
+    mode: "live",
+    playing: false,
+    speed: 2,
+  });
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [sceneReady, setSceneReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -301,20 +360,59 @@ export function OfficePage() {
   }, []);
 
   const sortedEvents = useMemo(() => sortEvents(events), [events]);
-  const officeAgents = useMemo(() => deriveOfficeAgents(directory, sortedEvents), [directory, sortedEvents]);
+  const replayWindow = useMemo(() => {
+    const newestTimestamp = parseTimestamp(sortedEvents[0]?.timestamp) || Date.now();
+    const startTime = newestTimestamp - PLAYBACK_WINDOW_MS;
+    const replayableEvents = sortedEvents.filter((event) => parseTimestamp(event.timestamp) >= startTime);
+    const earliestReplayTimestamp = parseTimestamp(replayableEvents.at(-1)?.timestamp);
+    return {
+      newestTimestamp,
+      replayableEvents,
+      startTime: earliestReplayTimestamp || startTime,
+      endTime: newestTimestamp,
+    };
+  }, [sortedEvents]);
+  const playbackCursorTime = playback.mode === "replay"
+    ? playback.cursorTime ?? replayWindow.startTime
+    : undefined;
+  const sceneEvents = useMemo(() => {
+    if (playback.mode !== "replay") {
+      return sortedEvents;
+    }
+    return sortedEvents.filter((event) => {
+      const timestamp = parseTimestamp(event.timestamp);
+      return timestamp >= replayWindow.startTime && timestamp <= (playbackCursorTime ?? replayWindow.startTime);
+    });
+  }, [playback.mode, playbackCursorTime, replayWindow.startTime, sortedEvents]);
+  const officeAgents = useMemo(() => deriveOfficeAgents(directory, sceneEvents), [directory, sceneEvents]);
   const officeAgentNamesByRole = useMemo(
     () => new Map(officeAgents.map((agent) => [agent.roleId, agent.name])),
     [officeAgents],
   );
   const collaborationEdges = useMemo(() => deriveCollaborationEdges(officeAgents), [officeAgents]);
-  const zoneTelemetry = useMemo(() => deriveZoneTelemetry(officeAgents), [officeAgents]);
+  const zoneActivityLanes = useMemo(
+    () => deriveZoneActivityLanes(officeAgents),
+    [officeAgents],
+  );
+  const zoneTelemetry = useMemo(
+    () => deriveZoneTelemetry(officeAgents, zoneActivityLanes),
+    [officeAgents, zoneActivityLanes],
+  );
+  const signalRoutes = useMemo(
+    () => deriveSignalRoutes(officeAgents),
+    [officeAgents],
+  );
   const selectedAgent = useMemo(
     () => officeAgents.find((agent) => agent.roleId === selectedEntityId),
     [officeAgents, selectedEntityId],
   );
-  const selectedZoneId = useMemo<OfficeZoneId>(
+  const selectionZoneId = useMemo<OfficeZoneId>(
     () => selectedEntityId === "operator" ? "command" : selectedAgent?.zoneId ?? "command",
     [selectedAgent?.zoneId, selectedEntityId],
+  );
+  const selectedZoneId = useMemo<OfficeZoneId>(
+    () => operatorPrefs.focusMode ? focusedZoneOverride ?? selectionZoneId : selectionZoneId,
+    [focusedZoneOverride, operatorPrefs.focusMode, selectionZoneId],
   );
   const selectedZoneTelemetry = useMemo(
     () => zoneTelemetry.find((zone) => zone.zoneId === selectedZoneId) ?? null,
@@ -323,6 +421,10 @@ export function OfficePage() {
   const stageZoneTelemetry = useMemo(
     () => operatorPrefs.focusMode ? zoneTelemetry.filter((zone) => zone.zoneId === selectedZoneId) : zoneTelemetry,
     [operatorPrefs.focusMode, selectedZoneId, zoneTelemetry],
+  );
+  const selectedAgentHandoffs = useMemo(
+    () => selectedAgent ? buildAgentHandoffs(selectedAgent, officeAgentNamesByRole) : [],
+    [officeAgentNamesByRole, selectedAgent],
   );
   const focusSummary = useMemo(() => {
     if (!operatorPrefs.focusMode) {
@@ -363,6 +465,48 @@ export function OfficePage() {
   }, [officeAgents, selectedEntityId]);
 
   useEffect(() => {
+    if (!operatorPrefs.focusMode) {
+      setFocusedZoneOverride(selectionZoneId);
+      return;
+    }
+    setFocusedZoneOverride((current) => current ?? selectionZoneId);
+  }, [operatorPrefs.focusMode, selectionZoneId]);
+
+  useEffect(() => {
+    if (playback.mode !== "replay") {
+      return;
+    }
+    setPlayback((current) => ({
+      ...current,
+      cursorTime: current.cursorTime ?? replayWindow.startTime,
+    }));
+  }, [playback.mode, replayWindow.startTime]);
+
+  useEffect(() => {
+    if (playback.mode !== "replay" || !playback.playing) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setPlayback((current) => {
+        const baseCursor = current.cursorTime ?? replayWindow.startTime;
+        const nextCursor = baseCursor + PLAYBACK_STEP_MS * current.speed;
+        if (nextCursor >= replayWindow.endTime) {
+          return {
+            ...current,
+            cursorTime: replayWindow.endTime,
+            playing: false,
+          };
+        }
+        return {
+          ...current,
+          cursorTime: nextCursor,
+        };
+      });
+    }, 420);
+    return () => window.clearInterval(interval);
+  }, [playback.mode, playback.playing, replayWindow.endTime, replayWindow.startTime]);
+
+  useEffect(() => {
     if (dockTab === "inspector" && operatorPrefs.showInspectorDock) {
       return;
     }
@@ -378,6 +522,48 @@ export function OfficePage() {
     }
   }, [dockTab, operatorPrefs.showInspectorDock, operatorPrefs.showRailDock]);
 
+  const focusZone = useCallback((zoneId: OfficeZoneId) => {
+    setFocusedZoneOverride(zoneId);
+    if (zoneId === "command") {
+      setSelectedEntityId("operator");
+      return;
+    }
+    const preferredAgent = officeAgents.find((agent) => agent.zoneId === zoneId && agent.attentionLevel === "priority")
+      ?? officeAgents.find((agent) => agent.zoneId === zoneId && agent.attentionLevel === "watch")
+      ?? officeAgents.find((agent) => agent.zoneId === zoneId);
+    if (preferredAgent) {
+      setSelectedEntityId(preferredAgent.roleId);
+    }
+  }, [officeAgents]);
+
+  useEffect(() => {
+    if (!operatorPrefs.focusMode) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target.isContentEditable)) {
+        return;
+      }
+      const zoneIndex = Number.parseInt(event.key, 10);
+      if (zoneIndex >= 1 && zoneIndex <= OFFICE_ZONE_ORDER.length) {
+        event.preventDefault();
+        focusZone(OFFICE_ZONE_ORDER[zoneIndex - 1] ?? "command");
+        return;
+      }
+      if (event.key !== "[" && event.key !== "]" && event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+        return;
+      }
+      event.preventDefault();
+      const currentIndex = Math.max(0, OFFICE_ZONE_ORDER.indexOf(selectedZoneId));
+      const delta = event.key === "[" || event.key === "ArrowLeft" ? -1 : 1;
+      const nextIndex = (currentIndex + delta + OFFICE_ZONE_ORDER.length) % OFFICE_ZONE_ORDER.length;
+      focusZone(OFFICE_ZONE_ORDER[nextIndex] ?? "command");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [focusZone, operatorPrefs.focusMode, selectedZoneId]);
+
   const activeAgents = useMemo(
     () => officeAgents.filter((agent) => agent.status === "active").length,
     [officeAgents],
@@ -387,10 +573,16 @@ export function OfficePage() {
     [officeAgents],
   );
   const eventFlow = useMemo(() => {
-    const threshold = Date.now() - EVENTS_PER_MINUTE_WINDOW_MS;
-    const count = sortedEvents.filter((event) => parseTimestamp(event.timestamp) >= threshold).length;
+    const anchorTime = playback.mode === "replay"
+      ? playbackCursorTime ?? replayWindow.startTime
+      : Date.now();
+    const threshold = anchorTime - EVENTS_PER_MINUTE_WINDOW_MS;
+    const count = sceneEvents.filter((event) => {
+      const timestamp = parseTimestamp(event.timestamp);
+      return timestamp >= threshold && timestamp <= anchorTime;
+    }).length;
     return count / 5;
-  }, [sortedEvents]);
+  }, [playback.mode, playbackCursorTime, replayWindow.startTime, sceneEvents]);
   const hotAgents = useMemo(
     () => officeAgents.filter((agent) => classifyAgentHeat(agent.lastSeenAt) === "hot").length,
     [officeAgents],
@@ -415,7 +607,19 @@ export function OfficePage() {
     return "idle_patrol";
   }, [activeAgents, eventFlow, pendingApprovals.length]);
 
-  const effectiveMotionMode: OfficeMotionMode = prefersReducedMotion ? "reduced" : operatorPrefs.motionMode;
+  const effectiveMotionMode: OfficeMotionMode = prefersReducedMotion
+    ? "reduced"
+    : operatorPrefs.quietMode && operatorPrefs.motionMode === "cinematic"
+      ? "subtle"
+      : operatorPrefs.quietMode && operatorPrefs.motionMode === "balanced"
+        ? "subtle"
+        : operatorPrefs.quietMode && operatorPrefs.motionMode === "subtle"
+          ? "reduced"
+          : operatorPrefs.motionMode;
+  const sceneBusy = useMemo(
+    () => !operatorPrefs.quietMode && (blockedAgents > 0 || priorityAgents > 0 || activeAgents >= 4 || eventFlow >= 2.5),
+    [activeAgents, blockedAgents, eventFlow, operatorPrefs.quietMode, priorityAgents],
+  );
   const goatAssetStatus = useMemo(() => describeGoatAssetStatus(assetPack), [assetPack]);
   const sceneResetKey = useMemo(
     () => [
@@ -478,11 +682,26 @@ export function OfficePage() {
   }, [operatorPrefs.showInspectorDock, operatorPrefs.showRailDock]);
 
   const handleEntitySelect = (entityId: SelectedEntityId) => {
+    const nextZoneId = entityId === "operator"
+      ? "command"
+      : officeAgents.find((agent) => agent.roleId === entityId)?.zoneId ?? "command";
     setSelectedEntityId(entityId);
+    if (operatorPrefs.focusMode) {
+      setFocusedZoneOverride(nextZoneId);
+    }
     if (operatorPrefs.showInspectorDock) {
       setDockTab("inspector");
     }
   };
+
+  const handlePlaybackModeChange = useCallback((mode: PlaybackState["mode"]) => {
+    setPlayback((current) => ({
+      ...current,
+      mode,
+      playing: mode === "replay" ? current.playing : false,
+      cursorTime: mode === "replay" ? current.cursorTime ?? replayWindow.startTime : undefined,
+    }));
+  }, [replayWindow.startTime]);
 
   const renderInspectorPanel = () => {
     if (selectedEntityId === "operator") {
@@ -602,27 +821,44 @@ export function OfficePage() {
 
     return (
       <>
-          <header className="office-agent-header">
-            <div className={`office-avatar office-avatar-${classifyAgentHeat(selectedAgent.lastSeenAt)}`}>
-              {initials(selectedAgent.name)}
-            </div>
-            <div>
-              <h3>{selectedAgent.name}</h3>
-              <p className="office-agent-id">{selectedAgent.title} - {selectedAgent.zoneLabel}</p>
-            </div>
-            <div className="office-agent-pills">
-              <span className={`office-pill office-pill-${selectedAgent.status === "ready" ? "idle" : selectedAgent.status}`}>
-                {selectedAgent.status}
-              </span>
-              <span className={`office-pill ${attentionPillClass(selectedAgent.attentionLevel)}`}>
-                {attentionLabel(selectedAgent.attentionLevel)}
-              </span>
-            </div>
+        <header className="office-agent-header">
+          <div className={`office-avatar office-avatar-${classifyAgentHeat(selectedAgent.lastSeenAt)}`}>
+            {initials(selectedAgent.name)}
+          </div>
+          <div>
+            <h3>{selectedAgent.name}</h3>
+            <p className="office-agent-id">{selectedAgent.title} - {selectedAgent.zoneLabel}</p>
+          </div>
+          <div className="office-agent-pills">
+            <span className={`office-pill office-pill-${selectedAgent.status === "ready" ? "idle" : selectedAgent.status}`}>
+              {selectedAgent.status}
+            </span>
+            <span className={`office-pill ${attentionPillClass(selectedAgent.attentionLevel)}`}>
+              {attentionLabel(selectedAgent.attentionLevel)}
+            </span>
+          </div>
         </header>
 
-        <p>{selectedAgent.summary}</p>
-        <p><strong>Doing:</strong> {selectedAgent.currentAction}</p>
-        <p><strong>Thinking:</strong> {selectedAgent.currentThought}</p>
+        <div className="office-dossier-strip">
+          <article className={`office-dossier-card office-dossier-card-${selectedAgent.attentionLevel}`}>
+            <p className="office-dossier-label">Current task</p>
+            <p className="office-dossier-value">{selectedAgent.currentTaskLabel}</p>
+            <p className="office-dossier-note">{selectedAgent.currentAction}</p>
+          </article>
+          <article className={`office-dossier-card office-dossier-card-${selectedAgent.risk === "none" ? "stable" : selectedAgent.risk}`}>
+            <p className="office-dossier-label">Risk state</p>
+            <p className="office-dossier-value">{selectedAgent.risk}</p>
+            <p className="office-dossier-note">{selectedAgent.currentThought}</p>
+          </article>
+          <article className="office-dossier-card office-dossier-card-stable">
+            <p className="office-dossier-label">Recent handoffs</p>
+            <p className="office-dossier-value">{selectedAgentHandoffs.length}</p>
+            <p className="office-dossier-note">
+              {selectedAgentHandoffs[0]?.detail ?? "No handoffs recorded yet."}
+            </p>
+          </article>
+        </div>
+
         <div className={`office-behavior-banner office-behavior-banner-${selectedAgent.attentionLevel}`}>
           <p className="office-behavior-label">Behavior directive</p>
           <p>{selectedAgent.behaviorDirective}</p>
@@ -677,6 +913,17 @@ export function OfficePage() {
             <span key={specialty} className="token-chip">{specialty}</span>
           ))}
         </div>
+
+        <h4>Recent handoffs</h4>
+        <ul className="compact-list">
+          {selectedAgentHandoffs.length === 0 ? <li>No handoffs recorded.</li> : selectedAgentHandoffs.map((handoff, index) => (
+            <li key={`${handoff.label}-${index}`}>
+              <strong>{handoff.label}</strong>
+              <p>{handoff.detail}</p>
+              <small>{handoff.timestamp ? formatClock(handoff.timestamp) : "current window"}</small>
+            </li>
+          ))}
+        </ul>
 
         <h4>Recent Signals</h4>
         <ul className="compact-list">
@@ -781,6 +1028,9 @@ export function OfficePage() {
               <StatusChip tone={priorityAgents > 0 ? "critical" : watchAgents > 0 ? "warning" : "muted"}>
                 {priorityAgents > 0 ? "Priority desks active" : watchAgents > 0 ? "Watch desks active" : "Desk pressure stable"}
               </StatusChip>
+              <StatusChip tone={playback.mode === "replay" ? "warning" : "muted"}>
+                {playback.mode === "replay" ? "Replay window" : "Live window"}
+              </StatusChip>
               <StatusChip tone={goatAssetStatus.tone}>{goatAssetStatus.chipLabel}</StatusChip>
             </div>
           )}
@@ -791,8 +1041,80 @@ export function OfficePage() {
               <p className="office-focus-title">{focusSummary.title}</p>
               <p className="office-focus-summary">{focusSummary.summary}</p>
               <p className="office-focus-detail">{focusSummary.detail}</p>
+              <p className="office-focus-hotkeys">Hotkeys: 1-5 jump zones, [ and ] cycle decks.</p>
             </div>
           ) : null}
+
+          <div className="office-playback-bar">
+            <div className="office-playback-head">
+              <div>
+                <p className="office-playback-label">Activity playback</p>
+                <p className="office-playback-copy">
+                  Rewind the last five minutes to watch traffic, approvals, and handoffs condense into a faster operations replay.
+                </p>
+              </div>
+              <div className="office-playback-actions">
+                <button
+                  type="button"
+                  className={playback.mode === "live" ? "active" : ""}
+                  onClick={() => handlePlaybackModeChange("live")}
+                >
+                  Live
+                </button>
+                <button
+                  type="button"
+                  className={playback.mode === "replay" ? "active" : ""}
+                  onClick={() => handlePlaybackModeChange("replay")}
+                  disabled={replayWindow.replayableEvents.length === 0}
+                >
+                  Replay 5m
+                </button>
+                <button
+                  type="button"
+                  disabled={playback.mode !== "replay" || replayWindow.replayableEvents.length === 0}
+                  onClick={() => setPlayback((current) => ({
+                    ...current,
+                    playing: current.mode === "replay" ? !current.playing : false,
+                    cursorTime: current.mode === "replay" ? current.cursorTime ?? replayWindow.startTime : current.cursorTime,
+                  }))}
+                >
+                  {playback.playing ? "Pause" : "Play"}
+                </button>
+              </div>
+            </div>
+            <div className="office-playback-controls">
+              <label htmlFor="officePlaybackCursor">Replay cursor</label>
+              <input
+                id="officePlaybackCursor"
+                type="range"
+                min={0}
+                max={100}
+                value={playback.mode === "replay" && replayWindow.endTime > replayWindow.startTime
+                  ? Math.round((((playbackCursorTime ?? replayWindow.startTime) - replayWindow.startTime) / (replayWindow.endTime - replayWindow.startTime)) * 100)
+                  : 100}
+                disabled={playback.mode !== "replay" || replayWindow.replayableEvents.length === 0}
+                onChange={(event) => {
+                  const ratio = Number.parseFloat(event.target.value) / 100;
+                  const nextCursor = replayWindow.startTime + ((replayWindow.endTime - replayWindow.startTime) * ratio);
+                  setPlayback((current) => ({
+                    ...current,
+                    cursorTime: nextCursor,
+                    playing: false,
+                  }));
+                }}
+              />
+              <GCSelect
+                id="officePlaybackSpeed"
+                value={String(playback.speed)}
+                onChange={(value) => setPlayback((current) => ({
+                  ...current,
+                  speed: Number.parseInt(value, 10) as PlaybackState["speed"],
+                }))}
+                options={PLAYBACK_SPEED_OPTIONS}
+                disabled={playback.mode !== "replay"}
+              />
+            </div>
+          </div>
 
           <div className="office-stage-toolbar">
             <div className="office-stage-toolbar-group office-stage-toolbar-motion">
@@ -868,11 +1190,51 @@ export function OfficePage() {
                   />
                   Focus Mode
                 </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.quietMode}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      quietMode: event.target.checked,
+                    }))}
+                  />
+                  Quiet Office
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={operatorPrefs.followSelection}
+                    onChange={(event) => setOperatorPrefs((prev) => ({
+                      ...prev,
+                      followSelection: event.target.checked,
+                    }))}
+                  />
+                  Follow Selected
+                </label>
               </div>
               <FieldHelp>
-                Inspector keeps entity detail in view. Rail keeps operators, approvals, and the live event stream docked beside the scene.
+                Focus mode narrows the stage, Quiet Office strips ambient churn, and Follow Selected turns the camera into a tighter operator lens.
               </FieldHelp>
             </div>
+          </div>
+
+          <div className="office-lane-grid">
+            {zoneActivityLanes.length === 0 ? (
+              <article className="office-lane-card office-lane-card-empty">
+                <p className="office-lane-label">Activity lanes</p>
+                <p className="office-lane-copy">No cross-zone traffic has surfaced yet in the current window.</p>
+              </article>
+            ) : zoneActivityLanes.map((lane) => (
+              <article
+                key={`${lane.fromZoneId}-${lane.toZoneId}`}
+                className={`office-lane-card${lane.risk ? " office-lane-card-risk" : ""}`}
+              >
+                <p className="office-lane-label">{`${lane.fromLabel} -> ${lane.toLabel}`}</p>
+                <p className="office-lane-value">{lane.count} linked handoffs</p>
+                <p className="office-lane-copy">{lane.label}</p>
+              </article>
+            ))}
           </div>
 
           <div className={`office-zone-grid${operatorPrefs.focusMode ? " office-zone-grid-focus" : ""}`}>
@@ -883,7 +1245,7 @@ export function OfficePage() {
               return (
                 <article
                   key={zone.zoneId}
-                  className={`office-zone-card office-zone-card-${zone.attentionLevel}${isSelectedZone ? " active" : ""}`}
+                  className={`office-zone-card office-zone-card-${zone.attentionLevel} office-zone-card-theme-${zone.zoneId}${isSelectedZone ? " active" : ""}`}
                 >
                   <div className="office-zone-card-head">
                     <p className="office-zone-card-label">{zone.label}</p>
@@ -892,9 +1254,10 @@ export function OfficePage() {
                     </span>
                   </div>
                   <p className="office-zone-card-metrics">
-                    {zone.totalAgents} goats · {zone.activeAgents} active · {zone.linkedAgents} linked
+                    {zone.totalAgents} goats · {zone.activeAgents} active · {zone.linkedAgents} linked · load {Math.round(zone.workloadScore * 100)}%
                   </p>
                   <p className="office-zone-card-focus">{zone.focus}</p>
+                  <p className="office-zone-card-architecture">{zone.landmark} · {zone.architectureNote}</p>
                 </article>
               );
             })}
@@ -918,9 +1281,15 @@ export function OfficePage() {
                   motionMode={effectiveMotionMode}
                   focusMode={operatorPrefs.focusMode}
                   focusedZoneId={selectedZoneId}
+                  quietMode={operatorPrefs.quietMode}
+                  followSelection={operatorPrefs.followSelection}
+                  sceneBusy={sceneBusy}
                   showCollabOverlay={operatorPrefs.showCollabOverlay}
                   idleMillingEnabled={operatorPrefs.idleMillingEnabled}
                   collaborationEdges={collaborationEdges}
+                  zoneTelemetry={zoneTelemetry}
+                  activityLanes={zoneActivityLanes}
+                  signalRoutes={signalRoutes}
                 />
               </Suspense>
             ) : (
@@ -1021,7 +1390,7 @@ export function OfficePage() {
                 <>
                   <FieldHelp>Live rail is the real-time signal feed. Use it to correlate motion in the scene with gateway and tool activity.</FieldHelp>
                   <ul className="compact-list">
-                    {sortedEvents.length === 0 ? <li>No live events yet.</li> : sortedEvents.slice(0, 12).map((event) => (
+                    {sceneEvents.length === 0 ? <li>No live events yet.</li> : sceneEvents.slice(0, 12).map((event) => (
                       <li key={event.eventId}>
                         <strong>{event.eventType}</strong>
                         <p>{summarizeEvent(event)}</p>
@@ -1069,7 +1438,8 @@ function deriveOfficeAgents(
       currentThought: agent.status === "ready"
         ? "Standing by for orders from GoatHerder."
         : "Monitoring the event rail.",
-      lastSeenAt: agent.lastUpdatedAt,
+      currentTaskLabel: "Standby slot",
+      lastSeenAt: undefined,
       risk: "none",
       eventTrail: [],
       activityState: "idle_milling",
@@ -1078,6 +1448,7 @@ function deriveOfficeAgents(
       zoneLabel: officeZoneLabel(zoneId),
       attentionLevel: "stable",
       behaviorDirective: "Patrol the event rail and hold warm context for the next task.",
+      workloadScore: 0.18,
     });
 
     if (agent.runtimeAgentId) {
@@ -1185,10 +1556,13 @@ function deriveOfficeAgents(
 
     return {
       ...agent,
+      lastSeenAt: agent.lastSeenAt ?? agent.lastUpdatedAt,
+      currentTaskLabel: deriveCurrentTaskLabel(agent),
       collabPeers: peers,
       activityState,
       attentionLevel: deriveAttentionLevel(agent),
       behaviorDirective: deriveBehaviorDirective(agent, peers.length),
+      workloadScore: deriveWorkloadScore(agent, ageMs, peers.length),
     };
   });
 
@@ -1222,16 +1596,28 @@ function deriveCollaborationEdges(agents: OfficeAgentModel[]): OfficeCollaborati
       const fromRoleId = orderedRoles[0] ?? agent.roleId;
       const toRoleId = orderedRoles[1] ?? peerRoleId;
       const key = `${fromRoleId}->${toRoleId}`;
+      const recencyBoost = classifyAgentHeat(agent.lastSeenAt) === "hot" || classifyAgentHeat(peer.lastSeenAt) === "hot"
+        ? 0.7
+        : classifyAgentHeat(agent.lastSeenAt) === "warm" || classifyAgentHeat(peer.lastSeenAt) === "warm"
+          ? 0.35
+          : 0.1;
+      const sharedContextBoost = agent.taskId && peer.taskId && agent.taskId === peer.taskId
+        ? 1
+        : agent.sessionId && peer.sessionId && agent.sessionId === peer.sessionId
+          ? 0.75
+          : 0.35;
+      const crossZoneBoost = agent.zoneId !== peer.zoneId ? 0.28 : 0;
+      const strengthDelta = sharedContextBoost + recencyBoost + crossZoneBoost + (risk ? 0.18 : 0);
       const existing = edgeMap.get(key);
       if (existing) {
-        existing.strength = Math.min(3, existing.strength + 0.4);
+        existing.strength = Math.min(3, existing.strength + strengthDelta * 0.34);
         existing.risk = existing.risk || risk;
         continue;
       }
       edgeMap.set(key, {
         fromRoleId,
         toRoleId,
-        strength: 1,
+        strength: Math.min(3, 0.72 + strengthDelta * 0.56),
         risk,
       });
     }
@@ -1618,7 +2004,177 @@ function deriveBehaviorDirective(
   return "Patrol the event rail, preserve context, and be ready to absorb the next signal.";
 }
 
-function deriveZoneTelemetry(agents: OfficeAgentModel[]): OfficeZoneTelemetry[] {
+function deriveCurrentTaskLabel(agent: Pick<OfficeAgentModel, "taskId" | "sessionId" | "status">): string {
+  if (agent.taskId) {
+    return agent.taskId;
+  }
+  if (agent.sessionId) {
+    return agent.sessionId;
+  }
+  if (agent.status === "ready") {
+    return "Ready reserve";
+  }
+  if (agent.status === "active") {
+    return "Live execution";
+  }
+  return "Standby slot";
+}
+
+function deriveWorkloadScore(
+  agent: Pick<OfficeAgentModel, "status" | "risk" | "activityState" | "attentionLevel">,
+  ageMs: number,
+  peerCount: number,
+): number {
+  let score = agent.status === "active" ? 0.48 : agent.status === "ready" ? 0.24 : 0.14;
+  if (agent.risk === "approval") {
+    score += 0.22;
+  } else if (agent.risk === "blocked" || agent.risk === "error") {
+    score += 0.36;
+  }
+  if (agent.activityState === "collaborating") {
+    score += 0.14;
+  }
+  if (agent.activityState === "alert_response") {
+    score += 0.2;
+  }
+  if (peerCount > 1) {
+    score += Math.min(0.16, peerCount * 0.04);
+  }
+  if (ageMs <= HOT_AGENT_WINDOW_MS) {
+    score += 0.08;
+  } else if (ageMs <= WARM_AGENT_WINDOW_MS) {
+    score += 0.03;
+  }
+  if (agent.attentionLevel === "priority") {
+    score += 0.12;
+  } else if (agent.attentionLevel === "watch") {
+    score += 0.05;
+  }
+  return Math.max(0.12, Math.min(1, score));
+}
+
+function buildAgentHandoffs(
+  agent: Pick<OfficeAgentModel, "collabPeers" | "eventTrail" | "currentTaskLabel" | "risk">,
+  officeAgentNamesByRole: Map<string, string>,
+): AgentHandoff[] {
+  const handoffs: AgentHandoff[] = [];
+
+  for (const peerRoleId of agent.collabPeers.slice(0, 3)) {
+    handoffs.push({
+      label: "Cross-desk sync",
+      detail: `Linked with ${officeAgentNamesByRole.get(peerRoleId) ?? peerRoleId} on ${agent.currentTaskLabel}.`,
+    });
+  }
+
+  for (const event of agent.eventTrail.slice(-6).reverse()) {
+    if (event.eventType === "tool_invoked") {
+      const payload = asRecord(event.payload);
+      const toolName = asString(payload.toolName) ?? "tool";
+      const outcome = asString(payload.outcome) ?? "executed";
+      handoffs.push({
+        label: outcome === "approval_required" ? "Approval handoff" : "Tool handoff",
+        detail: `${toolName} returned ${outcome}.`,
+        timestamp: event.timestamp,
+      });
+    } else if (event.eventType === "subagent_updated") {
+      const session = asRecord(asRecord(event.payload).session);
+      const status = asString(session.status) ?? "updated";
+      handoffs.push({
+        label: "Sub-agent handoff",
+        detail: `Session ${status} for ${agent.currentTaskLabel}.`,
+        timestamp: event.timestamp,
+      });
+    } else if (event.eventType === "task_updated" || event.eventType === "task_created") {
+      handoffs.push({
+        label: "Task handoff",
+        detail: summarizeEvent(event),
+        timestamp: event.timestamp,
+      });
+    }
+  }
+
+  if (agent.risk !== "none" && handoffs.length === 0) {
+    handoffs.push({
+      label: "Risk handoff",
+      detail: `Current risk state is ${agent.risk}. Operator review is likely the next hop.`,
+    });
+  }
+
+  return handoffs.slice(0, 4);
+}
+
+function deriveZoneActivityLanes(agents: OfficeAgentModel[]): OfficeZoneActivityLane[] {
+  const byRole = new Map(agents.map((agent) => [agent.roleId, agent]));
+  const lanes = new Map<string, OfficeZoneActivityLane>();
+
+  for (const agent of agents) {
+    for (const peerRoleId of agent.collabPeers) {
+      const peer = byRole.get(peerRoleId);
+      if (!peer || peer.zoneId === agent.zoneId) {
+        continue;
+      }
+      const orderedZones = [agent.zoneId, peer.zoneId].sort();
+      const fromZoneId = orderedZones[0] as OfficeZoneId;
+      const toZoneId = orderedZones[1] as OfficeZoneId;
+      const key = `${fromZoneId}->${toZoneId}`;
+      const risk = agent.risk !== "none" || peer.risk !== "none";
+      const existing = lanes.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.risk = existing.risk || risk;
+        existing.strength = Math.min(1, existing.strength + 0.14 + (risk ? 0.08 : 0));
+        continue;
+      }
+      lanes.set(key, {
+        fromZoneId,
+        toZoneId,
+        fromLabel: officeZoneLabel(fromZoneId),
+        toLabel: officeZoneLabel(toZoneId),
+        strength: 0.34 + (risk ? 0.16 : 0),
+        count: 1,
+        risk,
+        label: `${agent.name} and ${peer.name} are actively linking work across decks.`,
+      });
+    }
+  }
+
+  return [...lanes.values()]
+    .sort((left, right) => {
+      if (left.risk !== right.risk) {
+        return left.risk ? -1 : 1;
+      }
+      return right.count - left.count;
+    })
+    .slice(0, MAX_VISIBLE_ZONE_LANES);
+}
+
+function deriveSignalRoutes(agents: OfficeAgentModel[]): OfficeSignalRoute[] {
+  return agents
+    .filter((agent) => agent.risk !== "none")
+    .map((agent) => {
+      const kind: OfficeSignalRoute["kind"] = agent.risk === "approval"
+        ? "approval"
+        : agent.risk === "blocked"
+          ? "blocked"
+          : "error";
+      return {
+        roleId: agent.roleId,
+        zoneId: agent.zoneId,
+        kind,
+        label: agent.risk === "approval"
+          ? `${agent.name} needs review`
+          : `${agent.name} is in escalation`,
+        intensity: Math.max(0.45, agent.workloadScore),
+      };
+    })
+    .sort((left, right) => right.intensity - left.intensity)
+    .slice(0, 6);
+}
+
+function deriveZoneTelemetry(
+  agents: OfficeAgentModel[],
+  zoneActivityLanes: OfficeZoneActivityLane[],
+): OfficeZoneTelemetry[] {
   return OFFICE_ZONE_ORDER.map((zoneId) => {
     const zoneAgents = agents.filter((agent) => agent.zoneId === zoneId);
     const totalAgents = zoneAgents.length;
@@ -1626,9 +2182,18 @@ function deriveZoneTelemetry(agents: OfficeAgentModel[]): OfficeZoneTelemetry[] 
     const linkedAgents = zoneAgents.filter((agent) => agent.activityState === "collaborating").length;
     const alertAgents = zoneAgents.filter((agent) => agent.attentionLevel === "priority").length;
     const watchAgents = zoneAgents.filter((agent) => agent.attentionLevel === "watch").length;
+    const lastSignalAt = zoneAgents.reduce((latest, agent) => {
+      return Math.max(latest, parseTimestamp(agent.lastSeenAt));
+    }, 0);
+    const laneCount = zoneActivityLanes.filter((lane) => lane.fromZoneId === zoneId || lane.toZoneId === zoneId).length;
+    const workloadScore = totalAgents === 0
+      ? 0
+      : zoneAgents.reduce((sum, agent) => sum + agent.workloadScore, 0) / totalAgents;
     const hottestAgent = zoneAgents.find((agent) => agent.attentionLevel === "priority")
       ?? zoneAgents.find((agent) => agent.attentionLevel === "watch")
       ?? zoneAgents[0];
+    const landmark = zoneLandmark(zoneId);
+    const architectureNote = zoneArchitectureNote(zoneId, workloadScore);
 
     let focus = "No goats assigned to this deck yet.";
     if (hottestAgent?.attentionLevel === "priority") {
@@ -1650,8 +2215,46 @@ function deriveZoneTelemetry(agents: OfficeAgentModel[]): OfficeZoneTelemetry[] 
       alertAgents,
       focus,
       attentionLevel: alertAgents > 0 ? "priority" : watchAgents > 0 ? "watch" : "stable",
+      workloadScore,
+      lastSignalAt: lastSignalAt > 0 ? new Date(lastSignalAt).toISOString() : undefined,
+      laneCount,
+      landmark,
+      architectureNote,
     };
   });
+}
+
+function zoneLandmark(zoneId: OfficeZoneId): string {
+  if (zoneId === "command") {
+    return "Command spire";
+  }
+  if (zoneId === "research") {
+    return "Signal halo";
+  }
+  if (zoneId === "build") {
+    return "Forge stacks";
+  }
+  if (zoneId === "security") {
+    return "Sentinel wall";
+  }
+  return "Relay gantry";
+}
+
+function zoneArchitectureNote(zoneId: OfficeZoneId, workloadScore: number): string {
+  const loadLabel = workloadScore >= 0.72 ? "running hot" : workloadScore >= 0.42 ? "holding live pressure" : "idling cool";
+  if (zoneId === "command") {
+    return `${loadLabel} with bridge lighting and command rails.`;
+  }
+  if (zoneId === "research") {
+    return `${loadLabel} with halo frames and open scan surfaces.`;
+  }
+  if (zoneId === "build") {
+    return `${loadLabel} with forge geometry and heavy work bays.`;
+  }
+  if (zoneId === "security") {
+    return `${loadLabel} with shield walls and hard angles.`;
+  }
+  return `${loadLabel} with relay towers and routing pylons.`;
 }
 
 export function describeGoatAssetStatus(assetPack: OfficeAssetPack): {
@@ -1866,6 +2469,8 @@ function readOperatorPreferences(): OperatorPreferences {
       showRailDock: asBoolean(parsed.showRailDock, DEFAULT_OPERATOR_PREFS.showRailDock),
       idleMillingEnabled: asBoolean(parsed.idleMillingEnabled, DEFAULT_OPERATOR_PREFS.idleMillingEnabled),
       focusMode: asBoolean(parsed.focusMode, DEFAULT_OPERATOR_PREFS.focusMode),
+      quietMode: asBoolean(parsed.quietMode, DEFAULT_OPERATOR_PREFS.quietMode),
+      followSelection: asBoolean(parsed.followSelection, DEFAULT_OPERATOR_PREFS.followSelection),
     };
   } catch {
     return { ...DEFAULT_OPERATOR_PREFS };
@@ -1886,6 +2491,8 @@ function persistOperatorPreferences(value: OperatorPreferences): void {
     showRailDock: value.showRailDock,
     idleMillingEnabled: value.idleMillingEnabled,
     focusMode: value.focusMode,
+    quietMode: value.quietMode,
+    followSelection: value.followSelection,
   };
   window.localStorage.setItem(OPERATOR_STORAGE_KEY, JSON.stringify(payload));
 }

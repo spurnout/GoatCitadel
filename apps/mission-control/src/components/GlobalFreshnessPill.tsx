@@ -1,5 +1,5 @@
 import { memo } from "react";
-import type { EventStreamConnectionState } from "../api/client";
+import type { EventStreamConnectionState } from "../api/shell-client";
 import { useEventStreamStatus } from "../hooks/useEventStreamStatus";
 
 function mapStateToLabel(state: EventStreamConnectionState): "Live" | "Degraded" | "Reconnecting" | "Offline" {

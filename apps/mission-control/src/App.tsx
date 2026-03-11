@@ -5,12 +5,12 @@ import {
   fetchWorkspaces,
   getGatewayApiBaseUrl,
   preflightGatewayAccess,
+  resolveApproval,
   type GatewayAccessPreflightResult,
   type RealtimeEvent,
   type EventStreamConnectionState,
-} from "./api/client";
-import { CommandPalette } from "./components/CommandPalette";
-import { DevDiagnosticsPanel } from "./components/DevDiagnosticsPanel";
+} from "./api/shell-client";
+import { DeviceAccessApprovalModal, type DeviceAccessApprovalPrompt } from "./components/DeviceAccessApprovalModal";
 import { GatewayAccessGate } from "./components/GatewayAccessGate";
 import { GlobalFreshnessPill } from "./components/GlobalFreshnessPill";
 import { HelpHint } from "./components/HelpHint";
@@ -42,8 +42,10 @@ function lazyPage(loader: () => Promise<Record<string, unknown>>, exportName: st
 }
 
 const AddonsPage = lazyPage(() => import("./pages/AddonsPage"), "AddonsPage");
+const CommandPalette = lazyPage(() => import("./components/CommandPalette"), "CommandPalette");
 const OnboardingPage = lazyPage(() => import("./pages/OnboardingPage"), "OnboardingPage");
 const DashboardPage = lazyPage(() => import("./pages/DashboardPage"), "DashboardPage");
+const DevDiagnosticsPanel = lazyPage(() => import("./components/DevDiagnosticsPanel"), "DevDiagnosticsPanel");
 const SystemPage = lazyPage(() => import("./pages/SystemPage"), "SystemPage");
 const FilesPage = lazyPage(() => import("./pages/FilesPage"), "FilesPage");
 const MemoryPage = lazyPage(() => import("./pages/MemoryPage"), "MemoryPage");
@@ -318,6 +320,8 @@ export function App() {
   const [workspaceOptions, setWorkspaceOptions] = useState<Array<{ workspaceId: string; name: string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [deviceAccessPrompts, setDeviceAccessPrompts] = useState<DeviceAccessApprovalPrompt[]>([]);
+  const [deviceAccessResolveBusy, setDeviceAccessResolveBusy] = useState(false);
   const [gatewayAccess, setGatewayAccess] = useState<GatewayAccessViewState>({
     status: "checking",
     message: "Verifying gateway reachability and access policy.",
@@ -349,6 +353,42 @@ export function App() {
       });
     });
   }, []);
+
+  const activeDeviceAccessPrompt = deviceAccessPrompts[0];
+
+  const dismissDeviceAccessPrompt = useCallback((approvalId: string) => {
+    setDeviceAccessPrompts((current) => current.filter((item) => item.approvalId !== approvalId));
+  }, []);
+
+  const handleResolveDeviceAccessPrompt = useCallback(async (decision: "approve" | "reject") => {
+    if (!activeDeviceAccessPrompt) {
+      return;
+    }
+    setDeviceAccessResolveBusy(true);
+    try {
+      await resolveApproval(activeDeviceAccessPrompt.approvalId, {
+        decision,
+        resolvedBy: buildMissionControlResolverId(),
+        resolutionNote: decision === "approve"
+          ? "Approved from Mission Control."
+          : "Rejected from Mission Control.",
+      });
+      dismissDeviceAccessPrompt(activeDeviceAccessPrompt.approvalId);
+      pushNotification(
+        decision === "approve" ? "success" : "warning",
+        `${activeDeviceAccessPrompt.deviceLabel} ${decision === "approve" ? "was approved" : "was rejected"}.`,
+        `device-access:${activeDeviceAccessPrompt.approvalId}`,
+      );
+    } catch (error) {
+      pushNotification(
+        "error",
+        (error as Error).message,
+        `device-access-error:${activeDeviceAccessPrompt.approvalId}`,
+      );
+    } finally {
+      setDeviceAccessResolveBusy(false);
+    }
+  }, [activeDeviceAccessPrompt, dismissDeviceAccessPrompt, pushNotification]);
 
   const handleOnboardingCompleted = useCallback(() => {
     setOnboardingComplete(true);
@@ -439,6 +479,23 @@ export function App() {
             eventId: event.eventId,
             timestamp: Date.now(),
           });
+        }
+        if (event.eventType === "auth_device_request_created") {
+          const prompt = parseDeviceAccessPrompt(event);
+          if (prompt) {
+            setDeviceAccessPrompts((current) => upsertDeviceAccessPrompt(current, prompt));
+            pushNotification(
+              "warning",
+              `${prompt.deviceLabel} is waiting for approval.`,
+              `device-access:${prompt.approvalId}`,
+            );
+          }
+        }
+        if (event.eventType === "auth_device_request_resolved") {
+          const approvalId = readDeviceAccessPromptField(event.payload, "approvalId");
+          if (approvalId) {
+            dismissDeviceAccessPrompt(approvalId);
+          }
         }
       },
       (nextState) => {
@@ -812,20 +869,78 @@ export function App() {
           {content}
         </Suspense>
       </main>
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        items={commandItems}
-      />
-      <DevDiagnosticsPanel
-        open={diagnosticsOpen}
-        onClose={() => setDiagnosticsOpen(false)}
-      />
+      {paletteOpen ? (
+        <Suspense fallback={null}>
+          <CommandPalette
+            open={paletteOpen}
+            onClose={() => setPaletteOpen(false)}
+            items={commandItems}
+          />
+        </Suspense>
+      ) : null}
+      {diagnosticsOpen && isDevDiagnosticsEnabled() ? (
+        <Suspense fallback={null}>
+          <DevDiagnosticsPanel
+            open={diagnosticsOpen}
+            onClose={() => setDiagnosticsOpen(false)}
+          />
+        </Suspense>
+      ) : null}
       <NotificationStack
         items={notifications}
         onDismiss={(id) => setNotifications((current) => current.filter((item) => item.id !== id))}
       />
+      <DeviceAccessApprovalModal
+        open={Boolean(activeDeviceAccessPrompt)}
+        prompt={activeDeviceAccessPrompt}
+        busy={deviceAccessResolveBusy}
+        onApprove={() => void handleResolveDeviceAccessPrompt("approve")}
+        onReject={() => void handleResolveDeviceAccessPrompt("reject")}
+        onDismiss={() => {
+          if (activeDeviceAccessPrompt) {
+            dismissDeviceAccessPrompt(activeDeviceAccessPrompt.approvalId);
+          }
+        }}
+      />
     </div>
   );
+}
+
+function parseDeviceAccessPrompt(event: RealtimeEvent): DeviceAccessApprovalPrompt | undefined {
+  const approvalId = readDeviceAccessPromptField(event.payload, "approvalId");
+  const requestId = readDeviceAccessPromptField(event.payload, "requestId");
+  if (!approvalId || !requestId) {
+    return undefined;
+  }
+  return {
+    approvalId,
+    requestId,
+    deviceLabel: readDeviceAccessPromptField(event.payload, "deviceLabel") ?? "New device",
+    deviceType: readDeviceAccessPromptField(event.payload, "deviceType"),
+    platform: readDeviceAccessPromptField(event.payload, "platform"),
+    requestedIp: readDeviceAccessPromptField(event.payload, "requestedIp"),
+    requestedOrigin: readDeviceAccessPromptField(event.payload, "requestedOrigin"),
+    createdAt: readDeviceAccessPromptField(event.payload, "createdAt"),
+  };
+}
+
+function upsertDeviceAccessPrompt(
+  current: DeviceAccessApprovalPrompt[],
+  incoming: DeviceAccessApprovalPrompt,
+): DeviceAccessApprovalPrompt[] {
+  const withoutMatch = current.filter((item) => item.approvalId !== incoming.approvalId);
+  return [incoming, ...withoutMatch];
+}
+
+function readDeviceAccessPromptField(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function buildMissionControlResolverId(): string {
+  if (typeof window === "undefined") {
+    return "mission-control";
+  }
+  return `mission-control:${window.location.hostname}`;
 }
 

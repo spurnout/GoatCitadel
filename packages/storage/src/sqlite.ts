@@ -228,6 +228,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "chat_mode_orchestration_foundation",
     up: createChatModeOrchestrationFoundationSchema,
   },
+  {
+    version: 27,
+    name: "auth_device_requests_and_grants",
+    up: createAuthDeviceAccessSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -2080,6 +2085,59 @@ function createOperationalHotPathSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_policy_blocks_session_time
       ON policy_blocks(session_id, timestamp DESC);
+  `);
+}
+
+function createAuthDeviceAccessSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auth_device_requests (
+      request_id TEXT PRIMARY KEY,
+      approval_id TEXT NOT NULL UNIQUE,
+      request_secret_hash TEXT NOT NULL,
+      device_label TEXT NOT NULL,
+      device_type TEXT NOT NULL,
+      platform TEXT,
+      requested_origin TEXT,
+      requested_ip TEXT,
+      user_agent TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT,
+      resolution_note TEXT,
+      approved_token_plaintext TEXT,
+      approved_token_expires_at TEXT,
+      delivered_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_auth_device_requests_status_created
+      ON auth_device_requests(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_auth_device_requests_expires_at
+      ON auth_device_requests(expires_at);
+
+    CREATE TABLE IF NOT EXISTS auth_device_grants (
+      grant_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      token_hash TEXT NOT NULL UNIQUE,
+      device_label TEXT NOT NULL,
+      device_type TEXT NOT NULL,
+      platform TEXT,
+      granted_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY(request_id) REFERENCES auth_device_requests(request_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_auth_device_grants_expires_at
+      ON auth_device_grants(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_auth_device_grants_last_used
+      ON auth_device_grants(last_used_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_auth_device_grants_revoked
+      ON auth_device_grants(revoked_at, created_at DESC);
   `);
 }
 
