@@ -524,7 +524,7 @@ export function App() {
       close();
       resetEventStreamStatus();
     };
-  }, [gatewayAccess.status, pushNotification]);
+  }, [gatewayAccess.status, pushNotification, dismissDeviceAccessPrompt]);
 
   useEffect(() => {
     if (gatewayAccess.status !== "ready") {

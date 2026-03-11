@@ -10641,7 +10641,7 @@ export class GatewayService {
     const current = await this.expireDeviceAccessRequestIfNeeded(request);
     if (current.status === "approved" && !current.deliveredAt) {
       const deliveredAt = new Date().toISOString();
-      this.gatewaySql.prepare(`
+      const result = this.gatewaySql.prepare(`
         UPDATE auth_device_requests
         SET delivered_at = @deliveredAt,
             approved_token_plaintext = NULL
@@ -10651,6 +10651,14 @@ export class GatewayService {
         requestId: current.requestId,
         deliveredAt,
       });
+      if (result.changes === 0) {
+        // Another concurrent poll already delivered the token — re-read the record
+        // so the response does not leak the plaintext token a second time.
+        const refreshed = this.getAuthDeviceRequestById(requestId);
+        if (refreshed) {
+          return mapDeviceAccessStatusResponse(refreshed);
+        }
+      }
     }
 
     return mapDeviceAccessStatusResponse(current);
@@ -17680,6 +17688,11 @@ function hashSensitiveToken(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+/**
+ * Timing-safe string comparison. This function must only be called with
+ * fixed-length inputs (e.g. SHA-256 hex digests) because it early-returns
+ * on length mismatch. For variable-length secrets, hash both sides first.
+ */
 function timingSafeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left, "utf8");
   const rightBuffer = Buffer.from(right, "utf8");
