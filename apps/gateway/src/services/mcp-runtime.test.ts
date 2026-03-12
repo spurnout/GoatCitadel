@@ -1,0 +1,97 @@
+import { describe, expect, it } from "vitest";
+import type { McpServerRecord } from "@goatcitadel/contracts";
+import { discoverMcpTools, invokeMcpRuntimeTool } from "./mcp-runtime.js";
+
+function createTestServer(script: string): McpServerRecord {
+  const now = new Date().toISOString();
+  return {
+    serverId: "srv-test",
+    label: "Test Playwright MCP",
+    transport: "stdio",
+    command: process.execPath,
+    args: ["-e", script],
+    authType: "none",
+    enabled: true,
+    status: "connected",
+    category: "browser",
+    trustTier: "trusted",
+    costTier: "free",
+    policy: {
+      requireFirstToolApproval: false,
+      redactionMode: "off",
+      allowedToolPatterns: [],
+      blockedToolPatterns: [],
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+const MCP_TEST_SCRIPT = String.raw`
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function reply(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+}
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    reply(message.id, {
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "test-mcp", version: "1.0.0" },
+    });
+    return;
+  }
+  if (message.method === "tools/list") {
+    reply(message.id, {
+      tools: [
+        { name: "browser.navigate", description: "Navigate browser page" },
+        { name: "browser.extract", description: "Extract browser content" },
+      ],
+    });
+    return;
+  }
+  if (message.method === "tools/call") {
+    reply(message.id, {
+      structuredContent: {
+        url: message.params.arguments.url,
+        finalUrl: message.params.arguments.url,
+        status: 200,
+        title: "Example title",
+        textSnippet: "Example page content",
+      },
+    });
+  }
+});
+`;
+
+describe("mcp runtime", () => {
+  it("discovers tools from a stdio MCP server", async () => {
+    const server = createTestServer(MCP_TEST_SCRIPT);
+
+    const tools = await discoverMcpTools(server);
+
+    expect(tools.map((tool) => tool.toolName)).toEqual(["browser.navigate", "browser.extract"]);
+  });
+
+  it("executes a browser-capable MCP adapter through tools/call", async () => {
+    const server = createTestServer(MCP_TEST_SCRIPT);
+
+    const result = await invokeMcpRuntimeTool(server, {
+      toolName: "browser.navigate",
+      arguments: {
+        url: "https://example.com/releases",
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toMatchObject({
+      structuredContent: {
+        finalUrl: "https://example.com/releases",
+        status: 200,
+      },
+      contentText: undefined,
+    });
+  });
+});

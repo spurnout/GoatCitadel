@@ -618,6 +618,55 @@ describe("LlmService", () => {
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks[0]?.id).toBe("chunk_1");
   });
+
+  it("parses SSE events whose JSON payload spans multiple data lines", async () => {
+    const config: LlmConfigFile = {
+      activeProviderId: "glm",
+      providers: [
+        {
+          providerId: "glm",
+          label: "GLM",
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          apiStyle: "openai-chat-completions",
+          defaultModel: "glm-5",
+        },
+      ],
+    };
+
+    const service = new LlmService(config, process.env, { secretStore: createNoopSecretStore() });
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = vi.fn(async () => new Response(
+      [
+        "data: {\"id\":\"chunk_multiline\",",
+        "data: \"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello from multiline sse\"}}]}",
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      },
+    )) as unknown as typeof fetch;
+
+    const chunks: Record<string, unknown>[] = [];
+    try {
+      for await (const chunk of service.chatCompletionsStream({
+        providerId: "glm",
+        model: "glm-5",
+        messages: [{ role: "user", content: "hello" }],
+      })) {
+        chunks.push(chunk);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.id).toBe("chunk_multiline");
+    expect(((chunks[0]?.choices as Array<Record<string, unknown>>)[0]?.delta as Record<string, unknown>)?.content).toBe("hello from multiline sse");
+  });
 });
 
 function createNoopSecretStore(): SecretStoreService {

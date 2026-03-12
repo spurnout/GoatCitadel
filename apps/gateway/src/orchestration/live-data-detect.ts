@@ -1,7 +1,13 @@
 import type { ChatSessionPrefsRecord } from "@goatcitadel/contracts";
 
 const LIVE_DATA_KEYWORD_REGEX =
-  /\b(latest|today|right now|news|price|weather|recent|recently|lately)\b/;
+  /\b(latest|today|right now|news|price|weather|recent|recently|lately|coming out|opening|releasing|release schedule)\b/;
+
+// Temporal phrases like "this week" only indicate live-data intent when
+// paired with event/schedule context — "events this weekend" should match,
+// but "I was busy this week" should not.
+const TEMPORAL_EVENT_REGEX =
+  /\b(happening|events?|schedule[ds]?|showing|playing|releases?|forecast|weather|deals?|sales?|openings?|concerts?|games?|movies?|shows?)\b.{0,30}\b(this week|this weekend|this month)\b|\b(this week|this weekend|this month)\b.{0,30}\b(happening|events?|schedule[ds]?|showing|playing|releases?|forecast|weather|deals?|sales?|openings?|concerts?|games?|movies?|shows?)\b/i;
 
 const CURRENT_EVENT_REGEX =
   /\bcurrent\s+(news|events|weather|forecast|temperature|price|prices|stock|stocks|market|markets|headlines?|score|scores|conditions?|traffic)\b/;
@@ -15,10 +21,13 @@ const EXPLICIT_WEB_PHRASES = [
   "search web",
 ];
 
+export { EXPLICIT_WEB_PHRASES };
+
 export function hasLiveDataKeywords(objective: string): boolean {
   return (
     LIVE_DATA_KEYWORD_REGEX.test(objective)
     || CURRENT_EVENT_REGEX.test(objective)
+    || TEMPORAL_EVENT_REGEX.test(objective)
     || EXPLICIT_WEB_PHRASES.some((phrase) => objective.includes(phrase))
     || objective.includes("what's going on with")
     || objective.includes("whats going on with")

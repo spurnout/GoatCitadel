@@ -372,7 +372,8 @@ export class LlmService {
 
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
     const headers = this.buildHeaders(resolved, "chat");
-    let response = await postChatCompletionsRequest(endpoint, headers, payload, 60000);
+    const timeoutMs = resolveChatCompletionTimeoutMs(request.timeoutMs, 60000);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
@@ -383,7 +384,7 @@ export class LlmService {
       if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
         const fallbackPayload = { ...payload };
         delete fallbackPayload.metadata;
-        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, 60000);
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs);
         if (isRedirect(response.status)) {
           throw new Error(`chat completion blocked redirect (${response.status})`);
         }
@@ -428,7 +429,8 @@ export class LlmService {
 
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
     const headers = this.buildHeaders(resolved, "chat");
-    let response = await postChatCompletionsRequest(endpoint, headers, payload, 120000);
+    const timeoutMs = resolveChatCompletionTimeoutMs(request.timeoutMs, 120000);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
@@ -439,7 +441,7 @@ export class LlmService {
       if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
         const fallbackPayload = { ...payload };
         delete fallbackPayload.metadata;
-        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, 120000);
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs);
         if (isRedirect(response.status)) {
           throw new Error(`chat completion blocked redirect (${response.status})`);
         }
@@ -474,17 +476,13 @@ export class LlmService {
           const dataLines = frame
             .split(/\r?\n/g)
             .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trim())
+            .map((line) => line.slice(5).trimStart())
             .filter(Boolean);
-          for (const data of dataLines) {
-            if (data === "[DONE]") {
+          for (const payload of parseSseFramePayloads(dataLines)) {
+            if (payload === "[DONE]") {
               return;
             }
-            try {
-              yield JSON.parse(data) as Record<string, unknown>;
-            } catch {
-              // ignore malformed provider chunks
-            }
+            yield payload;
           }
         }
       }
@@ -775,6 +773,13 @@ function isMetadataStoreCompatibilityError(text: string): boolean {
   );
 }
 
+function resolveChatCompletionTimeoutMs(value: number | undefined, fallbackMs: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallbackMs;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
 async function postChatCompletionsRequest(
   endpoint: string,
   headers: Record<string, string>,
@@ -870,6 +875,51 @@ function isBlockedIpv6(host: string): boolean {
 
 function isRedirect(status: number): boolean {
   return status >= 300 && status < 400;
+}
+
+function parseSseFramePayloads(dataLines: string[]): Array<Record<string, unknown> | "[DONE]"> {
+  if (dataLines.length === 0) {
+    return [];
+  }
+
+  const joined = dataLines.join("\n").trim();
+  if (joined === "[DONE]") {
+    return ["[DONE]"];
+  }
+
+  const parsedJoined = tryParseJsonRecord(joined);
+  if (parsedJoined) {
+    return [parsedJoined];
+  }
+
+  const parsedLines: Array<Record<string, unknown> | "[DONE]"> = [];
+  for (const line of dataLines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (trimmed === "[DONE]") {
+      parsedLines.push("[DONE]");
+      continue;
+    }
+    const parsed = tryParseJsonRecord(trimmed);
+    if (parsed) {
+      parsedLines.push(parsed);
+    }
+  }
+  return parsedLines;
+}
+
+function tryParseJsonRecord(payload: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignore malformed provider chunks
+  }
+  return null;
 }
 
 function normalizeProviderMessages(

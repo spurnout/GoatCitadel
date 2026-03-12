@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatCompletionRequest, ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
+import type { ChatCompletionRequest, ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, McpInvokeResponse, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
 import { ChatAgentOrchestrator } from "./chat-agent-orchestrator.js";
 
 function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalogEntry[] {
@@ -352,9 +352,10 @@ describe("ChatAgentOrchestrator", () => {
     });
 
     expect(invokeTool).toHaveBeenCalledTimes(2);
-    expect(result.assistantContent).toContain("I stopped retrying tool calls because the same failure repeated.");
-    expect(result.assistantContent).not.toContain("What I did instead");
-    expect(result.assistantContent).not.toContain("What I need from you next");
+    expect(result.assistantContent).toContain("I hit the same tool issue repeatedly");
+    expect(result.assistantContent).toContain("I do not have a reliable enough partial answer yet.");
+    expect(result.assistantContent).not.toContain("Reason:");
+    expect(result.assistantContent).not.toContain("permission denied");
   });
 
   it("does not trip circuit breaker at two attempts for retryable failures", async () => {
@@ -385,8 +386,8 @@ describe("ChatAgentOrchestrator", () => {
     });
 
     expect(invokeTool.mock.calls.length).toBeGreaterThan(2);
-    expect(result.assistantContent).not.toContain("I stopped retrying tool calls because the same failure repeated.");
-    expect(result.assistantContent).not.toContain("What I did instead");
+    expect(result.assistantContent).not.toContain("I hit the same tool issue repeatedly");
+    expect(result.assistantContent).not.toContain("Reason:");
     expect(result.assistantContent).not.toContain("What I need from you next");
   });
 
@@ -1090,8 +1091,9 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(createChatCompletion).toHaveBeenCalledTimes(1);
     expect(invokeTool).not.toHaveBeenCalled();
-    expect(result.assistantContent).toContain("I stopped tool execution because the next step could not be safely recovered.");
-    expect(result.assistantContent).toContain("execution error: url is required");
+    expect(result.assistantContent).toContain("I hit a tool issue that was not safe to keep retrying.");
+    expect(result.assistantContent).toContain("The blocker was in navigate.");
+    expect(result.assistantContent).not.toContain("execution error: url is required");
   });
 
   it("injects evidence grounding instruction when live-data intent triggers a proactive search", async () => {
@@ -1246,6 +1248,282 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(invokeTool).not.toHaveBeenCalled();
     expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
+  });
+
+  it("treats release-window prompts like this week as live-data intent", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here are the strongest current leads.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-movies-week-1",
+        result: {
+          results: [
+            {
+              title: "IMDb upcoming releases",
+              url: "https://www.imdb.com/calendar/",
+              snippet: "Upcoming movie releases this week.",
+            },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-movies-week-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-movies-week-1",
+      content: "What movies are coming out this week?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What movies are coming out this week?" }],
+    });
+
+    expect(result.turnTrace.routing?.liveDataIntent).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "browser.search",
+      args: expect.objectContaining({
+        query: "What movies are coming out this week",
+      }),
+    }));
+  });
+
+  it("retries remote-blocked browser navigation through MCP fallback tiers", async () => {
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-remote-blocked-1",
+        result: {
+          url: "https://movieinsider.com/movies",
+          finalUrl: "https://movieinsider.com/movies",
+          status: 403,
+          title: "Attention Required! | Cloudflare",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+        },
+      });
+    const invokeMcpTool = vi
+      .fn<() => Promise<McpInvokeResponse>>()
+      .mockResolvedValueOnce({
+        ok: true,
+        output: {
+          structuredContent: {
+            url: "https://www.imdb.com/calendar/",
+            finalUrl: "https://www.imdb.com/calendar/",
+            status: 200,
+            title: "IMDb Release Calendar",
+            textSnippet: "Upcoming movies this week.",
+          },
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool,
+      invokeMcpTool,
+      listMcpBrowserFallbackTargets: () => [
+        {
+          serverId: "srv-playwright",
+          label: "Playwright MCP",
+          tier: "playwright_mcp",
+          navigateToolName: "browser.navigate",
+          extractToolName: "browser.extract",
+        },
+      ],
+    });
+
+    const executed = await (orchestrator as unknown as {
+      executeToolCall(input: {
+        input: {
+          sessionId: string;
+          content: string;
+          mode: "chat";
+          providerId: string;
+          model: string;
+          webMode: "auto";
+          memoryMode: "off";
+          thinkingLevel: "standard";
+          toolAutonomy: "safe_auto";
+        };
+        turnId: string;
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+      }): Promise<{ record: ChatToolRunRecord }>;
+    }).executeToolCall({
+      input: {
+        sessionId: "sess-mcp-fallback-1",
+        content: "What movies are coming out this week?",
+        mode: "chat",
+        providerId: "glm",
+        model: "glm-5",
+        webMode: "auto",
+        memoryMode: "off",
+        thinkingLevel: "standard",
+        toolAutonomy: "safe_auto",
+      },
+      turnId: "turn-mcp-fallback-1",
+      toolName: "browser.navigate",
+      rawArgs: {
+        url: "https://movieinsider.com/movies",
+      },
+    });
+
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(invokeMcpTool).toHaveBeenCalledWith(expect.objectContaining({
+      serverId: "srv-playwright",
+      toolName: "browser.navigate",
+      arguments: expect.objectContaining({
+        url: "https://movieinsider.com/movies",
+      }),
+    }));
+    expect(executed.record.status).toBe("executed");
+    expect(executed.record.result).toMatchObject({
+      engineTier: "playwright_mcp",
+      engineLabel: "Playwright MCP",
+      finalUrl: "https://www.imdb.com/calendar/",
+    });
+    expect(Array.isArray(executed.record.result?.fallbackChain)).toBe(true);
+    expect((executed.record.result?.fallbackChain as Array<Record<string, unknown>>)[0]).toMatchObject({
+      engineTier: "builtin",
+      browserFailureClass: "remote_blocked",
+      status: "failed",
+    });
+  });
+
+  it("poisons blocked hosts when selecting the next grounded browser result", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+      };
+    }).preflightToolInvocation({
+      toolName: "browser.navigate",
+      rawArgs: { url: "https://lite.duckduckgo.com/lite/?q=movies+this+week" },
+      userContent: "What movies are coming out this week?",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-movies-1",
+          turnId: "turn-movies-1",
+          sessionId: "sess-movies-1",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "movies coming out this week" },
+          result: {
+            results: [
+              { title: "Movie Insider releases", url: "https://www.movieinsider.com/movies", snippet: "Releases" },
+              { title: "Movies coming out this week - IMDb", url: "https://www.imdb.com/calendar/", snippet: "Upcoming releases this week." },
+            ],
+          },
+          startedAt: "2026-03-10T01:00:00.000Z",
+          finishedAt: "2026-03-10T01:00:01.000Z",
+        },
+        {
+          toolRunId: "tool-nav-movies-1",
+          turnId: "turn-movies-1",
+          sessionId: "sess-movies-1",
+          toolName: "browser.navigate",
+          status: "failed",
+          args: { url: "https://www.movieinsider.com/movies" },
+          result: {
+            url: "https://www.movieinsider.com/movies",
+            finalUrl: "https://www.movieinsider.com/movies",
+            status: 403,
+            browserFailureClass: "remote_blocked",
+          },
+          error: "remote site blocked automation (Cloudflare 403)",
+          startedAt: "2026-03-10T01:00:02.000Z",
+          finishedAt: "2026-03-10T01:00:03.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.toolName).toBe("browser.navigate");
+    expect(preflight.args).toMatchObject({
+      url: "https://www.imdb.com/calendar/",
+    });
+  });
+
+  it("surfaces blocked-source fallback copy instead of generic retry wording", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://www.movieinsider.com/movies" }))
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://www.movieinsider.com/movies" }));
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-movieinsider-blocked",
+        result: {
+          url: "https://www.movieinsider.com/movies",
+          finalUrl: "https://www.movieinsider.com/movies",
+          status: 403,
+          title: "Attention Required! | Cloudflare",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-movieinsider-blocked-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-movieinsider-blocked-1",
+      content: "What movies are coming out this week?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What movies are coming out this week?" }],
+    });
+
+    expect(result.assistantContent).toContain("A source blocked automated browsing");
+    expect(result.assistantContent).toContain("movieinsider.com");
   });
 
   it("asks for clarification instead of faking an estimate for ambiguous local-area prompts", async () => {
@@ -1631,5 +1909,69 @@ describe("ChatAgentOrchestrator", () => {
     expect(createChatCompletion).toHaveBeenCalledTimes(1);
     expect(invokeTool).not.toHaveBeenCalled();
     expect(result.assistantContent).toContain("Paris");
+  });
+
+  it("preserves streamed text parts when later chunks use nested text.value content", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>();
+    const createChatCompletionStream = vi.fn(async function* () {
+      yield {
+        id: "chunk_1",
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: "I'd be happy to help you find weekend activities! Since it's currently Wednesday, March 11th, you're asking about the upcoming weekend (March 14-15, 2026).\n\nTo give you the best recommendations, I",
+            },
+          },
+        ],
+      };
+      yield {
+        id: "chunk_2",
+        model: "glm-5",
+        usage: {
+          prompt_tokens: 1140,
+          completion_tokens: 191,
+        },
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: [
+                { type: "output_text", text: { value: " need a bit more information about your location and interests before I suggest specific plans." } },
+              ],
+            },
+          },
+        ],
+      };
+    });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog([]),
+      createChatCompletion,
+      createChatCompletionStream,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-streamed-parts-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-streamed-parts-1",
+      content: "Help me plan something fun.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Help me plan something fun." }],
+    });
+
+    expect(createChatCompletionStream).toHaveBeenCalledTimes(1);
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("To give you the best recommendations, I need a bit more information");
+    expect(result.assistantContent).toContain("location and interests");
   });
 });

@@ -9,6 +9,7 @@ import type {
 } from "@goatcitadel/contracts";
 import { StatusChip } from "../StatusChip";
 import { ChatStreamStatusBar, type ChatStreamStatus } from "./ChatStreamStatusBar";
+import { getChatToolRunDiagnostics } from "./chat-tool-diagnostics";
 
 export interface ChatThreadNotice {
   id: string;
@@ -136,12 +137,23 @@ function ChatTurnDetails({
         <div className="chat-v11-turn-section">
           <h5>Tools</h5>
           <ul className="chat-v11-turn-list">
-            {turn.toolRuns.map((run) => (
-              <li key={run.toolRunId}>
-                <strong>{run.toolName}</strong> · {run.status}
-                {run.error ? <p>{run.error}</p> : null}
-              </li>
-            ))}
+            {turn.toolRuns.map((run) => {
+              const diagnostics = getChatToolRunDiagnostics(run);
+              return (
+                <li key={run.toolRunId}>
+                  <strong>{run.toolName}</strong>
+                  {" · "}
+                  {run.status}
+                  {diagnostics.browserFailureClass ? ` · ${diagnostics.browserFailureClass}` : ""}
+                  {diagnostics.engineLabel ? <p>Engine: {diagnostics.engineLabel}{diagnostics.engineTier ? ` (${diagnostics.engineTier})` : ""}</p> : null}
+                  {diagnostics.url ? <p>URL: {diagnostics.url}</p> : null}
+                  {diagnostics.finalUrl && diagnostics.finalUrl !== diagnostics.url ? <p>Final URL: {diagnostics.finalUrl}</p> : null}
+                  {diagnostics.httpStatus !== undefined ? <p>HTTP status: {diagnostics.httpStatus}</p> : null}
+                  {diagnostics.summary ? <p>{diagnostics.summary}</p> : null}
+                  {run.error ? <p>Error: {run.error}</p> : null}
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : null}
@@ -161,6 +173,8 @@ function ChatTurnDetails({
       <div className="chat-v11-turn-section">
         <h5>Routing</h5>
         <p>{summarizeRouting(turn).join(" · ") || "No routing metadata yet."}</p>
+        <p>Live data intent: {turn.trace.routing.liveDataIntent ? "yes" : "no"}</p>
+        {turn.trace.routing.fallbackReason ? <p>Fallback reason: {turn.trace.routing.fallbackReason}</p> : null}
       </div>
       {turn.trace.orchestration ? (
         <div className="chat-v11-turn-section">

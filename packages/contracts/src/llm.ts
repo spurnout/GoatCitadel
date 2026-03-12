@@ -92,6 +92,7 @@ export interface ChatCompletionRequest {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  timeoutMs?: number;
   stream?: boolean;
   tools?: Array<Record<string, unknown>>;
   tool_choice?: string | Record<string, unknown>;

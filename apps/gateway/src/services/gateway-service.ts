@@ -257,6 +257,16 @@ import { LlmService } from "./llm-service.js";
 import { ApprovalExplainerService } from "./approval-explainer-service.js";
 import { scoutCapabilityUpgradeSuggestions } from "./chat-capability-scout.js";
 import {
+  collectMcpBrowserFallbackTargets,
+  inferMcpToolsForServer,
+  invokeMcpRuntimeTool,
+} from "./mcp-runtime.js";
+import {
+  extractLearnedMemoryCandidates,
+  looksLowConfidenceResponse,
+  shouldExtractLearnedMemoryContent,
+} from "./learned-memory-utils.js";
+import {
   assertChatSessionActive,
   buildChatSessionUpdatedPayload,
   deriveChatSessionTitleFromContent,
@@ -991,6 +1001,8 @@ export class GatewayService {
       createChatCompletionStream: (request) => this.createChatCompletionStream(request),
       invokeTool: (request) => this.invokeTool(request),
       evaluateToolAccess: (request) => this.policyEngine.evaluateAccess(request),
+      invokeMcpTool: (request) => this.invokeMcpTool(request),
+      listMcpBrowserFallbackTargets: () => this.listMcpBrowserFallbackTargets(),
     });
     this.researchService = new ResearchService({
       storage: this.storage,
@@ -2471,8 +2483,12 @@ export class GatewayService {
     source: {
       role: "user" | "assistant";
       sourceRef: string;
+      trace?: Pick<ChatTurnTraceRecord, "status" | "toolRuns">;
     },
   ): void {
+    if (!shouldExtractLearnedMemoryContent(content, source)) {
+      return;
+    }
     const candidates = extractLearnedMemoryCandidates(content, source.role);
     for (const candidate of candidates) {
       if (looksSensitive(candidate.content)) {
@@ -4052,6 +4068,19 @@ export class GatewayService {
     this.gatewaySql.prepare("DELETE FROM learned_memory_conflicts WHERE session_id = ?").run(sessionId);
     this.gatewaySql.prepare("DELETE FROM learned_memory_items WHERE session_id = ?").run(sessionId);
 
+    const traceByMessageId = new Map<string, Pick<ChatTurnTraceRecord, "status" | "toolRuns">>();
+    const traces = this.storage.chatTurnTraces.listBySession(sessionId, 5000);
+    for (const trace of traces) {
+      const traceContext = {
+        status: trace.status,
+        toolRuns: trace.toolRuns.length > 0 ? trace.toolRuns : this.storage.chatToolRuns.listByTurn(trace.turnId),
+      } satisfies Pick<ChatTurnTraceRecord, "status" | "toolRuns">;
+      traceByMessageId.set(trace.userMessageId, traceContext);
+      if (trace.assistantMessageId) {
+        traceByMessageId.set(trace.assistantMessageId, traceContext);
+      }
+    }
+
     const transcript = await this.readTranscriptOrEmpty(sessionId);
     for (const event of transcript) {
       if (event.type !== "message.user" && event.type !== "message.assistant") {
@@ -4065,6 +4094,7 @@ export class GatewayService {
       this.extractAndPersistLearnedMemory(sessionId, content, {
         role,
         sourceRef: event.eventId,
+        trace: traceByMessageId.get(event.eventId),
       });
     }
     const rebuiltAt = new Date().toISOString();
@@ -7198,6 +7228,7 @@ export class GatewayService {
         actorType: "user",
         actorId: "operator",
         content,
+        parts: inputParts.length > 0 ? inputParts : undefined,
         timestamp: new Date().toISOString(),
         attachments: attachments.length > 0 ? attachments : undefined,
       };
@@ -7652,6 +7683,7 @@ export class GatewayService {
         }),
         toolRuns: [],
       };
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       yield {
         type: "message_done",
         sessionId,
@@ -7679,7 +7711,6 @@ export class GatewayService {
           capabilityUpgradeSuggestions,
         };
       }
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       yield {
         type: "trace_update",
         sessionId,
@@ -7695,10 +7726,12 @@ export class GatewayService {
       this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
         role: "user",
         sourceRef: prepared.userEventId,
+        trace: hydratedTrace,
       });
       this.extractAndPersistLearnedMemory(sessionId, finalText, {
         role: "assistant",
         sourceRef: assistantMessageId,
+        trace: hydratedTrace,
       });
       yield {
         type: "done",
@@ -7879,6 +7912,7 @@ export class GatewayService {
         }),
         toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
       };
+      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       yield {
         type: "message_done",
         sessionId,
@@ -7906,7 +7940,6 @@ export class GatewayService {
           capabilityUpgradeSuggestions,
         };
       }
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
       yield {
         type: "trace_update",
         sessionId,
@@ -7922,10 +7955,12 @@ export class GatewayService {
       this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
         role: "user",
         sourceRef: prepared.userEventId,
+        trace: hydratedTrace,
       });
       this.extractAndPersistLearnedMemory(sessionId, finalText, {
         role: "assistant",
         sourceRef: assistantMessageId,
+        trace: hydratedTrace,
       });
     }
 
@@ -8192,10 +8227,12 @@ export class GatewayService {
     this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
       role: "user",
       sourceRef: prepared.userEventId,
+      trace: hydratedTrace,
     });
     this.extractAndPersistLearnedMemory(sessionId, assistantText, {
       role: "assistant",
       sourceRef: assistantEventId,
+      trace: hydratedTrace,
     });
     this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
     this.publishRealtime("chat_thread_updated", "chat", {
@@ -11291,23 +11328,12 @@ export class GatewayService {
       lastError: undefined,
     });
     const tools = this.readMcpTools();
-    if (!tools.some((item) => item.serverId === serverId)) {
+    const existing = tools.filter((item) => item.serverId === serverId);
+    const inferred = inferMcpToolsForServer(connected, existing);
+    if (inferred.length > 0) {
       this.writeMcpTools([
-        ...tools,
-        {
-          serverId,
-          toolName: "search",
-          description: "Search tool exposed by MCP server.",
-          enabled: true,
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          serverId,
-          toolName: "fetch",
-          description: "Fetch structured resource from MCP server.",
-          enabled: true,
-          updatedAt: new Date().toISOString(),
-        },
+        ...tools.filter((item) => item.serverId !== serverId),
+        ...inferred,
       ]);
     }
     return connected;
@@ -11360,6 +11386,14 @@ export class GatewayService {
     return this.readMcpTools()
       .filter((item) => item.serverId === serverId)
       .sort((left, right) => left.toolName.localeCompare(right.toolName));
+  }
+
+  public listMcpBrowserFallbackTargets(): ReturnType<typeof collectMcpBrowserFallbackTargets> {
+    return collectMcpBrowserFallbackTargets(
+      this.readMcpServers(),
+      this.readMcpTools(),
+      (serverId, toolName) => this.isMcpToolApproved(serverId, toolName),
+    );
   }
 
   public async invokeMcpTool(input: McpInvokeRequest): Promise<McpInvokeResponse> {
@@ -11462,13 +11496,19 @@ export class GatewayService {
       }
     }
 
-    const output = {
-      serverId: input.serverId,
+    const runtime = await invokeMcpRuntimeTool(server, {
       toolName: input.toolName,
-      arguments: input.arguments ?? {},
-      message: "MCP invocation recorded. Runtime adapter wiring is plugin-dependent.",
-    };
-    const redactedOutput = applyMcpRedaction(output, server.policy.redactionMode);
+      arguments: input.arguments,
+    });
+    const output = runtime.output
+      ? {
+          serverId: input.serverId,
+          toolName: input.toolName,
+          arguments: input.arguments ?? {},
+          ...runtime.output,
+        }
+      : undefined;
+    const redactedOutput = output ? applyMcpRedaction(output, server.policy.redactionMode) : undefined;
     this.publishRealtime("tool_invoked", "mcp", {
       type: "mcp_tool_invoked",
       serverId: input.serverId,
@@ -11477,6 +11517,13 @@ export class GatewayService {
       taskId: input.taskId,
       trustTier: server.trustTier,
     });
+    if (!runtime.ok) {
+      return {
+        ok: false,
+        output: redactedOutput,
+        error: runtime.error ?? `MCP tool ${input.toolName} failed.`,
+      };
+    }
     return {
       ok: true,
       output: redactedOutput,
@@ -12371,12 +12418,17 @@ export class GatewayService {
       normalizeToolProtocolRetryRequest(withContext, 1),
       normalizeToolProtocolRetryRequest(withContext, 2),
     ];
+    const completionDeadline = createChatCompletionDeadline(withContext.timeoutMs);
     let lastError: Error | undefined;
 
     for (let index = 0; index < retryAttempts.length; index += 1) {
       const attemptRequest = retryAttempts[index]!;
       try {
-        response = await this.llmService.chatCompletions(attemptRequest);
+        const attemptTimeoutMs = getRemainingChatCompletionTimeoutMs(completionDeadline, withContext.timeoutMs);
+        response = await this.llmService.chatCompletions({
+          ...attemptRequest,
+          timeoutMs: attemptTimeoutMs ?? attemptRequest.timeoutMs,
+        });
         routing.effectiveProviderId = attemptRequest.providerId ?? primaryProviderId;
         routing.effectiveModel = response.model ?? attemptRequest.model ?? primaryModel;
         if (index > 0) {
@@ -12389,7 +12441,7 @@ export class GatewayService {
         }
         break;
       } catch (error) {
-        lastError = error as Error;
+        lastError = normalizeChatCompletionAttemptError(error, withContext.timeoutMs);
         this.recordDevDiagnostic({
           level: "warn",
           category: "chat",
@@ -12416,10 +12468,12 @@ export class GatewayService {
       const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
       for (const fallback of fallbacks) {
         try {
+          const attemptTimeoutMs = getRemainingChatCompletionTimeoutMs(completionDeadline, withContext.timeoutMs);
           response = await this.llmService.chatCompletions({
             ...normalizeToolProtocolRetryRequest(withContext, 2),
             providerId: fallback.providerId,
             model: fallback.model,
+            timeoutMs: attemptTimeoutMs ?? withContext.timeoutMs,
           });
           this.recordDevDiagnostic({
             level: "info",
@@ -12441,7 +12495,7 @@ export class GatewayService {
           routing.effectiveModel = routing.fallbackModel;
           break;
         } catch (error) {
-          lastError = error as Error;
+          lastError = normalizeChatCompletionAttemptError(error, withContext.timeoutMs);
         }
       }
     }
@@ -12567,15 +12621,18 @@ export class GatewayService {
       normalizeToolProtocolRetryRequest(withContext, 1),
       normalizeToolProtocolRetryRequest(withContext, 2),
     ];
+    const completionDeadline = createChatCompletionDeadline(withContext.timeoutMs);
     let streamed = false;
     let lastError: Error | undefined;
 
     for (let index = 0; index < retryAttempts.length; index += 1) {
       const attemptRequest = retryAttempts[index]!;
       try {
+        const attemptTimeoutMs = getRemainingChatCompletionTimeoutMs(completionDeadline, withContext.timeoutMs);
         for await (const chunk of this.llmService.chatCompletionsStream({
           ...attemptRequest,
           stream: true,
+          timeoutMs: attemptTimeoutMs ?? attemptRequest.timeoutMs,
         })) {
           streamed = true;
           yield chunk;
@@ -12592,7 +12649,7 @@ export class GatewayService {
         }
         break;
       } catch (error) {
-        lastError = error as Error;
+        lastError = normalizeChatCompletionAttemptError(error, withContext.timeoutMs);
         if (index < retryAttempts.length - 1 && shouldRetryToolProtocolError(lastError)) {
           continue;
         }
@@ -12603,11 +12660,13 @@ export class GatewayService {
       const fallbacks = this.resolveFallbackTargets(runtime, primaryProviderId, primaryModel);
       for (const fallback of fallbacks) {
         try {
+          const attemptTimeoutMs = getRemainingChatCompletionTimeoutMs(completionDeadline, withContext.timeoutMs);
           for await (const chunk of this.llmService.chatCompletionsStream({
             ...normalizeToolProtocolRetryRequest(withContext, 2),
             providerId: fallback.providerId,
             model: fallback.model,
             stream: true,
+            timeoutMs: attemptTimeoutMs ?? withContext.timeoutMs,
           })) {
             streamed = true;
             yield chunk;
@@ -12620,7 +12679,7 @@ export class GatewayService {
           routing.effectiveModel = fallback.model;
           break;
         } catch (error) {
-          lastError = error as Error;
+          lastError = normalizeChatCompletionAttemptError(error, withContext.timeoutMs);
         }
       }
     }
@@ -14229,30 +14288,33 @@ export class GatewayService {
           message?: {
             role?: string;
             content?: unknown;
+            parts?: unknown;
             attachments?: unknown;
           };
         };
         const baseContent = typeof payload.message?.content === "string"
           ? payload.message.content
           : this.extractMessagePreview(event.payload);
-        const contentParts = event.type === "message.user"
-          ? await this.buildAttachmentMessageParts(payload.message?.attachments, baseContent, supportsVision)
-          : undefined;
-        const attachmentContext = event.type === "message.user"
-          ? this.buildAttachmentPromptContext(payload.message?.attachments, supportsVision)
-          : undefined;
-        if (contentParts) {
+        if (event.type === "message.user") {
+          const userMessage: ChatMessageRecord = {
+            messageId: event.eventId,
+            sessionId,
+            role: "user",
+            actorType: "user",
+            actorId: "operator",
+            content: baseContent,
+            timestamp: event.timestamp,
+            parts: parseMessageParts(payload.message?.parts),
+            attachments: parseMessageAttachments(payload.message?.attachments),
+          };
           return {
-            role: event.type === "message.assistant" ? "assistant" as const : "user" as const,
-            content: contentParts,
+            role: "user" as const,
+            content: await this.buildUserMessageContent(userMessage, supportsVision),
           };
         }
-        const content = attachmentContext
-          ? `${baseContent}\n\n${attachmentContext}`
-          : baseContent;
         return {
-          role: event.type === "message.assistant" ? "assistant" as const : "user" as const,
-          content,
+          role: "assistant" as const,
+          content: baseContent,
         };
       }));
     const messages = mapped.slice(-80);
@@ -14390,23 +14452,9 @@ export class GatewayService {
           content: message.content,
         };
       }
-      const contentParts = await this.buildAttachmentMessageParts(
-        message.attachments,
-        message.content,
-        supportsVision,
-      );
-      const attachmentContext = this.buildAttachmentPromptContext(message.attachments, supportsVision);
-      if (contentParts) {
-        return {
-          role: "user" as const,
-          content: contentParts,
-        };
-      }
       return {
         role: "user" as const,
-        content: attachmentContext
-          ? `${message.content}\n\n${attachmentContext}`
-          : message.content,
+        content: await this.buildUserMessageContent(message, supportsVision),
       };
     }));
     const messages = mapped.slice(-80);
@@ -14420,6 +14468,64 @@ export class GatewayService {
       },
       ...messages,
     ];
+  }
+
+  private async buildUserMessageContent(
+    message: ChatMessageRecord,
+    supportsVision: boolean,
+  ): Promise<string | Array<Record<string, unknown>>> {
+    const prompt = this.buildUserMessagePrompt(message);
+    const attachments = this.resolveMessageAttachments(message);
+    const contentParts = await this.buildAttachmentMessageParts(attachments, prompt, supportsVision);
+    if (contentParts) {
+      return contentParts;
+    }
+    const attachmentContext = this.buildAttachmentPromptContext(attachments, supportsVision);
+    return attachmentContext
+      ? `${prompt}\n\n${attachmentContext}`
+      : prompt;
+  }
+
+  private buildUserMessagePrompt(message: ChatMessageRecord): string {
+    const baseContent = message.content.trim();
+    const textParts = Array.isArray(message.parts)
+      ? message.parts
+        .filter((part): part is Extract<ChatInputPart, { type: "text" }> => part.type === "text")
+        .map((part) => part.text.trim())
+        .filter(Boolean)
+      : [];
+    if (textParts.length === 0) {
+      return baseContent;
+    }
+    if (!baseContent) {
+      return textParts.join("\n\n");
+    }
+    if (textParts[0] === baseContent) {
+      return textParts.join("\n\n");
+    }
+    return [baseContent, ...textParts].join("\n\n");
+  }
+
+  private resolveMessageAttachments(message: ChatMessageRecord): ChatAttachmentRecord[] {
+    const attachmentIds = new Set<string>();
+    if (Array.isArray(message.attachments)) {
+      for (const attachment of message.attachments) {
+        if (attachment?.attachmentId) {
+          attachmentIds.add(attachment.attachmentId);
+        }
+      }
+    }
+    if (Array.isArray(message.parts)) {
+      for (const part of message.parts) {
+        if (part.type !== "text" && part.attachmentId) {
+          attachmentIds.add(part.attachmentId);
+        }
+      }
+    }
+    if (attachmentIds.size === 0) {
+      return [];
+    }
+    return this.storage.chatAttachments.listByIds([...attachmentIds]).slice(0, 6);
   }
 
   private buildAttachmentPromptContext(input: unknown, supportsVision = false): string | undefined {
@@ -16218,66 +16324,6 @@ function buildRetrievalTrace(input: {
   };
 }
 
-function looksLowConfidenceResponse(content: string): boolean {
-  const normalized = content.trim().toLowerCase();
-  if (!normalized) {
-    return true;
-  }
-  return (
-    normalized.length < 80
-    || /\b(i don't know|not sure|can't help|cannot help|unable to)\b/.test(normalized)
-  );
-}
-
-function extractLearnedMemoryCandidates(
-  content: string,
-  role: "user" | "assistant",
-): Array<{
-  itemType: LearnedMemoryItemType;
-  content: string;
-  confidence: number;
-}> {
-  const lines = content
-    .split(/\r?\n/g)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, 12);
-  const out: Array<{ itemType: LearnedMemoryItemType; content: string; confidence: number }> = [];
-  const add = (itemType: LearnedMemoryItemType, text: string, confidence: number) => {
-    const normalized = normalizeMemoryText(text);
-    if (!normalized) {
-      return;
-    }
-    out.push({
-      itemType,
-      content: text.trim(),
-      confidence: clamp01(confidence),
-    });
-  };
-  for (const line of lines) {
-    if (/^(remember|preference|format|always|please format)/i.test(line)) {
-      add("preference", line, role === "user" ? 0.9 : 0.6);
-      continue;
-    }
-    if (/\b(top priority|goal|objective|for 1\.0|roadmap)\b/i.test(line)) {
-      add("goal", line, role === "user" ? 0.86 : 0.58);
-      continue;
-    }
-    if (/\bmust|never|cannot|can't|do not|without\b/i.test(line)) {
-      add("constraint", line, role === "user" ? 0.82 : 0.56);
-      continue;
-    }
-    if (/\b(project|workspace|stack|integration|session|prompt pack|goatcitadel)\b/i.test(line)) {
-      add("project_context", line, role === "user" ? 0.74 : 0.52);
-      continue;
-    }
-    if (/\bis|are|was|were\b/.test(line) && line.length > 18 && line.length < 220) {
-      add("fact", line, role === "user" ? 0.58 : 0.48);
-    }
-  }
-  return out.slice(0, 8);
-}
-
 function looksSensitive(value: string): boolean {
   const normalized = value.toLowerCase();
   return (
@@ -18049,6 +18095,50 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   }
 }
 
+function createChatCompletionDeadline(timeoutMs: number | undefined): number | undefined {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return undefined;
+  }
+  return Date.now() + Math.floor(timeoutMs);
+}
+
+function getRemainingChatCompletionTimeoutMs(
+  deadline: number | undefined,
+  timeoutMs: number | undefined,
+): number | undefined {
+  if (deadline === undefined) {
+    return timeoutMs;
+  }
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw buildChatCompletionTimeoutError(timeoutMs);
+  }
+  return Math.max(1, remaining);
+}
+
+function normalizeChatCompletionAttemptError(error: unknown, timeoutMs: number | undefined): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  const name = normalized.name.toLowerCase();
+  const message = normalized.message.toLowerCase();
+  if (
+    name.includes("timeout")
+    || name.includes("abort")
+    || message.includes("timed out")
+    || message.includes("timeout")
+    || message.includes("aborted")
+  ) {
+    return buildChatCompletionTimeoutError(timeoutMs);
+  }
+  return normalized;
+}
+
+function buildChatCompletionTimeoutError(timeoutMs: number | undefined): Error {
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return new Error(`Chat completion timed out after ${Math.floor(timeoutMs)}ms.`);
+  }
+  return new Error("Chat completion timed out.");
+}
+
 function formatBackupTimestamp(now: Date): string {
   const parts = [
     now.getUTCFullYear(),
@@ -18116,5 +18206,3 @@ function isTruthy(value: string | undefined): boolean {
   const normalized = value.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
-
-

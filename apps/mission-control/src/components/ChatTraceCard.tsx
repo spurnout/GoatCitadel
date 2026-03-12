@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ChatTurnTraceRecord } from "@goatcitadel/contracts";
+import { getChatToolRunDiagnostics, getTraceFallbackAttemptCount } from "./chat/chat-tool-diagnostics";
 
 function formatTime(value?: string): string {
   if (!value) {
@@ -20,6 +21,7 @@ export function ChatTraceCard({
   defaultCollapsed?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const fallbackAttemptCount = getTraceFallbackAttemptCount(trace);
   return (
     <article className="chat-trace-card">
       <header className="chat-trace-head">
@@ -42,18 +44,45 @@ export function ChatTraceCard({
             <span>Thinking: {trace.thinkingLevel}</span>
             <span>Started: {formatTime(trace.startedAt)}</span>
             <span>Finished: {formatTime(trace.finishedAt)}</span>
+            <span>Live data intent: {trace.routing.liveDataIntent ? "yes" : "no"}</span>
+            <span>Fallback used: {trace.routing.fallbackUsed ? "yes" : "no"}</span>
+            <span>Fallback tiers attempted: {fallbackAttemptCount || "none"}</span>
+          </div>
+          <div className="chat-trace-section">
+            <strong>Routing</strong>
+            <p>
+              {(trace.routing.primaryProviderId || trace.routing.primaryModel)
+                ? `Primary: ${trace.routing.primaryProviderId ?? "provider auto"}${trace.routing.primaryModel ? ` · ${trace.routing.primaryModel}` : ""}`
+                : "Primary: not recorded"}
+            </p>
+            <p>
+              {(trace.routing.effectiveProviderId || trace.routing.effectiveModel)
+                ? `Effective: ${trace.routing.effectiveProviderId ?? "provider auto"}${trace.routing.effectiveModel ? ` · ${trace.routing.effectiveModel}` : ""}`
+                : "Effective: not recorded"}
+            </p>
+            {trace.routing.fallbackReason ? <p>Fallback reason: {trace.routing.fallbackReason}</p> : null}
           </div>
           {trace.toolRuns.length > 0 ? (
             <div className="chat-trace-section">
               <strong>Tool timeline</strong>
               <ul className="chat-trace-list">
-                {trace.toolRuns.map((run) => (
+                {trace.toolRuns.map((run) => {
+                  const diagnostics = getChatToolRunDiagnostics(run);
+                  return (
                   <li key={run.toolRunId}>
                     <span>{run.toolName}</span>
                     <span>{run.status}</span>
                     <span>{formatTime(run.startedAt)}</span>
+                    {diagnostics.engineLabel ? <p>Engine: {diagnostics.engineLabel}{diagnostics.engineTier ? ` (${diagnostics.engineTier})` : ""}</p> : null}
+                    {diagnostics.url ? <p>URL: {diagnostics.url}</p> : null}
+                    {diagnostics.finalUrl && diagnostics.finalUrl !== diagnostics.url ? <p>Final URL: {diagnostics.finalUrl}</p> : null}
+                    {diagnostics.httpStatus !== undefined ? <p>HTTP status: {diagnostics.httpStatus}</p> : null}
+                    {diagnostics.browserFailureClass ? <p>Browser failure: {diagnostics.browserFailureClass}</p> : null}
+                    {diagnostics.summary ? <p>{diagnostics.summary}</p> : null}
+                    {run.error ? <p>Error: {run.error}</p> : null}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </div>
           ) : null}
