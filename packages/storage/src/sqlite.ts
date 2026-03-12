@@ -238,6 +238,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "chat_specialist_candidates",
     up: createChatSpecialistCandidateSchema,
   },
+  {
+    version: 29,
+    name: "chat_turn_trace_shape_repair",
+    up: repairChatTurnTraceShape,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -785,6 +790,32 @@ function createChatSpecialistCandidateSchema(db: DatabaseSync): void {
       ON chat_specialist_candidates(status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_specialist_candidates_workspace
       ON chat_specialist_candidates(workspace_id, updated_at DESC);
+  `);
+}
+
+function repairChatTurnTraceShape(db: DatabaseSync): void {
+  addColumnIfMissing(db, "chat_turn_traces", "retrieval_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "reflection_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "proactive_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "orchestration_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "guidance_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "citations_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "failure_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "capability_upgrade_suggestions_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "specialist_candidate_suggestions_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "parent_turn_id", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "branch_kind", "TEXT NOT NULL DEFAULT 'append'");
+  addColumnIfMissing(db, "chat_turn_traces", "source_turn_id", "TEXT");
+
+  db.exec(`
+    UPDATE chat_turn_traces
+    SET branch_kind = 'append'
+    WHERE branch_kind IS NULL OR TRIM(branch_kind) = '';
+
+    CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_session
+      ON chat_turn_traces(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_session_parent_started
+      ON chat_turn_traces(session_id, parent_turn_id, started_at DESC);
   `);
 }
 

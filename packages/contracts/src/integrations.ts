@@ -2,11 +2,39 @@ import type { IntegrationFormSchema } from "./ui-forms.js";
 
 export type AuthMode = "none" | "token" | "basic";
 
+export type GatewayAuthCredentialSource = "none" | "env" | "inline" | "runtime";
+
+export interface GatewayAuthCredentialPlanEntry {
+  configured: boolean;
+  source: GatewayAuthCredentialSource;
+  warning?: string;
+}
+
+export interface GatewayAuthCredentialPlan {
+  mode: AuthMode;
+  warnings: string[];
+  token: GatewayAuthCredentialPlanEntry;
+  basicUsername: GatewayAuthCredentialPlanEntry;
+  basicPassword: GatewayAuthCredentialPlanEntry;
+}
+
+export type GatewayInstallTokenSource = "none" | "explicit" | "env" | "inline" | "runtime" | "generated";
+
+export interface GatewayInstallTokenResolution {
+  token?: string;
+  source: GatewayInstallTokenSource;
+  persistedToEnv: boolean;
+  envPath?: string;
+  warnings: string[];
+  unavailableReason?: string;
+}
+
 export interface AuthRuntimeSettings {
   mode: AuthMode;
   allowLoopbackBypass: boolean;
   tokenConfigured: boolean;
   basicConfigured: boolean;
+  plan: GatewayAuthCredentialPlan;
 }
 
 export interface AuthSettingsUpdateInput {

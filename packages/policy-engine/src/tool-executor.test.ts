@@ -5,7 +5,12 @@ import type { Storage } from "@goatcitadel/storage";
 const mocked = vi.hoisted(() => ({
   isBrowserToolName: vi.fn<(name: string) => boolean>(),
   executeBrowserTool: vi.fn<
-    (toolName: string, args: Record<string, unknown>, config: ToolPolicyConfig) => Promise<Record<string, unknown>>
+    (
+      toolName: string,
+      args: Record<string, unknown>,
+      config: ToolPolicyConfig,
+      executionContext?: { sessionId?: string },
+    ) => Promise<Record<string, unknown>>
   >(),
 }));
 
@@ -63,6 +68,7 @@ describe("executeTool", () => {
       "browser.navigate",
       request.args,
       policyConfig,
+      { sessionId: "sess-1" },
     );
     expect(result).toMatchObject({ action: "navigate", title: "Example" });
   });

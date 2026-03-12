@@ -26,7 +26,27 @@
       "Bash(pnpm --filter @goatcitadel/skills test 2>&1 | tail -20)",
       "Bash(pnpm --filter mission-control test 2>&1 | tail -20)",
       "Bash(pnpm --filter mission-control typecheck 2>&1 | tail -5)",
-      "Bash(pnpm --filter mission-control test 2>&1 | tail -10)"
+      "Bash(pnpm --filter mission-control test 2>&1 | tail -10)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/gateway typecheck 2>&1; echo \"EXIT_CODE:$?\")",
+      "Read(//f/code/personal-ai-mobile-app/**)",
+      "Bash(npm run:*)",
+      "Bash(ls F:/code/personal-ai-mobile-app/tsconfig*.json 2>&1)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/gateway test -- src/plugins/auth.test.ts src/routes/auth.test.ts 2>&1; echo \"EXIT_CODE:$?\")",
+      "Bash(cd F:/code/personal-ai-mobile-app && npx tsc --noEmit 2>&1 | head -80)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/gateway test -- src/plugins/auth.test.ts src/routes/auth.test.ts 2>&1 | tail -20; echo \"EXIT_CODE:${PIPESTATUS[0]}\")",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/storage typecheck 2>&1; echo \"EXIT_CODE:$?\")",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/storage test -- src/sqlite-migration-versioning.test.ts 2>&1 | tail -20; echo \"EXIT_CODE:${PIPESTATUS[0]}\")",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/mission-control typecheck 2>&1; echo \"EXIT_CODE:$?\")",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/mission-control test -- src/App.access.test.tsx src/components/OfficeCanvas.coverage.test.tsx src/pages/OfficePage.coverage.test.tsx 2>&1 | tail -25; echo \"EXIT_CODE:${PIPESTATUS[0]}\")",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/gateway typecheck 2>&1 | tail -5)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/mission-control typecheck 2>&1 | tail -5)",
+      "Bash(cd F:/code/personal-ai-mobile-app && npx tsc --noEmit 2>&1 | tail -10)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/gateway test -- src/plugins/auth.test.ts src/routes/auth.test.ts 2>&1 | tail -15)",
+      "Bash(cd F:/code/personal-ai && pnpm --filter @goatcitadel/mission-control test -- src/App.access.test.tsx 2>&1 | tail -10)",
+      "Bash(cd F:/code/personal-ai && gh run list --workflow=publish-contracts.yml --limit=1)",
+      "Bash(cd F:/code/personal-ai && gh run view 22937139844 --log-failed)",
+      "Bash(cd F:/code/personal-ai && gh run list --workflow=publish-contracts.yml --limit=2)",
+      "Bash(cd F:/code/personal-ai && gh run watch 22937319827 --exit-status 2>&1 | tail -15)"
     ]
   },
   "hooks": {

@@ -31,7 +31,9 @@ export async function executeTool(
   options: ExecuteToolOptions = {},
 ): Promise<Record<string, unknown>> {
   if (isBrowserToolName(request.toolName)) {
-    return executeBrowserTool(request.toolName, request.args, config);
+    return executeBrowserTool(request.toolName, request.args, config, {
+      sessionId: request.sessionId,
+    });
   }
   if (
     request.toolName.startsWith("bankr.")

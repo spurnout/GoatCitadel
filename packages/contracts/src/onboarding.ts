@@ -1,4 +1,4 @@
-import type { AuthMode, AuthSettingsUpdateInput } from "./integrations.js";
+import type { AuthRuntimeSettings, AuthSettingsUpdateInput } from "./integrations.js";
 import type { ToolProfile } from "./policy.js";
 
 export type OnboardingChecklistStatus = "complete" | "needs_input" | "optional";
@@ -19,12 +19,7 @@ export interface OnboardingState {
     defaultToolProfile: string;
     budgetMode: "saver" | "balanced" | "power";
     networkAllowlist: string[];
-    auth: {
-      mode: AuthMode;
-      tokenConfigured: boolean;
-      basicConfigured: boolean;
-      allowLoopbackBypass: boolean;
-    };
+    auth: AuthRuntimeSettings;
     llm: {
       activeProviderId: string;
       activeModel: string;

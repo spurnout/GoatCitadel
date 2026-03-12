@@ -34,6 +34,8 @@ data/npu-runtime-state.json
 workspace/chat/
 .goatcitadel/self-improvement/
 .assistant/
+.claude/settings.local.json
+apps/gateway/backups/
 assets/source/**/*.zip
 assets/source/**/*.7z
 assets/source/**/*.rar

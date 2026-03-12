@@ -10,7 +10,18 @@ type BrowserToolName =
   | "browser.navigate"
   | "browser.extract"
   | "browser.screenshot"
-  | "browser.interact";
+  | "browser.interact"
+  | "browser.cookies.get"
+  | "browser.cookies.set"
+  | "browser.cookies.clear"
+  | "browser.storage.get"
+  | "browser.storage.set"
+  | "browser.storage.clear"
+  | "browser.context.configure";
+
+export interface BrowserExecutionContext {
+  sessionId?: string;
+}
 
 interface BrowserStepInput {
   action: "click" | "type" | "press" | "wait_for_selector" | "wait";
@@ -20,7 +31,42 @@ interface BrowserStepInput {
   timeoutMs?: number;
 }
 
+type BrowserCookieRecord = {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  url?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Lax" | "None" | "Strict";
+};
+
+type BrowserStorageBucket = Record<string, Record<string, string>>;
+
+type BrowserSessionState = {
+  cookies: BrowserCookieRecord[];
+  localStorage: BrowserStorageBucket;
+  sessionStorage: BrowserStorageBucket;
+  locale?: string;
+  timezoneId?: string;
+  geolocation?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
+  extraHTTPHeaders?: Record<string, string>;
+  httpCredentials?: {
+    username: string;
+    password: string;
+  };
+  updatedAt: number;
+};
+
 let playwrightChromiumInstallPromise: Promise<void> | null = null;
+const browserSessionStates = new Map<string, BrowserSessionState>();
+const MAX_BROWSER_SESSION_STATES = 128;
 
 export function isBrowserToolName(name: string): name is BrowserToolName {
   return (
@@ -29,6 +75,13 @@ export function isBrowserToolName(name: string): name is BrowserToolName {
     || name === "browser.extract"
     || name === "browser.screenshot"
     || name === "browser.interact"
+    || name === "browser.cookies.get"
+    || name === "browser.cookies.set"
+    || name === "browser.cookies.clear"
+    || name === "browser.storage.get"
+    || name === "browser.storage.set"
+    || name === "browser.storage.clear"
+    || name === "browser.context.configure"
   );
 }
 
@@ -36,25 +89,48 @@ export async function executeBrowserTool(
   toolName: BrowserToolName,
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   if (toolName === "browser.search") {
-    return executeBrowserSearch(args, config);
+    return executeBrowserSearch(args, config, executionContext);
   }
   if (toolName === "browser.navigate") {
-    return executeBrowserNavigate(args, config);
+    return executeBrowserNavigate(args, config, executionContext);
   }
   if (toolName === "browser.extract") {
-    return executeBrowserExtract(args, config);
+    return executeBrowserExtract(args, config, executionContext);
   }
   if (toolName === "browser.screenshot") {
-    return executeBrowserScreenshot(args, config);
+    return executeBrowserScreenshot(args, config, executionContext);
   }
-  return executeBrowserInteract(args, config);
+  if (toolName === "browser.interact") {
+    return executeBrowserInteract(args, config, executionContext);
+  }
+  if (toolName === "browser.cookies.get") {
+    return executeBrowserCookiesGet(args, config, executionContext);
+  }
+  if (toolName === "browser.cookies.set") {
+    return executeBrowserCookiesSet(args, config, executionContext);
+  }
+  if (toolName === "browser.cookies.clear") {
+    return executeBrowserCookiesClear(args, executionContext);
+  }
+  if (toolName === "browser.storage.get") {
+    return executeBrowserStorageGet(args, executionContext);
+  }
+  if (toolName === "browser.storage.set") {
+    return executeBrowserStorageSet(args, config, executionContext);
+  }
+  if (toolName === "browser.storage.clear") {
+    return executeBrowserStorageClear(args, executionContext);
+  }
+  return executeBrowserContextConfigure(args, executionContext);
 }
 
 async function executeBrowserSearch(
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   const query = asNonEmptyString(args.query, "query");
   const requestedEngine = normalizeSearchEngine(asString(args.engine)) ?? "auto";
@@ -70,6 +146,7 @@ async function executeBrowserSearch(
         searchUrl,
         args,
         config,
+        executionContext,
         async (page) => {
           await page.waitForLoadState("domcontentloaded");
           await page.waitForTimeout(400);
@@ -179,11 +256,12 @@ async function executeBrowserSearch(
 async function executeBrowserNavigate(
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   const url = asNonEmptyString(args.url, "url");
   const maxChars = clampInteger(args.maxChars, 6000, 200, 20000);
   try {
-    return await withBrowserPage(url, args, config, async (page, responseStatus) => {
+    return await withBrowserPage(url, args, config, executionContext, async (page, responseStatus) => {
       const title = await page.title();
       const domWeather = await extractWeatherSnapshot(page, title);
       let visualTextSnippet: string | undefined;
@@ -223,12 +301,13 @@ async function executeBrowserNavigate(
 async function executeBrowserExtract(
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   const url = asNonEmptyString(args.url, "url");
   const selector = asString(args.selector) ?? "body";
   const maxChars = clampInteger(args.maxChars, 12000, 200, 50000);
   try {
-    return await withBrowserPage(url, args, config, async (page, responseStatus) => {
+    return await withBrowserPage(url, args, config, executionContext, async (page, responseStatus) => {
       const title = await page.title();
       const domWeather = await extractWeatherSnapshot(page, title);
       let visualTextSnippet: string | undefined;
@@ -269,6 +348,7 @@ async function executeBrowserExtract(
 async function executeBrowserScreenshot(
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   const url = asNonEmptyString(args.url, "url");
   const outputPath = asString(args.outputPath)
@@ -276,7 +356,7 @@ async function executeBrowserScreenshot(
     ?? `workspace/artifacts/browser-shot-${Date.now()}.png`;
   assertWritePathInJail(outputPath, config.sandbox.writeJailRoots);
 
-  return withBrowserPage(url, args, config, async (page, responseStatus, finalUrl) => {
+  return withBrowserPage(url, args, config, executionContext, async (page, responseStatus, finalUrl) => {
     const resolvedPath = path.resolve(outputPath);
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     const fullPage = asBoolean(args.fullPage, true);
@@ -299,6 +379,7 @@ async function executeBrowserScreenshot(
 async function executeBrowserInteract(
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
 ): Promise<Record<string, unknown>> {
   const url = asNonEmptyString(args.url, "url");
   const rawSteps = Array.isArray(args.steps) ? args.steps : [];
@@ -314,7 +395,7 @@ async function executeBrowserInteract(
     assertWritePathInJail(outputPath, config.sandbox.writeJailRoots);
   }
 
-  return withBrowserPage(url, args, config, async (page, responseStatus, finalUrl) => {
+  return withBrowserPage(url, args, config, executionContext, async (page, responseStatus, finalUrl) => {
     for (const step of steps) {
       const timeout = clampInteger(step.timeoutMs, 12000, 500, 60000);
       if (step.action === "click") {
@@ -374,10 +455,660 @@ async function executeBrowserInteract(
   });
 }
 
+async function executeBrowserCookiesGet(
+  args: Record<string, unknown>,
+  _config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.cookies.get");
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const filter = buildBrowserCookieFilter(args);
+  const cookies = state.cookies.filter((cookie) => browserCookieMatchesFilter(cookie, filter));
+  return {
+    action: "cookies.get",
+    browserSessionId,
+    count: cookies.length,
+    cookies,
+  };
+}
+
+async function executeBrowserCookiesSet(
+  args: Record<string, unknown>,
+  config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.cookies.set");
+  const rawCookies = Array.isArray(args.cookies)
+    ? args.cookies
+    : [args];
+  if (rawCookies.length === 0) {
+    throw new Error("browser.cookies.set requires a cookie object or cookies array");
+  }
+
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const normalizedCookies = rawCookies.map((cookie, index) => normalizeBrowserCookieRecord(
+    cookie,
+    config,
+    `cookies[${index}]`,
+  ));
+
+  for (const cookie of normalizedCookies) {
+    const cookieKey = buildBrowserCookieKey(cookie);
+    state.cookies = state.cookies.filter((existing) => buildBrowserCookieKey(existing) !== cookieKey);
+    state.cookies.push(cookie);
+  }
+
+  storeBrowserSessionState(browserSessionId, state);
+  return {
+    action: "cookies.set",
+    browserSessionId,
+    count: normalizedCookies.length,
+    cookies: normalizedCookies,
+  };
+}
+
+async function executeBrowserCookiesClear(
+  args: Record<string, unknown>,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.cookies.clear");
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const filter = buildBrowserCookieFilter(args);
+  const originalCount = state.cookies.length;
+  state.cookies = hasBrowserCookieFilter(filter)
+    ? state.cookies.filter((cookie) => !browserCookieMatchesFilter(cookie, filter))
+    : [];
+  storeBrowserSessionState(browserSessionId, state);
+  return {
+    action: "cookies.clear",
+    browserSessionId,
+    removed: originalCount - state.cookies.length,
+    remaining: state.cookies.length,
+  };
+}
+
+async function executeBrowserStorageGet(
+  args: Record<string, unknown>,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.storage.get");
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const storage = parseBrowserStorageKind(args.storage, "both", true);
+  const origin = asString(args.origin);
+
+  if (origin) {
+    const normalizedOrigin = normalizeBrowserOrigin(origin);
+    return {
+      action: "storage.get",
+      browserSessionId,
+      origin: normalizedOrigin,
+      storage,
+      localStorage: { ...(state.localStorage[normalizedOrigin] ?? {}) },
+      sessionStorage: { ...(state.sessionStorage[normalizedOrigin] ?? {}) },
+    };
+  }
+
+  return {
+    action: "storage.get",
+    browserSessionId,
+    storage,
+    localStorage: storage === "session" ? {} : cloneBrowserStorageBucket(state.localStorage),
+    sessionStorage: storage === "local" ? {} : cloneBrowserStorageBucket(state.sessionStorage),
+  };
+}
+
+async function executeBrowserStorageSet(
+  args: Record<string, unknown>,
+  config: ToolPolicyConfig,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.storage.set");
+  const storage = parseBrowserStorageKind(args.storage, "local");
+  const origin = normalizeBrowserOriginForConfig(asNonEmptyString(args.origin, "origin"), config);
+  const entries = normalizeBrowserStorageEntries(args);
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const bucket = storage === "session" ? state.sessionStorage : state.localStorage;
+  const nextOriginState = {
+    ...(bucket[origin] ?? {}),
+    ...entries,
+  };
+  bucket[origin] = nextOriginState;
+  storeBrowserSessionState(browserSessionId, state);
+  return {
+    action: "storage.set",
+    browserSessionId,
+    origin,
+    storage,
+    count: Object.keys(entries).length,
+    entries: nextOriginState,
+  };
+}
+
+async function executeBrowserStorageClear(
+  args: Record<string, unknown>,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.storage.clear");
+  const storage = parseBrowserStorageKind(args.storage, "both", true);
+  const key = asString(args.key);
+  const origin = asString(args.origin);
+  if (key && !origin) {
+    throw new Error("browser.storage.clear requires origin when key is provided");
+  }
+
+  const state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+  const normalizedOrigin = origin ? normalizeBrowserOrigin(origin) : undefined;
+  let removed = 0;
+
+  for (const bucket of selectBrowserStorageBuckets(state, storage)) {
+    if (normalizedOrigin) {
+      removed += clearBrowserStorageBucket(bucket, normalizedOrigin, key);
+      continue;
+    }
+
+    for (const bucketOrigin of Object.keys(bucket)) {
+      removed += clearBrowserStorageBucket(bucket, bucketOrigin, key);
+    }
+  }
+
+  storeBrowserSessionState(browserSessionId, state);
+  return {
+    action: "storage.clear",
+    browserSessionId,
+    storage,
+    origin: normalizedOrigin,
+    key,
+    removed,
+  };
+}
+
+async function executeBrowserContextConfigure(
+  args: Record<string, unknown>,
+  executionContext?: BrowserExecutionContext,
+): Promise<Record<string, unknown>> {
+  const browserSessionId = requireBrowserSessionId(args, executionContext, "browser.context.configure");
+  let state = cloneBrowserSessionState(getBrowserSessionState(browserSessionId));
+
+  if (asBoolean(args.reset, false)) {
+    state = createEmptyBrowserSessionState();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(args, "locale")) {
+    state.locale = asString(args.locale);
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "timezoneId")) {
+    state.timezoneId = asString(args.timezoneId);
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "geolocation")) {
+    state.geolocation = normalizeBrowserGeolocation(args.geolocation);
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "extraHTTPHeaders")) {
+    state.extraHTTPHeaders = normalizeBrowserHeaders(args.extraHTTPHeaders);
+  }
+  if (Object.prototype.hasOwnProperty.call(args, "httpCredentials")) {
+    state.httpCredentials = normalizeBrowserHttpCredentials(args.httpCredentials);
+  }
+
+  storeBrowserSessionState(browserSessionId, state);
+  return {
+    action: "context.configure",
+    browserSessionId,
+    locale: state.locale,
+    timezoneId: state.timezoneId,
+    geolocation: state.geolocation,
+    extraHTTPHeaders: state.extraHTTPHeaders,
+    httpCredentialsConfigured: Boolean(state.httpCredentials),
+  };
+}
+
+function createEmptyBrowserSessionState(): BrowserSessionState {
+  return {
+    cookies: [],
+    localStorage: {},
+    sessionStorage: {},
+    updatedAt: Date.now(),
+  };
+}
+
+function cloneBrowserSessionState(state: BrowserSessionState): BrowserSessionState {
+  return {
+    cookies: state.cookies.map((cookie) => ({ ...cookie })),
+    localStorage: cloneBrowserStorageBucket(state.localStorage),
+    sessionStorage: cloneBrowserStorageBucket(state.sessionStorage),
+    locale: state.locale,
+    timezoneId: state.timezoneId,
+    geolocation: state.geolocation ? { ...state.geolocation } : undefined,
+    extraHTTPHeaders: state.extraHTTPHeaders ? { ...state.extraHTTPHeaders } : undefined,
+    httpCredentials: state.httpCredentials ? { ...state.httpCredentials } : undefined,
+    updatedAt: state.updatedAt,
+  };
+}
+
+function cloneBrowserStorageBucket(bucket: BrowserStorageBucket): BrowserStorageBucket {
+  return Object.fromEntries(
+    Object.entries(bucket).map(([origin, entries]) => [origin, { ...entries }]),
+  );
+}
+
+function resolveBrowserSessionId(
+  args: Record<string, unknown>,
+  executionContext?: BrowserExecutionContext,
+): string | undefined {
+  return asString(args.browserSessionId)
+    ?? asString(args.sessionId)
+    ?? asString(executionContext?.sessionId);
+}
+
+function requireBrowserSessionId(
+  args: Record<string, unknown>,
+  executionContext: BrowserExecutionContext | undefined,
+  toolName: BrowserToolName,
+): string {
+  const browserSessionId = resolveBrowserSessionId(args, executionContext);
+  if (!browserSessionId) {
+    throw new Error(`${toolName} requires browserSessionId or active session context`);
+  }
+  return browserSessionId;
+}
+
+function getBrowserSessionState(sessionId: string): BrowserSessionState {
+  const existing = browserSessionStates.get(sessionId);
+  if (existing) {
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+  const created = createEmptyBrowserSessionState();
+  browserSessionStates.set(sessionId, created);
+  evictOldestBrowserSessionStates();
+  return created;
+}
+
+function storeBrowserSessionState(sessionId: string, state: BrowserSessionState): void {
+  state.updatedAt = Date.now();
+  browserSessionStates.set(sessionId, state);
+  evictOldestBrowserSessionStates();
+}
+
+function evictOldestBrowserSessionStates(): void {
+  while (browserSessionStates.size > MAX_BROWSER_SESSION_STATES) {
+    let oldestKey: string | undefined;
+    let oldestUpdatedAt = Number.POSITIVE_INFINITY;
+    for (const [sessionId, state] of browserSessionStates.entries()) {
+      if (state.updatedAt < oldestUpdatedAt) {
+        oldestUpdatedAt = state.updatedAt;
+        oldestKey = sessionId;
+      }
+    }
+    if (!oldestKey) {
+      break;
+    }
+    browserSessionStates.delete(oldestKey);
+  }
+}
+
+function buildBrowserCookieKey(cookie: BrowserCookieRecord): string {
+  return [
+    cookie.name,
+    cookie.domain ?? "",
+    cookie.path ?? "",
+    cookie.url ?? "",
+  ].join("::");
+}
+
+function buildBrowserCookieFilter(args: Record<string, unknown>): {
+  name?: string;
+  domain?: string;
+  path?: string;
+  url?: string;
+} {
+  return {
+    name: asString(args.name),
+    domain: asString(args.domain),
+    path: asString(args.path),
+    url: asString(args.url),
+  };
+}
+
+function hasBrowserCookieFilter(filter: {
+  name?: string;
+  domain?: string;
+  path?: string;
+  url?: string;
+}): boolean {
+  return Boolean(filter.name || filter.domain || filter.path || filter.url);
+}
+
+function browserCookieMatchesFilter(
+  cookie: BrowserCookieRecord,
+  filter: {
+    name?: string;
+    domain?: string;
+    path?: string;
+    url?: string;
+  },
+): boolean {
+  if (filter.name && cookie.name !== filter.name) {
+    return false;
+  }
+  if (filter.path && cookie.path !== filter.path) {
+    return false;
+  }
+  if (filter.domain) {
+    const normalizedFilterDomain = normalizeBrowserCookieDomain(filter.domain);
+    const normalizedCookieDomain = normalizeBrowserCookieDomain(cookie.domain);
+    if (normalizedFilterDomain !== normalizedCookieDomain) {
+      return false;
+    }
+  }
+  if (filter.url) {
+    const parsedFilterUrl = new URL(filter.url);
+    const filterHost = normalizeBrowserCookieDomain(parsedFilterUrl.hostname);
+    const cookieHost = normalizeBrowserCookieDomain(cookie.domain ?? cookie.url);
+    if (cookieHost !== filterHost) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeBrowserCookieRecord(
+  value: unknown,
+  config: ToolPolicyConfig,
+  fieldPrefix: string,
+): BrowserCookieRecord {
+  if (!value || typeof value !== "object") {
+    throw new Error(`${fieldPrefix} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const name = asNonEmptyString(record.name, `${fieldPrefix}.name`);
+  if (typeof record.value !== "string") {
+    throw new Error(`${fieldPrefix}.value is required`);
+  }
+
+  const normalized: BrowserCookieRecord = {
+    name,
+    value: record.value,
+  };
+
+  const url = asString(record.url);
+  const domain = asString(record.domain);
+  if (url) {
+    assertAllowedHttpUrl(url);
+    assertHostAllowed(url, config.sandbox.networkAllowlist);
+    normalized.url = url;
+  }
+  if (domain) {
+    const normalizedDomain = normalizeBrowserCookieDomain(domain);
+    assertHostAllowed(`https://${normalizedDomain}`, config.sandbox.networkAllowlist);
+    normalized.domain = domain.startsWith(".") ? `.${normalizedDomain}` : normalizedDomain;
+  }
+  if (!normalized.url && !normalized.domain) {
+    throw new Error(`${fieldPrefix} requires url or domain`);
+  }
+
+  const cookiePath = asString(record.path);
+  if (cookiePath) {
+    normalized.path = cookiePath;
+  }
+
+  if (record.expires !== undefined) {
+    const expires = Number(record.expires);
+    if (!Number.isFinite(expires)) {
+      throw new Error(`${fieldPrefix}.expires must be a finite number`);
+    }
+    normalized.expires = expires;
+  }
+
+  normalized.httpOnly = asBoolean(record.httpOnly, false);
+  normalized.secure = asBoolean(record.secure, false);
+  if (record.sameSite !== undefined) {
+    const sameSite = asString(record.sameSite);
+    if (sameSite !== "Lax" && sameSite !== "None" && sameSite !== "Strict") {
+      throw new Error(`${fieldPrefix}.sameSite must be Lax, None, or Strict`);
+    }
+    normalized.sameSite = sameSite;
+  }
+
+  return normalized;
+}
+
+function normalizeBrowserCookieDomain(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.hostname.replace(/^\./u, "").toLowerCase();
+  } catch {
+    return value.replace(/^\./u, "").toLowerCase();
+  }
+}
+
+function parseBrowserStorageKind(
+  value: unknown,
+  fallback: "local" | "session" | "both",
+  allowBoth = false,
+): "local" | "session" | "both" {
+  const parsed = asString(value) ?? fallback;
+  if (parsed === "local" || parsed === "session") {
+    return parsed;
+  }
+  if (allowBoth && parsed === "both") {
+    return parsed;
+  }
+  throw new Error(`storage must be ${allowBoth ? "local, session, or both" : "local or session"}`);
+}
+
+function normalizeBrowserOrigin(input: string): string {
+  assertAllowedHttpUrl(input);
+  return new URL(input).origin;
+}
+
+function normalizeBrowserOriginForConfig(input: string, config: ToolPolicyConfig): string {
+  const origin = normalizeBrowserOrigin(input);
+  assertHostAllowed(origin, config.sandbox.networkAllowlist);
+  return origin;
+}
+
+function normalizeBrowserStorageEntries(args: Record<string, unknown>): Record<string, string> {
+  if (args.entries && typeof args.entries === "object" && !Array.isArray(args.entries)) {
+    return normalizeBrowserStorageEntryRecord(args.entries as Record<string, unknown>, "entries");
+  }
+
+  const key = asNonEmptyString(args.key, "key");
+  return {
+    [key]: normalizeBrowserStorageScalar(args.value, "value"),
+  };
+}
+
+function normalizeBrowserStorageEntryRecord(
+  value: Record<string, unknown>,
+  fieldPrefix: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    const normalizedKey = entryKey.trim();
+    if (!normalizedKey) {
+      throw new Error(`${fieldPrefix} contains an empty key`);
+    }
+    out[normalizedKey] = normalizeBrowserStorageScalar(entryValue, `${fieldPrefix}.${normalizedKey}`);
+  }
+  return out;
+}
+
+function normalizeBrowserStorageScalar(value: unknown, field: string): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  throw new Error(`${field} must be a string, number, or boolean`);
+}
+
+function selectBrowserStorageBuckets(
+  state: BrowserSessionState,
+  storage: "local" | "session" | "both",
+): BrowserStorageBucket[] {
+  if (storage === "both") {
+    return [state.localStorage, state.sessionStorage];
+  }
+  return [storage === "local" ? state.localStorage : state.sessionStorage];
+}
+
+function clearBrowserStorageBucket(
+  bucket: BrowserStorageBucket,
+  origin: string,
+  key?: string,
+): number {
+  const existing = bucket[origin];
+  if (!existing) {
+    return 0;
+  }
+  if (!key) {
+    const removed = Object.keys(existing).length;
+    delete bucket[origin];
+    return removed;
+  }
+  if (!(key in existing)) {
+    return 0;
+  }
+  delete existing[key];
+  if (Object.keys(existing).length === 0) {
+    delete bucket[origin];
+  } else {
+    bucket[origin] = existing;
+  }
+  return 1;
+}
+
+function normalizeBrowserGeolocation(value: unknown): BrowserSessionState["geolocation"] {
+  if (value == null) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("geolocation must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  const latitude = Number(record.latitude);
+  const longitude = Number(record.longitude);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    throw new Error("geolocation.latitude must be between -90 and 90");
+  }
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new Error("geolocation.longitude must be between -180 and 180");
+  }
+  const accuracy = record.accuracy === undefined ? undefined : Number(record.accuracy);
+  if (accuracy !== undefined && (!Number.isFinite(accuracy) || accuracy < 0)) {
+    throw new Error("geolocation.accuracy must be a non-negative number");
+  }
+  return {
+    latitude,
+    longitude,
+    accuracy,
+  };
+}
+
+function normalizeBrowserHeaders(value: unknown): Record<string, string> | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("extraHTTPHeaders must be an object");
+  }
+  const headers = normalizeBrowserStorageEntryRecord(value as Record<string, unknown>, "extraHTTPHeaders");
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+function normalizeBrowserHttpCredentials(
+  value: unknown,
+): BrowserSessionState["httpCredentials"] {
+  if (value == null) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("httpCredentials must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    username: asNonEmptyString(record.username, "httpCredentials.username"),
+    password: asNonEmptyString(record.password, "httpCredentials.password"),
+  };
+}
+
+async function snapshotBrowserSessionStorage(
+  page: PlaywrightPage,
+  finalUrl: string,
+  previousState: BrowserSessionState | undefined,
+): Promise<BrowserStorageBucket> {
+  const nextSessionStorage = cloneBrowserStorageBucket(previousState?.sessionStorage ?? {});
+  try {
+    const origin = new URL(finalUrl).origin;
+    const entries = await page.evaluate(() => {
+      const out: Record<string, string> = {};
+      for (let index = 0; index < window.sessionStorage.length; index += 1) {
+        const key = window.sessionStorage.key(index);
+        if (!key) {
+          continue;
+        }
+        const value = window.sessionStorage.getItem(key);
+        if (value !== null) {
+          out[key] = value;
+        }
+      }
+      return out;
+    }, undefined);
+    if (Object.keys(entries).length === 0) {
+      delete nextSessionStorage[origin];
+    } else {
+      nextSessionStorage[origin] = entries;
+    }
+  } catch {
+    // Ignore sessionStorage capture failures and keep the last known in-memory snapshot.
+  }
+  return nextSessionStorage;
+}
+
+function buildPlaywrightStorageState(
+  state: BrowserSessionState | undefined,
+): PlaywrightStorageState | undefined {
+  if (!state) {
+    return undefined;
+  }
+  const cookies = state.cookies.map((cookie) => ({ ...cookie }));
+  const origins = Object.entries(state.localStorage).map(([origin, entries]) => ({
+    origin,
+    localStorage: Object.entries(entries).map(([name, value]) => ({ name, value })),
+  }));
+  if (cookies.length === 0 && origins.length === 0) {
+    return undefined;
+  }
+  return {
+    cookies,
+    origins,
+  };
+}
+
+function buildPlaywrightContextOptions(
+  args: Record<string, unknown>,
+  state: BrowserSessionState | undefined,
+): PlaywrightContextOptions {
+  const storageState = buildPlaywrightStorageState(state);
+  return {
+    locale: state?.locale,
+    timezoneId: state?.timezoneId,
+    geolocation: state?.geolocation,
+    extraHTTPHeaders: state?.extraHTTPHeaders,
+    httpCredentials: state?.httpCredentials,
+    storageState,
+  };
+}
+
 async function withBrowserPage(
   url: string,
   args: Record<string, unknown>,
   config: ToolPolicyConfig,
+  executionContext: BrowserExecutionContext | undefined,
   run: (
     page: PlaywrightPage,
     responseStatus: number | undefined,
@@ -391,10 +1122,29 @@ async function withBrowserPage(
   const headless = asBoolean(args.headless, true);
   const timeout = clampInteger(args.timeoutMs, 20000, 2000, 120000);
   const waitUntil = parseWaitUntil(args.waitUntil);
+  const browserSessionId = resolveBrowserSessionId(args, executionContext);
+  const previousSessionState = browserSessionId
+    ? cloneBrowserSessionState(getBrowserSessionState(browserSessionId))
+    : undefined;
   const browser = await launchPlaywrightChromium(playwright, headless);
 
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext(buildPlaywrightContextOptions(args, previousSessionState));
+    if (previousSessionState?.geolocation) {
+      await context.grantPermissions?.(["geolocation"], { origin: new URL(url).origin });
+    }
+    if (previousSessionState && Object.keys(previousSessionState.sessionStorage).length > 0) {
+      await context.addInitScript?.((sessionStorageByOrigin: BrowserStorageBucket) => {
+        const entries = sessionStorageByOrigin[window.location.origin];
+        if (!entries) {
+          return;
+        }
+        window.sessionStorage.clear();
+        for (const [key, value] of Object.entries(entries)) {
+          window.sessionStorage.setItem(key, value);
+        }
+      }, previousSessionState.sessionStorage);
+    }
     const page = await context.newPage();
     const response = await page.goto(url, {
       timeout,
@@ -406,9 +1156,32 @@ async function withBrowserPage(
     assertHostAllowed(finalUrl, config.sandbox.networkAllowlist);
 
     const result = await run(page, response?.status(), finalUrl);
+    if (browserSessionId) {
+      const storageState = await context.storageState?.();
+      const nextState: BrowserSessionState = {
+        cookies: (storageState?.cookies ?? previousSessionState?.cookies ?? []).map((cookie) => ({ ...cookie })),
+        localStorage: storageState
+          ? Object.fromEntries(
+            storageState.origins.map((originRecord) => [
+              originRecord.origin,
+              Object.fromEntries(originRecord.localStorage.map((entry) => [entry.name, entry.value])),
+            ]),
+          )
+          : cloneBrowserStorageBucket(previousSessionState?.localStorage ?? {}),
+        sessionStorage: await snapshotBrowserSessionStorage(page, finalUrl, previousSessionState),
+        locale: previousSessionState?.locale,
+        timezoneId: previousSessionState?.timezoneId,
+        geolocation: previousSessionState?.geolocation ? { ...previousSessionState.geolocation } : undefined,
+        extraHTTPHeaders: previousSessionState?.extraHTTPHeaders ? { ...previousSessionState.extraHTTPHeaders } : undefined,
+        httpCredentials: previousSessionState?.httpCredentials ? { ...previousSessionState.httpCredentials } : undefined,
+        updatedAt: Date.now(),
+      };
+      storeBrowserSessionState(browserSessionId, nextState);
+    }
     return {
       url,
       finalUrl,
+      browserSessionId,
       ...result,
     };
   } finally {
@@ -1202,13 +1975,40 @@ type PlaywrightModule = {
   };
 };
 
+type PlaywrightContextOptions = {
+  locale?: string;
+  timezoneId?: string;
+  geolocation?: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+  };
+  extraHTTPHeaders?: Record<string, string>;
+  httpCredentials?: {
+    username: string;
+    password: string;
+  };
+  storageState?: PlaywrightStorageState;
+};
+
+type PlaywrightStorageState = {
+  cookies: BrowserCookieRecord[];
+  origins: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+  }>;
+};
+
 type PlaywrightBrowser = {
-  newContext: () => Promise<PlaywrightContext>;
+  newContext: (options?: PlaywrightContextOptions) => Promise<PlaywrightContext>;
   close: () => Promise<void>;
 };
 
 type PlaywrightContext = {
   newPage: () => Promise<PlaywrightPage>;
+  storageState?: () => Promise<PlaywrightStorageState>;
+  addInitScript?: (fn: (sessionStorageByOrigin: BrowserStorageBucket) => void, arg: BrowserStorageBucket) => Promise<void>;
+  grantPermissions?: (permissions: string[], options?: { origin?: string }) => Promise<void>;
 };
 
 type PlaywrightPage = {

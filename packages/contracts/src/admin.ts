@@ -20,6 +20,21 @@ export interface BackupCreateResponse {
   manifest: BackupManifestRecord;
 }
 
+export interface BackupVerifyIssue {
+  code: string;
+  message: string;
+  path?: string;
+}
+
+export interface BackupVerifyResponse {
+  backupPath: string;
+  backupId?: string;
+  verified: boolean;
+  filesVerified: number;
+  issues: BackupVerifyIssue[];
+  manifest?: BackupManifestRecord;
+}
+
 export interface RetentionPolicy {
   realtimeEventsDays: number;
   backupsKeep: number;

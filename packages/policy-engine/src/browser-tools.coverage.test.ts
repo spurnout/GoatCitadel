@@ -50,9 +50,18 @@ function createConfig(root: string): ToolPolicyConfig {
 
 function createPlaywrightStub() {
   let currentUrl = "https://example.com/start";
+  let cookies: Array<Record<string, unknown>> = [];
+  let localStorageByOrigin: Record<string, Record<string, string>> = {};
+  let sessionStorageByOrigin: Record<string, Record<string, string>> = {};
+  let pendingSessionStorageByOrigin: Record<string, Record<string, string>> = {};
   const page = {
     goto: async (url: string) => {
       currentUrl = url;
+      const origin = new URL(currentUrl).origin;
+      const seededSessionStorage = pendingSessionStorageByOrigin[origin];
+      if (seededSessionStorage) {
+        sessionStorageByOrigin[origin] = { ...seededSessionStorage };
+      }
       return { status: () => 200 };
     },
     waitForLoadState: async () => undefined,
@@ -60,7 +69,13 @@ function createPlaywrightStub() {
     waitForTimeout: async () => undefined,
     title: async () => "Austin Weather | 72°F Sunny",
     url: () => currentUrl,
-    evaluate: async (_fn: unknown, maxItems: number) => {
+    evaluate: async (fn: unknown, arg: unknown) => {
+      const source = String(fn);
+      if (source.includes("window.sessionStorage")) {
+        return { ...(sessionStorageByOrigin[new URL(currentUrl).origin] ?? {}) };
+      }
+
+      const maxItems = Number(arg ?? 0);
       const out = [];
       for (let i = 0; i < Number(maxItems); i += 1) {
         out.push({
@@ -93,10 +108,37 @@ function createPlaywrightStub() {
     },
   };
   const context = {
+    addInitScript: async (_fn: unknown, arg: Record<string, Record<string, string>>) => {
+      pendingSessionStorageByOrigin = Object.fromEntries(
+        Object.entries(arg).map(([origin, entries]) => [origin, { ...entries }]),
+      );
+    },
+    grantPermissions: async () => undefined,
     newPage: async () => page,
+    storageState: async () => ({
+      cookies: cookies.map((cookie) => ({ ...cookie })),
+      origins: Object.entries(localStorageByOrigin).map(([origin, entries]) => ({
+        origin,
+        localStorage: Object.entries(entries).map(([name, value]) => ({ name, value })),
+      })),
+    }),
   };
   const browser = {
-    newContext: async () => context,
+    newContext: async (options?: {
+      storageState?: {
+        cookies?: Array<Record<string, unknown>>;
+        origins?: Array<{ origin: string; localStorage?: Array<{ name: string; value: string }> }>;
+      };
+    }) => {
+      cookies = (options?.storageState?.cookies ?? []).map((cookie) => ({ ...cookie }));
+      localStorageByOrigin = Object.fromEntries(
+        (options?.storageState?.origins ?? []).map((originRecord) => [
+          originRecord.origin,
+          Object.fromEntries((originRecord.localStorage ?? []).map((entry) => [entry.name, entry.value])),
+        ]),
+      );
+      return context;
+    },
     close: async () => undefined,
   };
   return browser;
@@ -168,6 +210,9 @@ describe("browser tools coverage sweep", () => {
     expect(isBrowserToolName("browser.extract")).toBe(true);
     expect(isBrowserToolName("browser.screenshot")).toBe(true);
     expect(isBrowserToolName("browser.interact")).toBe(true);
+    expect(isBrowserToolName("browser.cookies.get")).toBe(true);
+    expect(isBrowserToolName("browser.storage.set")).toBe(true);
+    expect(isBrowserToolName("browser.context.configure")).toBe(true);
     expect(isBrowserToolName("shell.exec")).toBe(false);
   });
 
@@ -452,5 +497,158 @@ describe("browser tools coverage sweep", () => {
         config,
       ),
     ).rejects.toThrow(/Unsupported browser\.interact step action/i);
+  });
+
+  it("manages browser cookies and storage in session-scoped state", async () => {
+    const config = createConfig(tempRoot);
+    const executionContext = { sessionId: "sess-browser-state" };
+
+    await executeBrowserTool(
+      "browser.context.configure",
+      {
+        locale: "en-US",
+        timezoneId: "America/Los_Angeles",
+        extraHTTPHeaders: { "x-goat-test": "1" },
+        httpCredentials: { username: "goat", password: "citadel" },
+      },
+      config,
+      executionContext,
+    );
+
+    await executeBrowserTool(
+      "browser.storage.set",
+      {
+        origin: "https://example.com",
+        storage: "local",
+        entries: { theme: "signal-noir", density: "compact" },
+      },
+      config,
+      executionContext,
+    );
+
+    await executeBrowserTool(
+      "browser.storage.set",
+      {
+        origin: "https://example.com",
+        storage: "session",
+        entries: { token: "session-123" },
+      },
+      config,
+      executionContext,
+    );
+
+    await executeBrowserTool(
+      "browser.cookies.set",
+      {
+        cookies: [
+          { name: "sid", value: "abc123", url: "https://example.com" },
+        ],
+      },
+      config,
+      executionContext,
+    );
+
+    const cookies = await executeBrowserTool(
+      "browser.cookies.get",
+      {},
+      config,
+      executionContext,
+    );
+    expect(cookies.cookies).toEqual([
+      expect.objectContaining({ name: "sid", value: "abc123", url: "https://example.com" }),
+    ]);
+
+    const storage = await executeBrowserTool(
+      "browser.storage.get",
+      { origin: "https://example.com" },
+      config,
+      executionContext,
+    );
+    expect(storage.localStorage).toEqual({ theme: "signal-noir", density: "compact" });
+    expect(storage.sessionStorage).toEqual({ token: "session-123" });
+
+    const clearedStorage = await executeBrowserTool(
+      "browser.storage.clear",
+      { origin: "https://example.com", storage: "session", key: "token" },
+      config,
+      executionContext,
+    );
+    expect(clearedStorage.removed).toBe(1);
+
+    const clearedCookies = await executeBrowserTool(
+      "browser.cookies.clear",
+      { name: "sid" },
+      config,
+      executionContext,
+    );
+    expect(clearedCookies.removed).toBe(1);
+  });
+
+  it("applies stored browser session state to playwright contexts", async () => {
+    const config = createConfig(tempRoot);
+    const executionContext = { sessionId: "sess-browser-context" };
+    const seenContextOptions: Array<Record<string, unknown> | undefined> = [];
+    mocked.launch.mockResolvedValueOnce({
+      ...createPlaywrightStub(),
+      newContext: async (options?: Record<string, unknown>) => {
+        seenContextOptions.push(options);
+        return (createPlaywrightStub() as unknown as { newContext: () => Promise<unknown> }).newContext();
+      },
+    } as never);
+
+    await executeBrowserTool(
+      "browser.context.configure",
+      {
+        locale: "en-US",
+        timezoneId: "America/Los_Angeles",
+        geolocation: { latitude: 30.2672, longitude: -97.7431 },
+        extraHTTPHeaders: { "x-goat-test": "1" },
+      },
+      config,
+      executionContext,
+    );
+    await executeBrowserTool(
+      "browser.storage.set",
+      {
+        origin: "https://example.com",
+        storage: "local",
+        entries: { theme: "signal-noir" },
+      },
+      config,
+      executionContext,
+    );
+    await executeBrowserTool(
+      "browser.cookies.set",
+      {
+        cookies: [{ name: "sid", value: "abc123", url: "https://example.com" }],
+      },
+      config,
+      executionContext,
+    );
+
+    await executeBrowserTool(
+      "browser.navigate",
+      { url: "https://example.com/dashboard", maxChars: 300 },
+      config,
+      executionContext,
+    );
+
+    expect(seenContextOptions[0]).toMatchObject({
+      locale: "en-US",
+      timezoneId: "America/Los_Angeles",
+      geolocation: { latitude: 30.2672, longitude: -97.7431 },
+      extraHTTPHeaders: { "x-goat-test": "1" },
+      storageState: {
+        cookies: [expect.objectContaining({ name: "sid", value: "abc123" })],
+        origins: [
+          {
+            origin: "https://example.com",
+            localStorage: [
+              { name: "theme", value: "signal-noir" },
+            ],
+          },
+        ],
+      },
+    });
   });
 });

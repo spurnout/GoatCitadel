@@ -49,6 +49,7 @@ import type {
   BackupCreateResponse,
   BackupManifestFileRecord,
   BackupManifestRecord,
+  BackupVerifyResponse,
   AuthRuntimeSettings,
   AuthSettingsUpdateInput,
   DeviceAccessRequestCreateInput,
@@ -338,6 +339,12 @@ import {
   PRIVATE_BETA_BACKUP_JOB_ID,
 } from "./gateway/cron-automation-service.js";
 import { OperatorSummaryCache } from "./gateway/operator-summary-cache.js";
+import {
+  createGatewayAuthCredentialPlan,
+  readAssistantAuthConfigSnapshotSync,
+  resolveGatewayInstallToken as resolveGatewayInstallTokenFromPlanner,
+} from "./gateway/auth-credential-planner.js";
+import { verifyBackupAtPath } from "./gateway/backup-verify.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -9332,24 +9339,15 @@ export class GatewayService {
     const backupDir = path.resolve(this.getBackupDirectory());
     const backupPath = path.resolve(backupDir, input.filePath);
     ensurePathWithinRoot(backupPath, backupDir);
-    const manifestPath = path.join(backupPath, "manifest.json");
+    const verification = await this.verifyBackup({
+      filePath: input.filePath,
+    });
+    if (!verification.verified || !verification.manifest) {
+      throw new Error(formatBackupVerifyFailure(verification));
+    }
+
     const payloadDir = path.join(backupPath, "payload");
-    const manifestRaw = await fs.readFile(manifestPath, "utf8");
-    const manifest = JSON.parse(manifestRaw) as BackupManifestRecord;
-
-    if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
-      throw new Error("Backup manifest has no files");
-    }
-
-    for (const file of manifest.files) {
-      const source = path.resolve(payloadDir, file.path);
-      ensurePathWithinRoot(source, payloadDir);
-      const bytes = await fs.readFile(source);
-      const digest = createHash("sha256").update(bytes).digest("hex");
-      if (digest !== file.sha256) {
-        throw new Error(`Backup checksum mismatch for ${file.path}`);
-      }
-    }
+    const manifest = verification.manifest;
 
     for (const file of manifest.files) {
       const source = path.resolve(payloadDir, file.path);
@@ -9365,6 +9363,15 @@ export class GatewayService {
       backupId: manifest.backupId,
       filesRestored: manifest.files.length,
     };
+  }
+
+  public async verifyBackup(input: {
+    filePath: string;
+  }): Promise<BackupVerifyResponse> {
+    const backupDir = path.resolve(this.getBackupDirectory());
+    const backupPath = path.resolve(backupDir, input.filePath);
+    ensurePathWithinRoot(backupPath, backupDir);
+    return verifyBackupAtPath(backupPath);
   }
 
   public getRetentionPolicy(): RetentionPolicy {
@@ -10939,6 +10946,11 @@ export class GatewayService {
   }
 
   public getAuthRuntimeSettings(): AuthRuntimeSettings {
+    const plan = createGatewayAuthCredentialPlan({
+      runtimeConfig: this.config,
+      env: process.env,
+      configAuth: readAssistantAuthConfigSnapshotSync(this.config.rootDir),
+    });
     return {
       mode: this.config.assistant.auth.mode,
       allowLoopbackBypass: this.config.assistant.auth.allowLoopbackBypass,
@@ -10947,6 +10959,7 @@ export class GatewayService {
         this.config.assistant.auth.basic.username?.trim()
         && this.config.assistant.auth.basic.password?.trim(),
       ),
+      plan,
     };
   }
 
@@ -10967,6 +10980,24 @@ export class GatewayService {
       this.config.assistant.auth.basic.password = input.basicPassword.trim() || undefined;
     }
     return this.getAuthRuntimeSettings();
+  }
+
+  public getAuthCredentialPlan() {
+    return this.getAuthRuntimeSettings().plan;
+  }
+
+  public async resolveGatewayInstallToken(input?: {
+    token?: string;
+    generateWhenMissing?: boolean;
+    persistToEnv?: boolean;
+  }) {
+    return resolveGatewayInstallTokenFromPlanner({
+      runtimeConfig: this.config,
+      env: process.env,
+      explicitToken: input?.token,
+      generateWhenMissing: input?.generateWhenMissing,
+      persistToEnv: input?.persistToEnv,
+    });
   }
 
   public async createDeviceAccessRequest(
@@ -18774,6 +18805,19 @@ async function collectBackupFileRecords(payloadDir: string): Promise<BackupManif
   await walk(payloadDir);
   files.sort((left, right) => left.path.localeCompare(right.path));
   return files;
+}
+
+function formatBackupVerifyFailure(result: BackupVerifyResponse): string {
+  if (result.issues.length === 0) {
+    return "Backup verification failed.";
+  }
+  const first = result.issues[0];
+  if (!first) {
+    return "Backup verification failed.";
+  }
+  return first.path
+    ? `Backup verification failed (${first.code}): ${first.message} [${first.path}]`
+    : `Backup verification failed (${first.code}): ${first.message}`;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

@@ -22,6 +22,28 @@ function baseAuthConfig(mode: AuthConfig["mode"]): AuthConfig {
 async function buildApp(mode: AuthConfig["mode"]): Promise<FastifyInstance> {
   const app = Fastify();
   app.decorate("gateway", {
+    getAuthCredentialPlan: () => ({
+      mode: baseAuthConfig(mode).mode,
+      warnings: [],
+      token: {
+        configured: mode === "token",
+        source: mode === "token" ? "env" : "none",
+      },
+      basicUsername: {
+        configured: mode === "basic",
+        source: mode === "basic" ? "env" : "none",
+      },
+      basicPassword: {
+        configured: mode === "basic",
+        source: mode === "basic" ? "env" : "none",
+      },
+    }),
+    resolveGatewayInstallToken: async () => ({
+      token: "install-token-1",
+      source: "env",
+      persistedToEnv: false,
+      warnings: [],
+    }),
     createDeviceAccessRequest: async () => ({
       requestId: "request-device-1",
       requestSecret: "request-secret-1",
@@ -108,6 +130,45 @@ describe("auth routes", () => {
       requestId: "request-device-1",
       approvalId: "approval-device-1",
       status: "pending",
+    });
+  });
+
+  it("returns the credential plan on the authenticated auth plan route", async () => {
+    app = await buildApp("token");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/plan",
+      headers: {
+        Authorization: "Bearer test-token",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      mode: "token",
+      token: {
+        configured: true,
+        source: "env",
+      },
+    });
+  });
+
+  it("resolves an install token on the authenticated auth install-token route", async () => {
+    app = await buildApp("token");
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/install-token",
+      headers: {
+        Authorization: "Bearer test-token",
+      },
+      payload: {
+        generateWhenMissing: true,
+        persistToEnv: true,
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      token: "install-token-1",
+      source: "env",
     });
   });
 

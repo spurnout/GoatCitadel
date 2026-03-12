@@ -73,6 +73,12 @@ function buildOpenApiSpec(): Record<string, unknown> {
         get: { summary: "Fetch runtime settings", responses: { "200": { description: "Current settings" } } },
         patch: { summary: "Update runtime settings", responses: { "200": { description: "Updated settings" } } },
       },
+      "/api/v1/auth/plan": {
+        get: { summary: "Inspect resolved gateway auth credential sources", responses: { "200": { description: "Auth credential plan" } } },
+      },
+      "/api/v1/auth/install-token": {
+        post: { summary: "Resolve or generate the install token for token-mode gateways", responses: { "200": { description: "Install token resolution" } } },
+      },
       "/api/v1/admin/retention": {
         get: { summary: "Get retention policy", responses: { "200": { description: "Retention policy" } } },
         patch: { summary: "Update retention policy", responses: { "200": { description: "Updated policy" } } },
@@ -88,6 +94,9 @@ function buildOpenApiSpec(): Record<string, unknown> {
       },
       "/api/v1/admin/backups/restore": {
         post: { summary: "Restore backup", responses: { "200": { description: "Backup restored" } } },
+      },
+      "/api/v1/admin/backups/verify": {
+        post: { summary: "Verify backup manifest and payload integrity", responses: { "200": { description: "Backup verification result" } } },
       },
       "/api/v1/tools/invoke": {
         post: { summary: "Invoke tool", responses: { "200": { description: "Tool result" } } },

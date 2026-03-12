@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, it } from "vitest";
-import { loadLocalEnvFile } from "./env-file.js";
+import { loadLocalEnvFile, upsertLocalEnvVar } from "./env-file.js";
 
 const TEMP_ROOTS: string[] = [];
 
@@ -73,5 +73,44 @@ describe("loadLocalEnvFile", () => {
       }
     }
   });
-});
 
+  it("updates or appends env vars in the detected local env file", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "goatcitadel-env-update-test-"));
+    TEMP_ROOTS.push(tempRoot);
+    await mkdir(path.join(tempRoot, "config"), { recursive: true });
+    await writeFile(path.join(tempRoot, "config", "assistant.config.json"), "{}\n", "utf8");
+    const envPath = path.join(tempRoot, ".env");
+    await writeFile(
+      envPath,
+      [
+        "# test env",
+        "GOATCITADEL_AUTH_MODE=token",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const priorRoot = process.env.GOATCITADEL_ROOT_DIR;
+    try {
+      process.env.GOATCITADEL_ROOT_DIR = tempRoot;
+
+      const first = upsertLocalEnvVar("GOATCITADEL_AUTH_TOKEN", "abc123");
+      assert.equal(first.path, envPath);
+      assert.equal(first.updated, true);
+
+      const second = upsertLocalEnvVar("GOATCITADEL_AUTH_MODE", "basic");
+      assert.equal(second.path, envPath);
+      assert.equal(second.updated, true);
+
+      const raw = await readFile(envPath, "utf8");
+      assert.match(raw, /GOATCITADEL_AUTH_TOKEN="abc123"/);
+      assert.match(raw, /GOATCITADEL_AUTH_MODE="basic"/);
+    } finally {
+      if (priorRoot === undefined) {
+        delete process.env.GOATCITADEL_ROOT_DIR;
+      } else {
+        process.env.GOATCITADEL_ROOT_DIR = priorRoot;
+      }
+    }
+  });
+});

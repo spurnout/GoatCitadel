@@ -76,4 +76,34 @@ describe("admin routes", () => {
       error: "restore blocked: file path outside workspace",
     });
   });
+
+  it("returns backup verification output from the gateway", async () => {
+    const verifyBackup = vi.fn(async () => ({
+      backupPath: "F:/code/personal-ai/backups/example.backup",
+      backupId: "example",
+      verified: true,
+      filesVerified: 3,
+      issues: [],
+    }));
+    app = Fastify();
+    app.decorate("gateway", { verifyBackup } as never);
+    await app.register(adminRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/backups/verify",
+      payload: {
+        filePath: "example.backup",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(verifyBackup).toHaveBeenCalledWith({
+      filePath: "example.backup",
+    });
+    expect(response.json()).toMatchObject({
+      verified: true,
+      filesVerified: 3,
+    });
+  });
 });

@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   }
 
   const [group, action, ...rest] = args;
-  if (group !== "backup" && group !== "retention") {
+  if (group !== "backup" && group !== "retention" && group !== "auth") {
     printUsage();
     process.exitCode = 1;
     return;
@@ -30,7 +30,11 @@ async function main(): Promise<void> {
       await runBackupCommand(gateway, action, rest);
       return;
     }
-    await runRetentionCommand(gateway, action, rest);
+    if (group === "retention") {
+      await runRetentionCommand(gateway, action, rest);
+      return;
+    }
+    await runAuthCommand(gateway, action, rest);
   } finally {
     await gateway.close();
   }
@@ -77,6 +81,18 @@ async function runBackupCommand(
     return;
   }
 
+  if (action === "verify") {
+    const filePath = readFlag(args, "--file");
+    if (!filePath) {
+      throw new Error("Missing required --file <path>");
+    }
+    const verified = await gateway.verifyBackup({
+      filePath,
+    });
+    console.log(JSON.stringify(verified, null, 2));
+    return;
+  }
+
   throw new Error("Unknown backup command");
 }
 
@@ -114,6 +130,30 @@ async function runRetentionCommand(
   }
 
   throw new Error("Unknown retention command");
+}
+
+async function runAuthCommand(
+  gateway: GatewayService,
+  action: string | undefined,
+  args: string[],
+): Promise<void> {
+  if (action === "plan") {
+    console.log(JSON.stringify(gateway.getAuthCredentialPlan(), null, 2));
+    return;
+  }
+
+  if (action === "install-token") {
+    const token = readFlag(args, "--token");
+    const resolved = await gateway.resolveGatewayInstallToken({
+      token: token ?? undefined,
+      generateWhenMissing: args.includes("--generate"),
+      persistToEnv: args.includes("--persist"),
+    });
+    console.log(JSON.stringify(resolved, null, 2));
+    return;
+  }
+
+  throw new Error("Unknown auth command");
 }
 
 function parseOptionalDays(value: string | null): number | undefined {
@@ -160,7 +200,10 @@ function printUsage(): void {
   console.log(`Usage:
   goat admin backup create [--name <name>] [--output <path>]
   goat admin backup list [--limit <n>]
+  goat admin backup verify --file <path>
   goat admin backup restore --file <path> --confirm
+  goat admin auth plan
+  goat admin auth install-token [--token <value>] [--generate] [--persist]
   goat admin retention show
   goat admin retention set --realtime-days <n> --backup-keep <n> [--transcript-days <n>|off] [--audit-days <n>|off]
   goat admin retention prune [--dry-run|--apply]`);

@@ -15,6 +15,12 @@ const deviceRequestSecretHeaderSchema = z.object({
   "x-goatcitadel-device-request-secret": z.string().trim().min(16).max(256),
 });
 
+const installTokenSchema = z.object({
+  token: z.string().trim().min(16).max(4096).optional(),
+  generateWhenMissing: z.boolean().optional(),
+  persistToEnv: z.boolean().optional(),
+});
+
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post("/api/v1/auth/sse-token", async (_request, reply) => {
     const authMode = fastify.gatewayConfig.assistant.auth.mode;
@@ -40,6 +46,25 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         userAgent: typeof request.headers["user-agent"] === "string" ? request.headers["user-agent"] : undefined,
       });
       return reply.code(201).send(created);
+    } catch (error) {
+      return reply.code(400).send({
+        error: (error as Error).message,
+      });
+    }
+  });
+
+  fastify.get("/api/v1/auth/plan", async (_request, reply) => {
+    return reply.send(fastify.gateway.getAuthCredentialPlan());
+  });
+
+  fastify.post("/api/v1/auth/install-token", async (request, reply) => {
+    const parsed = installTokenSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: parsed.error.flatten() });
+    }
+
+    try {
+      return reply.send(await fastify.gateway.resolveGatewayInstallToken(parsed.data));
     } catch (error) {
       return reply.code(400).send({
         error: (error as Error).message,
