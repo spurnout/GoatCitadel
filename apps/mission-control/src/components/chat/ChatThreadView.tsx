@@ -2,10 +2,16 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  getChatTurnRecoveryActionLabel,
+  getChatTurnRecoveryActionSummary,
+  isChatTurnActiveStatus,
+} from "@goatcitadel/contracts";
 import type {
   ChatCapabilityUpgradeSuggestion,
   ChatThreadResponse,
   ChatThreadTurnRecord,
+  ChatTurnTraceRecord,
 } from "@goatcitadel/contracts";
 import { StatusChip } from "../StatusChip";
 import { ChatStreamStatusBar, type ChatStreamStatus } from "./ChatStreamStatusBar";
@@ -37,11 +43,49 @@ function summarizeRouting(turn: ChatThreadTurnRecord): string[] {
   return parts as string[];
 }
 
+function getTraceTone(trace: ChatTurnTraceRecord): "muted" | "warning" | "critical" | "success" {
+  if (trace.status === "failed") {
+    return "critical";
+  }
+  if (trace.status === "completed" && !trace.failure) {
+    return "success";
+  }
+  if (trace.status === "cancelled") {
+    return "muted";
+  }
+  return "warning";
+}
+
+function getTurnPendingLabel(trace: ChatTurnTraceRecord): string {
+  switch (trace.status) {
+    case "queued":
+      return "Queued...";
+    case "waiting_for_tool":
+      return "Using tools...";
+    case "waiting_for_approval":
+      return "Waiting for approval.";
+    case "cancelled":
+      return "Turn cancelled.";
+    case "failed":
+      return trace.failure?.message ?? "Turn failed.";
+    default:
+      return "Working...";
+  }
+}
+
 function renderSuggestionSummary(suggestions: ChatCapabilityUpgradeSuggestion[] | undefined): string | null {
   if (!suggestions || suggestions.length === 0) {
     return null;
   }
   return suggestions.slice(0, 2).map((item) => item.title).join(" · ");
+}
+
+function getRecoveryStripLabel(turn: ChatThreadTurnRecord): string | null {
+  const action = turn.trace.failure?.recommendedAction;
+  if (!action) {
+    return null;
+  }
+  return getChatTurnRecoveryActionLabel(action);
 }
 
 function ChatMarkdown({ content }: { content: string }) {
@@ -99,11 +143,13 @@ function ChatBranchSwitcher({
 
 function ChatTurnRunStrip({ turn }: { turn: ChatThreadTurnRecord }) {
   const routing = summarizeRouting(turn);
+  const recoveryLabel = getRecoveryStripLabel(turn);
   return (
     <div className="chat-v11-turn-strip">
-      <StatusChip tone={turn.trace.status === "completed" ? "success" : turn.trace.status === "failed" ? "critical" : "warning"}>
+      <StatusChip tone={getTraceTone(turn.trace)}>
         {turn.trace.status}
       </StatusChip>
+      {recoveryLabel ? <span>{recoveryLabel}</span> : turn.trace.failure ? <span>{turn.trace.failure.failureClass}</span> : null}
       {routing.map((item) => <span key={item}>{item}</span>)}
       {turn.toolRuns.length > 0 ? <span>{turn.toolRuns.length} tool{turn.toolRuns.length === 1 ? "" : "s"}</span> : null}
       {turn.citations.length > 0 ? <span>{turn.citations.length} citation{turn.citations.length === 1 ? "" : "s"}</span> : null}
@@ -176,6 +222,20 @@ function ChatTurnDetails({
         <p>Live data intent: {turn.trace.routing.liveDataIntent ? "yes" : "no"}</p>
         {turn.trace.routing.fallbackReason ? <p>Fallback reason: {turn.trace.routing.fallbackReason}</p> : null}
       </div>
+      {turn.trace.failure ? (
+        <div className="chat-v11-turn-section">
+          <h5>Recovery state</h5>
+          {turn.trace.failure.recommendedAction ? (
+            <>
+              <p>Next step: {getChatTurnRecoveryActionLabel(turn.trace.failure.recommendedAction)}</p>
+              <p>{getChatTurnRecoveryActionSummary(turn.trace.failure.recommendedAction)}</p>
+            </>
+          ) : null}
+          <p>Failure class: {turn.trace.failure.failureClass}</p>
+          <p>{turn.trace.failure.message}</p>
+          <p>Retryable: {turn.trace.failure.retryable === false ? "no" : "yes"}</p>
+        </div>
+      ) : null}
       {turn.trace.orchestration ? (
         <div className="chat-v11-turn-section">
           <h5>Orchestration</h5>
@@ -187,6 +247,13 @@ function ChatTurnDetails({
             {turn.trace.orchestration.status}
           </p>
           <p>{turn.trace.orchestration.routeDecision.selectedRoles.join(" -> ")}</p>
+          {turn.trace.orchestration.routeDecision.specialistCandidates?.length ? (
+            <p>
+              Specialists: {turn.trace.orchestration.routeDecision.specialistCandidates
+                .map((item) => `${item.title} (${item.baseRole})`)
+                .join(" · ")}
+            </p>
+          ) : null}
           {turn.trace.orchestration.finalSummary ? <p>{turn.trace.orchestration.finalSummary}</p> : null}
         </div>
       ) : null}
@@ -194,6 +261,12 @@ function ChatTurnDetails({
         <div className="chat-v11-turn-section">
           <h5>Capability suggestions</h5>
           <p>{suggestionSummary}</p>
+        </div>
+      ) : null}
+      {turn.trace.specialistCandidateSuggestions?.length ? (
+        <div className="chat-v11-turn-section">
+          <h5>Specialist suggestions</h5>
+          <p>{turn.trace.specialistCandidateSuggestions.slice(0, 2).map((item) => item.title).join(" · ")}</p>
         </div>
       ) : null}
     </details>
@@ -244,7 +317,13 @@ function ChatTurnCard({
           {turn.assistantMessage ? (
             <ChatMarkdown content={turn.assistantMessage.content} />
           ) : (
-            <p>{turn.trace.status === "running" ? "Working..." : "No assistant output yet."}</p>
+            <p>{
+              isChatTurnActiveStatus(turn.trace.status)
+                || turn.trace.status === "cancelled"
+                || turn.trace.status === "failed"
+                ? getTurnPendingLabel(turn.trace)
+                : "No assistant output yet."
+            }</p>
           )}
         </div>
       </div>

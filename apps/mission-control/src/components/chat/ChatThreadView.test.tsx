@@ -84,6 +84,12 @@ function makeThread(): ChatThreadResponse {
             liveDataIntent: true,
             fallbackReason: "primary blocked by remote site",
           },
+          failure: {
+            failureClass: "tool_blocked",
+            message: "A required source blocked automated access.",
+            retryable: true,
+            recommendedAction: "retry_narrower",
+          },
         },
         toolRuns: [
           {
@@ -167,5 +173,6 @@ describe("ChatThreadView", () => {
     expect(detailsText).toContain("URL: https://www.movieinsider.com/movies");
     expect(detailsText).toContain("HTTP status: 403");
     expect(detailsText).toContain("Fallback reason: primary blocked by remote site");
+    expect(detailsText).toContain("Next step: Retry with a narrower request");
   });
 });

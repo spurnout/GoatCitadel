@@ -98,6 +98,7 @@ async function executeStep(input: {
         stepIndex: input.stepIndex,
         priorSteps: input.priorSteps,
         stepRole: input.step.role,
+        specialistCandidate: input.step.specialistCandidate,
       }),
     });
     const finishedAt = new Date().toISOString();
@@ -106,6 +107,9 @@ async function executeStep(input: {
       stepId: input.step.stepId,
       role: input.step.role,
       index: input.stepIndex,
+      specialistCandidateId: input.step.specialistCandidate?.candidateId,
+      specialistTitle: input.step.specialistCandidate?.title,
+      specialistRole: input.step.specialistCandidate?.role,
       providerId: input.step.providerId,
       model: response.model ?? input.step.model,
       startedAt,
@@ -123,6 +127,9 @@ async function executeStep(input: {
       stepId: input.step.stepId,
       role: input.step.role,
       index: input.stepIndex,
+      specialistCandidateId: input.step.specialistCandidate?.candidateId,
+      specialistTitle: input.step.specialistCandidate?.title,
+      specialistRole: input.step.specialistCandidate?.role,
       providerId: input.step.providerId,
       model: input.step.model,
       startedAt,
@@ -142,6 +149,7 @@ function buildStepMessages(input: {
   stepIndex: number;
   priorSteps: OrchestrationStepExecutionResult[];
   stepRole: OrchestrationRole;
+  specialistCandidate?: OrchestrationPlan["steps"][number]["specialistCandidate"];
 }): ChatCompletionRequest["messages"] {
   const conversationContext = input.task.conversation
     .slice(-8)
@@ -154,11 +162,19 @@ function buildStepMessages(input: {
     ].join(": "))
     .join("\n");
   const roleInstruction = buildRoleInstruction(input.task.mode, input.stepRole, input.plan.workflowTemplate);
+  const specialistOverlay = input.specialistCandidate
+    ? [
+      `Specialist overlay: route this step through "${input.specialistCandidate.title}" (${input.specialistCandidate.role}).`,
+      `Why selected: ${input.specialistCandidate.matchReason}`,
+      `Specialist focus: ${input.specialistCandidate.summary}`,
+    ].join("\n")
+    : undefined;
   const userPrompt = [
     `Objective: ${input.task.objective}`,
     `Mode: ${input.task.mode}`,
     conversationContext ? `Conversation context:\n${conversationContext}` : undefined,
     priorSummaries ? `Prior handoffs:\n${priorSummaries}` : undefined,
+    specialistOverlay,
     buildParallelHint(input.stepRole, input.stepIndex, input.plan),
     "Return concise, high-signal output suitable for handoff to the next role.",
   ].filter(Boolean).join("\n\n");

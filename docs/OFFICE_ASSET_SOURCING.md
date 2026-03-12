@@ -4,6 +4,8 @@ Last updated: 2026-03-06
 
 This doc defines the safe sourcing lane for Office scene assets.
 
+See also: [OFFICE_LAB_DIRECTION.md](./OFFICE_LAB_DIRECTION.md) for the current citadel-first direction, donor policy, and the rule that AI-generated art stays supplemental rather than foundational.
+
 ## Allowed shipped licenses
 
 1. CC0 / Public Domain

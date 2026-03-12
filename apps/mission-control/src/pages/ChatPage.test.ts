@@ -3,8 +3,12 @@ import type { ChatMessageRecord } from "@goatcitadel/contracts";
 import {
   formatSessionLabel,
   looksMachineSessionLabel,
+  shouldShowLearnedMemoryPanel,
+  shouldShowSuggestionsPanel,
   shouldApplyFetchedMessagesAfterStream,
+  shouldShowTracePanel,
 } from "./ChatPage";
+import type { ChatThreadResponse } from "@goatcitadel/contracts";
 
 function makeMessage(
   messageId: string,
@@ -139,5 +143,107 @@ describe("shouldApplyFetchedMessagesAfterStream", () => {
     ];
 
     expect(shouldApplyFetchedMessagesAfterStream(current, fetched, null)).toBe(true);
+  });
+});
+
+function makeTurn(
+  overrides: Partial<ChatThreadResponse["turns"][number]["trace"]> = {},
+): ChatThreadResponse["turns"][number] {
+  return {
+    turnId: "turn-1",
+    branchKind: "append",
+    userMessage: makeMessage("user-1", "user", "hello"),
+    assistantMessage: makeMessage("assistant-1", "assistant", "hi"),
+    trace: {
+      turnId: "turn-1",
+      sessionId: "sess-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-1",
+      branchKind: "append",
+      status: "completed",
+      mode: "chat",
+      webMode: "auto",
+      memoryMode: "auto",
+      thinkingLevel: "standard",
+      startedAt: "2026-03-08T00:00:00.000Z",
+      finishedAt: "2026-03-08T00:00:01.000Z",
+      toolRuns: [],
+      citations: [],
+      routing: {},
+      ...overrides,
+    },
+    toolRuns: [],
+    citations: [],
+    branch: {
+      siblingTurnIds: ["turn-1"],
+      activeSiblingIndex: 0,
+      siblingCount: 1,
+      isSelectedPath: true,
+      newestLeafTurnId: "turn-1",
+    },
+  };
+}
+
+describe("Wave 2 surface helpers", () => {
+  it("keeps normal chat trace panels hidden unless something notable happened", () => {
+    expect(shouldShowTracePanel("chat", makeTurn())).toBe(false);
+    expect(shouldShowTracePanel("chat", makeTurn({
+      toolRuns: [
+        {
+          toolRunId: "tool-1",
+          turnId: "turn-1",
+          sessionId: "sess-1",
+          toolName: "browser.navigate",
+          status: "failed",
+          startedAt: "2026-03-08T00:00:00.200Z",
+        },
+      ],
+    }))).toBe(true);
+    expect(shouldShowTracePanel("cowork", makeTurn())).toBe(true);
+  });
+
+  it("shows suggestions only where they materially help", () => {
+    expect(shouldShowSuggestionsPanel("chat", {
+      capabilitySuggestionCount: 0,
+      specialistSuggestionCount: 0,
+      specialistCandidateCount: 0,
+      proactiveSuggestionCount: 0,
+      hasDelegationSuggestion: false,
+    })).toBe(false);
+    expect(shouldShowSuggestionsPanel("chat", {
+      capabilitySuggestionCount: 1,
+      specialistSuggestionCount: 0,
+      specialistCandidateCount: 0,
+      proactiveSuggestionCount: 0,
+      hasDelegationSuggestion: false,
+    })).toBe(true);
+    expect(shouldShowSuggestionsPanel("code", {
+      capabilitySuggestionCount: 0,
+      specialistSuggestionCount: 0,
+      specialistCandidateCount: 0,
+      proactiveSuggestionCount: 2,
+      hasDelegationSuggestion: true,
+    })).toBe(false);
+    expect(shouldShowSuggestionsPanel("code", {
+      capabilitySuggestionCount: 0,
+      specialistSuggestionCount: 1,
+      specialistCandidateCount: 0,
+      proactiveSuggestionCount: 0,
+      hasDelegationSuggestion: false,
+    })).toBe(true);
+    expect(shouldShowSuggestionsPanel("cowork", {
+      capabilitySuggestionCount: 0,
+      specialistSuggestionCount: 0,
+      specialistCandidateCount: 0,
+      proactiveSuggestionCount: 0,
+      hasDelegationSuggestion: false,
+    })).toBe(true);
+  });
+
+  it("keeps learned memory off the chat surface until there is something to review", () => {
+    expect(shouldShowLearnedMemoryPanel("chat", 0)).toBe(false);
+    expect(shouldShowLearnedMemoryPanel("chat", 2)).toBe(true);
+    expect(shouldShowLearnedMemoryPanel("cowork", 0)).toBe(true);
+    expect(shouldShowLearnedMemoryPanel("code", 0)).toBe(true);
   });
 });

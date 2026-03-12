@@ -9,6 +9,7 @@ import {
   type GatewayAccessPreflightResult,
   type GatewayAuthState,
 } from "../api/shell-client";
+import { deriveShellGatewayAccessState } from "../state/gateway-shell-state";
 import { StatusChip } from "./StatusChip";
 import { GCSelect, GCSwitch } from "./ui";
 
@@ -40,41 +41,13 @@ interface PendingDeviceApprovalRequest {
 
 type AccessAuthMode = "token" | "basic";
 
-function resolveStatusTone(status: GatewayAccessView["status"]): "warning" | "critical" | "muted" | "live" {
-  if (status === "checking") {
-    return "muted";
-  }
-  if (status === "ready") {
-    return "live";
-  }
-  if (status === "needs-auth") {
-    return "warning";
-  }
-  return "critical";
-}
-
-function resolveStatusLabel(status: GatewayAccessView["status"]): string {
-  if (status === "checking") {
-    return "Checking";
-  }
-  if (status === "needs-auth") {
-    return "Access required";
-  }
-  if (status === "unreachable") {
-    return "Gateway offline";
-  }
-  if (status === "misconfigured") {
-    return "Gateway misconfigured";
-  }
-  return "Ready";
-}
-
 export function GatewayAccessGate({
   gatewayBaseUrl,
   access,
   busy,
   onRetry,
 }: GatewayAccessGateProps) {
+  const shellState = deriveShellGatewayAccessState(access);
   const [authMode, setAuthMode] = useState<AccessAuthMode>("token");
   const [token, setToken] = useState("");
   const [username, setUsername] = useState("");
@@ -223,7 +196,7 @@ export function GatewayAccessGate({
               Mission Control is waiting for a verified gateway session before it starts live data and control surfaces.
             </p>
           </div>
-          <StatusChip tone={resolveStatusTone(access.status)}>{resolveStatusLabel(access.status)}</StatusChip>
+          <StatusChip tone={shellState.tone}>{shellState.label}</StatusChip>
         </div>
 
         <div className="gateway-access-meta">
@@ -232,14 +205,22 @@ export function GatewayAccessGate({
             <p className="gateway-access-mono">{gatewayBaseUrl}</p>
           </div>
           <div>
-            <span className="sidebar-footer-label">Probe detail</span>
-            <p className="gateway-access-note">{access.healthDetail ?? "Waiting for the first gateway probe."}</p>
+            <span className="sidebar-footer-label">Stored credentials</span>
+            <p className="gateway-access-note">{storedAuthPresent ? "Present on this browser." : "None stored yet."}</p>
           </div>
         </div>
 
         <div className="gateway-access-status">
-          <p>{access.message}</p>
+          <p>{shellState.summary}</p>
+          <p className="gateway-access-note"><strong>Next:</strong> {shellState.nextStep}</p>
         </div>
+
+        {shellState.detail ? (
+          <details className="gateway-access-details">
+            <summary>Technical details</summary>
+            <p className="gateway-access-note">{shellState.detail}</p>
+          </details>
+        ) : null}
 
         {formError ? <p className="error gateway-access-error">{formError}</p> : null}
         {deviceApprovalError ? <p className="error gateway-access-error">{deviceApprovalError}</p> : null}

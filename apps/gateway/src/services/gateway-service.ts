@@ -23,6 +23,14 @@ import {
   type SessionAutonomyPrefsPatchInput,
   type SessionAutonomyPrefsRecord,
 } from "@goatcitadel/storage";
+import {
+  applyChatModePresetToPatch,
+  buildChatModePrefsPatch,
+  chatModeAllowsDynamicTeamGrowth,
+  chatModeRequiresProjectBinding,
+  isChatTurnActiveStatus,
+  isChatTurnTerminalStatus,
+} from "@goatcitadel/contracts";
 import type {
   AddonActionResponse,
   AddonCatalogEntry,
@@ -59,6 +67,7 @@ import type {
   ChatAttachmentMediaType,
   ChatAttachmentPreviewResponse,
   ChatCapabilityUpgradeSuggestion,
+  ChatCancelTurnResponse,
   ChatCitationRecord,
   ChatDelegateAcceptRequest,
   ChatDelegateRequest,
@@ -83,10 +92,15 @@ import type {
   ChatSessionBindingRecord,
   ChatSessionRecord,
   ChatSessionPrefsPatch,
+  ChatSpecialistCandidateCreateInput,
+  ChatSpecialistCandidatePatchInput,
+  ChatSpecialistCandidateRecord,
+  ChatSpecialistCandidateSuggestionRecord,
   ChatStreamChunk,
   ChatThreadResponse,
   ChatThinkingLevel,
   ChatTurnBranchKind,
+  ChatTurnFailureRecord,
   ChatTurnTraceRecord,
   ChatWebMode,
   DocsIngestInput,
@@ -287,6 +301,7 @@ import {
 } from "../orchestration/router.js";
 import type {
   OrchestrationExecutionResult,
+  OrchestrationRole,
   OrchestrationRouterInput,
   OrchestrationStepExecutionResult,
 } from "../orchestration/types.js";
@@ -886,6 +901,36 @@ class ChatTurnWriteConflictError extends Error {
   }
 }
 
+class ChatTurnCancelledError extends Error {
+  public constructor(
+    public readonly turnId: string,
+    message = "Chat turn cancelled.",
+  ) {
+    super(message);
+    this.name = "ChatTurnCancelledError";
+  }
+}
+
+function isChatTurnCancelledError(error: unknown): boolean {
+  if (error instanceof ChatTurnCancelledError) {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const name = error.name.toLowerCase();
+  const message = error.message.toLowerCase();
+  return name.includes("cancel") || message.includes("chat turn cancelled");
+}
+
+interface ActiveChatTurnExecution {
+  sessionId: string;
+  turnId: string;
+  operation: string;
+  startedAt: string;
+  controller: AbortController;
+}
+
 export class GatewayService {
   private readonly storage: Storage;
   private readonly eventIngestService: EventIngestService;
@@ -909,6 +954,7 @@ export class GatewayService {
   private readonly warnedOutsideRootPathFingerprints = new Set<string>();
   private readonly chatMessageProjectionBackfillAttempted = new Set<string>();
   private readonly activeChatTurnWrites = new Map<string, string>();
+  private readonly activeChatTurns = new Map<string, ActiveChatTurnExecution>();
   private readonly operatorSummaryCache = new OperatorSummaryCache(15_000);
   private readonly onboardingMarkerPath: string;
   private proactiveScheduler?: NodeJS.Timeout;
@@ -1430,6 +1476,7 @@ export class GatewayService {
     workspaceId?: string;
     title?: string;
     projectId?: string;
+    mode?: ChatMode;
   }): ChatSessionRecord {
     const workspaceId = this.normalizeWorkspaceId(input.workspaceId);
     const peer = `chat_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -1475,6 +1522,9 @@ export class GatewayService {
         throw new Error("project workspace does not match requested session workspace");
       }
       this.storage.chatSessionProjects.assign(resolution.sessionId, input.projectId, now);
+    }
+    if (input.mode) {
+      this.storage.chatSessionPrefs.patch(resolution.sessionId, buildChatModePrefsPatch(input.mode), now);
     }
     const created = this.requireChatSession(resolution.sessionId);
     if (!created) {
@@ -1750,7 +1800,8 @@ export class GatewayService {
     input: ChatSessionPrefsPatch,
   ): ChatSessionPrefsRecord {
     this.getSession(sessionId);
-    const { basePatch, autonomyPatch } = splitChatPrefsPatch(input);
+    const normalizedInput = applyChatModePresetToPatch(input);
+    const { basePatch, autonomyPatch } = splitChatPrefsPatch(normalizedInput);
     if (Object.keys(autonomyPatch).length > 0) {
       this.patchSessionAutonomyPrefs(sessionId, autonomyPatch);
     }
@@ -2144,7 +2195,82 @@ export class GatewayService {
 
   private hasRunningTurn(sessionId: string): boolean {
     const latest = this.storage.chatTurnTraces.listBySession(sessionId, 1)[0];
-    return latest?.status === "running" || latest?.status === "approval_required";
+    return latest ? isChatTurnActiveStatus(latest.status) : false;
+  }
+
+  private beginActiveChatTurnExecution(
+    sessionId: string,
+    turnId: string,
+    operation: string,
+  ): AbortController {
+    const controller = new AbortController();
+    this.activeChatTurns.set(turnId, {
+      sessionId,
+      turnId,
+      operation,
+      startedAt: new Date().toISOString(),
+      controller,
+    });
+    return controller;
+  }
+
+  private endActiveChatTurnExecution(turnId: string, controller: AbortController): void {
+    const active = this.activeChatTurns.get(turnId);
+    if (!active || active.controller !== controller) {
+      return;
+    }
+    this.activeChatTurns.delete(turnId);
+  }
+
+  private isChatTurnCancellationRequested(turnId: string): boolean {
+    return this.activeChatTurns.get(turnId)?.controller.signal.aborted ?? false;
+  }
+
+  private createHydratedChatTurnTrace(turnId: string, trace: ChatTurnTraceRecord): ChatTurnTraceRecord {
+    return {
+      ...trace,
+      toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+      citations: trace.citations ?? [],
+    };
+  }
+
+  private markChatTurnCancelled(
+    sessionId: string,
+    turnId: string,
+    cancelledBy?: string,
+  ): ChatTurnTraceRecord {
+    const current = this.storage.chatTurnTraces.get(turnId);
+    if (current.sessionId !== sessionId) {
+      throw new Error(`Chat turn ${turnId} does not belong to session ${sessionId}`);
+    }
+    if (current.status === "cancelled") {
+      return this.createHydratedChatTurnTrace(turnId, current);
+    }
+    if (isChatTurnTerminalStatus(current.status)) {
+      return this.createHydratedChatTurnTrace(turnId, current);
+    }
+    const trace = this.storage.chatTurnTraces.patch(turnId, {
+      status: "cancelled",
+      failure: undefined,
+      finishedAt: new Date().toISOString(),
+    });
+    this.recordDevDiagnostic({
+      level: "info",
+      category: "chat",
+      event: "chat.turn.cancelled",
+      message: "Cancelled active chat turn",
+      sessionId,
+      turnId,
+      context: {
+        cancelledBy,
+      },
+    });
+    this.publishRealtime("chat_thread_updated", "chat", {
+      type: "chat_thread_turn_cancelled",
+      sessionId,
+      turnId,
+    });
+    return this.createHydratedChatTurnTrace(turnId, trace);
   }
 
   private getSessionIdleSeconds(sessionId: string): number {
@@ -2475,6 +2601,59 @@ export class GatewayService {
       score += 0.12;
     }
     return clamp01(score);
+  }
+
+  private collectSpecialistCandidateSuggestions(input: {
+    sessionId: string;
+    mode: ChatMode;
+    content: string;
+    capabilitySuggestions: ChatCapabilityUpgradeSuggestion[];
+    trace: ChatTurnTraceRecord;
+  }): ChatSpecialistCandidateSuggestionRecord[] {
+    if (!chatModeAllowsDynamicTeamGrowth(input.mode)) {
+      return [];
+    }
+    const existingCandidates = this.storage.chatSpecialistCandidates.listBySession(input.sessionId, 200);
+    const seen = new Set<string>(existingCandidates
+      .filter((candidate) => candidate.status !== "retired")
+      .map((candidate) => normalizeSpecialistCandidateFingerprint(candidate)));
+    const suggested = new Map<string, ChatSpecialistCandidateSuggestionRecord>();
+    const objectiveKeywords = extractSpecialistObjectiveKeywords(input.content);
+    const addSuggestion = (suggestion: ChatSpecialistCandidateSuggestionRecord): void => {
+      const fingerprint = normalizeSpecialistCandidateFingerprint(suggestion);
+      if (seen.has(fingerprint) || suggested.has(fingerprint)) {
+        return;
+      }
+      suggested.set(fingerprint, suggestion);
+    };
+
+    for (const capability of input.capabilitySuggestions) {
+      addSuggestion(buildSpecialistSuggestionFromCapability({
+        capability,
+        mode: input.mode,
+        objectiveKeywords,
+      }));
+    }
+
+    if (suggested.size === 0 && input.trace.orchestration) {
+      const detectedRoles = normalizeDelegationRoles(detectDelegationRoles(input.content));
+      for (const role of detectedRoles) {
+        if (role === "coder") {
+          continue;
+        }
+        addSuggestion(buildRoleGapSpecialistSuggestion({
+          role,
+          mode: input.mode,
+          objective: input.content,
+          objectiveKeywords,
+          confidence: this.computeDelegationSuggestionConfidence(input.content, detectedRoles),
+          runId: input.trace.orchestration.runId,
+          turnId: input.trace.turnId,
+        }));
+      }
+    }
+
+    return [...suggested.values()].slice(0, 3);
   }
 
   private extractAndPersistLearnedMemory(
@@ -4003,6 +4182,91 @@ export class GatewayService {
     };
   }
 
+  public listChatSessionSpecialistCandidates(
+    sessionId: string,
+    limit = 200,
+  ): {
+    items: ChatSpecialistCandidateRecord[];
+  } {
+    this.getSession(sessionId);
+    return {
+      items: this.storage.chatSpecialistCandidates.listBySession(sessionId, limit),
+    };
+  }
+
+  public createChatSessionSpecialistCandidate(
+    sessionId: string,
+    input: {
+      turnId?: string;
+      suggestion: ChatSpecialistCandidateSuggestionRecord;
+    },
+  ): ChatSpecialistCandidateRecord {
+    this.getSession(sessionId);
+    const session = this.requireChatSession(sessionId);
+    const normalizedFingerprint = normalizeSpecialistCandidateFingerprint({
+      title: input.suggestion.title,
+      role: input.suggestion.role,
+    });
+    const existing = this.storage.chatSpecialistCandidates
+      .listBySession(sessionId, 200)
+      .find((candidate) => (
+        candidate.status !== "retired"
+        && normalizeSpecialistCandidateFingerprint(candidate) === normalizedFingerprint
+      ));
+    const trace = input.turnId
+      ? this.storage.chatTurnTraces.listBySession(sessionId, 2000).find((item) => item.turnId === input.turnId)
+      : undefined;
+    if (existing) {
+      return this.storage.chatSpecialistCandidates.patch(existing.candidateId, {
+        summary: input.suggestion.summary,
+        reason: input.suggestion.reason,
+        confidence: Math.max(existing.confidence, input.suggestion.confidence),
+        suggestedTools: dedupeStrings([
+          ...(existing.suggestedTools ?? []),
+          ...(input.suggestion.suggestedTools ?? []),
+        ]),
+        suggestedSkills: dedupeStrings([
+          ...(existing.suggestedSkills ?? []),
+          ...(input.suggestion.suggestedSkills ?? []),
+        ]),
+        routingHints: mergeSpecialistRoutingHints(existing.routingHints, input.suggestion.routingHints),
+        evidence: mergeSpecialistEvidence(existing.evidence, input.suggestion.evidence),
+      });
+    }
+    const createInput: ChatSpecialistCandidateCreateInput & { workspaceId?: string } = {
+      workspaceId: session.workspaceId,
+      leadTurnId: input.turnId,
+      leadRunId: trace?.orchestration?.runId,
+      title: input.suggestion.title,
+      role: input.suggestion.role,
+      summary: input.suggestion.summary,
+      reason: input.suggestion.reason,
+      source: input.suggestion.source,
+      status: "drafted",
+      routingMode: input.suggestion.suggestedRoutingMode,
+      confidence: input.suggestion.confidence,
+      requiresApproval: input.suggestion.requiresApproval,
+      suggestedTools: input.suggestion.suggestedTools,
+      suggestedSkills: input.suggestion.suggestedSkills,
+      routingHints: input.suggestion.routingHints,
+      evidence: input.suggestion.evidence,
+    };
+    return this.storage.chatSpecialistCandidates.create(sessionId, createInput);
+  }
+
+  public updateChatSessionSpecialistCandidate(
+    sessionId: string,
+    candidateId: string,
+    input: ChatSpecialistCandidatePatchInput,
+  ): ChatSpecialistCandidateRecord {
+    this.getSession(sessionId);
+    const current = this.storage.chatSpecialistCandidates.get(candidateId);
+    if (current.sessionId !== sessionId) {
+      throw new Error("Specialist candidate does not belong to this session.");
+    }
+    return this.storage.chatSpecialistCandidates.patch(candidateId, input);
+  }
+
   public updateChatSessionLearnedMemory(
     sessionId: string,
     itemId: string,
@@ -4258,7 +4522,7 @@ export class GatewayService {
       const traceStatus = response.trace?.status;
       const missingOutput = responseText.trim().length === 0;
       const failedByTrace = traceStatus === "failed";
-      const approvalPending = traceStatus === "approval_required";
+      const approvalPending = traceStatus === "waiting_for_approval";
       const status: PromptPackRunRecord["status"] = (missingOutput || failedByTrace || approvalPending) ? "failed" : "completed";
       const error = status === "failed"
         ? (approvalPending
@@ -7237,7 +7501,7 @@ export class GatewayService {
       throw new Error("user message is required");
     }
 
-    const prefsOverride = {
+    const prefsOverride = applyChatModePresetToPatch({
       ...(input.prefsOverride ?? {}),
       mode: input.mode ?? input.prefsOverride?.mode,
       providerId: input.providerId ?? input.prefsOverride?.providerId,
@@ -7245,7 +7509,7 @@ export class GatewayService {
       webMode: input.webMode ?? input.prefsOverride?.webMode,
       memoryMode: input.memoryMode ?? input.prefsOverride?.memoryMode,
       thinkingLevel: input.thinkingLevel ?? input.prefsOverride?.thinkingLevel,
-    };
+    });
     const splitPrefs = splitChatPrefsPatch(prefsOverride);
     if (Object.keys(splitPrefs.autonomyPatch).length > 0) {
       this.patchSessionAutonomyPrefs(sessionId, splitPrefs.autonomyPatch);
@@ -7254,7 +7518,12 @@ export class GatewayService {
     const prefs = this.ensureGlmPrimaryDefaults(sessionId, prefsPatched);
     const autonomy = this.getSessionAutonomyPrefs(sessionId);
     const normalized = normalizeAgentInputFromSend(input);
-    const effectiveToolAutonomy = prefs.planningMode === "advisory" ? "manual" : prefs.toolAutonomy;
+    const projectId = this.storage.chatSessionProjects.get(sessionId)?.projectId;
+    const requiresProjectBinding = chatModeRequiresProjectBinding(prefs.mode);
+    const missingRequiredProjectBinding = requiresProjectBinding && !projectId;
+    const effectiveToolAutonomy = prefs.planningMode === "advisory" || missingRequiredProjectBinding
+      ? "manual"
+      : prefs.toolAutonomy;
     const retrievalTrace = buildRetrievalTrace({
       content,
       retrievalMode: autonomy.retrievalMode,
@@ -7265,6 +7534,9 @@ export class GatewayService {
     const guidanceSystemInstruction = mergeChatSystemInstructions(
       resolvedGuidance.systemInstruction,
       buildPlanningModeSystemInstruction(prefs.planningMode),
+      missingRequiredProjectBinding
+        ? "Code mode requires a bound project before execution-heavy work. Until a project is attached, stay in planning and review posture, and do not imply that repository-bound edits or filesystem inspection were executed."
+        : undefined,
     );
 
     const sessionState = await this.loadChatTurnSessionState(sessionId);
@@ -7344,9 +7616,73 @@ export class GatewayService {
     if (!shouldUseModeOrchestration(routerInput)) {
       return undefined;
     }
+    const plan = this.applyApprovedSpecialistsToPlan(prepared, buildOrchestrationPlan(routerInput));
     return {
       ...routerInput,
-      plan: buildOrchestrationPlan(routerInput),
+      plan,
+    };
+  }
+
+  private applyApprovedSpecialistsToPlan(
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    plan: ReturnType<typeof buildOrchestrationPlan>,
+  ): ReturnType<typeof buildOrchestrationPlan> {
+    const mode = prepared.normalized.mode ?? prepared.prefs.mode;
+    if (!chatModeAllowsDynamicTeamGrowth(mode)) {
+      return plan;
+    }
+    const candidates = this.storage.chatSpecialistCandidates.listAutoRoutable(
+      prepared.session.sessionId,
+      mode,
+      Boolean(this.storage.chatSessionProjects.get(prepared.session.sessionId)?.projectId),
+    );
+    if (candidates.length === 0) {
+      return plan;
+    }
+    const objectiveKeywords = extractSpecialistObjectiveKeywords(prepared.content);
+    const nextSteps = plan.steps.map((step) => ({ ...step }));
+    const matchedSelections: NonNullable<typeof plan.routeDecision.specialistCandidates> = [];
+    const usedCandidateIds = new Set<string>();
+    for (const step of nextSteps) {
+      const bestMatch = candidates
+        .filter((candidate) => !usedCandidateIds.has(candidate.candidateId))
+        .map((candidate) => {
+          const baseRole = inferSpecialistBaseRole(candidate.role);
+          const score = scoreSpecialistCandidateMatch(candidate, objectiveKeywords, step.role);
+          return { candidate, baseRole, score };
+        })
+        .filter((item) => item.baseRole === step.role && item.score >= 0.58)
+        .sort((left, right) => right.score - left.score)
+        .at(0);
+      if (!bestMatch) {
+        continue;
+      }
+      const selection = {
+        candidateId: bestMatch.candidate.candidateId,
+        title: bestMatch.candidate.title,
+        role: bestMatch.candidate.role,
+        baseRole: bestMatch.baseRole,
+        summary: bestMatch.candidate.summary,
+        matchReason: buildSpecialistMatchReason(bestMatch.candidate, objectiveKeywords),
+        routingMode: bestMatch.candidate.routingMode,
+      } satisfies NonNullable<typeof plan.routeDecision.specialistCandidates>[number];
+      step.specialistCandidate = selection;
+      matchedSelections.push(selection);
+      usedCandidateIds.add(bestMatch.candidate.candidateId);
+      if (matchedSelections.length >= 2) {
+        break;
+      }
+    }
+    if (matchedSelections.length === 0) {
+      return plan;
+    }
+    return {
+      ...plan,
+      routeDecision: {
+        ...plan.routeDecision,
+        specialistCandidates: matchedSelections,
+      },
+      steps: nextSteps,
     };
   }
 
@@ -7382,6 +7718,9 @@ export class GatewayService {
         role: step.role,
         index: step.index,
         status: step.status,
+        specialistCandidateId: step.specialistCandidateId,
+        specialistTitle: step.specialistTitle,
+        specialistRole: step.specialistRole,
         providerId: step.providerId,
         model: step.model,
         startedAt: step.startedAt,
@@ -7396,6 +7735,7 @@ export class GatewayService {
   private async executePreparedModeOrchestration(
     prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
     input: ChatSendMessageRequest,
+    signal?: AbortSignal,
     onProgress?: (summary: NonNullable<ChatTurnTraceRecord["orchestration"]>) => Promise<void> | void,
   ): Promise<OrchestrationExecutionResult & { summary: NonNullable<ChatTurnTraceRecord["orchestration"]> }> {
     const orchestration = this.resolvePreparedTurnOrchestration(prepared);
@@ -7473,7 +7813,10 @@ export class GatewayService {
       task: orchestration.task,
       plan: orchestration.plan,
       callbacks: {
-        createChatCompletion: (request) => this.createChatCompletion(request),
+        createChatCompletion: (request) => this.createChatCompletion({
+          ...request,
+          signal,
+        }),
         onStepResult: async (step, allSteps) => {
           currentSteps = [...allSteps];
           this.recordDevDiagnostic({
@@ -7568,223 +7911,268 @@ export class GatewayService {
   ): AsyncGenerator<ChatStreamChunk> {
     const turnId = prepared.turnId;
     const assistantMessageId = prepared.assistantMessageId;
+    const controller = this.beginActiveChatTurnExecution(sessionId, turnId, threadEventType);
 
-    yield {
-      type: "message_start",
-      sessionId,
-      turnId,
-      messageId: assistantMessageId,
-      parentTurnId: prepared.parentTurnId,
-      branchKind: prepared.branchKind,
-      sourceTurnId: prepared.sourceTurnId,
-    };
-
-    const modeOrchestration = this.resolvePreparedTurnOrchestration(prepared);
-    if (modeOrchestration) {
-      const mode = prepared.normalized.mode ?? prepared.prefs.mode;
-      const initialTrace = this.storage.chatTurnTraces.create({
-        turnId,
+    try {
+      yield {
+        type: "message_start",
         sessionId,
+        turnId,
+        messageId: assistantMessageId,
+        parentTurnId: prepared.parentTurnId,
+        branchKind: prepared.branchKind,
+        sourceTurnId: prepared.sourceTurnId,
+      };
+
+      const modeOrchestration = this.resolvePreparedTurnOrchestration(prepared);
+      if (modeOrchestration) {
+        const mode = prepared.normalized.mode ?? prepared.prefs.mode;
+        const initialTrace = this.storage.chatTurnTraces.create({
+          turnId,
+          sessionId,
+          userMessageId: prepared.userEventId,
+          parentTurnId: prepared.parentTurnId,
+          branchKind: prepared.branchKind,
+          sourceTurnId: prepared.sourceTurnId,
+          status: "running",
+          mode,
+          model: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+          memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+          thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+          effectiveToolAutonomy: prepared.effectiveToolAutonomy,
+          routing: {
+            primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+            primaryModel: input.model ?? prepared.prefs.model,
+            effectiveProviderId: modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+            effectiveModel: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          },
+        });
+        yield {
+          type: "trace_update",
+          sessionId,
+          turnId,
+          trace: initialTrace,
+        };
+
+        const orchestrationResult = await this.executePreparedModeOrchestration(prepared, input, controller.signal, async (summary) => {
+          this.storage.chatTurnTraces.patch(turnId, {
+            orchestration: summary,
+            model: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            routing: {
+              primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+              primaryModel: input.model ?? prepared.prefs.model,
+              effectiveProviderId: summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+              effectiveModel: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            },
+          });
+        });
+
+        let finalText = orchestrationResult.finalOutput.trim();
+        if (!finalText) {
+          finalText = buildEmptyAssistantTurnFallbackText();
+        }
+
+        await this.ingestEvent(randomUUID(), {
+          eventId: assistantMessageId,
+          route: prepared.route,
+          actor: {
+            type: "agent",
+            id: "assistant",
+          },
+          message: {
+            role: "assistant",
+            content: finalText,
+          },
+        });
+
+        for (const citation of orchestrationResult.citations) {
+          yield {
+            type: "citation",
+            sessionId,
+            turnId,
+            citation,
+          };
+        }
+
+        let hydratedTrace: ChatTurnTraceRecord = {
+          ...this.storage.chatTurnTraces.patch(turnId, {
+            assistantMessageId,
+            status: orchestrationResult.summary.status === "failed" ? "failed" : "completed",
+            finishedAt: new Date().toISOString(),
+            model: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            routing: {
+              primaryProviderId: input.providerId ?? prepared.prefs.providerId,
+              primaryModel: input.model ?? prepared.prefs.model,
+              effectiveProviderId: orchestrationResult.summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+              effectiveModel: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            },
+            retrieval: prepared.retrievalTrace,
+            reflection: {
+              attempted: false,
+              attemptCount: 0,
+              outcome: "not_needed",
+            },
+            proactive: {
+              runId: prepared.autonomy.lastProactiveRunId,
+              mode: prepared.autonomy.proactiveMode,
+            },
+            orchestration: orchestrationResult.summary,
+            guidance: {
+              workspaceId: prepared.workspaceId,
+              globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+              workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+              truncated: prepared.resolvedGuidance.truncated,
+            },
+            citations: orchestrationResult.citations,
+          }),
+          toolRuns: [],
+        };
+        this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
+        yield {
+          type: "message_done",
+          sessionId,
+          turnId,
+          messageId: assistantMessageId,
+          content: finalText,
+        };
+        const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+          sessionId,
+          content: prepared.content,
+          assistantText: finalText,
+          trace: hydratedTrace,
+        });
+        const specialistCandidateSuggestions = this.collectSpecialistCandidateSuggestions({
+          sessionId,
+          mode: prepared.normalized.mode ?? prepared.prefs.mode,
+          content: prepared.content,
+          capabilitySuggestions: capabilityUpgradeSuggestions,
+          trace: hydratedTrace,
+        });
+        if (capabilityUpgradeSuggestions.length > 0 || specialistCandidateSuggestions.length > 0) {
+          hydratedTrace = {
+            ...this.storage.chatTurnTraces.patch(turnId, {
+              capabilityUpgradeSuggestions: capabilityUpgradeSuggestions.length > 0 ? capabilityUpgradeSuggestions : [],
+              specialistCandidateSuggestions: specialistCandidateSuggestions.length > 0 ? specialistCandidateSuggestions : [],
+            }),
+            toolRuns: [],
+          };
+          if (capabilityUpgradeSuggestions.length > 0) {
+            yield {
+              type: "capability_upgrade_suggestion",
+              sessionId,
+              turnId,
+              capabilityUpgradeSuggestions,
+            };
+          }
+        }
+        yield {
+          type: "trace_update",
+          sessionId,
+          turnId,
+          trace: hydratedTrace,
+        };
+        this.publishRealtime("chat_thread_updated", "chat", {
+          type: threadEventType,
+          sessionId,
+          turnId,
+          activeLeafTurnId: turnId,
+        });
+        this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
+          role: "user",
+          sourceRef: prepared.userEventId,
+          trace: hydratedTrace,
+        });
+        this.extractAndPersistLearnedMemory(sessionId, finalText, {
+          role: "assistant",
+          sourceRef: assistantMessageId,
+          trace: hydratedTrace,
+        });
+        yield {
+          type: "done",
+          sessionId,
+          turnId,
+          messageId: assistantMessageId,
+        };
+        return;
+      }
+
+      let finalText = "";
+      let assistantUsage: {
+        inputTokens?: number;
+        outputTokens?: number;
+        cachedInputTokens?: number;
+        costUsd?: number;
+      } | undefined;
+      let hasStreamedDelta = false;
+      let approvalRequired = false;
+      const streamCitations: ChatCitationRecord[] = [];
+      for await (const chunk of this.chatAgentOrchestrator.runStream({
+        sessionId,
+        turnId,
         userMessageId: prepared.userEventId,
         parentTurnId: prepared.parentTurnId,
         branchKind: prepared.branchKind,
         sourceTurnId: prepared.sourceTurnId,
-        status: "running",
-        mode,
-        model: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+        outputMessageId: assistantMessageId,
+        content: prepared.content,
+        mode: prepared.normalized.mode ?? prepared.prefs.mode,
+        providerId: input.providerId ?? prepared.prefs.providerId,
+        model: input.model ?? prepared.prefs.model,
         webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
         memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
         thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
-        effectiveToolAutonomy: prepared.effectiveToolAutonomy,
-        routing: {
-          primaryProviderId: input.providerId ?? prepared.prefs.providerId,
-          primaryModel: input.model ?? prepared.prefs.model,
-          effectiveProviderId: modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-          effectiveModel: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
-        },
-      });
-      yield {
-        type: "trace_update",
-        sessionId,
-        turnId,
-        trace: initialTrace,
-      };
-
-      const orchestrationResult = await this.executePreparedModeOrchestration(prepared, input, async (summary) => {
-        this.storage.chatTurnTraces.patch(turnId, {
-          orchestration: summary,
-          model: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
-          routing: {
-            primaryProviderId: input.providerId ?? prepared.prefs.providerId,
-            primaryModel: input.model ?? prepared.prefs.model,
-            effectiveProviderId: summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-            effectiveModel: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
-          },
-        });
-      });
-
-      let finalText = orchestrationResult.finalOutput.trim();
-      if (!finalText) {
-        finalText = buildEmptyAssistantTurnFallbackText();
-      }
-
-      await this.ingestEvent(randomUUID(), {
-        eventId: assistantMessageId,
-        route: prepared.route,
-        actor: {
-          type: "agent",
-          id: "assistant",
-        },
-        message: {
-          role: "assistant",
-          content: finalText,
-        },
-      });
-
-      for (const citation of orchestrationResult.citations) {
-        yield {
-          type: "citation",
-          sessionId,
-          turnId,
-          citation,
-        };
-      }
-
-      let hydratedTrace: ChatTurnTraceRecord = {
-        ...this.storage.chatTurnTraces.patch(turnId, {
-          assistantMessageId,
-          status: orchestrationResult.summary.status === "failed" ? "failed" : "completed",
-          finishedAt: new Date().toISOString(),
-          model: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
-          routing: {
-            primaryProviderId: input.providerId ?? prepared.prefs.providerId,
-            primaryModel: input.model ?? prepared.prefs.model,
-            effectiveProviderId: orchestrationResult.summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-            effectiveModel: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
-          },
-          retrieval: prepared.retrievalTrace,
-          reflection: {
-            attempted: false,
-            attemptCount: 0,
-            outcome: "not_needed",
-          },
-          proactive: {
-            runId: prepared.autonomy.lastProactiveRunId,
-            mode: prepared.autonomy.proactiveMode,
-          },
-          orchestration: orchestrationResult.summary,
-          guidance: {
-            workspaceId: prepared.workspaceId,
-            globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
-            workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
-            truncated: prepared.resolvedGuidance.truncated,
-          },
-          citations: orchestrationResult.citations,
-        }),
-        toolRuns: [],
-      };
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
-      yield {
-        type: "message_done",
-        sessionId,
-        turnId,
-        messageId: assistantMessageId,
-        content: finalText,
-      };
-      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
-        sessionId,
-        content: prepared.content,
-        assistantText: finalText,
-        trace: hydratedTrace,
-      });
-      if (capabilityUpgradeSuggestions.length > 0) {
-        hydratedTrace = {
-          ...this.storage.chatTurnTraces.patch(turnId, {
-            capabilityUpgradeSuggestions,
-          }),
-          toolRuns: [],
-        };
-        yield {
-          type: "capability_upgrade_suggestion",
-          sessionId,
-          turnId,
-          capabilityUpgradeSuggestions,
-        };
-      }
-      yield {
-        type: "trace_update",
-        sessionId,
-        turnId,
-        trace: hydratedTrace,
-      };
-      this.publishRealtime("chat_thread_updated", "chat", {
-        type: threadEventType,
-        sessionId,
-        turnId,
-        activeLeafTurnId: turnId,
-      });
-      this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
-        role: "user",
-        sourceRef: prepared.userEventId,
-        trace: hydratedTrace,
-      });
-      this.extractAndPersistLearnedMemory(sessionId, finalText, {
-        role: "assistant",
-        sourceRef: assistantMessageId,
-        trace: hydratedTrace,
-      });
-      yield {
-        type: "done",
-        sessionId,
-        turnId,
-        messageId: assistantMessageId,
-      };
-      return;
-    }
-
-    let finalText = "";
-    let assistantUsage: {
-      inputTokens?: number;
-      outputTokens?: number;
-      cachedInputTokens?: number;
-      costUsd?: number;
-    } | undefined;
-    let hasStreamedDelta = false;
-    let approvalRequired = false;
-    const streamCitations: ChatCitationRecord[] = [];
-    for await (const chunk of this.chatAgentOrchestrator.runStream({
-      sessionId,
-      turnId,
-      userMessageId: prepared.userEventId,
-      parentTurnId: prepared.parentTurnId,
-      branchKind: prepared.branchKind,
-      sourceTurnId: prepared.sourceTurnId,
-      outputMessageId: assistantMessageId,
-      content: prepared.content,
-      mode: prepared.normalized.mode ?? prepared.prefs.mode,
-      providerId: input.providerId ?? prepared.prefs.providerId,
-      model: input.model ?? prepared.prefs.model,
-      webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
-      memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
-      thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
-      toolAutonomy: prepared.effectiveToolAutonomy,
-      historyMessages: prepared.history,
-    })) {
-      if (chunk.type === "message_done" && chunk.content) {
-        finalText = chunk.content;
-      }
-      if (chunk.type === "approval_required") {
-        approvalRequired = true;
-        yield chunk;
-      }
-      if (chunk.type === "usage") {
-        assistantUsage = chunk.usage;
-        yield chunk;
-      }
-      if (chunk.type === "message_done") {
-        if (chunk.content.trim() && !hasStreamedDelta) {
+        toolAutonomy: prepared.effectiveToolAutonomy,
+        historyMessages: prepared.history,
+        signal: controller.signal,
+      })) {
+        if (chunk.type === "message_done" && chunk.content) {
           finalText = chunk.content;
-          for (const slice of splitIntoChunks(chunk.content, 120)) {
+        }
+        if (chunk.type === "approval_required") {
+          approvalRequired = true;
+          yield chunk;
+        }
+        if (chunk.type === "usage") {
+          assistantUsage = chunk.usage;
+          yield chunk;
+        }
+        if (chunk.type === "message_done") {
+          if (chunk.content.trim() && !hasStreamedDelta) {
+            finalText = chunk.content;
+            for (const slice of splitIntoChunks(chunk.content, 120)) {
+              yield {
+                type: "delta",
+                sessionId,
+                turnId,
+                messageId: assistantMessageId,
+                delta: slice,
+              };
+            }
+          }
+        }
+        if (chunk.type === "citation") {
+          const nextCitations = dedupeChatCitations([...streamCitations, chunk.citation]);
+          streamCitations.length = 0;
+          streamCitations.push(...nextCitations);
+          yield chunk;
+        }
+        if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "error") {
+          yield chunk;
+        }
+        if (chunk.type === "delta") {
+          hasStreamedDelta = true;
+          yield {
+            ...chunk,
+            messageId: chunk.messageId ?? assistantMessageId,
+          };
+        }
+      }
+
+      if (!approvalRequired && !finalText.trim()) {
+        finalText = buildEmptyAssistantTurnFallbackText();
+        if (!hasStreamedDelta) {
+          for (const slice of splitIntoChunks(finalText, 120)) {
             yield {
               type: "delta",
               sessionId,
@@ -7795,103 +8183,16 @@ export class GatewayService {
           }
         }
       }
-      if (chunk.type === "citation") {
-        const nextCitations = dedupeChatCitations([...streamCitations, chunk.citation]);
-        streamCitations.length = 0;
-        streamCitations.push(...nextCitations);
-        yield chunk;
-      }
-      if (chunk.type === "tool_start" || chunk.type === "tool_result" || chunk.type === "trace_update" || chunk.type === "error") {
-        yield chunk;
-      }
-      if (chunk.type === "delta") {
-        hasStreamedDelta = true;
-        yield {
-          ...chunk,
-          messageId: chunk.messageId ?? assistantMessageId,
-        };
-      }
-    }
 
-    if (!approvalRequired && !finalText.trim()) {
-      finalText = buildEmptyAssistantTurnFallbackText();
-      if (!hasStreamedDelta) {
-        for (const slice of splitIntoChunks(finalText, 120)) {
-          yield {
-            type: "delta",
-            sessionId,
-            turnId,
-            messageId: assistantMessageId,
-            delta: slice,
-          };
-        }
-      }
-    }
-
-    if (approvalRequired) {
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
-      this.publishRealtime("chat_thread_updated", "chat", {
-        type: threadEventType,
-        sessionId,
-        turnId,
-        activeLeafTurnId: turnId,
-      });
-      const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
-        retrieval: prepared.retrievalTrace,
-        reflection: {
-          attempted: false,
-          attemptCount: 0,
-          outcome: "not_needed",
-        },
-        proactive: {
-          runId: prepared.autonomy.lastProactiveRunId,
-          mode: prepared.autonomy.proactiveMode,
-        },
-        guidance: {
-          workspaceId: prepared.workspaceId,
-          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
-          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
-          truncated: prepared.resolvedGuidance.truncated,
-        },
-        citations: dedupeChatCitations(streamCitations),
-      });
-      yield {
-        type: "trace_update",
-        sessionId,
-        turnId,
-        trace: {
-          ...traceWithMeta,
-          toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-        },
-      };
-      yield {
-        type: "done",
-        sessionId,
-        turnId,
-        messageId: assistantMessageId,
-      };
-      return;
-    }
-
-    if (finalText.trim()) {
-      await this.ingestEvent(randomUUID(), {
-        eventId: assistantMessageId,
-        route: prepared.route,
-        actor: {
-          type: "agent",
-          id: "assistant",
-        },
-        message: {
-          role: "assistant",
-          content: finalText,
-        },
-        usage: assistantUsage,
-      });
-      let hydratedTrace: ChatTurnTraceRecord = {
-        ...this.storage.chatTurnTraces.patch(turnId, {
-          assistantMessageId,
-          status: "completed",
-          finishedAt: new Date().toISOString(),
+      if (approvalRequired) {
+        this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
+        this.publishRealtime("chat_thread_updated", "chat", {
+          type: threadEventType,
+          sessionId,
+          turnId,
+          activeLeafTurnId: turnId,
+        });
+        const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
           retrieval: prepared.retrievalTrace,
           reflection: {
             attempted: false,
@@ -7909,67 +8210,153 @@ export class GatewayService {
             truncated: prepared.resolvedGuidance.truncated,
           },
           citations: dedupeChatCitations(streamCitations),
-        }),
-        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-      };
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
-      yield {
-        type: "message_done",
-        sessionId,
-        turnId,
-        messageId: assistantMessageId,
-        content: finalText,
-      };
-      const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
-        sessionId,
-        content: prepared.content,
-        assistantText: finalText,
-        trace: hydratedTrace,
-      });
-      if (capabilityUpgradeSuggestions.length > 0) {
-        hydratedTrace = {
+        });
+        yield {
+          type: "trace_update",
+          sessionId,
+          turnId,
+          trace: {
+            ...traceWithMeta,
+            toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+          },
+        };
+        yield {
+          type: "done",
+          sessionId,
+          turnId,
+          messageId: assistantMessageId,
+        };
+        return;
+      }
+
+      if (finalText.trim()) {
+        await this.ingestEvent(randomUUID(), {
+          eventId: assistantMessageId,
+          route: prepared.route,
+          actor: {
+            type: "agent",
+            id: "assistant",
+          },
+          message: {
+            role: "assistant",
+            content: finalText,
+          },
+          usage: assistantUsage,
+        });
+        let hydratedTrace: ChatTurnTraceRecord = {
           ...this.storage.chatTurnTraces.patch(turnId, {
-            capabilityUpgradeSuggestions,
+            assistantMessageId,
+            status: "completed",
+            finishedAt: new Date().toISOString(),
+            retrieval: prepared.retrievalTrace,
+            reflection: {
+              attempted: false,
+              attemptCount: 0,
+              outcome: "not_needed",
+            },
+            proactive: {
+              runId: prepared.autonomy.lastProactiveRunId,
+              mode: prepared.autonomy.proactiveMode,
+            },
+            guidance: {
+              workspaceId: prepared.workspaceId,
+              globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+              workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+              truncated: prepared.resolvedGuidance.truncated,
+            },
+            citations: dedupeChatCitations(streamCitations),
           }),
           toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
         };
+        this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
         yield {
-          type: "capability_upgrade_suggestion",
+          type: "message_done",
           sessionId,
           turnId,
-          capabilityUpgradeSuggestions,
+          messageId: assistantMessageId,
+          content: finalText,
         };
+        const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+          sessionId,
+          content: prepared.content,
+          assistantText: finalText,
+          trace: hydratedTrace,
+        });
+        const specialistCandidateSuggestions = this.collectSpecialistCandidateSuggestions({
+          sessionId,
+          mode: prepared.normalized.mode ?? prepared.prefs.mode,
+          content: prepared.content,
+          capabilitySuggestions: capabilityUpgradeSuggestions,
+          trace: hydratedTrace,
+        });
+        if (capabilityUpgradeSuggestions.length > 0 || specialistCandidateSuggestions.length > 0) {
+          hydratedTrace = {
+            ...this.storage.chatTurnTraces.patch(turnId, {
+              capabilityUpgradeSuggestions: capabilityUpgradeSuggestions.length > 0 ? capabilityUpgradeSuggestions : [],
+              specialistCandidateSuggestions: specialistCandidateSuggestions.length > 0 ? specialistCandidateSuggestions : [],
+            }),
+            toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+          };
+          if (capabilityUpgradeSuggestions.length > 0) {
+            yield {
+              type: "capability_upgrade_suggestion",
+              sessionId,
+              turnId,
+              capabilityUpgradeSuggestions,
+            };
+          }
+        }
+        yield {
+          type: "trace_update",
+          sessionId,
+          turnId,
+          trace: hydratedTrace,
+        };
+        this.publishRealtime("chat_thread_updated", "chat", {
+          type: threadEventType,
+          sessionId,
+          turnId,
+          activeLeafTurnId: turnId,
+        });
+        this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
+          role: "user",
+          sourceRef: prepared.userEventId,
+          trace: hydratedTrace,
+        });
+        this.extractAndPersistLearnedMemory(sessionId, finalText, {
+          role: "assistant",
+          sourceRef: assistantMessageId,
+          trace: hydratedTrace,
+        });
       }
-      yield {
-        type: "trace_update",
-        sessionId,
-        turnId,
-        trace: hydratedTrace,
-      };
-      this.publishRealtime("chat_thread_updated", "chat", {
-        type: threadEventType,
-        sessionId,
-        turnId,
-        activeLeafTurnId: turnId,
-      });
-      this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
-        role: "user",
-        sourceRef: prepared.userEventId,
-        trace: hydratedTrace,
-      });
-      this.extractAndPersistLearnedMemory(sessionId, finalText, {
-        role: "assistant",
-        sourceRef: assistantMessageId,
-        trace: hydratedTrace,
-      });
-    }
 
-    yield {
-      type: "done",
-      sessionId,
-      turnId,
-      messageId: assistantMessageId,
-    };
+      yield {
+        type: "done",
+        sessionId,
+        turnId,
+        messageId: assistantMessageId,
+      };
+    } catch (error) {
+      if (controller.signal.aborted || isChatTurnCancelledError(error)) {
+        const trace = this.markChatTurnCancelled(sessionId, turnId);
+        yield {
+          type: "trace_update",
+          sessionId,
+          turnId,
+          trace,
+        };
+        yield {
+          type: "done",
+          sessionId,
+          turnId,
+          messageId: assistantMessageId,
+        };
+        return;
+      }
+      throw error;
+    } finally {
+      this.endActiveChatTurnExecution(turnId, controller);
+    }
   }
 
   public async agentSendChatMessage(
@@ -8025,241 +8412,259 @@ export class GatewayService {
           "chat_thread_turn_appended",
         );
       }
-      let turnId = prepared.turnId;
-      let turnResult = await this.chatAgentOrchestrator.run({
-        sessionId,
-        turnId,
-        userMessageId: prepared.userEventId,
-        parentTurnId: prepared.parentTurnId,
-        branchKind: prepared.branchKind,
-        sourceTurnId: prepared.sourceTurnId,
-        content: prepared.content,
-        mode: prepared.normalized.mode ?? prepared.prefs.mode,
-        providerId: input.providerId ?? prepared.prefs.providerId,
-        model: input.model ?? prepared.prefs.model,
-        webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
-        memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
-        thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
-        toolAutonomy: prepared.effectiveToolAutonomy,
-        historyMessages: prepared.history,
-        outputMessageId: prepared.assistantMessageId,
-      });
-    let reflectionTrace: ChatTurnTraceRecord["reflection"] = {
-      attempted: false,
-      attemptCount: 0,
-      outcome: "not_needed",
-    };
+      const controller = this.beginActiveChatTurnExecution(sessionId, prepared.turnId, "agent-send");
+      try {
+        let turnId = prepared.turnId;
+        let turnResult = await this.chatAgentOrchestrator.run({
+          sessionId,
+          turnId,
+          userMessageId: prepared.userEventId,
+          parentTurnId: prepared.parentTurnId,
+          branchKind: prepared.branchKind,
+          sourceTurnId: prepared.sourceTurnId,
+          content: prepared.content,
+          mode: prepared.normalized.mode ?? prepared.prefs.mode,
+          providerId: input.providerId ?? prepared.prefs.providerId,
+          model: input.model ?? prepared.prefs.model,
+          webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+          memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+          thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+          toolAutonomy: prepared.effectiveToolAutonomy,
+          historyMessages: prepared.history,
+          outputMessageId: prepared.assistantMessageId,
+          signal: controller.signal,
+        });
+        let reflectionTrace: ChatTurnTraceRecord["reflection"] = {
+          attempted: false,
+          attemptCount: 0,
+          outcome: "not_needed",
+        };
 
-    const shouldAttemptReflection = prepared.autonomy.reflectionMode === "on"
-      && prepared.prefs.planningMode !== "advisory"
-      && !turnResult.requiresApproval
-      && (turnResult.turnTrace.status === "failed" || looksLowConfidenceResponse(turnResult.assistantContent));
+        const shouldAttemptReflection = prepared.autonomy.reflectionMode === "on"
+          && prepared.prefs.planningMode !== "advisory"
+          && !controller.signal.aborted
+          && !turnResult.requiresApproval
+          && (turnResult.turnTrace.status === "failed" || looksLowConfidenceResponse(turnResult.assistantContent));
 
-    if (shouldAttemptReflection) {
-      const retryTurnId = randomUUID();
-      const retryReason = turnResult.turnTrace.status === "failed"
-        ? "tool failure or completion failure"
-        : "low confidence response";
-      reflectionTrace = {
-        attempted: true,
-        attemptCount: 1,
-        reason: retryReason,
-        outcome: "still_failed",
-      };
-      this.gatewaySql.prepare(`
+        if (shouldAttemptReflection) {
+          const retryTurnId = randomUUID();
+          const retryReason = turnResult.turnTrace.status === "failed"
+            ? "tool failure or completion failure"
+            : "low confidence response";
+          reflectionTrace = {
+            attempted: true,
+            attemptCount: 1,
+            reason: retryReason,
+            outcome: "still_failed",
+          };
+          this.gatewaySql.prepare(`
         INSERT INTO chat_reflection_attempts (
           attempt_id, turn_id, session_id, reason, outcome, attempt_count, strategy, error, created_at
         ) VALUES (
           @attemptId, @turnId, @sessionId, @reason, @outcome, @attemptCount, @strategy, @error, @createdAt
         )
-      `).run({
-        attemptId: randomUUID(),
-        turnId: retryTurnId,
-        sessionId,
-        reason: retryReason,
-        outcome: "still_failed",
-        attemptCount: 1,
-        strategy: "single retry with alternate tool/query strategy",
-        error: turnResult.turnTrace.status === "failed" ? turnResult.assistantContent.slice(0, 500) : null,
-        createdAt: new Date().toISOString(),
-      });
+          `).run({
+            attemptId: randomUUID(),
+            turnId: retryTurnId,
+            sessionId,
+            reason: retryReason,
+            outcome: "still_failed",
+            attemptCount: 1,
+            strategy: "single retry with alternate tool/query strategy",
+            error: turnResult.turnTrace.status === "failed" ? turnResult.assistantContent.slice(0, 500) : null,
+            createdAt: new Date().toISOString(),
+          });
 
-      const retryHistory = prepared.history;
-      const retryPrompt = `${prepared.content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
-      const retryResult = await this.chatAgentOrchestrator.run({
-        sessionId,
-        turnId: retryTurnId,
-        userMessageId: prepared.userEventId,
-        parentTurnId: prepared.parentTurnId,
-        branchKind: "retry",
-        sourceTurnId: turnId,
-        content: retryPrompt,
-        mode: prepared.normalized.mode ?? prepared.prefs.mode,
-        providerId: input.providerId ?? prepared.prefs.providerId,
-        model: input.model ?? prepared.prefs.model,
-        webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
-        memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
-        thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
-        toolAutonomy: prepared.effectiveToolAutonomy,
-        historyMessages: retryHistory,
-        outputMessageId: prepared.assistantMessageId,
-      });
-      if (retryResult.turnTrace.status === "completed" && retryResult.assistantContent.trim().length > 0) {
-        turnId = retryTurnId;
-        turnResult = retryResult;
-        reflectionTrace = {
-          attempted: true,
-          attemptCount: 1,
-          reason: retryReason,
-          outcome: "recovered",
+          const retryHistory = prepared.history;
+          const retryPrompt = `${prepared.content}\n\nRetry guidance: last attempt was incomplete. Use a different approach or tool and be explicit about limits.`;
+          const retryResult = await this.chatAgentOrchestrator.run({
+            sessionId,
+            turnId: retryTurnId,
+            userMessageId: prepared.userEventId,
+            parentTurnId: prepared.parentTurnId,
+            branchKind: "retry",
+            sourceTurnId: turnId,
+            content: retryPrompt,
+            mode: prepared.normalized.mode ?? prepared.prefs.mode,
+            providerId: input.providerId ?? prepared.prefs.providerId,
+            model: input.model ?? prepared.prefs.model,
+            webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
+            memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
+            thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
+            toolAutonomy: prepared.effectiveToolAutonomy,
+            historyMessages: retryHistory,
+            outputMessageId: prepared.assistantMessageId,
+            signal: controller.signal,
+          });
+          if (retryResult.turnTrace.status === "completed" && retryResult.assistantContent.trim().length > 0) {
+            turnId = retryTurnId;
+            turnResult = retryResult;
+            reflectionTrace = {
+              attempted: true,
+              attemptCount: 1,
+              reason: retryReason,
+              outcome: "recovered",
+            };
+          }
+        }
+
+        const dedupedTurnCitations = dedupeChatCitations(turnResult.turnTrace.citations ?? []);
+        if (turnResult.requiresApproval || turnResult.turnTrace.status === "cancelled") {
+          const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
+            retrieval: prepared.retrievalTrace,
+            reflection: reflectionTrace,
+            proactive: {
+              runId: prepared.autonomy.lastProactiveRunId,
+              mode: prepared.autonomy.proactiveMode,
+            },
+            guidance: {
+              workspaceId: prepared.workspaceId,
+              globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+              workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+              truncated: prepared.resolvedGuidance.truncated,
+            },
+            citations: dedupedTurnCitations,
+          });
+          if (turnResult.turnTrace.status !== "cancelled") {
+            this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
+            this.publishRealtime("chat_thread_updated", "chat", {
+              type: "chat_thread_turn_appended",
+              sessionId,
+              turnId,
+              activeLeafTurnId: turnId,
+            });
+          }
+          return {
+            sessionId,
+            userMessage: prepared.userMessage,
+            assistantMessage: undefined,
+            transport: "llm",
+            model: turnResult.assistantModel,
+            turnId,
+            trace: {
+              ...traceWithMeta,
+              citations: dedupedTurnCitations,
+              toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+            },
+            citations: dedupedTurnCitations,
+            routing: turnResult.turnTrace.routing,
+          };
+        }
+
+        const assistantText = turnResult.assistantContent.trim().length > 0
+          ? turnResult.assistantContent
+          : buildEmptyAssistantTurnFallbackText();
+        const assistantUsage = turnResult.usage;
+        const assistantEventId = prepared.assistantMessageId;
+        await this.ingestEvent(randomUUID(), {
+          eventId: assistantEventId,
+          route: prepared.route,
+          actor: {
+            type: "agent",
+            id: "assistant",
+          },
+          message: {
+            role: "assistant",
+            content: assistantText,
+          },
+          usage: assistantUsage,
+        });
+        const assistantMessage: ChatMessageRecord = {
+          messageId: assistantEventId,
+          sessionId,
+          role: "assistant",
+          actorType: "agent",
+          actorId: "assistant",
+          content: assistantText,
+          timestamp: new Date().toISOString(),
         };
-      }
-    }
-
-    const dedupedTurnCitations = dedupeChatCitations(turnResult.turnTrace.citations ?? []);
-    if (turnResult.requiresApproval) {
-      const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
-        retrieval: prepared.retrievalTrace,
-        reflection: reflectionTrace,
-        proactive: {
-          runId: prepared.autonomy.lastProactiveRunId,
-          mode: prepared.autonomy.proactiveMode,
-        },
-        guidance: {
-          workspaceId: prepared.workspaceId,
-          globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
-          workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
-          truncated: prepared.resolvedGuidance.truncated,
-        },
-        citations: dedupedTurnCitations,
-      });
-      this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
-      this.publishRealtime("chat_thread_updated", "chat", {
-        type: "chat_thread_turn_appended",
-        sessionId,
-        turnId,
-        activeLeafTurnId: turnId,
-      });
-      return {
-        sessionId,
-        userMessage: prepared.userMessage,
-        assistantMessage: undefined,
-        transport: "llm",
-        model: turnResult.assistantModel,
-        turnId,
-        trace: {
-          ...traceWithMeta,
+        const finalTraceStatus = turnResult.turnTrace.status === "failed" ? "failed" : "completed";
+        const trace = this.storage.chatTurnTraces.patch(turnId, {
+          assistantMessageId: assistantEventId,
+          status: finalTraceStatus,
+          finishedAt: new Date().toISOString(),
+          retrieval: prepared.retrievalTrace,
+          reflection: reflectionTrace,
+          proactive: {
+            runId: prepared.autonomy.lastProactiveRunId,
+            mode: prepared.autonomy.proactiveMode,
+          },
+          guidance: {
+            workspaceId: prepared.workspaceId,
+            globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
+            workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
+            truncated: prepared.resolvedGuidance.truncated,
+          },
+          citations: dedupedTurnCitations,
+        });
+        let hydratedTrace: ChatTurnTraceRecord = {
+          ...trace,
           citations: dedupedTurnCitations,
           toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-        },
-        citations: dedupedTurnCitations,
-        routing: turnResult.turnTrace.routing,
-      };
-    }
+        };
+        const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
+          sessionId,
+          content: prepared.content,
+          assistantText,
+          trace: hydratedTrace,
+        });
+        const specialistCandidateSuggestions = this.collectSpecialistCandidateSuggestions({
+          sessionId,
+          mode: prepared.normalized.mode ?? prepared.prefs.mode,
+          content: prepared.content,
+          capabilitySuggestions: capabilityUpgradeSuggestions,
+          trace: hydratedTrace,
+        });
+        if (capabilityUpgradeSuggestions.length > 0 || specialistCandidateSuggestions.length > 0) {
+          hydratedTrace = this.storage.chatTurnTraces.patch(turnId, {
+            capabilityUpgradeSuggestions: capabilityUpgradeSuggestions.length > 0 ? capabilityUpgradeSuggestions : [],
+            specialistCandidateSuggestions: specialistCandidateSuggestions.length > 0 ? specialistCandidateSuggestions : [],
+          });
+          hydratedTrace = {
+            ...hydratedTrace,
+            toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
+          };
+        }
 
-    const assistantText = turnResult.assistantContent.trim().length > 0
-      ? turnResult.assistantContent
-      : buildEmptyAssistantTurnFallbackText();
-    const assistantUsage = turnResult.usage;
-    const assistantEventId = prepared.assistantMessageId;
-    await this.ingestEvent(randomUUID(), {
-      eventId: assistantEventId,
-      route: prepared.route,
-      actor: {
-        type: "agent",
-        id: "assistant",
-      },
-      message: {
-        role: "assistant",
-        content: assistantText,
-      },
-      usage: assistantUsage,
-    });
-    const assistantMessage: ChatMessageRecord = {
-      messageId: assistantEventId,
-      sessionId,
-      role: "assistant",
-      actorType: "agent",
-      actorId: "assistant",
-      content: assistantText,
-      timestamp: new Date().toISOString(),
-    };
-    const finalTraceStatus = turnResult.turnTrace.status === "failed" ? "failed" : "completed";
-    const trace = this.storage.chatTurnTraces.patch(turnId, {
-      assistantMessageId: assistantEventId,
-      status: finalTraceStatus,
-      finishedAt: new Date().toISOString(),
-      retrieval: prepared.retrievalTrace,
-      reflection: reflectionTrace,
-      proactive: {
-        runId: prepared.autonomy.lastProactiveRunId,
-        mode: prepared.autonomy.proactiveMode,
-      },
-      guidance: {
-        workspaceId: prepared.workspaceId,
-        globalFilesUsed: prepared.resolvedGuidance.globalFilesUsed,
-        workspaceFilesUsed: prepared.resolvedGuidance.workspaceFilesUsed,
-        truncated: prepared.resolvedGuidance.truncated,
-      },
-      citations: dedupedTurnCitations,
-    });
-    let hydratedTrace: ChatTurnTraceRecord = {
-      ...trace,
-      citations: dedupedTurnCitations,
-      toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-    };
-    const capabilityUpgradeSuggestions = await this.collectCapabilityUpgradeSuggestions({
-      sessionId,
-      content: prepared.content,
-      assistantText,
-      trace: hydratedTrace,
-    });
-    if (capabilityUpgradeSuggestions.length > 0) {
-      hydratedTrace = this.storage.chatTurnTraces.patch(turnId, {
-        capabilityUpgradeSuggestions,
-      });
-      hydratedTrace = {
-        ...hydratedTrace,
-        toolRuns: this.storage.chatToolRuns.listByTurn(turnId),
-      };
-    }
+        this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
+          role: "user",
+          sourceRef: prepared.userEventId,
+          trace: hydratedTrace,
+        });
+        this.extractAndPersistLearnedMemory(sessionId, assistantText, {
+          role: "assistant",
+          sourceRef: assistantEventId,
+          trace: hydratedTrace,
+        });
+        this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
+        this.publishRealtime("chat_thread_updated", "chat", {
+          type: "chat_thread_turn_appended",
+          sessionId,
+          turnId,
+          activeLeafTurnId: turnId,
+        });
+        const delegationDetection = detectDelegationRoles(prepared.content);
+        if (prepared.prefs.planningMode !== "advisory" && delegationDetection.length > 1) {
+          await this.triggerChatSessionProactive(sessionId, {
+            source: "chat",
+            reason: "Detected multi-role phrasing; generated delegation suggestion.",
+          });
+        }
 
-    this.extractAndPersistLearnedMemory(sessionId, prepared.content, {
-      role: "user",
-      sourceRef: prepared.userEventId,
-      trace: hydratedTrace,
-    });
-    this.extractAndPersistLearnedMemory(sessionId, assistantText, {
-      role: "assistant",
-      sourceRef: assistantEventId,
-      trace: hydratedTrace,
-    });
-    this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
-    this.publishRealtime("chat_thread_updated", "chat", {
-      type: "chat_thread_turn_appended",
-      sessionId,
-      turnId,
-      activeLeafTurnId: turnId,
-    });
-    const delegationDetection = detectDelegationRoles(prepared.content);
-    if (prepared.prefs.planningMode !== "advisory" && delegationDetection.length > 1) {
-      await this.triggerChatSessionProactive(sessionId, {
-        source: "chat",
-        reason: "Detected multi-role phrasing; generated delegation suggestion.",
-      });
-    }
-
-    return {
-      sessionId,
-      userMessage: prepared.userMessage,
-      assistantMessage,
-      transport: "llm",
-      model: turnResult.assistantModel,
-      turnId,
-      trace: hydratedTrace,
-      citations: hydratedTrace.citations,
-      routing: hydratedTrace.routing,
-    };
+        return {
+          sessionId,
+          userMessage: prepared.userMessage,
+          assistantMessage,
+          transport: "llm",
+          model: turnResult.assistantModel,
+          turnId,
+          trace: hydratedTrace,
+          citations: hydratedTrace.citations,
+          routing: hydratedTrace.routing,
+        };
+      } finally {
+        this.endActiveChatTurnExecution(prepared.turnId, controller);
+      }
     });
   }
 
@@ -8462,6 +8867,28 @@ export class GatewayService {
         yield* self.streamPreparedAgentChatTurn(sessionId, request, prepared, "chat_thread_turn_edited");
       })();
     });
+  }
+
+  public async cancelChatTurn(
+    sessionId: string,
+    turnId: string,
+    cancelledBy?: string,
+  ): Promise<ChatCancelTurnResponse> {
+    const current = this.storage.chatTurnTraces.get(turnId);
+    if (current.sessionId !== sessionId) {
+      throw new Error(`Chat turn ${turnId} does not belong to session ${sessionId}`);
+    }
+    const active = this.activeChatTurns.get(turnId);
+    if (active?.sessionId === sessionId && !active.controller.signal.aborted) {
+      active.controller.abort(new ChatTurnCancelledError(turnId));
+    }
+    const trace = this.markChatTurnCancelled(sessionId, turnId, cancelledBy);
+    return {
+      sessionId,
+      turnId,
+      cancelled: trace.status === "cancelled",
+      trace,
+    };
   }
 
   private async collectCapabilityUpgradeSuggestions(input: {
@@ -16154,7 +16581,7 @@ function summarizePromptPackRunFailure(run: PromptPackRunRecord): string | undef
   if (run.responseText && run.responseText.trim().length < 1) {
     return "No assistant output generated.";
   }
-  return trace.status === "approval_required"
+  return trace.status === "waiting_for_approval"
     ? "Turn paused for approval."
     : undefined;
 }
@@ -16196,6 +16623,274 @@ function detectDelegationRoles(objective: string): string[] {
     return [...DEFAULT_DELEGATION_ROLES.slice(0, 3)];
   }
   return [];
+}
+
+function normalizeSpecialistToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeSpecialistCandidateFingerprint(input: { title?: string; role?: string }): string {
+  return `${normalizeSpecialistToken(input.role ?? "")}:${normalizeSpecialistToken(input.title ?? "")}`;
+}
+
+function dedupeStrings(values: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function extractSpecialistObjectiveKeywords(content: string): string[] {
+  const STOP_WORDS = new Set([
+    "about",
+    "after",
+    "again",
+    "also",
+    "around",
+    "because",
+    "build",
+    "could",
+    "does",
+    "from",
+    "have",
+    "into",
+    "need",
+    "that",
+    "their",
+    "them",
+    "then",
+    "this",
+    "through",
+    "what",
+    "with",
+    "would",
+  ]);
+  const matches = content.toLowerCase().match(/[a-z0-9][a-z0-9._+-]{2,}/g) ?? [];
+  return dedupeStrings(matches.map(normalizeSpecialistToken).filter((token) => token.length >= 3 && !STOP_WORDS.has(token)))
+    .slice(0, 12);
+}
+
+function mergeSpecialistRoutingHints(
+  left: ChatSpecialistCandidateRecord["routingHints"],
+  right: ChatSpecialistCandidateRecord["routingHints"],
+): ChatSpecialistCandidateRecord["routingHints"] {
+  const maxInvocationsPerRun = (() => {
+    const values = [left.maxInvocationsPerRun, right.maxInvocationsPerRun]
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (values.length === 0) {
+      return undefined;
+    }
+    return Math.min(...values);
+  })();
+  return {
+    preferredModes: dedupeStrings([...left.preferredModes, ...right.preferredModes]) as ChatMode[],
+    objectiveKeywords: (() => {
+      const values = dedupeStrings([...(left.objectiveKeywords ?? []), ...(right.objectiveKeywords ?? [])]);
+      return values.length > 0 ? values : undefined;
+    })(),
+    requiresProjectBinding: Boolean(left.requiresProjectBinding || right.requiresProjectBinding),
+    maxInvocationsPerRun,
+  };
+}
+
+function mergeSpecialistEvidence(
+  left: ChatSpecialistCandidateRecord["evidence"],
+  right: ChatSpecialistCandidateRecord["evidence"],
+): ChatSpecialistCandidateRecord["evidence"] {
+  const merged = new Map<string, ChatSpecialistCandidateRecord["evidence"][number]>();
+  for (const item of [...left, ...right]) {
+    const key = [
+      item.kind,
+      normalizeSpecialistToken(item.summary),
+      item.turnId ?? "",
+      item.runId ?? "",
+      item.toolName ?? "",
+      item.skillRef ?? "",
+    ].join("|");
+    const current = merged.get(key);
+    if (!current || (item.confidence ?? 0) > (current.confidence ?? 0)) {
+      merged.set(key, item);
+    }
+  }
+  return [...merged.values()].slice(0, 8);
+}
+
+function inferSpecialistBaseRole(role: string): OrchestrationRole {
+  const normalized = role.toLowerCase();
+  if (/\b(research|analyst|market|source|intel)\b/.test(normalized)) {
+    return "researcher";
+  }
+  if (/\b(qa|test|validator)\b/.test(normalized)) {
+    return "qa-validator";
+  }
+  if (/\b(review|critic|audit|security)\b/.test(normalized)) {
+    return "reviewer";
+  }
+  if (/\b(coder|developer|implement|engineer)\b/.test(normalized)) {
+    return "coder";
+  }
+  if (/\b(product|architect|planner|design)\b/.test(normalized)) {
+    return "planner";
+  }
+  if (/\b(ops|deploy|release|infra)\b/.test(normalized)) {
+    return "worker";
+  }
+  return "worker";
+}
+
+function inferSpecialistRoleFromCapability(capability: ChatCapabilityUpgradeSuggestion): string {
+  const haystack = `${capability.title} ${capability.summary} ${capability.reason}`.toLowerCase();
+  if (/\b(security|auth|permission)\b/.test(haystack)) return "security-reviewer";
+  if (/\b(test|qa|validate)\b/.test(haystack)) return "qa";
+  if (/\b(research|search|browser|source|latest|market)\b/.test(haystack)) return "researcher";
+  if (/\b(deploy|release|ops|infra)\b/.test(haystack)) return "ops";
+  if (/\b(architect|architecture|design)\b/.test(haystack)) return "architect";
+  if (/\b(product|requirements|prd|plan)\b/.test(haystack)) return "product";
+  if (/\b(code|coder|developer|implementation|build)\b/.test(haystack)) return "coder";
+  const titleTokens = extractSpecialistObjectiveKeywords(capability.title);
+  return titleTokens[0] ? `${titleTokens[0]}-specialist` : "tooling-specialist";
+}
+
+function suggestedToolsForRole(role: string): string[] | undefined {
+  const normalized = role.toLowerCase();
+  if (normalized.includes("research")) return ["browser.search", "browser.navigate"];
+  if (normalized.includes("qa")) return ["tests.run"];
+  if (normalized.includes("ops")) return ["shell.command"];
+  if (normalized.includes("security")) return ["security.review"];
+  return undefined;
+}
+
+function buildSpecialistSuggestionFromCapability(input: {
+  capability: ChatCapabilityUpgradeSuggestion;
+  mode: ChatMode;
+  objectiveKeywords: string[];
+}): ChatSpecialistCandidateSuggestionRecord {
+  const role = inferSpecialistRoleFromCapability(input.capability);
+  const title = /\bspecialist\b/i.test(input.capability.title)
+    ? input.capability.title
+    : `${toTitleCase(role)} specialist`;
+  const objectiveKeywords = dedupeStrings([
+    ...input.objectiveKeywords,
+    ...extractSpecialistObjectiveKeywords(input.capability.title),
+    ...extractSpecialistObjectiveKeywords(input.capability.summary),
+  ]).slice(0, 10);
+  return {
+    candidateId: `specialist-${normalizeSpecialistCandidateFingerprint({ title, role })}`,
+    title,
+    role,
+    summary: `Use ${input.capability.title} as a dormant specialist capability for repeat ${input.mode} work of this kind.`,
+    reason: input.capability.reason,
+    source: "runtime_gap",
+    confidence: clamp01((input.capability.riskLevel === "low" ? 0.76 : input.capability.riskLevel === "high" ? 0.62 : 0.69)),
+    suggestedStatus: "suggested",
+    suggestedRoutingMode: input.mode === "code" ? "strong_match_only" : "manual_only",
+    requiresApproval: true,
+    suggestedTools: suggestedToolsForRole(role),
+    suggestedSkills: input.capability.sourceRef ? [input.capability.sourceRef] : undefined,
+    routingHints: {
+      preferredModes: input.mode === "code" ? ["code"] : ["cowork"],
+      objectiveKeywords: objectiveKeywords.length > 0 ? objectiveKeywords : undefined,
+      requiresProjectBinding: input.mode === "code",
+      maxInvocationsPerRun: 1,
+    },
+    evidence: [{
+      evidenceId: randomUUID(),
+      kind: input.capability.kind === "mcp_template" ? "tool_gap" : "skill_gap",
+      summary: input.capability.summary,
+      confidence: clamp01(input.capability.riskLevel === "low" ? 0.78 : 0.66),
+      skillRef: input.capability.sourceRef,
+    }],
+  };
+}
+
+function buildRoleGapSpecialistSuggestion(input: {
+  role: string;
+  mode: ChatMode;
+  objective: string;
+  objectiveKeywords: string[];
+  confidence: number;
+  runId?: string;
+  turnId?: string;
+}): ChatSpecialistCandidateSuggestionRecord {
+  const title = `${toTitleCase(input.role)} specialist`;
+  const routingMode: ChatSpecialistCandidateSuggestionRecord["suggestedRoutingMode"] = input.confidence >= 0.8
+    ? "strong_match_only"
+    : "manual_only";
+  return {
+    candidateId: `specialist-${normalizeSpecialistCandidateFingerprint({ title, role: input.role })}`,
+    title,
+    role: input.role,
+    summary: `Add a dormant ${input.role} specialist so similar ${input.mode} runs can reuse a focused persona instead of rebuilding the roster each time.`,
+    reason: `This run implied a recurring ${input.role} gap in the current roster.`,
+    source: "runtime_gap",
+    confidence: clamp01(input.confidence),
+    suggestedStatus: "suggested",
+    suggestedRoutingMode: routingMode,
+    requiresApproval: true,
+    suggestedTools: suggestedToolsForRole(input.role),
+    routingHints: {
+      preferredModes: input.mode === "code" ? ["code"] : ["cowork"],
+      objectiveKeywords: input.objectiveKeywords.length > 0 ? input.objectiveKeywords : extractSpecialistObjectiveKeywords(input.objective),
+      requiresProjectBinding: input.mode === "code",
+      maxInvocationsPerRun: 1,
+    },
+    evidence: [{
+      evidenceId: randomUUID(),
+      kind: "role_gap",
+      summary: `Objective hinted that ${input.role} work would help: ${input.objective.slice(0, 180)}`,
+      turnId: input.turnId,
+      runId: input.runId,
+      confidence: clamp01(input.confidence),
+    }],
+  };
+}
+
+function scoreSpecialistCandidateMatch(
+  candidate: ChatSpecialistCandidateRecord,
+  objectiveKeywords: string[],
+  stepRole: OrchestrationRole,
+): number {
+  const baseRole = inferSpecialistBaseRole(candidate.role);
+  if (baseRole !== stepRole) {
+    return 0;
+  }
+  const candidateKeywords = dedupeStrings([
+    ...(candidate.routingHints.objectiveKeywords ?? []),
+    ...extractSpecialistObjectiveKeywords(candidate.title),
+    ...extractSpecialistObjectiveKeywords(candidate.summary),
+    ...extractSpecialistObjectiveKeywords(candidate.reason),
+  ]);
+  const overlap = candidateKeywords.length > 0
+    ? objectiveKeywords.filter((keyword) => candidateKeywords.includes(keyword)).length / candidateKeywords.length
+    : 0;
+  return clamp01((candidate.confidence * 0.55) + (overlap * 0.35) + 0.1);
+}
+
+function buildSpecialistMatchReason(
+  candidate: ChatSpecialistCandidateRecord,
+  objectiveKeywords: string[],
+): string {
+  const candidateKeywords = dedupeStrings([
+    ...(candidate.routingHints.objectiveKeywords ?? []),
+    ...extractSpecialistObjectiveKeywords(candidate.title),
+  ]);
+  const overlap = objectiveKeywords.filter((keyword) => candidateKeywords.includes(keyword));
+  if (overlap.length > 0) {
+    return `Matched on ${overlap.slice(0, 3).join(", ")}.`;
+  }
+  return candidate.reason;
 }
 
 function splitChatPrefsPatch(
@@ -18118,8 +18813,14 @@ function getRemainingChatCompletionTimeoutMs(
 
 function normalizeChatCompletionAttemptError(error: unknown, timeoutMs: number | undefined): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
+  if (isChatTurnCancelledError(normalized)) {
+    return normalized;
+  }
   const name = normalized.name.toLowerCase();
   const message = normalized.message.toLowerCase();
+  if (name.includes("cancel") || message.includes("cancelled")) {
+    return normalized;
+  }
   if (
     name.includes("timeout")
     || name.includes("abort")

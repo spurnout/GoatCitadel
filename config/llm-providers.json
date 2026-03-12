@@ -84,7 +84,7 @@
     {
       "providerId": "perplexity",
       "label": "Perplexity",
-      "baseUrl": "https://api.perplexity.ai",
+      "baseUrl": "https://api.perplexity.ai/v1",
       "apiStyle": "openai-chat-completions",
       "defaultModel": "sonar",
       "apiKeyEnv": "PERPLEXITY_API_KEY"

@@ -5,6 +5,7 @@ import type {
   ChatCompletionResponse,
   ChatMessageRecord,
   ChatMode,
+  ChatOrchestrationSpecialistSelection,
   ChatOrchestrationIntensity,
   ChatOrchestrationParallelism,
   ChatOrchestrationProviderPreference,
@@ -60,6 +61,7 @@ export interface OrchestrationStepPlan {
   stage: number;
   providerId?: string;
   model?: string;
+  specialistCandidate?: ChatOrchestrationSpecialistSelection;
 }
 
 export interface ModeOrchestrationPolicy {
@@ -84,6 +86,9 @@ export interface OrchestrationStepExecutionResult {
   stepId: string;
   role: OrchestrationRole;
   index: number;
+  specialistCandidateId?: string;
+  specialistTitle?: string;
+  specialistRole?: string;
   providerId?: string;
   model?: string;
   startedAt: string;

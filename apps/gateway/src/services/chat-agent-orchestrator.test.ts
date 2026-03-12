@@ -319,6 +319,41 @@ describe("ChatAgentOrchestrator", () => {
     expect(invokeTool).toHaveBeenCalledTimes(1);
   });
 
+  it("marks the turn cancelled when execution is aborted mid-run", async () => {
+    const controller = new AbortController();
+    const createChatCompletion = vi.fn(async (_request: ChatCompletionRequest) => {
+      controller.abort();
+      throw new Error("Chat turn cancelled.");
+    });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-cancel-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-user-cancel-1",
+      content: "Stop this turn.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Stop this turn." }],
+      signal: controller.signal,
+    });
+
+    expect(result.turnTrace.status).toBe("cancelled");
+    expect(result.assistantContent).toBe("");
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
   it("trips circuit breaker for repeated non-retryable tool failures", async () => {
     const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>().mockResolvedValue(
       toolCallCompletion("latest ai tooling"),
@@ -356,6 +391,7 @@ describe("ChatAgentOrchestrator", () => {
     expect(result.assistantContent).toContain("I do not have a reliable enough partial answer yet.");
     expect(result.assistantContent).not.toContain("Reason:");
     expect(result.assistantContent).not.toContain("permission denied");
+    expect(result.turnTrace.failure?.recommendedAction).toBe("retry_narrower");
   });
 
   it("does not trip circuit breaker at two attempts for retryable failures", async () => {
@@ -389,6 +425,38 @@ describe("ChatAgentOrchestrator", () => {
     expect(result.assistantContent).not.toContain("I hit the same tool issue repeatedly");
     expect(result.assistantContent).not.toContain("Reason:");
     expect(result.assistantContent).not.toContain("What I need from you next");
+  });
+
+  it("maps auth failures to reconnect auth recovery guidance", async () => {
+    const createChatCompletion = vi.fn<() => Promise<ChatCompletionResponse>>()
+      .mockRejectedValue(new Error("401 unauthorized"));
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-auth-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-user-auth-1",
+      content: "Use the locked provider.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Use the locked provider." }],
+    });
+
+    expect(result.turnTrace.status).toBe("failed");
+    expect(result.turnTrace.failure?.failureClass).toBe("auth_required");
+    expect(result.turnTrace.failure?.recommendedAction).toBe("reconnect_auth");
+    expect(result.assistantContent).toContain("needs valid auth");
   });
 
   it("grounds browser.navigate from the most recent browser.search results", async () => {

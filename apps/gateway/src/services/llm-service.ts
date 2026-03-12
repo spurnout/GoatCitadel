@@ -373,7 +373,7 @@ export class LlmService {
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
     const headers = this.buildHeaders(resolved, "chat");
     const timeoutMs = resolveChatCompletionTimeoutMs(request.timeoutMs, 60000);
-    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs, request.signal);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
@@ -384,7 +384,7 @@ export class LlmService {
       if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
         const fallbackPayload = { ...payload };
         delete fallbackPayload.metadata;
-        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs);
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs, request.signal);
         if (isRedirect(response.status)) {
           throw new Error(`chat completion blocked redirect (${response.status})`);
         }
@@ -430,7 +430,7 @@ export class LlmService {
     const endpoint = `${resolved.provider.baseUrl}/chat/completions`;
     const headers = this.buildHeaders(resolved, "chat");
     const timeoutMs = resolveChatCompletionTimeoutMs(request.timeoutMs, 120000);
-    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs);
+    let response = await postChatCompletionsRequest(endpoint, headers, payload, timeoutMs, request.signal);
 
     if (isRedirect(response.status)) {
       throw new Error(`chat completion blocked redirect (${response.status})`);
@@ -441,7 +441,7 @@ export class LlmService {
       if (request.metadata !== undefined && isMetadataStoreCompatibilityError(errorText)) {
         const fallbackPayload = { ...payload };
         delete fallbackPayload.metadata;
-        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs);
+        response = await postChatCompletionsRequest(endpoint, headers, fallbackPayload, timeoutMs, request.signal);
         if (isRedirect(response.status)) {
           throw new Error(`chat completion blocked redirect (${response.status})`);
         }
@@ -785,12 +785,17 @@ async function postChatCompletionsRequest(
   headers: Record<string, string>,
   payload: Record<string, unknown>,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([timeoutSignal, externalSignal])
+    : timeoutSignal;
   return fetch(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
     redirect: "manual",
   });
 }

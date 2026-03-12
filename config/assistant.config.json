@@ -7,7 +7,7 @@
   "workspaceDir": "./workspace",
   "worktreesDir": "./.worktrees",
   "auth": {
-    "mode": "token",
+    "mode": "none",
     "allowLoopbackBypass": false,
     "token": {
       "queryParam": "access_token"
@@ -53,9 +53,9 @@
     }
   },
   "mesh": {
-    "enabled": true,
+    "enabled": false,
     "mode": "lan",
-    "nodeId": "bld-main",
+    "nodeId": "bld-258388",
     "discovery": {
       "mdns": true,
       "staticPeers": []
@@ -93,6 +93,11 @@
         "backoffMs": 2000
       }
     }
+  },
+  "sqlite": {
+    "cacheSizeKb": 65536,
+    "tempStoreMemory": true,
+    "walAutoCheckpointPages": 5000
   },
   "durable": {
     "enabled": false,

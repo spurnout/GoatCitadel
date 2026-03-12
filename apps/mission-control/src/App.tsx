@@ -23,6 +23,7 @@ import { emitRefresh, type RefreshTopic } from "./state/refresh-bus";
 import { useUiPreferences } from "./state/ui-preferences";
 import { resolveEffectiveEffectsMode } from "./state/effects-mode";
 import { publishEventStreamStatus, resetEventStreamStatus } from "./state/event-stream-status-store";
+import { deriveShellGatewayAccessState } from "./state/gateway-shell-state";
 import { useEventStreamStatus } from "./hooks/useEventStreamStatus";
 import {
   isDevDiagnosticsEnabled,
@@ -329,6 +330,10 @@ export function App() {
   const [gatewayAccessBusy, setGatewayAccessBusy] = useState(true);
   const [gatewayAccessRunId, setGatewayAccessRunId] = useState(0);
   const effectiveEffectsMode = useMemo(() => resolveEffectiveEffectsMode(effectsMode), [effectsMode]);
+  const shellGatewayState = useMemo(
+    () => deriveShellGatewayAccessState(gatewayAccess, streamState),
+    [gatewayAccess, streamState],
+  );
 
   const loadWorkspaceOptions = useCallback(async () => {
     try {
@@ -860,9 +865,9 @@ export function App() {
             </div>
           </div>
         </header>
-        {streamState === "error" || streamState === "closed" ? (
+        {shellGatewayState.status === "degraded-live-updates" ? (
           <div className="status-banner warning">
-            {appCopy.streamBanner.replace("{state}", streamState)}
+            {shellGatewayState.summary} {shellGatewayState.nextStep}
           </div>
         ) : null}
         <Suspense fallback={<PageLoadingFallback label={activeNav?.label ?? "Mission Control"} />}>
@@ -943,4 +948,3 @@ function buildMissionControlResolverId(): string {
   }
   return `mission-control:${window.location.hostname}`;
 }
-

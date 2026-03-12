@@ -54,6 +54,7 @@ const createSessionSchema = z.object({
   workspaceId: z.string().min(1).optional(),
   title: z.string().optional(),
   projectId: z.string().optional(),
+  mode: z.enum(["chat", "cowork", "code"]).optional(),
 });
 
 const updateSessionSchema = z.object({
@@ -173,6 +174,9 @@ const retryTurnSchema = sendMessageSchema.partial().extend({
 });
 
 const editTurnSchema = sendMessageSchema;
+const cancelTurnSchema = z.object({
+  cancelledBy: z.string().min(1).optional(),
+});
 
 const commandParseSchema = z.object({
   commandText: z.string().min(1),
@@ -237,6 +241,68 @@ const learnedMemoryPatchSchema = z.object({
   content: z.string().optional(),
   confidence: z.coerce.number().min(0).max(1).optional(),
   resolutionNote: z.string().optional(),
+});
+
+const specialistCandidateListSchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).default(200),
+});
+
+const specialistCandidateRoutingHintsSchema = z.object({
+  preferredModes: z.array(z.enum(["chat", "cowork", "code"])).min(1),
+  objectiveKeywords: z.array(z.string().min(1)).optional(),
+  requiresProjectBinding: z.boolean().optional(),
+  maxInvocationsPerRun: z.coerce.number().int().positive().max(25).optional(),
+});
+
+const specialistCandidateEvidenceSchema = z.object({
+  evidenceId: z.string().min(1),
+  kind: z.enum(["role_gap", "tool_gap", "skill_gap", "successful_workaround"]),
+  summary: z.string().min(1),
+  turnId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  toolName: z.string().min(1).optional(),
+  skillRef: z.string().min(1).optional(),
+  confidence: z.coerce.number().min(0).max(1).optional(),
+});
+
+const specialistCandidateSuggestionSchema = z.object({
+  candidateId: z.string().min(1),
+  title: z.string().min(1),
+  role: z.string().min(1),
+  summary: z.string().min(1),
+  reason: z.string().min(1),
+  source: z.enum(["manual", "runtime_gap", "replay"]),
+  confidence: z.coerce.number().min(0).max(1),
+  suggestedStatus: z.enum(["suggested", "drafted", "disabled"]),
+  suggestedRoutingMode: z.enum(["disabled", "manual_only", "strong_match_only"]),
+  requiresApproval: z.literal(true),
+  suggestedTools: z.array(z.string().min(1)).optional(),
+  suggestedSkills: z.array(z.string().min(1)).optional(),
+  routingHints: specialistCandidateRoutingHintsSchema,
+  evidence: z.array(specialistCandidateEvidenceSchema),
+});
+
+const specialistCandidateCreateSchema = z.object({
+  turnId: z.string().min(1).optional(),
+  suggestion: specialistCandidateSuggestionSchema,
+});
+
+const specialistCandidatePatchSchema = z.object({
+  title: z.string().min(1).optional(),
+  summary: z.string().min(1).optional(),
+  reason: z.string().min(1).optional(),
+  status: z.enum(["suggested", "drafted", "disabled", "approved", "active", "retired"]).optional(),
+  routingMode: z.enum(["disabled", "manual_only", "strong_match_only"]).optional(),
+  confidence: z.coerce.number().min(0).max(1).optional(),
+  suggestedTools: z.array(z.string().min(1)).optional(),
+  suggestedSkills: z.array(z.string().min(1)).optional(),
+  routingHints: specialistCandidateRoutingHintsSchema.optional(),
+  evidence: z.array(specialistCandidateEvidenceSchema).optional(),
+});
+
+const specialistCandidateParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  candidateId: z.string().min(1),
 });
 
 const delegateSuggestSchema = z.object({
@@ -843,6 +909,28 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
       fastify.gateway.editChatTurnStream(params.data.sessionId, params.data.turnId, body.data));
   });
 
+  fastify.post("/api/v1/chat/sessions/:sessionId/turns/:turnId/cancel", async (request, reply) => {
+    const params = turnParamsSchema.safeParse(request.params);
+    const body = cancelTurnSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(await fastify.gateway.cancelChatTurn(
+        params.data.sessionId,
+        params.data.turnId,
+        body.data.cancelledBy,
+      ));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
   fastify.get("/api/v1/chat/sessions/:sessionId/prefs", async (request, reply) => {
     const params = sessionParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -1113,6 +1201,70 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
     }
     try {
       return reply.send(await fastify.gateway.rebuildChatSessionLearnedMemory(params.data.sessionId));
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.get("/api/v1/chat/sessions/:sessionId/specialist-candidates", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const query = specialistCandidateListSchema.safeParse(request.query ?? {});
+    if (!params.success || !query.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          query: query.success ? undefined : query.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(
+        fastify.gateway.listChatSessionSpecialistCandidates(params.data.sessionId, query.data.limit),
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.post("/api/v1/chat/sessions/:sessionId/specialist-candidates", async (request, reply) => {
+    const params = sessionParamsSchema.safeParse(request.params);
+    const body = specialistCandidateCreateSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.code(201).send(
+        fastify.gateway.createChatSessionSpecialistCandidate(params.data.sessionId, body.data),
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: (error as Error).message });
+    }
+  });
+
+  fastify.patch("/api/v1/chat/sessions/:sessionId/specialist-candidates/:candidateId", async (request, reply) => {
+    const params = specialistCandidateParamsSchema.safeParse(request.params);
+    const body = specialistCandidatePatchSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success) {
+      return reply.code(400).send({
+        error: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: body.success ? undefined : body.error.flatten(),
+        },
+      });
+    }
+    try {
+      return reply.send(
+        fastify.gateway.updateChatSessionSpecialistCandidate(
+          params.data.sessionId,
+          params.data.candidateId,
+          body.data,
+        ),
+      );
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }

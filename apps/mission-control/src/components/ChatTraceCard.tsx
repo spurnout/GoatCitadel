@@ -1,5 +1,9 @@
 import { useState } from "react";
-import type { ChatTurnTraceRecord } from "@goatcitadel/contracts";
+import {
+  getChatTurnRecoveryActionLabel,
+  getChatTurnRecoveryActionSummary,
+  type ChatTurnTraceRecord,
+} from "@goatcitadel/contracts";
 import { getChatToolRunDiagnostics, getTraceFallbackAttemptCount } from "./chat/chat-tool-diagnostics";
 
 function formatTime(value?: string): string {
@@ -48,6 +52,20 @@ export function ChatTraceCard({
             <span>Fallback used: {trace.routing.fallbackUsed ? "yes" : "no"}</span>
             <span>Fallback tiers attempted: {fallbackAttemptCount || "none"}</span>
           </div>
+          {trace.failure ? (
+            <div className="chat-trace-section">
+              <strong>Recovery state</strong>
+              {trace.failure.recommendedAction ? (
+                <>
+                  <p>Next step: {getChatTurnRecoveryActionLabel(trace.failure.recommendedAction)}</p>
+                  <p>{getChatTurnRecoveryActionSummary(trace.failure.recommendedAction)}</p>
+                </>
+              ) : null}
+              <p>Failure class: {trace.failure.failureClass}</p>
+              <p>{trace.failure.message}</p>
+              <p>Retryable: {trace.failure.retryable === false ? "no" : "yes"}</p>
+            </div>
+          ) : null}
           <div className="chat-trace-section">
             <strong>Routing</strong>
             <p>
@@ -116,6 +134,13 @@ export function ChatTraceCard({
                 {trace.orchestration.status}
               </p>
               <p>{trace.orchestration.routeDecision.selectedRoles.join(" -> ")}</p>
+              {trace.orchestration.routeDecision.specialistCandidates?.length ? (
+                <p>
+                  Specialists: {trace.orchestration.routeDecision.specialistCandidates
+                    .map((item) => `${item.title} (${item.baseRole})`)
+                    .join(" · ")}
+                </p>
+              ) : null}
               {trace.orchestration.finalSummary ? <p>{trace.orchestration.finalSummary}</p> : null}
               <ul className="chat-trace-list">
                 {trace.orchestration.steps.map((step) => (
@@ -123,6 +148,7 @@ export function ChatTraceCard({
                     <span>{step.role}</span>
                     <span>{step.providerId ?? "provider auto"}{step.model ? ` · ${step.model}` : ""}</span>
                     <span>{step.status}</span>
+                    {step.specialistTitle ? <p>Specialist: {step.specialistTitle} ({step.specialistRole ?? "specialist"})</p> : null}
                   </li>
                 ))}
               </ul>

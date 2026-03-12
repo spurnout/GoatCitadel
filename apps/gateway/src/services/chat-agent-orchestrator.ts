@@ -9,6 +9,8 @@ import type {
   ChatThinkingLevel,
   ChatToolRunRecord,
   ChatTurnBranchKind,
+  ChatTurnFailureClass,
+  ChatTurnFailureRecord,
   ChatTurnTraceRecord,
   ChatWebMode,
   ToolCatalogEntry,
@@ -17,6 +19,7 @@ import type {
   McpInvokeRequest,
   McpInvokeResponse,
 } from "@goatcitadel/contracts";
+import { getChatTurnRecoveryAction, type ChatTurnRecoveryAction } from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
 import { hasLiveDataKeywords, EXPLICIT_WEB_PHRASES } from "../orchestration/live-data-detect.js";
 import type { McpBrowserFallbackTarget } from "./mcp-runtime.js";
@@ -101,6 +104,7 @@ export interface ChatAgentTurnInput {
   toolAutonomy: "safe_auto" | "manual";
   historyMessages: ChatCompletionRequest["messages"];
   outputMessageId?: string;
+  signal?: AbortSignal;
 }
 
 export interface ChatAgentTurnResult {
@@ -177,6 +181,7 @@ export class ChatAgentOrchestrator {
   }
 
   public async *runStream(input: ChatAgentTurnInput): AsyncGenerator<ChatStreamChunk> {
+    throwIfChatTurnCancelled(input);
     const now = new Date().toISOString();
     const intents = {
       liveData: detectLiveDataIntent(input.content),
@@ -231,6 +236,7 @@ export class ChatAgentOrchestrator {
       effectiveModel: input.model,
     };
     let finalStatus: ChatTurnTraceRecord["status"] = "completed";
+    let finalFailure: ChatTurnFailureRecord | undefined;
     let approvalPayload: {
       approvalId: string;
       toolName?: string;
@@ -282,6 +288,10 @@ export class ChatAgentOrchestrator {
 
     // Deterministic live-time helper for simple queries.
     if (!assistantContent && intents.time && canUseTimeTool) {
+      throwIfChatTurnCancelled(input);
+      this.deps.storage.chatTurnTraces.patch(input.turnId, {
+        status: "waiting_for_tool",
+      });
       ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
       const syntheticRun = await this.executeToolCall({
         input,
@@ -336,7 +346,13 @@ export class ChatAgentOrchestrator {
         };
       }
       if (syntheticRun.record.status === "approval_required" && syntheticRun.record.approvalId) {
-        finalStatus = "approval_required";
+        finalStatus = "waiting_for_approval";
+        finalFailure = {
+          failureClass: "approval_required",
+          message: "Approval required by policy.",
+          retryable: true,
+          recommendedAction: getChatTurnRecoveryAction("approval_required"),
+        };
         approvalPayload = {
           approvalId: syntheticRun.record.approvalId,
           toolName: syntheticRun.record.toolName,
@@ -364,6 +380,10 @@ export class ChatAgentOrchestrator {
       && canUseSearchTool
       && toolRunCount < executionBudget.maxToolRunsPerTurn
     ) {
+      throwIfChatTurnCancelled(input);
+      this.deps.storage.chatTurnTraces.patch(input.turnId, {
+        status: "waiting_for_tool",
+      });
       ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
       const liveDataQuery = deriveLiveDataQuery(input.content);
       const syntheticRun = await this.executeToolCall({
@@ -425,7 +445,13 @@ export class ChatAgentOrchestrator {
         };
       }
       if (syntheticRun.record.status === "approval_required" && syntheticRun.record.approvalId) {
-        finalStatus = "approval_required";
+        finalStatus = "waiting_for_approval";
+        finalFailure = {
+          failureClass: "approval_required",
+          message: "Approval required by policy.",
+          retryable: true,
+          recommendedAction: getChatTurnRecoveryAction("approval_required"),
+        };
         approvalPayload = {
           approvalId: syntheticRun.record.approvalId,
           toolName: syntheticRun.record.toolName,
@@ -452,6 +478,10 @@ export class ChatAgentOrchestrator {
     if (!assistantContent) {
       try {
         for (let loop = 0; loop < executionBudget.maxToolLoops; loop += 1) {
+          throwIfChatTurnCancelled(input);
+          this.deps.storage.chatTurnTraces.patch(input.turnId, {
+            status: "running",
+          });
           const loopTrace: ChatTurnTraceRecord = {
             ...trace,
             routing: {
@@ -562,6 +592,7 @@ export class ChatAgentOrchestrator {
         } as unknown as ChatCompletionMessage);
 
         for (const toolCall of toolCalls) {
+          throwIfChatTurnCancelled(input);
           if (toolRunCount >= executionBudget.maxToolRunsPerTurn) {
             throw new Error("Tool run limit reached for this turn.");
           }
@@ -569,6 +600,9 @@ export class ChatAgentOrchestrator {
             break;
           }
           ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
+          this.deps.storage.chatTurnTraces.patch(input.turnId, {
+            status: "waiting_for_tool",
+          });
           toolRunCount += 1;
           const executed = await this.executeToolCall({
             input,
@@ -594,7 +628,13 @@ export class ChatAgentOrchestrator {
           }
 
           if (executed.record.status === "approval_required" && executed.record.approvalId) {
-            finalStatus = "approval_required";
+            finalStatus = "waiting_for_approval";
+            finalFailure = {
+              failureClass: "approval_required",
+              message: "Approval required by policy.",
+              retryable: true,
+              recommendedAction: getChatTurnRecoveryAction("approval_required"),
+            };
             approvalPayload = {
               approvalId: executed.record.approvalId,
               toolName: executed.record.toolName,
@@ -657,20 +697,42 @@ export class ChatAgentOrchestrator {
         if (circuitBreakerReason) {
           assistantContent = buildToolFailureFallbackMessage(input.content, toolRuns, circuitBreakerReason);
           finalStatus = "completed";
+          finalFailure = buildChatTurnFailureRecord(
+            classifyChatTurnFailure({
+              toolRuns,
+            }),
+            circuitBreakerReason,
+          );
           break;
         }
       }
       } catch (error) {
-        if (error instanceof ChatTurnBudgetExceededError) {
+        if (isChatTurnAbortError(error, input.signal)) {
+          finalStatus = "cancelled";
+          assistantContent = "";
+          finalFailure = undefined;
+        } else if (error instanceof ChatTurnBudgetExceededError) {
           finalStatus = "completed";
           assistantContent = buildTurnBudgetExceededFallbackMessage(
             input,
             toolRuns,
             error.turnBudgetMs,
           );
+          finalFailure = buildChatTurnFailureRecord(
+            "budget_exceeded",
+            error.message,
+            input.webMode === "deep" ? "retry_narrower" : "switch_to_deep_mode",
+          );
         } else {
           finalStatus = "failed";
-          assistantContent = (error as Error).message;
+          finalFailure = buildChatTurnFailureRecord(
+            classifyChatTurnFailure({
+              error,
+              toolRuns,
+            }),
+            (error as Error).message,
+          );
+          assistantContent = buildUserSafeFailureMessage(finalFailure);
           yield {
             type: "error",
             sessionId: input.sessionId,
@@ -681,19 +743,22 @@ export class ChatAgentOrchestrator {
       }
     }
 
-    if (!approvalPayload && assistantContent.trim().length === 0) {
+    if (!approvalPayload && finalStatus !== "cancelled" && assistantContent.trim().length === 0) {
       assistantContent = await this.synthesizeToolOutcomeFallback({
         input,
         toolRuns,
         circuitBreakerReason,
       });
     }
-    assistantContent = appendToolFailureConstraints(assistantContent, toolRuns);
+    if (finalStatus !== "cancelled") {
+      assistantContent = appendToolFailureConstraints(assistantContent, toolRuns);
+    }
 
     const finishedAt = new Date().toISOString();
     const updatedTrace = this.deps.storage.chatTurnTraces.patch(input.turnId, {
       status: finalStatus,
       model: assistantModel,
+      failure: finalFailure,
       routing: {
         ...routingState,
         liveDataIntent: intents.liveData,
@@ -715,7 +780,7 @@ export class ChatAgentOrchestrator {
         turnId: input.turnId,
         approval: approvalPayload,
       };
-    } else {
+    } else if (finalStatus !== "cancelled") {
       if (usageObserved) {
         yield {
           type: "usage",
@@ -3221,6 +3286,121 @@ function buildTurnBudgetExceededReason(webMode: ChatWebMode, turnBudgetMs: numbe
     return `the deep-research response budget ran out after ${Math.floor(turnBudgetMs / 1000)} seconds`;
   }
   return `the response budget ran out after ${Math.floor(turnBudgetMs / 1000)} seconds to keep chat responsive`;
+}
+
+function throwIfChatTurnCancelled(input: Pick<ChatAgentTurnInput, "signal">): void {
+  if (!input.signal?.aborted) {
+    return;
+  }
+  const reason = input.signal.reason;
+  if (reason instanceof Error) {
+    throw reason;
+  }
+  throw new Error("Chat turn cancelled.");
+}
+
+function isChatTurnAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const name = error.name.toLowerCase();
+  const message = error.message.toLowerCase();
+  return name.includes("abort")
+    || name.includes("cancel")
+    || message.includes("aborted")
+    || message.includes("cancelled");
+}
+
+function buildChatTurnFailureRecord(
+  failureClass: ChatTurnFailureClass,
+  message: string,
+  recommendedAction: ChatTurnRecoveryAction = getChatTurnRecoveryAction(failureClass),
+): ChatTurnFailureRecord {
+  return {
+    failureClass,
+    message,
+    retryable: failureClass !== "auth_required",
+    recommendedAction,
+  };
+}
+
+function classifyChatTurnFailure(input: {
+  error?: unknown;
+  toolRuns: ChatToolRunRecord[];
+}): ChatTurnFailureClass {
+  if (hasToolBlockedFailure(input.toolRuns)) {
+    return "tool_blocked";
+  }
+  if (hasToolFailedFailure(input.toolRuns)) {
+    return "tool_failed";
+  }
+  const normalizedMessage = input.error instanceof Error ? input.error.message.toLowerCase() : "";
+  if (
+    normalizedMessage.includes("timed out")
+    || normalizedMessage.includes("timeout")
+  ) {
+    return "provider_timeout";
+  }
+  if (
+    normalizedMessage.includes("unauthorized")
+    || normalizedMessage.includes("forbidden")
+    || normalizedMessage.includes("api key")
+    || normalizedMessage.includes("401")
+    || normalizedMessage.includes("403")
+    || normalizedMessage.includes("auth")
+  ) {
+    return "auth_required";
+  }
+  if (
+    normalizedMessage.includes("network")
+    || normalizedMessage.includes("fetch failed")
+    || normalizedMessage.includes("socket")
+    || normalizedMessage.includes("econnreset")
+    || normalizedMessage.includes("enotfound")
+  ) {
+    return "network_interrupted";
+  }
+  return "unknown";
+}
+
+function hasToolBlockedFailure(toolRuns: ChatToolRunRecord[]): boolean {
+  return toolRuns.some((run) => {
+    if (run.status === "blocked") {
+      return true;
+    }
+    const failureClass = typeof run.result?.browserFailureClass === "string"
+      ? run.result.browserFailureClass
+      : undefined;
+    return failureClass === "remote_blocked" || failureClass === "http_error";
+  });
+}
+
+function hasToolFailedFailure(toolRuns: ChatToolRunRecord[]): boolean {
+  return toolRuns.some((run) => run.status === "failed");
+}
+
+function buildUserSafeFailureMessage(failure: ChatTurnFailureRecord): string {
+  switch (failure.failureClass) {
+    case "provider_timeout":
+      return "The model request timed out before completion. Retry once, or switch to a lighter mode for faster results.";
+    case "network_interrupted":
+      return "The request was interrupted before the turn could finish. Retry once and check the gateway connection if it happens again.";
+    case "tool_blocked":
+      return "A required source blocked automated access. Retry with a narrower request, or continue from the strongest leads already gathered.";
+    case "tool_failed":
+      return "A required tool failed before the turn could finish. Retry once, or narrow the request so it can complete without that tool path.";
+    case "auth_required":
+      return "The selected provider or integration needs valid auth before this turn can continue. Reconnect auth or choose another provider.";
+    case "budget_exceeded":
+      return "This turn hit the current execution budget before a full pass finished. Continue from the strongest leads or switch to a deeper mode.";
+    case "approval_required":
+      return "This turn is waiting for approval before it can continue.";
+    default:
+      return "This turn failed before completion. Retry once, or narrow the request so the next pass can finish cleanly.";
+  }
 }
 
 function buildTurnBudgetExceededFallbackMessage(

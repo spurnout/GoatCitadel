@@ -259,6 +259,31 @@
     linear-gradient(180deg, rgba(10, 18, 28, 0.96), rgba(6, 10, 16, 1));
 }
 
+.theme-signal-noir .chat-v11-surface-identity {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(92, 198, 223, 0.12);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(10, 18, 28, 0.92), rgba(6, 10, 16, 0.98));
+}
+
+.theme-signal-noir .chat-v11-surface-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.theme-signal-noir .chat-v11-surface-copy {
+  margin: 0;
+}
+
+.theme-signal-noir .chat-v11-surface-copy.secondary {
+  color: var(--snr-text-muted);
+}
+
 .theme-signal-noir .chat-v11-composer-banner.planning,
 .theme-signal-noir .chat-v11-planning-pill {
   border: 1px solid rgba(255, 154, 69, 0.22);

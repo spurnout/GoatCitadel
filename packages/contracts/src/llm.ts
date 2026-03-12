@@ -80,6 +80,7 @@ export interface ChatCompletionRequest {
   providerId?: string;
   model?: string;
   messages: ChatCompletionMessage[];
+  signal?: AbortSignal;
   memory?: {
     enabled?: boolean;
     mode?: "qmd" | "off";

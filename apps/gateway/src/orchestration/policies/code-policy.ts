@@ -1,13 +1,16 @@
+import { getChatModePreset } from "@goatcitadel/contracts";
 import type { ModeOrchestrationPolicy } from "../types.js";
+
+const preset = getChatModePreset("code");
 
 export const CODE_MODE_POLICY: ModeOrchestrationPolicy = {
   mode: "code",
   maxVisibleVisibility: "explicit",
-  defaultVisibility: "expandable",
-  defaultIntensity: "balanced",
+  defaultVisibility: preset.defaultPrefs.orchestrationVisibility ?? "expandable",
+  defaultIntensity: preset.defaultPrefs.orchestrationIntensity ?? "balanced",
   maxSteps: 5,
   maxParallelAgents: 2,
   allowHiddenOrchestration: false,
   allowParallelWorkers: false,
-  defaultCodeAutoApply: "aggressive_auto",
+  defaultCodeAutoApply: preset.defaultPrefs.codeAutoApply ?? "manual",
 };

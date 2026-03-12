@@ -15,7 +15,7 @@ export function shouldExtractLearnedMemoryContent(
   if (source.role !== "assistant") {
     return true;
   }
-  if (source.trace?.status === "failed" || source.trace?.status === "approval_required") {
+  if (source.trace?.status === "failed" || source.trace?.status === "waiting_for_approval") {
     return false;
   }
   if (looksLowConfidenceResponse(content)) {

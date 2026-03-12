@@ -49,10 +49,11 @@ describe("chat routes additional coverage", () => {
       url: "/api/v1/chat/sessions",
       payload: {
         title: "Fresh chat",
+        mode: "cowork",
       },
     });
     expect(createResponse.statusCode).toBe(201);
-    expect(createChatSession).toHaveBeenCalledWith({ title: "Fresh chat" });
+    expect(createChatSession).toHaveBeenCalledWith({ title: "Fresh chat", mode: "cowork" });
   });
 
   it("deletes chat sessions through the gateway", async () => {
@@ -214,6 +215,165 @@ describe("chat routes additional coverage", () => {
     });
     expect(prefsResponse.statusCode).toBe(200);
     expect(updateChatSessionPrefs).toHaveBeenCalledWith("sess-1", { planningMode: "advisory" });
+  });
+
+  it("lists, creates, and updates specialist candidates through the gateway", async () => {
+    const listChatSessionSpecialistCandidates = vi.fn(() => ({
+      items: [{
+        candidateId: "cand-1",
+        sessionId: "sess-1",
+        title: "Research Specialist",
+        role: "researcher",
+        summary: "Reusable researcher persona",
+        reason: "Repeated research gap",
+        source: "runtime_gap",
+        status: "drafted",
+        routingMode: "manual_only",
+        confidence: 0.74,
+        requiresApproval: true,
+        routingHints: { preferredModes: ["cowork"] },
+        evidence: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      }],
+    }));
+    const createChatSessionSpecialistCandidate = vi.fn(() => ({
+      candidateId: "cand-2",
+      sessionId: "sess-1",
+      title: "Research Specialist",
+      role: "researcher",
+      summary: "Reusable researcher persona",
+      reason: "Repeated research gap",
+      source: "runtime_gap",
+      status: "drafted",
+      routingMode: "manual_only",
+      confidence: 0.74,
+      requiresApproval: true,
+      routingHints: { preferredModes: ["cowork"] },
+      evidence: [],
+      createdAt: "2026-03-12T00:00:00.000Z",
+      updatedAt: "2026-03-12T00:00:00.000Z",
+    }));
+    const updateChatSessionSpecialistCandidate = vi.fn(() => ({
+      candidateId: "cand-2",
+      sessionId: "sess-1",
+      title: "Research Specialist",
+      role: "researcher",
+      summary: "Reusable researcher persona",
+      reason: "Repeated research gap",
+      source: "runtime_gap",
+      status: "active",
+      routingMode: "strong_match_only",
+      confidence: 0.74,
+      requiresApproval: true,
+      routingHints: { preferredModes: ["cowork"] },
+      evidence: [],
+      createdAt: "2026-03-12T00:00:00.000Z",
+      updatedAt: "2026-03-12T00:05:00.000Z",
+      activatedAt: "2026-03-12T00:05:00.000Z",
+    }));
+    app = Fastify();
+    app.decorate("gateway", {
+      listChatSessionSpecialistCandidates,
+      createChatSessionSpecialistCandidate,
+      updateChatSessionSpecialistCandidate,
+    } as never);
+    await app.register(chatRoutes);
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/api/v1/chat/sessions/sess-1/specialist-candidates?limit=50",
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listChatSessionSpecialistCandidates).toHaveBeenCalledWith("sess-1", 50);
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/specialist-candidates",
+      payload: {
+        turnId: "turn-1",
+        suggestion: {
+          candidateId: "suggestion-1",
+          title: "Research Specialist",
+          role: "researcher",
+          summary: "Reusable researcher persona",
+          reason: "Repeated research gap",
+          source: "runtime_gap",
+          confidence: 0.74,
+          suggestedStatus: "suggested",
+          suggestedRoutingMode: "manual_only",
+          requiresApproval: true,
+          routingHints: { preferredModes: ["cowork"] },
+          evidence: [],
+        },
+      },
+    });
+    expect(createResponse.statusCode).toBe(201);
+    expect(createChatSessionSpecialistCandidate).toHaveBeenCalledWith("sess-1", expect.objectContaining({
+      turnId: "turn-1",
+      suggestion: expect.objectContaining({
+        title: "Research Specialist",
+      }),
+    }));
+
+    const patchResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/chat/sessions/sess-1/specialist-candidates/cand-2",
+      payload: {
+        status: "active",
+        routingMode: "strong_match_only",
+      },
+    });
+    expect(patchResponse.statusCode).toBe(200);
+    expect(updateChatSessionSpecialistCandidate).toHaveBeenCalledWith("sess-1", "cand-2", {
+      status: "active",
+      routingMode: "strong_match_only",
+    });
+  });
+
+  it("cancels active turns through the gateway", async () => {
+    const cancelChatTurn = vi.fn(async () => ({
+      sessionId: "sess-1",
+      turnId: "turn-9",
+      cancelled: true,
+      trace: {
+        turnId: "turn-9",
+        sessionId: "sess-1",
+        userMessageId: "msg-user-9",
+        branchKind: "append",
+        status: "cancelled",
+        mode: "chat",
+        startedAt: "2026-03-11T20:00:00.000Z",
+        finishedAt: "2026-03-11T20:00:02.000Z",
+        citations: [],
+        toolRuns: [],
+        routing: {},
+      },
+    }));
+    app = Fastify();
+    app.decorate("gateway", {
+      cancelChatTurn,
+    } as never);
+    await app.register(chatRoutes);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/chat/sessions/sess-1/turns/turn-9/cancel",
+      payload: {
+        cancelledBy: "mission-control",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(cancelChatTurn).toHaveBeenCalledWith("sess-1", "turn-9", "mission-control");
+    expect(response.json()).toMatchObject({
+      sessionId: "sess-1",
+      turnId: "turn-9",
+      cancelled: true,
+      trace: {
+        status: "cancelled",
+      },
+    });
   });
 
   it("returns 409 for branch-write conflicts on agent send", async () => {

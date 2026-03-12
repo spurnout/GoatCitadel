@@ -233,6 +233,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "auth_device_requests_and_grants",
     up: createAuthDeviceAccessSchema,
   },
+  {
+    version: 28,
+    name: "chat_specialist_candidates",
+    up: createChatSpecialistCandidateSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -745,6 +750,44 @@ function createChatModeOrchestrationFoundationSchema(db: DatabaseSync): void {
   addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "summary", "TEXT");
 }
 
+function createChatSpecialistCandidateSchema(db: DatabaseSync): void {
+  addColumnIfMissing(db, "chat_turn_traces", "specialist_candidate_suggestions_json", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_specialist_candidates (
+      candidate_id TEXT PRIMARY KEY,
+      workspace_id TEXT,
+      session_id TEXT NOT NULL,
+      lead_turn_id TEXT,
+      lead_run_id TEXT,
+      title TEXT NOT NULL,
+      role TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      routing_mode TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      requires_approval INTEGER NOT NULL DEFAULT 1,
+      suggested_tools_json TEXT,
+      suggested_skills_json TEXT,
+      routing_hints_json TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      activated_at TEXT,
+      retired_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_specialist_candidates_session
+      ON chat_specialist_candidates(session_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_specialist_candidates_status
+      ON chat_specialist_candidates(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_specialist_candidates_workspace
+      ON chat_specialist_candidates(workspace_id, updated_at DESC);
+  `);
+}
+
 function migrateApprovalsColumns(db: DatabaseSync): void {
   const rows = db.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
   const columns = new Set(rows.map((row) => row.name));
@@ -1214,6 +1257,7 @@ function createAgenticChatSchema(db: DatabaseSync): void {
       orchestration_json TEXT,
       guidance_json TEXT,
       citations_json TEXT,
+      failure_json TEXT,
       capability_upgrade_suggestions_json TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT
@@ -1594,6 +1638,7 @@ function createAgenticDepthSchema(db: DatabaseSync): void {
   addColumnIfMissing(db, "chat_turn_traces", "retrieval_json", "TEXT");
   addColumnIfMissing(db, "chat_turn_traces", "reflection_json", "TEXT");
   addColumnIfMissing(db, "chat_turn_traces", "proactive_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "failure_json", "TEXT");
 }
 
 function createWeeklyDecisionReplaySchema(db: DatabaseSync): void {
@@ -1793,6 +1838,7 @@ function createWorkspaceIsolationSchema(db: DatabaseSync): void {
   addColumnIfMissing(db, "chat_session_bindings", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
   addColumnIfMissing(db, "chat_attachments", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
   addColumnIfMissing(db, "chat_turn_traces", "guidance_json", "TEXT");
+  addColumnIfMissing(db, "chat_turn_traces", "failure_json", "TEXT");
   addColumnIfMissing(db, "tasks", "workspace_id", "TEXT NOT NULL DEFAULT 'default'");
 
   db.exec(`

@@ -18,6 +18,7 @@ import type {
   ChatMode,
   ChatAttachmentPreviewResponse,
   ChatCitationRecord,
+  ChatCancelTurnResponse,
   ChatDelegateRequest,
   ChatDelegateAcceptRequest,
   ChatDelegateSuggestRequest,
@@ -34,6 +35,9 @@ import type {
   ChatSessionPrefsRecord,
   ChatSessionPrefsPatch,
   ChatSessionRecord,
+  ChatSpecialistCandidatePatchInput,
+  ChatSpecialistCandidateRecord,
+  ChatSpecialistCandidateSuggestionRecord,
   ChatStreamChunk,
   ChatThreadResponse,
   ChatThinkingLevel,
@@ -1320,7 +1324,12 @@ export async function fetchChatSessions(input?: {
   return request<ChatSessionsResponse>(`/api/v1/chat/sessions?${query.toString()}`);
 }
 
-export async function createChatSession(input?: { workspaceId?: string; title?: string; projectId?: string }): Promise<ChatSessionRecord> {
+export async function createChatSession(input?: {
+  workspaceId?: string;
+  title?: string;
+  projectId?: string;
+  mode?: ChatMode;
+}): Promise<ChatSessionRecord> {
   return request<ChatSessionRecord>("/api/v1/chat/sessions", {
     method: "POST",
     body: JSON.stringify(input ?? {}),
@@ -1582,6 +1591,20 @@ export async function streamEditChatTurn(
   await consumeSseResponse(response.body, onChunk, options.signal);
 }
 
+export async function cancelChatTurn(
+  sessionId: string,
+  turnId: string,
+  cancelledBy?: string,
+): Promise<ChatCancelTurnResponse> {
+  return request<ChatCancelTurnResponse>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/cancel`,
+    {
+      method: "POST",
+      body: JSON.stringify(cancelledBy ? { cancelledBy } : {}),
+    },
+  );
+}
+
 export async function fetchChatSessionPrefs(sessionId: string): Promise<ChatSessionPrefsRecord> {
   return request<ChatSessionPrefsRecord>(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/prefs`);
 }
@@ -1689,6 +1712,45 @@ export async function rebuildChatLearnedMemory(
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export async function fetchChatSpecialistCandidates(
+  sessionId: string,
+  limit = 200,
+): Promise<{ items: ChatSpecialistCandidateRecord[] }> {
+  return request<{ items: ChatSpecialistCandidateRecord[] }>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/specialist-candidates?limit=${Math.max(1, Math.min(limit, 500))}`,
+  );
+}
+
+export async function createChatSpecialistCandidate(
+  sessionId: string,
+  input: {
+    turnId?: string;
+    suggestion: ChatSpecialistCandidateSuggestionRecord;
+  },
+): Promise<ChatSpecialistCandidateRecord> {
+  return request<ChatSpecialistCandidateRecord>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/specialist-candidates`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function updateChatSpecialistCandidate(
+  sessionId: string,
+  candidateId: string,
+  input: ChatSpecialistCandidatePatchInput,
+): Promise<ChatSpecialistCandidateRecord> {
+  return request<ChatSpecialistCandidateRecord>(
+    `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/specialist-candidates/${encodeURIComponent(candidateId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function suggestChatDelegation(

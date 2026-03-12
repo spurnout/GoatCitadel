@@ -33,6 +33,7 @@ import { ChatAttachmentRepository } from "./chat-attachment-repo.js";
 import { ChatSessionPrefsRepository } from "./chat-session-prefs-repo.js";
 import { SessionAutonomyPrefsRepository } from "./session-autonomy-prefs-repo.js";
 import { ChatTurnTraceRepository } from "./chat-turn-trace-repo.js";
+import { ChatSpecialistCandidateRepository } from "./chat-specialist-candidate-repo.js";
 import { ChatToolRunRepository } from "./chat-tool-run-repo.js";
 import { ChatInlineApprovalRepository } from "./chat-inline-approval-repo.js";
 import { ChatDelegationRunRepository } from "./chat-delegation-run-repo.js";
@@ -96,6 +97,7 @@ export class Storage {
   public readonly sessionAutonomyPrefs: SessionAutonomyPrefsRepository;
   public readonly chatMessages: ChatMessageRepository;
   public readonly chatTurnTraces: ChatTurnTraceRepository;
+  public readonly chatSpecialistCandidates: ChatSpecialistCandidateRepository;
   public readonly chatToolRuns: ChatToolRunRepository;
   public readonly chatInlineApprovals: ChatInlineApprovalRepository;
   public readonly chatDelegationRuns: ChatDelegationRunRepository;
@@ -149,6 +151,7 @@ export class Storage {
     this.sessionAutonomyPrefs = new SessionAutonomyPrefsRepository(this.db);
     this.chatMessages = new ChatMessageRepository(this.db);
     this.chatTurnTraces = new ChatTurnTraceRepository(this.db);
+    this.chatSpecialistCandidates = new ChatSpecialistCandidateRepository(this.db);
     this.chatToolRuns = new ChatToolRunRepository(this.db);
     this.chatInlineApprovals = new ChatInlineApprovalRepository(this.db);
     this.chatDelegationRuns = new ChatDelegationRunRepository(this.db);
@@ -254,6 +257,7 @@ export class Storage {
       this.db.prepare("DELETE FROM mesh_session_owners WHERE session_id = ?").run(normalizedSessionId);
       this.db.prepare("DELETE FROM chat_inline_approvals WHERE session_id = ?").run(normalizedSessionId);
       this.db.prepare("DELETE FROM chat_tool_runs WHERE session_id = ?").run(normalizedSessionId);
+      this.db.prepare("DELETE FROM chat_specialist_candidates WHERE session_id = ?").run(normalizedSessionId);
       this.db.prepare("DELETE FROM chat_turn_traces WHERE session_id = ?").run(normalizedSessionId);
       this.db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(normalizedSessionId);
       this.db.prepare("DELETE FROM session_autonomy_prefs WHERE session_id = ?").run(normalizedSessionId);

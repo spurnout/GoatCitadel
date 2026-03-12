@@ -5,6 +5,7 @@ export type ChatBindingTransport = "llm" | "integration";
 export type ChatMessageRole = "user" | "assistant" | "system";
 export type ChatAttachmentMediaType = "text" | "image" | "audio" | "video" | "binary";
 export type ChatMode = "chat" | "cowork" | "code";
+export type ChatModeTeamBehavior = "single_lead" | "guided_swarm" | "constrained_squad";
 export type ChatWebMode = "auto" | "off" | "quick" | "deep";
 export type ChatMemoryMode = "auto" | "on" | "off";
 export type ChatThinkingLevel = "minimal" | "standard" | "extended";
@@ -187,6 +188,134 @@ export interface ChatSessionPrefsPatch {
   reflectionMode?: ChatReflectionMode;
 }
 
+export interface ChatModePresetRecord {
+  mode: ChatMode;
+  label: string;
+  summary: string;
+  teamBehavior: ChatModeTeamBehavior;
+  teamBehaviorLabel: string;
+  teamBehaviorSummary: string;
+  growthPolicyLabel: string;
+  growthPolicySummary: string;
+  allowsDynamicTeamGrowth: boolean;
+  defaultPrefs: Pick<
+    ChatSessionPrefsPatch,
+    | "planningMode"
+    | "webMode"
+    | "thinkingLevel"
+    | "toolAutonomy"
+    | "orchestrationEnabled"
+    | "orchestrationIntensity"
+    | "orchestrationVisibility"
+    | "orchestrationProviderPreference"
+    | "orchestrationReviewDepth"
+    | "orchestrationParallelism"
+    | "codeAutoApply"
+  >;
+  requiresProjectBindingForExecution?: boolean;
+}
+
+export const CHAT_MODE_PRESETS = {
+  chat: {
+    mode: "chat",
+    label: "Chat",
+    summary: "Fast conversation with lightweight orchestration and compact trace defaults.",
+    teamBehavior: "single_lead",
+    teamBehaviorLabel: "Single lead",
+    teamBehaviorSummary: "Chat stays single-assistant by default and keeps orchestration low-friction.",
+    growthPolicyLabel: "No silent team growth",
+    growthPolicySummary: "Chat may suggest delegation or escalation, but it does not silently add specialists on its own.",
+    allowsDynamicTeamGrowth: false,
+    defaultPrefs: {
+      planningMode: "off",
+      webMode: "auto",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      orchestrationEnabled: true,
+      orchestrationIntensity: "minimal",
+      orchestrationVisibility: "summarized",
+      orchestrationProviderPreference: "speed",
+      orchestrationReviewDepth: "off",
+      orchestrationParallelism: "auto",
+      codeAutoApply: "manual",
+    },
+  },
+  cowork: {
+    mode: "cowork",
+    label: "Cowork",
+    summary: "Guided multi-step execution with visible orchestration, checkpoints, and collaboration controls.",
+    teamBehavior: "guided_swarm",
+    teamBehaviorLabel: "Guided swarm",
+    teamBehaviorSummary: "Cowork keeps one visible lead agent and adds specialists only through explicit, traceable workflow rules.",
+    growthPolicyLabel: "Visible capped growth",
+    growthPolicySummary: "Specialist expansion is allowed here, but every growth step must stay attributable, capped, and legible in the run trace.",
+    allowsDynamicTeamGrowth: true,
+    defaultPrefs: {
+      planningMode: "off",
+      webMode: "auto",
+      thinkingLevel: "extended",
+      toolAutonomy: "safe_auto",
+      orchestrationEnabled: true,
+      orchestrationIntensity: "balanced",
+      orchestrationVisibility: "expandable",
+      orchestrationProviderPreference: "balanced",
+      orchestrationReviewDepth: "standard",
+      orchestrationParallelism: "parallel",
+      codeAutoApply: "manual",
+    },
+  },
+  code: {
+    mode: "code",
+    label: "Code",
+    summary: "Project-bound implementation and review with stricter defaults for quality, visibility, and apply posture.",
+    teamBehavior: "constrained_squad",
+    teamBehaviorLabel: "Constrained squad",
+    teamBehaviorSummary: "Code stays project-bound and favors tight specialist splits such as implement, review, and test.",
+    growthPolicyLabel: "Project-bound specialist growth",
+    growthPolicySummary: "Specialist expansion is allowed only inside tighter project and execution rules than Cowork.",
+    allowsDynamicTeamGrowth: true,
+    defaultPrefs: {
+      planningMode: "off",
+      webMode: "auto",
+      thinkingLevel: "extended",
+      toolAutonomy: "safe_auto",
+      orchestrationEnabled: true,
+      orchestrationIntensity: "balanced",
+      orchestrationVisibility: "expandable",
+      orchestrationProviderPreference: "quality",
+      orchestrationReviewDepth: "strict",
+      orchestrationParallelism: "sequential",
+      codeAutoApply: "manual",
+    },
+    requiresProjectBindingForExecution: true,
+  },
+} satisfies Record<ChatMode, ChatModePresetRecord>;
+
+export function getChatModePreset(mode: ChatMode): ChatModePresetRecord {
+  return CHAT_MODE_PRESETS[mode];
+}
+
+export function buildChatModePrefsPatch(mode: ChatMode): ChatSessionPrefsPatch {
+  return {
+    mode,
+    ...getChatModePreset(mode).defaultPrefs,
+  };
+}
+
+export function applyChatModePresetToPatch(input: ChatSessionPrefsPatch): ChatSessionPrefsPatch {
+  if (!input.mode) {
+    return input;
+  }
+  return {
+    ...buildChatModePrefsPatch(input.mode),
+    ...input,
+  };
+}
+
+export function chatModeRequiresProjectBinding(mode: ChatMode): boolean {
+  return getChatModePreset(mode).requiresProjectBindingForExecution === true;
+}
+
 export interface ChatCitationRecord {
   citationId: string;
   title?: string;
@@ -209,6 +338,120 @@ export interface ChatToolRunRecord {
   error?: string;
 }
 
+export type ChatTurnLifecycleStatus =
+  | "queued"
+  | "running"
+  | "waiting_for_tool"
+  | "waiting_for_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type ChatTurnFailureClass =
+  | "provider_timeout"
+  | "network_interrupted"
+  | "tool_blocked"
+  | "tool_failed"
+  | "auth_required"
+  | "budget_exceeded"
+  | "approval_required"
+  | "unknown";
+
+export type ChatTurnRecoveryAction =
+  | "retry"
+  | "retry_narrower"
+  | "continue_from_partial"
+  | "reconnect_auth"
+  | "approve_pending_step"
+  | "switch_to_deep_mode"
+  | "check_gateway_connection";
+
+export interface ChatTurnFailureRecord {
+  failureClass: ChatTurnFailureClass;
+  message: string;
+  retryable?: boolean;
+  recommendedAction?: ChatTurnRecoveryAction;
+}
+
+export function getChatTurnRecoveryAction(failureClass: ChatTurnFailureClass): ChatTurnRecoveryAction {
+  switch (failureClass) {
+    case "provider_timeout":
+      return "retry";
+    case "network_interrupted":
+      return "check_gateway_connection";
+    case "tool_blocked":
+    case "tool_failed":
+      return "retry_narrower";
+    case "auth_required":
+      return "reconnect_auth";
+    case "budget_exceeded":
+      return "switch_to_deep_mode";
+    case "approval_required":
+      return "approve_pending_step";
+    default:
+      return "retry";
+  }
+}
+
+export function getChatTurnRecoveryActionLabel(action: ChatTurnRecoveryAction): string {
+  switch (action) {
+    case "retry":
+      return "Retry the turn";
+    case "retry_narrower":
+      return "Retry with a narrower request";
+    case "continue_from_partial":
+      return "Continue from the strongest leads";
+    case "reconnect_auth":
+      return "Reconnect auth";
+    case "approve_pending_step":
+      return "Approve the pending step";
+    case "switch_to_deep_mode":
+      return "Switch to Deep mode";
+    case "check_gateway_connection":
+      return "Check the gateway connection";
+  }
+}
+
+export function getChatTurnRecoveryActionSummary(action: ChatTurnRecoveryAction): string {
+  switch (action) {
+    case "retry":
+      return "Run the same turn again once. If it repeats, narrow the request before retrying.";
+    case "retry_narrower":
+      return "Ask for a smaller slice of the task so the next pass can finish cleanly.";
+    case "continue_from_partial":
+      return "Ask GoatCitadel to continue from the strongest leads or partial results it already gathered.";
+    case "reconnect_auth":
+      return "Reconnect the provider or integration auth, then resend the turn.";
+    case "approve_pending_step":
+      return "Review the pending approval so the turn can continue.";
+    case "switch_to_deep_mode":
+      return "Switch Web to Deep and resend if you want a slower, more exhaustive pass.";
+    case "check_gateway_connection":
+      return "Check the gateway or network connection, then retry the turn.";
+  }
+}
+
+export const CHAT_TURN_ACTIVE_STATUSES = [
+  "queued",
+  "running",
+  "waiting_for_tool",
+  "waiting_for_approval",
+] as const satisfies ChatTurnLifecycleStatus[];
+
+export const CHAT_TURN_TERMINAL_STATUSES = [
+  "completed",
+  "failed",
+  "cancelled",
+] as const satisfies ChatTurnLifecycleStatus[];
+
+export function isChatTurnActiveStatus(status: ChatTurnLifecycleStatus): boolean {
+  return (CHAT_TURN_ACTIVE_STATUSES as readonly string[]).includes(status);
+}
+
+export function isChatTurnTerminalStatus(status: ChatTurnLifecycleStatus): boolean {
+  return (CHAT_TURN_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
 export interface ChatCapabilityUpgradeSuggestion {
   kind: "existing_but_disabled" | "skill_import" | "mcp_template";
   title: string;
@@ -228,6 +471,16 @@ export interface ChatOrchestrationProviderSelection {
   model?: string;
 }
 
+export interface ChatOrchestrationSpecialistSelection {
+  candidateId: string;
+  title: string;
+  role: string;
+  baseRole: string;
+  summary: string;
+  matchReason: string;
+  routingMode: ChatSpecialistCandidateRoutingMode;
+}
+
 export interface ChatOrchestrationRouteDecision {
   modePolicy: ChatMode;
   workflowTemplate: string;
@@ -239,6 +492,7 @@ export interface ChatOrchestrationRouteDecision {
   parallelism: ChatOrchestrationParallelism;
   selectedRoles: string[];
   selectedProviders: ChatOrchestrationProviderSelection[];
+  specialistCandidates?: ChatOrchestrationSpecialistSelection[];
   triggerReason: string;
 }
 
@@ -247,6 +501,9 @@ export interface ChatOrchestrationStepSummary {
   role: string;
   index: number;
   status: ChatDelegationStepStatus;
+  specialistCandidateId?: string;
+  specialistTitle?: string;
+  specialistRole?: string;
   providerId?: string;
   model?: string;
   startedAt: string;
@@ -276,7 +533,8 @@ export interface ChatTurnTraceRecord {
   branchKind: ChatTurnBranchKind;
   sourceTurnId?: string;
   assistantMessageId?: string;
-  status: "running" | "completed" | "failed" | "approval_required";
+  status: ChatTurnLifecycleStatus;
+  failure?: ChatTurnFailureRecord;
   mode: ChatMode;
   model?: string;
   webMode: ChatWebMode;
@@ -327,6 +585,7 @@ export interface ChatTurnTraceRecord {
     truncated: boolean;
   };
   capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
+  specialistCandidateSuggestions?: ChatSpecialistCandidateSuggestionRecord[];
 }
 
 export interface ChatDelegationStepRecord {
@@ -395,6 +654,121 @@ export interface ChatDelegationSuggestionRecord {
   createdAt: string;
 }
 
+export type ChatSpecialistCandidateStatus =
+  | "suggested"
+  | "drafted"
+  | "disabled"
+  | "approved"
+  | "active"
+  | "retired";
+
+export type ChatSpecialistCandidateRoutingMode =
+  | "disabled"
+  | "manual_only"
+  | "strong_match_only";
+
+export type ChatSpecialistCandidateSource =
+  | "manual"
+  | "runtime_gap"
+  | "replay";
+
+export type ChatSpecialistCandidateEvidenceKind =
+  | "role_gap"
+  | "tool_gap"
+  | "skill_gap"
+  | "successful_workaround";
+
+export interface ChatSpecialistCandidateEvidenceRecord {
+  evidenceId: string;
+  kind: ChatSpecialistCandidateEvidenceKind;
+  summary: string;
+  turnId?: string;
+  runId?: string;
+  toolName?: string;
+  skillRef?: string;
+  confidence?: number;
+}
+
+export interface ChatSpecialistCandidateRoutingHints {
+  preferredModes: ChatMode[];
+  objectiveKeywords?: string[];
+  requiresProjectBinding?: boolean;
+  maxInvocationsPerRun?: number;
+}
+
+export interface ChatSpecialistCandidateRecord {
+  candidateId: string;
+  workspaceId?: string;
+  sessionId: string;
+  leadTurnId?: string;
+  leadRunId?: string;
+  title: string;
+  role: string;
+  summary: string;
+  reason: string;
+  source: ChatSpecialistCandidateSource;
+  status: ChatSpecialistCandidateStatus;
+  routingMode: ChatSpecialistCandidateRoutingMode;
+  confidence: number;
+  requiresApproval: boolean;
+  suggestedTools?: string[];
+  suggestedSkills?: string[];
+  routingHints: ChatSpecialistCandidateRoutingHints;
+  evidence: ChatSpecialistCandidateEvidenceRecord[];
+  createdAt: string;
+  updatedAt: string;
+  activatedAt?: string;
+  retiredAt?: string;
+}
+
+export interface ChatSpecialistCandidateSuggestionRecord {
+  candidateId: string;
+  title: string;
+  role: string;
+  summary: string;
+  reason: string;
+  source: ChatSpecialistCandidateSource;
+  confidence: number;
+  suggestedStatus: Extract<ChatSpecialistCandidateStatus, "suggested" | "drafted" | "disabled">;
+  suggestedRoutingMode: ChatSpecialistCandidateRoutingMode;
+  requiresApproval: true;
+  suggestedTools?: string[];
+  suggestedSkills?: string[];
+  routingHints: ChatSpecialistCandidateRoutingHints;
+  evidence: ChatSpecialistCandidateEvidenceRecord[];
+}
+
+export interface ChatSpecialistCandidateCreateInput {
+  leadTurnId?: string;
+  leadRunId?: string;
+  title: string;
+  role: string;
+  summary: string;
+  reason: string;
+  source: ChatSpecialistCandidateSource;
+  status?: ChatSpecialistCandidateStatus;
+  routingMode?: ChatSpecialistCandidateRoutingMode;
+  confidence: number;
+  requiresApproval?: boolean;
+  suggestedTools?: string[];
+  suggestedSkills?: string[];
+  routingHints: ChatSpecialistCandidateRoutingHints;
+  evidence: ChatSpecialistCandidateEvidenceRecord[];
+}
+
+export interface ChatSpecialistCandidatePatchInput {
+  title?: string;
+  summary?: string;
+  reason?: string;
+  status?: ChatSpecialistCandidateStatus;
+  routingMode?: ChatSpecialistCandidateRoutingMode;
+  confidence?: number;
+  suggestedTools?: string[];
+  suggestedSkills?: string[];
+  routingHints?: ChatSpecialistCandidateRoutingHints;
+  evidence?: ChatSpecialistCandidateEvidenceRecord[];
+}
+
 export interface ChatDelegateSuggestRequest {
   objective?: string;
   roles?: string[];
@@ -403,6 +777,10 @@ export interface ChatDelegateSuggestRequest {
 
 export interface ChatDelegateSuggestResponse {
   suggestion: ChatDelegationSuggestionRecord;
+}
+
+export function chatModeAllowsDynamicTeamGrowth(mode: ChatMode): boolean {
+  return getChatModePreset(mode).allowsDynamicTeamGrowth;
 }
 
 export interface ChatDelegateAcceptRequest {
@@ -439,6 +817,13 @@ export interface ChatSendMessageResponse {
   trace?: ChatTurnTraceRecord;
   citations?: ChatCitationRecord[];
   routing?: ChatTurnTraceRecord["routing"];
+}
+
+export interface ChatCancelTurnResponse {
+  sessionId: string;
+  turnId: string;
+  trace: ChatTurnTraceRecord;
+  cancelled: boolean;
 }
 
 export interface ChatThreadTurnBranchRecord {

@@ -60,6 +60,12 @@ function makeTrace(): ChatTurnTraceRecord {
       effectiveProviderId: "glm",
       effectiveModel: "glm-5",
     },
+    failure: {
+      failureClass: "tool_blocked",
+      message: "A required source blocked automated access.",
+      retryable: true,
+      recommendedAction: "retry_narrower",
+    },
   };
 }
 
@@ -77,5 +83,6 @@ describe("ChatTraceCard", () => {
     expect(text).toContain("URL: https://www.movieinsider.com/movies");
     expect(text).toContain("HTTP status: 403");
     expect(text).toContain("Browser failure: remote_blocked");
+    expect(text).toContain("Next step: Retry with a narrower request");
   });
 });
