@@ -61,6 +61,56 @@ describe("SkillImportService lookup", () => {
     });
   });
 
+  it("resolves curated ClawHub listing URLs into review-only lookup results", async () => {
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    const result = await service.lookupSources("https://clawhub.ai/aiwithabidi/chrome-devtools-mcp", 5);
+
+    expect(result.parsedSource).toMatchObject({
+      sourceProvider: "clawhub",
+      sourceKind: "marketplace_listing",
+      installability: "review_only",
+    });
+    expect(result.bestMatch).toMatchObject({
+      name: "Chrome Devtools Mcp",
+      sourceProvider: "clawhub",
+      installability: "review_only",
+      skillFamily: "browser_automation",
+    });
+  });
+
+  it("treats Animal House as a non-installable external reference", async () => {
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    const result = await service.lookupSources("https://animalhouse.ai/skills/animal-house", 5);
+
+    expect(result.parsedSource).toMatchObject({
+      sourceProvider: "external",
+      sourceKind: "reference",
+      installability: "not_installable",
+      repositoryUrl: "https://github.com/geeks-accelerator/animal-house-ai",
+    });
+    expect(result.bestMatch).toMatchObject({
+      name: "Animal House",
+      sourceProvider: "external",
+      installability: "not_installable",
+    });
+  });
+
+  it("resolves Animal House repositoryUrl as a curated non-installable match", async () => {
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    const result = await service.lookupSources("https://github.com/geeks-accelerator/animal-house-ai", 5);
+
+    expect(result.parsedSource).toMatchObject({
+      sourceProvider: "external",
+      sourceKind: "reference",
+      installability: "not_installable",
+    });
+    expect(result.bestMatch).toMatchObject({
+      name: "Animal House",
+      sourceProvider: "external",
+      installability: "not_installable",
+    });
+  });
+
   it("treats direct GitHub URLs as installable upstream sources", async () => {
     const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
     const result = await service.lookupSources("https://github.com/example/playwright-skill", 5);
@@ -74,6 +124,20 @@ describe("SkillImportService lookup", () => {
       sourceProvider: "github",
       installability: "direct",
       matchReason: "Direct source match",
+    });
+  });
+
+  it("ranks Chrome Devtools MCP first for a 'chrome' query", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      return new Response("<html><body></body></html>", { status: 200 });
+    }));
+
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    const result = await service.listSources("chrome", 5);
+
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.items[0]).toMatchObject({
+      name: "Chrome Devtools Mcp",
     });
   });
 
@@ -112,7 +176,7 @@ describe("SkillImportService lookup", () => {
     const result = await service.listSources("browser automation", 5);
 
     expect(result.items[0]).toMatchObject({
-      name: "Playwright Interactive",
+      name: "Chrome Devtools Mcp",
       matchReason: "Capability match",
     });
   });
@@ -129,6 +193,25 @@ describe("SkillImportService validation", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  it("rejects not_installable curated sources at import time", async () => {
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    await expect(
+      service.validateImport({
+        sourceRef: "https://animalhouse.ai/skills/animal-house",
+      }),
+    ).rejects.toThrow(/not installable/i);
+  });
+
+  it("rejects not_installable sources via repositoryUrl match", async () => {
+    const service = new SkillImportService(rootDir, createSystemSettingsRepo() as never);
+    await expect(
+      service.validateImport({
+        sourceRef: "https://github.com/geeks-accelerator/animal-house-ai",
+        sourceType: "git_url",
+      }),
+    ).rejects.toThrow(/not installable/i);
   });
 
   it("warns when the security scan skips oversized files", async () => {

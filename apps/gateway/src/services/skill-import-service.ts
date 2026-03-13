@@ -85,6 +85,39 @@ const FALLBACK_SOURCE_ITEMS: SkillSourceResultRecord[] = [
     installability: "review_only",
     installHint: "Search for the skill, then review the upstream repository before installing.",
   },
+  {
+    sourceProvider: "clawhub",
+    sourceUrl: "https://clawhub.ai/rot13maxi/shards",
+    name: "Shards",
+    description: "Agent skill by @rot13maxi on ClawHub.",
+    tags: ["clawhub", "skill", "shards", "coordination", "workflow"],
+    sourceKind: "marketplace_listing",
+    installability: "review_only",
+    installHint: "Review the ClawHub listing and resolve the upstream repository or packaged source before importing.",
+  },
+  {
+    sourceProvider: "clawhub",
+    sourceUrl: "https://clawhub.ai/aiwithabidi/chrome-devtools-mcp",
+    name: "Chrome Devtools Mcp",
+    description: "Chrome DevTools MCP - official browser automation and testing server for controlling Chrome via the MCP protocol.",
+    tags: ["clawhub", "browser", "devtools", "mcp", "playwright", "automation", "testing"],
+    sourceKind: "marketplace_listing",
+    installability: "review_only",
+    installHint: "Review the ClawHub listing and resolve the upstream repository or packaged source before importing.",
+    skillFamily: "browser_automation",
+  },
+  {
+    sourceProvider: "external",
+    sourceUrl: "https://animalhouse.ai/skills/animal-house",
+    repositoryUrl: "https://github.com/geeks-accelerator/animal-house-ai",
+    upstreamUrl: "https://animalhouse.ai/skills/animal-house",
+    name: "Animal House",
+    description: "Virtual creature game and REST API for AI agents. Join the house by following the hosted skill instructions rather than importing it as a normal GoatCitadel skill.",
+    tags: ["game", "virtual-pet", "api", "creatures", "pixel-art", "animalhouse", "rest"],
+    sourceKind: "reference",
+    installability: "not_installable",
+    installHint: "Read the hosted instructions and interact with the live service directly. This is an external experience, not a normal installable GoatCitadel skill pack.",
+  },
 ];
 
 const LOOKUP_FAMILY_TERMS: Array<{ family: string; tokens: string[] }> = [
@@ -95,6 +128,7 @@ const LOOKUP_FAMILY_TERMS: Array<{ family: string; tokens: string[] }> = [
   { family: "presentations", tokens: ["slides", "presentation", "deck", "ppt", "powerpoint"] },
   { family: "docs_authoring", tokens: ["docs", "documentation", "doc", "writing", "authoring"] },
   { family: "mcp_integrations", tokens: ["mcp", "integration", "server", "template", "connector"] },
+  { family: "games_and_experiments", tokens: ["game", "virtual", "pet", "creature", "pixel", "animalhouse", "tamagotchi"] },
 ];
 
 export class SkillImportService {
@@ -488,6 +522,12 @@ export class SkillImportService {
         "Marketplace listing URLs are reference-only. Use skill lookup to find the upstream repository or validated source before importing.",
       );
     }
+    const curatedEntry = findCuratedSourceByUrl(sourceRef);
+    if (curatedEntry?.installability === "not_installable") {
+      throw new Error(
+        `This source is not installable: ${curatedEntry.name}. ${curatedEntry.installHint ?? "Review the hosted instructions directly instead of importing."}`,
+      );
+    }
 
     if (sourceType === "local_path") {
       const sourceDir = path.resolve(sourceRef);
@@ -679,6 +719,18 @@ function defaultLookupProviders(): SkillSourceSearchRecord[] {
       available: true,
       status: "ok",
     },
+    {
+      provider: "clawhub",
+      providerLabel: "ClawHub",
+      available: true,
+      status: "ok",
+    },
+    {
+      provider: "external",
+      providerLabel: "External",
+      available: true,
+      status: "ok",
+    },
   ];
 }
 
@@ -744,6 +796,24 @@ async function resolveDirectSourceReference(query: string): Promise<{
   if (!trimmed) {
     return undefined;
   }
+  const curatedMatch = findCuratedSourceByUrl(trimmed);
+  if (curatedMatch) {
+    return {
+      parsedSource: {
+        sourceProvider: curatedMatch.sourceProvider,
+        sourceKind: curatedMatch.sourceKind ?? "reference",
+        sourceUrl: curatedMatch.sourceUrl,
+        upstreamUrl: curatedMatch.upstreamUrl,
+        repositoryUrl: curatedMatch.repositoryUrl,
+        installability: curatedMatch.installability ?? "review_only",
+      },
+      item: {
+        ...curatedMatch,
+        matchReason: curatedMatch.matchReason ?? "Direct source match",
+        matchedTerms: curatedMatch.matchedTerms ?? [trimmed],
+      },
+    };
+  }
   if (isGitHubUrl(trimmed)) {
     const provider: SkillSourceProvider = "github";
     return {
@@ -775,7 +845,7 @@ async function resolveDirectSourceReference(query: string): Promise<{
 
   if (isMarketplaceListingUrl(trimmed)) {
     const provider = inferSourceProvider(trimmed);
-    const providerLabel = provider === "agentskill" ? "AgentSkill" : "SkillsMP";
+    const providerLabel = getProviderLabel(provider);
     const upstreamUrl = await resolveMarketplaceUpstream(trimmed);
     return {
       parsedSource: {
@@ -881,6 +951,12 @@ function inferSourceProvider(sourceRef: string, explicit?: SkillSourceProvider):
   }
   if (lowered.includes("skillsmp.com")) {
     return "skillsmp";
+  }
+  if (lowered.includes("clawhub.ai")) {
+    return "clawhub";
+  }
+  if (lowered.includes("animalhouse.ai")) {
+    return "external";
   }
   if (lowered.includes("github.com") || lowered.startsWith("git@")) {
     return "github";
@@ -1010,7 +1086,15 @@ function scoreFreshness(updatedAt: string | undefined): number {
 }
 
 function scoreTrust(provider: SkillSourceProvider, repositoryUrl?: string): number {
-  let score = provider === "local" ? 0.95 : provider === "github" ? 0.75 : 0.65;
+  let score = provider === "local"
+    ? 0.95
+    : provider === "github"
+      ? 0.75
+      : provider === "clawhub"
+        ? 0.7
+        : provider === "external"
+          ? 0.6
+          : 0.65;
   if (repositoryUrl && /github\.com/i.test(repositoryUrl)) {
     score += 0.1;
   }
@@ -1127,7 +1211,33 @@ function isGitHubUrl(value: string): boolean {
 }
 
 function isMarketplaceListingUrl(value: string): boolean {
-  return /https?:\/\/(?:www\.)?(?:skillsmp\.com|agentskill\.sh)\//i.test(value);
+  return /https?:\/\/(?:www\.)?(?:skillsmp\.com|agentskill\.sh|clawhub\.ai)\//i.test(value);
+}
+
+function getProviderLabel(provider: SkillSourceProvider): string {
+  switch (provider) {
+    case "agentskill":
+      return "AgentSkill";
+    case "skillsmp":
+      return "SkillsMP";
+    case "clawhub":
+      return "ClawHub";
+    case "github":
+      return "GitHub";
+    case "external":
+      return "External";
+    case "local":
+    default:
+      return "Local";
+  }
+}
+
+function findCuratedSourceByUrl(value: string): SkillSourceResultRecord | undefined {
+  const normalized = normalizeLookupText(value);
+  return FALLBACK_SOURCE_ITEMS.find((item) =>
+    [item.sourceUrl, item.upstreamUrl, item.repositoryUrl]
+      .filter((candidate): candidate is string => Boolean(candidate))
+      .some((candidate) => normalizeLookupText(candidate) === normalized));
 }
 
 function looksLikeLocalSource(value: string): boolean {

@@ -15,6 +15,7 @@ export interface LoadedSkill {
   name: string;
   source: "bundled" | "managed" | "workspace" | "extra";
   dir: string;
+  tags?: string[];
   declaredTools: string[];
   requires: string[];
   keywords: string[];
@@ -138,7 +139,7 @@ export interface BankrActionAuditRecord {
   createdAt: string;
 }
 
-export type SkillSourceProvider = "agentskill" | "skillsmp" | "github" | "local";
+export type SkillSourceProvider = "agentskill" | "skillsmp" | "clawhub" | "github" | "local" | "external";
 
 export type SkillImportSourceType = "local_path" | "local_zip" | "git_url";
 export type SkillSourceKind = "marketplace_listing" | "upstream_repo" | "reference" | "local";

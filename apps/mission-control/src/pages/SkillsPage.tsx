@@ -4,6 +4,7 @@ import type {
   SkillListItem,
   SkillRuntimeState,
   SkillSourceLookupParsedSource,
+  SkillSourceProvider,
   SkillSourceSearchRecord,
 } from "@goatcitadel/contracts";
 import {
@@ -38,6 +39,83 @@ const STATE_OPTIONS: SkillRuntimeState[] = ["enabled", "sleep", "disabled"];
 export const BANKR_MIGRATION_CARD_TITLE = "Bankr is Optional";
 export const BANKR_MIGRATION_DOC_PATH = "docs/OPTIONAL_BANKR_SKILL.md";
 export const BANKR_MIGRATION_TEMPLATE_PATH = "templates/skills/bankr-optional/SKILL.md";
+// "external" is intentionally omitted: external sources are reference-only and not importable.
+const IMPORT_PROVIDER_OPTIONS: SkillSourceProvider[] = ["local", "github", "clawhub", "agentskill", "skillsmp"];
+
+const SKILL_CATEGORY_RULES: Array<{ label: string; tokens: string[] }> = [
+  { label: "Games & Experiments", tokens: ["animalhouse", "game", "virtual-pet", "creature", "pixel-art", "tamagotchi", "playful"] },
+  { label: "Browser & Automation", tokens: ["browser", "playwright", "devtools", "automation", "screenshot", "web", "e2e", "chrome"] },
+  { label: "Code & Engineering", tokens: ["code", "coding", "engineering", "implement", "refactor", "git", "fs.read", "fs.write", "shell.exec", "qa", "test"] },
+  { label: "Ops & Reliability", tokens: ["ops", "runtime", "sre", "incident", "monitoring", "safety", "observability"] },
+  { label: "Research & Knowledge", tokens: ["research", "investigate", "source", "citations", "knowledge", "notebook", "discovery"] },
+  { label: "Planning & Product", tokens: ["plan", "planning", "scope", "roadmap", "architecture", "product", "milestone"] },
+  { label: "Docs & Writing", tokens: ["docs", "documentation", "readme", "runbook", "writing", "guide", "changelog"] },
+  { label: "Communication & Productivity", tokens: ["assistant", "coordination", "productivity", "reminder", "follow-up", "organize", "summarize"] },
+  { label: "Integrations & MCP", tokens: ["mcp", "connector", "integration", "server", "tooling"] },
+];
+
+export function deriveSkillCategoryLabel(skill: Pick<SkillListItem, "skillId" | "name" | "tags" | "declaredTools" | "requires" | "keywords">): string {
+  const corpus = [
+    skill.skillId,
+    skill.name,
+    ...(skill.tags ?? []),
+    ...skill.declaredTools,
+    ...skill.requires,
+    ...skill.keywords,
+  ].join(" ").toLowerCase();
+  return deriveCategoryLabel(corpus);
+}
+
+export const SKILL_FAMILY_TO_CATEGORY: Record<string, string> = {
+  browser_automation: "Browser & Automation",
+  mcp_integrations: "Integrations & MCP",
+  docs_authoring: "Docs & Writing",
+  notebook_research: "Research & Knowledge",
+  games_and_experiments: "Games & Experiments",
+};
+
+export function deriveSourceCategoryLabel(item: Pick<SkillMergedSourceResult, "name" | "description" | "tags" | "skillFamily" | "sourceUrl" | "repositoryUrl" | "upstreamUrl">): string {
+  const familyCategory = item.skillFamily ? SKILL_FAMILY_TO_CATEGORY[item.skillFamily] : undefined;
+  if (familyCategory) {
+    return familyCategory;
+  }
+  const corpus = [
+    item.name,
+    item.description,
+    ...(item.tags ?? []),
+    item.sourceUrl,
+    item.repositoryUrl ?? "",
+    item.upstreamUrl ?? "",
+  ].join(" ").toLowerCase();
+  return deriveCategoryLabel(corpus);
+}
+
+// Rules are evaluated in priority order: first matching rule wins.
+// Place higher-priority categories earlier in SKILL_CATEGORY_RULES.
+function deriveCategoryLabel(corpus: string): string {
+  for (const rule of SKILL_CATEGORY_RULES) {
+    if (rule.tokens.some((token) => corpus.includes(token))) {
+      return rule.label;
+    }
+  }
+  return "General";
+}
+
+function groupByCategory<T>(items: T[], derive: (item: T) => string): Array<{ category: string; items: T[] }> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const category = derive(item);
+    const existing = grouped.get(category);
+    if (existing) {
+      existing.push(item);
+    } else {
+      grouped.set(category, [item]);
+    }
+  }
+  return [...grouped.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([category, categoryItems]) => ({ category, items: categoryItems }));
+}
 
 export function SkillsPage() {
   const { mode } = useUiPreferences();
@@ -62,7 +140,7 @@ export function SkillsPage() {
   } | null>(null);
   const [importSourceRef, setImportSourceRef] = useState("");
   const [importSourceType, setImportSourceType] = useState<"local_path" | "local_zip" | "git_url">("local_path");
-  const [importSourceProvider, setImportSourceProvider] = useState<"local" | "github" | "agentskill" | "skillsmp">("local");
+  const [importSourceProvider, setImportSourceProvider] = useState<SkillSourceProvider>("local");
   const [validationResult, setValidationResult] = useState<Awaited<ReturnType<typeof validateSkillImport>> | null>(null);
   const [importHistory, setImportHistory] = useState<Awaited<ReturnType<typeof fetchSkillImportHistory>>["items"]>([]);
   const [importBusy, setImportBusy] = useState<null | "validate" | "install">(null);
@@ -121,6 +199,14 @@ export function SkillsPage() {
   const filteredSkills = useMemo(
     () => skills.filter((skill) => stateFilter === "all" ? true : skill.state === stateFilter),
     [skills, stateFilter],
+  );
+  const groupedSkills = useMemo(
+    () => groupByCategory(filteredSkills, deriveSkillCategoryLabel),
+    [filteredSkills],
+  );
+  const groupedSourceItems = useMemo(
+    () => groupByCategory(sourceItems, deriveSourceCategoryLabel),
+    [sourceItems],
   );
 
   const onReload = useCallback(async () => {
@@ -386,35 +472,47 @@ export function SkillsPage() {
           {sourceItems.length === 0 ? (
             <p className="table-subtext">No source results loaded.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Source</th>
-                  <th>Why</th>
-                  <th>Install</th>
-                  <th>Description</th>
-                  <th>Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sourceItems.map((item) => (
-                  <tr key={item.canonicalKey}>
-                    <td>{item.name}</td>
-                    <td>
-                      {item.sourceProvider}
-                      {item.alternateProviders.length > 0 ? ` (+${item.alternateProviders.join(",")})` : ""}
-                      {item.sourceKind ? ` · ${item.sourceKind}` : ""}
-                      {item.alreadyInstalled ? " · installed" : ""}
-                    </td>
-                    <td>{item.matchReason ?? "ranked source result"}</td>
-                    <td>{item.installability ?? "review_only"}</td>
-                    <td>{item.description}</td>
-                    <td>{item.combinedScore.toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="stack-md">
+              {groupedSourceItems.map((section) => (
+                <div key={section.category} className="stack-sm">
+                  <p>
+                    <strong>{section.category}</strong> <span className="token-chip">{section.items.length}</span>
+                  </p>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Source</th>
+                        <th>Why</th>
+                        <th>Install</th>
+                        <th>Description</th>
+                        <th>Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {section.items.map((item) => (
+                        <tr key={item.canonicalKey}>
+                          <td>
+                            {item.name}
+                            <div className="table-subtext">{item.tags.slice(0, 4).join(", ") || "uncategorized"}</div>
+                          </td>
+                          <td>
+                            {item.sourceProvider}
+                            {item.alternateProviders.length > 0 ? ` (+${item.alternateProviders.join(",")})` : ""}
+                            {item.sourceKind ? ` · ${item.sourceKind}` : ""}
+                            {item.alreadyInstalled ? " · installed" : ""}
+                          </td>
+                          <td>{item.matchReason ?? "ranked source result"}</td>
+                          <td>{item.installability ?? "review_only"}</td>
+                          <td>{item.description}</td>
+                          <td>{item.combinedScore.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
           )}
         </details>
         <div className="controls-row">
@@ -439,13 +537,8 @@ export function SkillsPage() {
           <GCSelect
             id="importSourceProvider"
             value={importSourceProvider}
-            onChange={(value) => setImportSourceProvider(value as "local" | "github" | "agentskill" | "skillsmp")}
-            options={[
-              { value: "local", label: "local" },
-              { value: "github", label: "github" },
-              { value: "agentskill", label: "agentskill" },
-              { value: "skillsmp", label: "skillsmp" },
-            ]}
+            onChange={(value) => setImportSourceProvider(value as SkillSourceProvider)}
+            options={IMPORT_PROVIDER_OPTIONS.map((provider) => ({ value: provider, label: provider }))}
           />
         </div>
         <div className="controls-row">
@@ -541,6 +634,18 @@ export function SkillsPage() {
               note: "Cross-agent skills catalog. Review quality and provenance before import.",
             },
             {
+              label: "ClawHub",
+              trust: "Cross-agent directory",
+              href: "https://clawhub.ai/",
+              note: "Catalog of agent skills and shards. Treat listing pages as review-first sources, then resolve the upstream repo or package before import.",
+            },
+            {
+              label: "Animal House",
+              trust: "External experience",
+              href: "https://animalhouse.ai/skills/animal-house",
+              note: "Hosted game/integration for agents. Read the instructions and join the house directly instead of trying to import it as a normal skill pack.",
+            },
+            {
               label: "Terminal Skills",
               trust: "Cross-agent directory",
               href: "https://terminalskills.io/",
@@ -569,6 +674,8 @@ export function SkillsPage() {
         <ul>
           <li><strong>AgentSkill</strong>: curated marketplace and guided install surface.</li>
           <li><strong>SkillsMP</strong>: broader multi-agent catalog.</li>
+          <li><strong>ClawHub</strong>: optional external directory for skills and shards.</li>
+          <li><strong>Animal House</strong>: external game/integration with hosted instructions, not a standard importable skill.</li>
           <li><strong>GitHub</strong>: flexible fallback when curated catalogs do not have the skill you need.</li>
           <li><strong>local</strong>: local path or zip import for private/internal skills.</li>
         </ul>
@@ -659,68 +766,81 @@ export function SkillsPage() {
           )}
         />
 
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Source</th>
-              <th>Tools</th>
-              <th>Requires</th>
-              <th>
-                State
-                <HelpHint label="Skill state help" text="Enabled means the skill can activate automatically. Sleep means it only auto-activates when confidence is high enough. Disabled means it will not activate at all." />
-              </th>
-              <th>Note</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredSkills.map((skill) => {
-              const draftState = stateDraftBySkill[skill.skillId] ?? skill.state;
-              const draftNote = noteDraftBySkill[skill.skillId] ?? "";
-              const changed = draftState !== skill.state || draftNote !== (skill.note ?? "");
-              return (
-                <tr key={skill.skillId}>
-                  <td>
-                    {skill.name}
-                    <div className="table-subtext">{skill.skillId}</div>
-                  </td>
-                  <td>{skill.source}</td>
-                  <td>{skill.declaredTools.join(", ") || "-"}</td>
-                  <td>{skill.requires.join(", ") || "-"}</td>
-                  <td>
-                    <GCSelect
-                      value={draftState}
-                      onChange={(value) => setStateDraftBySkill((current) => ({
-                        ...current,
-                        [skill.skillId]: value as SkillRuntimeState,
-                      }))}
-                      options={STATE_OPTIONS.map((option) => ({ value: option, label: option }))}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      value={draftNote}
-                      placeholder="Optional reason"
-                      onChange={(event) => setNoteDraftBySkill((current) => ({
-                        ...current,
-                        [skill.skillId]: event.target.value,
-                      }))}
-                    />
-                  </td>
-                  <td>
-                    <button type="button"
-                      disabled={!changed || busySkillId === skill.skillId}
-                      onClick={() => void onSaveSkillState(skill)}
-                    >
-                      {busySkillId === skill.skillId ? "Saving..." : "Save"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="stack-md">
+          {groupedSkills.length === 0 ? (
+            <p className="table-subtext">No installed skills match the current filter.</p>
+          ) : null}
+          {groupedSkills.map((section) => (
+            <div key={section.category} className="stack-sm">
+              <p>
+                <strong>{section.category}</strong> <span className="token-chip">{section.items.length}</span>
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Tools</th>
+                    <th>Requires</th>
+                    <th>
+                      State
+                      <HelpHint label="Skill state help" text="Enabled means the skill can activate automatically. Sleep means it only auto-activates when confidence is high enough. Disabled means it will not activate at all." />
+                    </th>
+                    <th>Note</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {section.items.map((skill) => {
+                    const draftState = stateDraftBySkill[skill.skillId] ?? skill.state;
+                    const draftNote = noteDraftBySkill[skill.skillId] ?? "";
+                    const changed = draftState !== skill.state || draftNote !== (skill.note ?? "");
+                    return (
+                      <tr key={skill.skillId}>
+                        <td>
+                          {skill.name}
+                          <div className="table-subtext">{skill.skillId}</div>
+                          <div className="table-subtext">{(skill.tags ?? []).join(", ") || "no tags"}</div>
+                        </td>
+                        <td>{skill.source}</td>
+                        <td>{skill.declaredTools.join(", ") || "-"}</td>
+                        <td>{skill.requires.join(", ") || "-"}</td>
+                        <td>
+                          <GCSelect
+                            value={draftState}
+                            onChange={(value) => setStateDraftBySkill((current) => ({
+                              ...current,
+                              [skill.skillId]: value as SkillRuntimeState,
+                            }))}
+                            options={STATE_OPTIONS.map((option) => ({ value: option, label: option }))}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={draftNote}
+                            placeholder="Optional reason"
+                            onChange={(event) => setNoteDraftBySkill((current) => ({
+                              ...current,
+                              [skill.skillId]: event.target.value,
+                            }))}
+                          />
+                        </td>
+                        <td>
+                          <button type="button"
+                            disabled={!changed || busySkillId === skill.skillId}
+                            onClick={() => void onSaveSkillState(skill)}
+                          >
+                            {busySkillId === skill.skillId ? "Saving..." : "Save"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
       </Panel>
     </section>
   );

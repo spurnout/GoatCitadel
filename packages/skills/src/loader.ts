@@ -74,6 +74,7 @@ async function loadSkillFromDir(source: SkillSource, skillDir: string): Promise<
       name: parsed.frontmatter.name,
       source: source.source,
       dir: skillDir,
+      tags: parsed.frontmatter.metadata?.tags ?? [],
       declaredTools: parsed.frontmatter.metadata?.tools ?? [],
       requires: parsed.frontmatter.metadata?.requires ?? [],
       keywords: parsed.frontmatter.metadata?.keywords ?? [],

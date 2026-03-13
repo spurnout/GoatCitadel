@@ -72,7 +72,7 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   const importSourceTypeSchema = z.enum(["local_path", "local_zip", "git_url"]);
-  const sourceProviderSchema = z.enum(["agentskill", "skillsmp", "github", "local"]);
+  const sourceProviderSchema = z.enum(["agentskill", "skillsmp", "clawhub", "github", "local", "external"]);
 
   const validateImportSchema = z.object({
     sourceRef: z.string().min(1),

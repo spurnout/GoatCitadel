@@ -1,3 +1,5 @@
+import type { SkillSourceProvider } from "./skills.js";
+
 export type ChatProjectLifecycleStatus = "active" | "archived";
 export type ChatSessionScope = "mission" | "external";
 export type ChatSessionLifecycleStatus = "active" | "archived";
@@ -336,6 +338,7 @@ export interface ChatToolRunRecord {
   args?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
+  failureGuidance?: string;
 }
 
 export type ChatTurnLifecycleStatus =
@@ -457,7 +460,7 @@ export interface ChatCapabilityUpgradeSuggestion {
   title: string;
   summary: string;
   reason: string;
-  sourceProvider?: "agentskill" | "skillsmp" | "github" | "mcp_template";
+  sourceProvider?: SkillSourceProvider | "mcp_template";
   sourceRef?: string;
   riskLevel?: "low" | "medium" | "high";
   recommendedAction: "enable_skill" | "install_skill_disabled" | "add_mcp_template" | "switch_tool_profile";
@@ -525,6 +528,78 @@ export interface ChatOrchestrationSummary {
   steps: ChatOrchestrationStepSummary[];
 }
 
+export type ChatExecutionPlanStatus =
+  | "drafted"
+  | "ready"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type ChatExecutionPlanStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type ChatExecutionPlanSource =
+  | "planner"
+  | "workflow_template"
+  | "planner_with_template_fallback";
+
+export interface ChatExecutionPlanStepRecord {
+  stepId: string;
+  index: number;
+  objective: string;
+  successCriteria?: string;
+  suggestedTools?: string[];
+  expectedOutput?: string;
+  parallelizable: boolean;
+  dependsOnStepIds?: string[];
+  delegatedRole?: string;
+  status: ChatExecutionPlanStepStatus;
+  summary?: string;
+  error?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  childRunId?: string;
+  childSessionId?: string;
+  childTurnId?: string;
+}
+
+export interface ChatExecutionPlanRecord {
+  planId: string;
+  sessionId: string;
+  turnId: string;
+  mode: ChatMode;
+  planningMode: ChatPlanningMode;
+  status: ChatExecutionPlanStatus;
+  source: ChatExecutionPlanSource;
+  advisoryOnly: boolean;
+  objective: string;
+  summary: string;
+  steps: ChatExecutionPlanStepRecord[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface ChatConversationSummaryRecord {
+  summaryId: string;
+  sessionId: string;
+  branchHeadTurnId: string;
+  startTurnId: string;
+  endTurnId: string;
+  turnIds: string[];
+  sourceHash: string;
+  tokenEstimate: number;
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatTurnTraceRecord {
   turnId: string;
   sessionId: string;
@@ -584,6 +659,8 @@ export interface ChatTurnTraceRecord {
     workspaceFilesUsed: string[];
     truncated: boolean;
   };
+  executionPlanId?: string;
+  executionPlan?: ChatExecutionPlanRecord;
   capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
   specialistCandidateSuggestions?: ChatSpecialistCandidateSuggestionRecord[];
 }
@@ -602,6 +679,10 @@ export interface ChatDelegationStepRecord {
   summary?: string;
   output?: string;
   error?: string;
+  failureGuidance?: string;
+  childSessionId?: string;
+  childTurnId?: string;
+  citations?: ChatCitationRecord[];
 }
 
 export interface ChatDelegationRunRecord {
@@ -616,6 +697,7 @@ export interface ChatDelegationRunRecord {
   status: ChatDelegationRunStatus;
   visibility?: ChatOrchestrationVisibility;
   workflowTemplate?: string;
+  executionPlanId?: string;
   routeDecision?: ChatOrchestrationRouteDecision;
   finalSummary?: string;
   startedAt: string;
@@ -636,6 +718,7 @@ export interface ChatDelegateRequest {
 export interface ChatDelegateResponse {
   runId: string;
   taskId: string;
+  executionPlanId?: string;
   steps: ChatDelegationStepRecord[];
   stitchedOutput: string;
   citations: ChatCitationRecord[];
