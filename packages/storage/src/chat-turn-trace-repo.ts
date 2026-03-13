@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   ChatCapabilityUpgradeSuggestion,
   ChatCitationRecord,
+  ChatExecutionPlanRecord,
   ChatMode,
   ChatOrchestrationSummary,
   ChatSpecialistCandidateSuggestionRecord,
@@ -20,6 +21,7 @@ interface ChatTurnTraceRow {
   branch_kind: ChatTurnBranchKind;
   source_turn_id: string | null;
   assistant_message_id: string | null;
+  execution_plan_id: string | null;
   status: ChatTurnTraceRecord["status"];
   mode: ChatMode;
   model: string | null;
@@ -48,6 +50,7 @@ export interface ChatTurnTraceCreateInput {
   branchKind?: ChatTurnBranchKind;
   sourceTurnId?: string;
   assistantMessageId?: string;
+  executionPlanId?: string;
   status?: ChatTurnTraceRecord["status"];
   mode: ChatMode;
   model?: string;
@@ -74,6 +77,7 @@ export interface ChatTurnTracePatchInput {
   branchKind?: ChatTurnBranchKind;
   sourceTurnId?: string;
   assistantMessageId?: string;
+  executionPlanId?: string;
   status?: ChatTurnTraceRecord["status"];
   model?: string;
   effectiveToolAutonomy?: ChatTurnTraceRecord["effectiveToolAutonomy"];
@@ -101,13 +105,13 @@ export class ChatTurnTraceRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO chat_turn_traces (
         turn_id, session_id, user_message_id, parent_turn_id, branch_kind, source_turn_id,
-        assistant_message_id, status, mode, model, web_mode, memory_mode, thinking_level,
+        assistant_message_id, execution_plan_id, status, mode, model, web_mode, memory_mode, thinking_level,
         routing_json, retrieval_json, reflection_json, proactive_json, orchestration_json, guidance_json, citations_json,
         failure_json,
         capability_upgrade_suggestions_json, specialist_candidate_suggestions_json, started_at, finished_at
       ) VALUES (
         @turnId, @sessionId, @userMessageId, @parentTurnId, @branchKind, @sourceTurnId,
-        @assistantMessageId, @status, @mode, @model, @webMode, @memoryMode, @thinkingLevel,
+        @assistantMessageId, @executionPlanId, @status, @mode, @model, @webMode, @memoryMode, @thinkingLevel,
         @routingJson, @retrievalJson, @reflectionJson, @proactiveJson, @orchestrationJson, @guidanceJson, @citationsJson,
         @failureJson,
         @capabilityUpgradeSuggestionsJson, @specialistCandidateSuggestionsJson, @startedAt, @finishedAt
@@ -120,6 +124,7 @@ export class ChatTurnTraceRepository {
         branch_kind = @branchKind,
         source_turn_id = @sourceTurnId,
         assistant_message_id = @assistantMessageId,
+        execution_plan_id = @executionPlanId,
         status = @status,
         model = @model,
         routing_json = @routingJson,
@@ -160,6 +165,7 @@ export class ChatTurnTraceRepository {
       branchKind: input.branchKind ?? "append",
       sourceTurnId: input.sourceTurnId ?? null,
       assistantMessageId: input.assistantMessageId ?? null,
+      executionPlanId: input.executionPlanId ?? null,
       status: input.status ?? "running",
       mode: input.mode,
       model: input.model ?? null,
@@ -197,6 +203,9 @@ export class ChatTurnTraceRepository {
       assistantMessageId: input.assistantMessageId !== undefined
         ? input.assistantMessageId
         : (current.assistantMessageId ?? null),
+      executionPlanId: input.executionPlanId !== undefined
+        ? input.executionPlanId
+        : (current.executionPlanId ?? null),
       status: input.status ?? current.status,
       model: input.model !== undefined ? input.model : (current.model ?? null),
       routingJson: serializeRoutingJson(
@@ -240,6 +249,7 @@ function mapRow(row: ChatTurnTraceRow): ChatTurnTraceRecord {
     branchKind: row.branch_kind,
     sourceTurnId: row.source_turn_id ?? undefined,
     assistantMessageId: row.assistant_message_id ?? undefined,
+    executionPlanId: row.execution_plan_id ?? undefined,
     status: row.status,
     mode: row.mode,
     model: row.model ?? undefined,
@@ -308,6 +318,7 @@ export function attachTurnTraceDetails(
   details: {
     toolRuns?: ChatTurnTraceRecord["toolRuns"];
     citations?: ChatCitationRecord[];
+    executionPlan?: ChatExecutionPlanRecord;
     capabilityUpgradeSuggestions?: ChatCapabilityUpgradeSuggestion[];
   },
 ): ChatTurnTraceRecord {
@@ -315,6 +326,7 @@ export function attachTurnTraceDetails(
     ...trace,
     toolRuns: details.toolRuns ?? trace.toolRuns,
     citations: details.citations ?? trace.citations,
+    executionPlan: details.executionPlan ?? trace.executionPlan,
     capabilityUpgradeSuggestions: details.capabilityUpgradeSuggestions ?? trace.capabilityUpgradeSuggestions,
   };
 }

@@ -107,6 +107,7 @@ export interface McpInvokeRequest {
   agentId?: string;
   sessionId?: string;
   taskId?: string;
+  signal?: AbortSignal;
 }
 
 export interface McpInvokeResponse {

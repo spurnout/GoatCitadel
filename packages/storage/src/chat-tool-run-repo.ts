@@ -11,6 +11,7 @@ interface ChatToolRunRow {
   args_json: string | null;
   result_json: string | null;
   error: string | null;
+  failure_guidance: string | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -25,6 +26,7 @@ export interface ChatToolRunCreateInput {
   args?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
+  failureGuidance?: string;
   startedAt?: string;
   finishedAt?: string;
 }
@@ -34,6 +36,7 @@ export interface ChatToolRunPatchInput {
   approvalId?: string;
   result?: Record<string, unknown>;
   error?: string;
+  failureGuidance?: string;
   finishedAt?: string;
 }
 
@@ -50,10 +53,10 @@ export class ChatToolRunRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO chat_tool_runs (
         tool_run_id, turn_id, session_id, tool_name, status, approval_id, args_json,
-        result_json, error, started_at, finished_at
+        result_json, error, failure_guidance, started_at, finished_at
       ) VALUES (
         @toolRunId, @turnId, @sessionId, @toolName, @status, @approvalId, @argsJson,
-        @resultJson, @error, @startedAt, @finishedAt
+        @resultJson, @error, @failureGuidance, @startedAt, @finishedAt
       )
     `);
     this.patchStmt = db.prepare(`
@@ -63,6 +66,7 @@ export class ChatToolRunRepository {
         approval_id = @approvalId,
         result_json = @resultJson,
         error = @error,
+        failure_guidance = @failureGuidance,
         finished_at = @finishedAt
       WHERE tool_run_id = @toolRunId
     `);
@@ -98,6 +102,7 @@ export class ChatToolRunRepository {
       argsJson: input.args ? JSON.stringify(input.args) : null,
       resultJson: input.result ? JSON.stringify(input.result) : null,
       error: input.error ?? null,
+      failureGuidance: input.failureGuidance ?? null,
       startedAt: input.startedAt ?? new Date().toISOString(),
       finishedAt: input.finishedAt ?? null,
     });
@@ -112,6 +117,7 @@ export class ChatToolRunRepository {
       approvalId: input.approvalId !== undefined ? input.approvalId : (current.approvalId ?? null),
       resultJson: input.result !== undefined ? JSON.stringify(input.result) : (current.result ? JSON.stringify(current.result) : null),
       error: input.error !== undefined ? input.error : (current.error ?? null),
+      failureGuidance: input.failureGuidance !== undefined ? input.failureGuidance : (current.failureGuidance ?? null),
       finishedAt: input.finishedAt !== undefined ? input.finishedAt : (current.finishedAt ?? null),
     });
     return this.get(toolRunId);
@@ -191,6 +197,7 @@ function mapRow(row: ChatToolRunRow): ChatToolRunRecord {
     args: row.args_json ? safeJsonParse<Record<string, unknown>>(row.args_json, {}) : undefined,
     result: row.result_json ? safeJsonParse<Record<string, unknown>>(row.result_json, {}) : undefined,
     error: row.error ?? undefined,
+    failureGuidance: row.failure_guidance ?? undefined,
     startedAt: row.started_at,
     finishedAt: row.finished_at ?? undefined,
   };

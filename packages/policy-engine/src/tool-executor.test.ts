@@ -1,4 +1,6 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolInvokeRequest, ToolPolicyConfig } from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
 
@@ -9,7 +11,7 @@ const mocked = vi.hoisted(() => ({
       toolName: string,
       args: Record<string, unknown>,
       config: ToolPolicyConfig,
-      executionContext?: { sessionId?: string },
+      executionContext?: { sessionId?: string; signal?: AbortSignal },
     ) => Promise<Record<string, unknown>>
   >(),
 }));
@@ -42,10 +44,16 @@ const policyConfig: ToolPolicyConfig = {
   },
 };
 
+const testWorkspaceRoot = path.resolve(policyConfig.sandbox.writeJailRoots[0] ?? "./workspace", "tool-executor-test");
+
 describe("executeTool", () => {
   beforeEach(() => {
     mocked.isBrowserToolName.mockReset();
     mocked.executeBrowserTool.mockReset();
+  });
+
+  afterEach(async () => {
+    await fs.rm(testWorkspaceRoot, { recursive: true, force: true });
   });
 
   it("dispatches browser tools to browser executor", async () => {
@@ -60,6 +68,7 @@ describe("executeTool", () => {
       args: { url: "https://example.com" },
       agentId: "researcher",
       sessionId: "sess-1",
+      signal: new AbortController().signal,
     };
 
     const result = await executeTool(request, policyConfig, storageStub);
@@ -68,12 +77,12 @@ describe("executeTool", () => {
       "browser.navigate",
       request.args,
       policyConfig,
-      { sessionId: "sess-1" },
+      { sessionId: "sess-1", signal: request.signal },
     );
     expect(result).toMatchObject({ action: "navigate", title: "Example" });
   });
 
-  it("returns simulated output for unknown non-browser tools", async () => {
+  it("rejects unknown non-browser tools instead of simulating success", async () => {
     mocked.isBrowserToolName.mockReturnValue(false);
 
     const request: ToolInvokeRequest = {
@@ -83,12 +92,9 @@ describe("executeTool", () => {
       sessionId: "sess-2",
     };
 
-    const result = await executeTool(request, policyConfig, storageStub);
-
-    expect(result).toEqual({
-      simulated: true,
-      toolName: "custom.unknown",
-    });
+    await expect(executeTool(request, policyConfig, storageStub)).rejects.toThrow(
+      "Unsupported tool executor: custom.unknown",
+    );
   });
 
   it("executes shell commands via execFile parsing", async () => {
@@ -107,6 +113,93 @@ describe("executeTool", () => {
       exitCode: 0,
     });
     expect(String(result.stdout ?? "")).toContain("ok");
+  });
+
+  it("reads a targeted file range", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const filePath = path.join(testWorkspaceRoot, "sample.ts");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, ["alpha", "beta", "gamma", "delta"].join("\n"), "utf8");
+
+    const request: ToolInvokeRequest = {
+      toolName: "file.read_range",
+      args: { path: filePath, startLine: 2, endLine: 3 },
+      agentId: "agent",
+      sessionId: "sess-range",
+    };
+
+    const result = await executeTool(request, policyConfig, storageStub);
+    expect(result).toMatchObject({
+      path: filePath,
+      startLine: 2,
+      endLine: 3,
+      lineCount: 2,
+      content: "beta\ngamma",
+    });
+  });
+
+  it("searches code content with code.search", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const filePath = path.join(testWorkspaceRoot, "src", "service.ts");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, "export const failureGuidance = 'retry';\n", "utf8");
+
+    const request: ToolInvokeRequest = {
+      toolName: "code.search",
+      args: { path: testWorkspaceRoot, query: "failureGuidance" },
+      agentId: "agent",
+      sessionId: "sess-search",
+    };
+
+    const result = await executeTool(request, policyConfig, storageStub);
+    expect(result).toMatchObject({
+      path: testWorkspaceRoot,
+      pattern: "failureGuidance",
+      count: 1,
+    });
+    expect(Array.isArray(result.matches)).toBe(true);
+    expect((result.matches as Array<Record<string, unknown>>)[0]?.path).toBe(filePath);
+  });
+
+  it("searches file names with code.search_files", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const filePath = path.join(testWorkspaceRoot, "src", "chat-agent-orchestrator.test.ts");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, "test('ok')\n", "utf8");
+
+    const request: ToolInvokeRequest = {
+      toolName: "code.search_files",
+      args: { path: testWorkspaceRoot, query: "orchestrator" },
+      agentId: "agent",
+      sessionId: "sess-files",
+    };
+
+    const result = await executeTool(request, policyConfig, storageStub);
+    expect(result).toMatchObject({
+      path: testWorkspaceRoot,
+      query: "orchestrator",
+      count: 1,
+    });
+    expect((result.matches as Array<Record<string, unknown>>)[0]?.path).toBe(filePath);
+  });
+
+  it("starts background shell commands without blocking", async () => {
+    mocked.isBrowserToolName.mockReturnValue(false);
+    const request: ToolInvokeRequest = {
+      toolName: "shell.exec_background",
+      args: { command: 'node -e "setTimeout(() => process.exit(0), 50)"' },
+      agentId: "agent",
+      sessionId: "sess-bg",
+    };
+
+    const result = await executeTool(request, policyConfig, storageStub);
+    expect(result).toMatchObject({
+      command: request.args.command,
+      executable: "node",
+      detached: true,
+      started: true,
+    });
+    expect(typeof result.pid).toBe("number");
   });
 
   it("rejects malformed shell command parsing", async () => {

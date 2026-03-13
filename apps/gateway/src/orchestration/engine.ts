@@ -82,6 +82,15 @@ async function executeStep(input: {
   callbacks: OrchestrationExecutionCallbacks;
 }): Promise<OrchestrationStepExecutionResult> {
   const startedAt = new Date().toISOString();
+  if (input.step.delegatedRole && input.callbacks.executeDelegatedStep) {
+    return input.callbacks.executeDelegatedStep({
+      task: input.task,
+      plan: input.plan,
+      stepIndex: input.stepIndex,
+      priorSteps: input.priorSteps,
+      step: input.step,
+    });
+  }
   try {
     const response = await input.callbacks.createChatCompletion({
       providerId: input.step.providerId,
@@ -95,11 +104,11 @@ async function executeStep(input: {
       messages: buildStepMessages({
         task: input.task,
         plan: input.plan,
-        stepIndex: input.stepIndex,
-        priorSteps: input.priorSteps,
-        stepRole: input.step.role,
-        specialistCandidate: input.step.specialistCandidate,
-      }),
+      stepIndex: input.stepIndex,
+      priorSteps: input.priorSteps,
+      step: input.step,
+      specialistCandidate: input.step.specialistCandidate,
+    }),
     });
     const finishedAt = new Date().toISOString();
     const output = extractCompletionText(response).trim() || "(no output returned)";
@@ -148,7 +157,7 @@ function buildStepMessages(input: {
   plan: OrchestrationPlan;
   stepIndex: number;
   priorSteps: OrchestrationStepExecutionResult[];
-  stepRole: OrchestrationRole;
+  step: OrchestrationPlan["steps"][number];
   specialistCandidate?: OrchestrationPlan["steps"][number]["specialistCandidate"];
 }): ChatCompletionRequest["messages"] {
   const conversationContext = input.task.conversation
@@ -161,7 +170,7 @@ function buildStepMessages(input: {
       step.summary ?? step.output ?? step.error ?? "No summary available.",
     ].join(": "))
     .join("\n");
-  const roleInstruction = buildRoleInstruction(input.task.mode, input.stepRole, input.plan.workflowTemplate);
+  const roleInstruction = buildRoleInstruction(input.task.mode, input.step.role, input.plan.workflowTemplate);
   const specialistOverlay = input.specialistCandidate
     ? [
       `Specialist overlay: route this step through "${input.specialistCandidate.title}" (${input.specialistCandidate.role}).`,
@@ -172,10 +181,20 @@ function buildStepMessages(input: {
   const userPrompt = [
     `Objective: ${input.task.objective}`,
     `Mode: ${input.task.mode}`,
+    `Plan summary: ${input.plan.summary}`,
+    `Current step objective: ${input.step.objective}`,
+    input.step.successCriteria ? `Success criteria: ${input.step.successCriteria}` : undefined,
+    input.step.expectedOutput ? `Expected output: ${input.step.expectedOutput}` : undefined,
+    input.step.suggestedTools && input.step.suggestedTools.length > 0
+      ? `Suggested tools: ${input.step.suggestedTools.join(", ")}`
+      : undefined,
+    input.step.dependsOnStepIds && input.step.dependsOnStepIds.length > 0
+      ? `Depends on steps: ${input.step.dependsOnStepIds.join(", ")}`
+      : undefined,
     conversationContext ? `Conversation context:\n${conversationContext}` : undefined,
     priorSummaries ? `Prior handoffs:\n${priorSummaries}` : undefined,
     specialistOverlay,
-    buildParallelHint(input.stepRole, input.stepIndex, input.plan),
+    buildParallelHint(input.step.role, input.stepIndex, input.plan),
     "Return concise, high-signal output suitable for handoff to the next role.",
   ].filter(Boolean).join("\n\n");
   return [

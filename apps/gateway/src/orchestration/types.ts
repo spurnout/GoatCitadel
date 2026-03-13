@@ -57,8 +57,16 @@ export interface ProviderCapabilityRecord {
 
 export interface OrchestrationStepPlan {
   stepId: string;
+  index: number;
   role: OrchestrationRole;
   stage: number;
+  objective: string;
+  successCriteria?: string;
+  suggestedTools?: string[];
+  expectedOutput?: string;
+  parallelizable: boolean;
+  dependsOnStepIds?: string[];
+  delegatedRole?: string;
   providerId?: string;
   model?: string;
   specialistCandidate?: ChatOrchestrationSpecialistSelection;
@@ -79,6 +87,9 @@ export interface ModeOrchestrationPolicy {
 export interface OrchestrationPlan {
   workflowTemplate: string;
   routeDecision: ChatOrchestrationRouteDecision;
+  summary: string;
+  source: "planner" | "workflow_template" | "planner_with_template_fallback";
+  advisoryOnly?: boolean;
   steps: OrchestrationStepPlan[];
 }
 
@@ -98,6 +109,10 @@ export interface OrchestrationStepExecutionResult {
   output?: string;
   summary?: string;
   error?: string;
+  failureGuidance?: string;
+  childRunId?: string;
+  childSessionId?: string;
+  childTurnId?: string;
   citations: ChatCitationRecord[];
   routing?: ChatTurnTraceRecord["routing"];
 }
@@ -112,6 +127,13 @@ export interface OrchestrationExecutionResult {
 
 export interface OrchestrationExecutionCallbacks {
   createChatCompletion: (request: ChatCompletionRequest) => Promise<ChatCompletionResponse>;
+  executeDelegatedStep?: (input: {
+    task: OrchestrationTaskInput;
+    plan: OrchestrationPlan;
+    stepIndex: number;
+    priorSteps: OrchestrationStepExecutionResult[];
+    step: OrchestrationPlan["steps"][number];
+  }) => Promise<OrchestrationStepExecutionResult>;
   onStepResult?: (step: OrchestrationStepExecutionResult, currentSteps: OrchestrationStepExecutionResult[]) => Promise<void> | void;
 }
 

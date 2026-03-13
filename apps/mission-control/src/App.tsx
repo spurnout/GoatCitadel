@@ -52,6 +52,7 @@ const FilesPage = lazyPage(() => import("./pages/FilesPage"), "FilesPage");
 const MemoryPage = lazyPage(() => import("./pages/MemoryPage"), "MemoryPage");
 const AgentsPage = lazyPage(() => import("./pages/AgentsPage"), "AgentsPage");
 const OfficePage = lazyPage(() => import("./pages/OfficePage"), "OfficePage");
+const OfficeLabPage = lazyPage(() => import("./pages/OfficeLabPage"), "OfficeLabPage");
 const ActivityPage = lazyPage(() => import("./pages/ActivityPage"), "ActivityPage");
 const CronPage = lazyPage(() => import("./pages/CronPage"), "CronPage");
 const SessionsPage = lazyPage(() => import("./pages/SessionsPage"), "SessionsPage");
@@ -90,6 +91,7 @@ type Tab =
   | "memory"
   | "agents"
   | "office"
+  | "officeLab"
   | "activity"
   | "cron"
   | "sessions"
@@ -117,6 +119,7 @@ const allTabs: Tab[] = [
   "memory",
   "agents",
   "office",
+  "officeLab",
   "activity",
   "cron",
   "sessions",
@@ -656,6 +659,9 @@ export function App() {
     }
     if (tab === "office") {
       return <OfficePage />;
+    }
+    if (tab === "officeLab") {
+      return <OfficeLabPage />;
     }
     if (tab === "activity") {
       return <ActivityPage />;

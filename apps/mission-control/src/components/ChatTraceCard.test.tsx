@@ -28,6 +28,7 @@ function makeTrace(): ChatTurnTraceRecord {
         startedAt: "2026-03-08T00:00:01.000Z",
         finishedAt: "2026-03-08T00:00:02.000Z",
         error: "remote site blocked automation (Cloudflare 403)",
+        failureGuidance: "Try the next viable source instead of retrying the blocked host.",
         result: {
           url: "https://www.movieinsider.com/movies",
           finalUrl: "https://www.movieinsider.com/movies",
@@ -66,6 +67,39 @@ function makeTrace(): ChatTurnTraceRecord {
       retryable: true,
       recommendedAction: "retry_narrower",
     },
+    executionPlan: {
+      planId: "plan-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      mode: "chat",
+      planningMode: "advisory",
+      status: "ready",
+      source: "planner",
+      advisoryOnly: true,
+      objective: "Find alternative current-release sources.",
+      summary: "Check the top likely sources, skip blocked hosts, and summarize the confirmed release window.",
+      steps: [
+        {
+          stepId: "step-1",
+          index: 0,
+          objective: "Search likely movie release sources.",
+          status: "completed",
+          parallelizable: false,
+          summary: "Search completed with several viable sources.",
+          suggestedTools: ["browser.search"],
+        },
+        {
+          stepId: "step-2",
+          index: 1,
+          objective: "Open the best unblocked source and confirm release details.",
+          status: "pending",
+          parallelizable: false,
+          suggestedTools: ["browser.navigate", "browser.extract"],
+        },
+      ],
+      createdAt: "2026-03-08T00:00:00.000Z",
+      updatedAt: "2026-03-08T00:00:02.000Z",
+    },
   };
 }
 
@@ -84,5 +118,9 @@ describe("ChatTraceCard", () => {
     expect(text).toContain("HTTP status: 403");
     expect(text).toContain("Browser failure: remote_blocked");
     expect(text).toContain("Next step: Retry with a narrower request");
+    expect(text).toContain("Try the next viable source instead of retrying the blocked host.");
+    expect(text).toContain("Check the top likely sources, skip blocked hosts, and summarize the confirmed release window.");
+    expect(text).toContain("Open the best unblocked source and confirm release details.");
+    expect(text).toContain("Status: pending");
   });
 });

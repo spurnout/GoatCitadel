@@ -13,6 +13,23 @@ describe("tool registry", () => {
     expect(catalog.some((tool) => tool.toolName === "browser.context.configure")).toBe(true);
   });
 
+  it("includes specialized file/code/background-shell tools", () => {
+    const catalog = createDefaultToolRegistry().toCatalog();
+    expect(catalog.some((tool) => tool.toolName === "file.read_range")).toBe(true);
+    expect(catalog.some((tool) => tool.toolName === "file.find")).toBe(true);
+    expect(catalog.some((tool) => tool.toolName === "code.search")).toBe(true);
+    expect(catalog.some((tool) => tool.toolName === "code.search_files")).toBe(true);
+    expect(catalog.some((tool) => tool.toolName === "shell.exec_background")).toBe(true);
+  });
+
+  it("passes ranking metadata through the public catalog", () => {
+    const catalog = createDefaultToolRegistry().toCatalog();
+    const tool = catalog.find((item) => item.toolName === "code.search");
+    expect(tool?.recommendedContexts).toContain("code");
+    expect(tool?.preferredForIntents).toContain("search_code");
+    expect(tool?.usageHints?.length).toBeGreaterThan(0);
+  });
+
   it("excludes bankr tools by default", () => {
     const catalog = createDefaultToolRegistry().toCatalog();
     expect(catalog.some((tool) => tool.toolName.startsWith("bankr."))).toBe(false);

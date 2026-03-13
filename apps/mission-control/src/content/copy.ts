@@ -83,6 +83,7 @@ export const appCopy = {
     { id: "memory", label: "Memory Pasture (Agent Memory)", code: "MEM" },
     { id: "agents", label: "Goat Crew (Agents)", code: "HERD" },
     { id: "office", label: "Herd HQ (Office)", code: "HQ" },
+    { id: "officeLab", label: "Citadel Lab (Pixel Office)", code: "OFL" },
     { id: "activity", label: "Pulse (Activity)", code: "ACT" },
     { id: "cron", label: "Bell Tower (Scheduler)", code: "CRN" },
     { id: "sessions", label: "Runs (Sessions)", code: "SES" },
@@ -103,7 +104,7 @@ export const appCopy = {
   ] satisfies NavItemCopy[],
   navSections: [
     { label: "Setup", items: ["onboarding", "settings", "workspaces", "integrations", "tools", "addons"] },
-    { label: "Operate", items: ["dashboard", "chat", "promptLab", "improvement", "tasks", "agents", "office", "approvals", "sessions"] },
+    { label: "Operate", items: ["dashboard", "chat", "promptLab", "improvement", "tasks", "agents", "office", "officeLab", "approvals", "sessions"] },
     { label: "Observe", items: ["activity", "system", "memory", "files", "costs", "mesh", "npu", "cron"] },
     { label: "Admin", items: ["skills", "mcp"] },
   ] satisfies NavSectionCopy[],
@@ -116,6 +117,7 @@ export const appCopy = {
     memory: "Use this when replies feel off-context or forgetful.",
     agents: "Tune your crew roles so each agent has a clear job.",
     office: "Pick an agent station to see what it is doing right now.",
+    officeLab: "Use the 2D citadel office to watch deck load, approvals, and live crew activity.",
     activity: "Keep this open while you test actions in other tabs.",
     cron: "Review scheduled jobs and confirm recent runs look healthy.",
     sessions: "Choose a run and inspect timeline, usage, and outcomes.",
@@ -250,6 +252,23 @@ export const pageCopy: Record<PageId, PageCopy> = {
         "Select an agent station to inspect details.",
         "Review thought/action overlays.",
         "Track active and idle roles at a glance.",
+      ],
+    },
+  },
+  officeLab: {
+    title: "Citadel Lab",
+    subtitle: "A separate 2D pixel-style office view mapped onto GoatCitadel decks and live agent activity.",
+    guide: {
+      what: "Office Lab is the non-3D office surface: deck-based, pixel-inspired, and fed by the same live GoatCitadel runtime data.",
+      when: "Use this when you want a clearer 2D operations floor instead of the immersive 3D office.",
+      actions: [
+        "Scan which deck is carrying live load or waiting on approvals.",
+        "Pick an operator tile to inspect what that role is doing right now.",
+        "Use the live rail to see event traffic without opening the full activity stream.",
+      ],
+      terms: [
+        { term: "Deck", meaning: "A named citadel area like Command Deck or Build Bay that groups related agent roles." },
+        { term: "Live rail", meaning: "The recent event feed driving the office floor state and urgency indicators." },
       ],
     },
   },

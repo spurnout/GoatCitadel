@@ -21,6 +21,7 @@ interface ChatDelegationRunRow {
   status: ChatDelegationRunStatus;
   visibility: ChatOrchestrationVisibility | null;
   workflow_template: string | null;
+  execution_plan_id: string | null;
   route_decision_json: string | null;
   final_summary: string | null;
   stitched_output: string | null;
@@ -41,11 +42,11 @@ export class ChatDelegationRunRepository {
     this.insertStmt = db.prepare(`
       INSERT INTO chat_delegation_runs (
         run_id, session_id, task_id, objective, roles_json, mode, provider_id, model, status, visibility,
-        workflow_template, route_decision_json, final_summary,
+        workflow_template, execution_plan_id, route_decision_json, final_summary,
         stitched_output, citations_json, trace_json, started_at, finished_at
       ) VALUES (
         @runId, @sessionId, @taskId, @objective, @rolesJson, @mode, @providerId, @model, @status, @visibility,
-        @workflowTemplate, @routeDecisionJson, @finalSummary,
+        @workflowTemplate, @executionPlanId, @routeDecisionJson, @finalSummary,
         @stitchedOutput, @citationsJson, @traceJson, @startedAt, @finishedAt
       )
     `);
@@ -55,6 +56,7 @@ export class ChatDelegationRunRepository {
         status = @status,
         visibility = @visibility,
         workflow_template = @workflowTemplate,
+        execution_plan_id = @executionPlanId,
         route_decision_json = @routeDecisionJson,
         final_summary = @finalSummary,
         stitched_output = @stitchedOutput,
@@ -91,6 +93,7 @@ export class ChatDelegationRunRepository {
     status?: ChatDelegationRunStatus;
     visibility?: ChatOrchestrationVisibility;
     workflowTemplate?: string;
+    executionPlanId?: string;
     routeDecision?: ChatOrchestrationRouteDecision;
     finalSummary?: string;
     stitchedOutput?: string;
@@ -111,6 +114,7 @@ export class ChatDelegationRunRepository {
       status: input.status ?? "running",
       visibility: input.visibility ?? null,
       workflowTemplate: input.workflowTemplate ?? null,
+      executionPlanId: input.executionPlanId ?? null,
       routeDecisionJson: input.routeDecision ? JSON.stringify(input.routeDecision) : null,
       finalSummary: input.finalSummary ?? null,
       stitchedOutput: input.stitchedOutput ?? null,
@@ -126,6 +130,7 @@ export class ChatDelegationRunRepository {
     status?: ChatDelegationRunStatus;
     visibility?: ChatOrchestrationVisibility;
     workflowTemplate?: string;
+    executionPlanId?: string;
     routeDecision?: ChatOrchestrationRouteDecision;
     finalSummary?: string;
     stitchedOutput?: string;
@@ -139,6 +144,7 @@ export class ChatDelegationRunRepository {
       status: input.status ?? current.status,
       visibility: input.visibility !== undefined ? input.visibility : (current.visibility ?? null),
       workflowTemplate: input.workflowTemplate !== undefined ? input.workflowTemplate : (current.workflowTemplate ?? null),
+      executionPlanId: input.executionPlanId !== undefined ? input.executionPlanId : (current.executionPlanId ?? null),
       routeDecisionJson: JSON.stringify(input.routeDecision ?? current.routeDecision ?? null),
       finalSummary: input.finalSummary !== undefined ? input.finalSummary : (current.finalSummary ?? null),
       stitchedOutput: input.stitchedOutput !== undefined ? input.stitchedOutput : (current.stitchedOutput ?? null),
@@ -171,6 +177,7 @@ function mapRow(row: ChatDelegationRunRow): ChatDelegationRunRecord {
     status: row.status,
     visibility: row.visibility ?? undefined,
     workflowTemplate: row.workflow_template ?? undefined,
+    executionPlanId: row.execution_plan_id ?? undefined,
     routeDecision: row.route_decision_json
       ? safeJsonParse<ChatOrchestrationRouteDecision | undefined>(row.route_decision_json, undefined)
       : undefined,

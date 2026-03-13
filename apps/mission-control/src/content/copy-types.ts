@@ -7,6 +7,7 @@ export type TabId =
   | "memory"
   | "agents"
   | "office"
+  | "officeLab"
   | "activity"
   | "cron"
   | "sessions"

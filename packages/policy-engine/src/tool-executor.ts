@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ToolInvokeRequest, ToolPolicyConfig } from "@goatcitadel/contracts";
 import type { Storage } from "@goatcitadel/storage";
@@ -33,6 +33,7 @@ export async function executeTool(
   if (isBrowserToolName(request.toolName)) {
     return executeBrowserTool(request.toolName, request.args, config, {
       sessionId: request.sessionId,
+      signal: request.signal,
     });
   }
   if (
@@ -55,6 +56,14 @@ export async function executeTool(
       return bankrPrompt(request, storage, "write");
     case "fs.read":
       return fsRead(request.args, config);
+    case "file.read_range":
+      return fileReadRange(request.args, config);
+    case "file.find":
+      return fileFind(request.args, config);
+    case "code.search":
+      return codeSearch(request.args, config);
+    case "code.search_files":
+      return codeSearchFiles(request.args, config);
     case "fs.write":
       return fsWrite(request.args, config);
     case "fs.list":
@@ -68,11 +77,13 @@ export async function executeTool(
     case "fs.delete":
       return fsDelete(request.args, config);
     case "http.get":
-      return httpGet(request.args, config);
+      return httpGet(request.args, config, request.signal);
     case "http.post":
-      return httpPost(request.args, config);
+      return httpPost(request.args, config, request.signal);
     case "shell.exec":
       return shellExec(request.args, config, request.consentContext?.reason);
+    case "shell.exec_background":
+      return shellExecBackground(request.args, config, request.consentContext?.reason);
     case "git.status":
       return gitStatus();
     case "git.diff":
@@ -119,7 +130,7 @@ export async function executeTool(
     case "slack.send":
       return commsInvoke(request.toolName, request.args, config, storage);
     default:
-      return { simulated: true, toolName: request.toolName };
+      throw new Error(`Unsupported tool executor: ${request.toolName}`);
   }
 }
 
@@ -318,6 +329,102 @@ async function fsRead(args: Record<string, unknown>, config: ToolPolicyConfig) {
   return { path: path.resolve(p), bytes: content.length, content };
 }
 
+async function fileReadRange(args: Record<string, unknown>, config: ToolPolicyConfig) {
+  const p = required(args.path, "path");
+  assertReadPathAllowed(p, config.sandbox.writeJailRoots, config.sandbox.readOnlyRoots);
+  const full = path.resolve(p);
+  const content = await fs.readFile(full, "utf8");
+  const lines = content.split(/\r?\n/);
+  const startLine = clampInt(args.startLine, 1, 1, Math.max(lines.length, 1));
+  const endLine = clampInt(args.endLine, startLine, startLine, Math.max(lines.length, startLine));
+  const selected = lines.slice(startLine - 1, endLine);
+  return {
+    path: full,
+    startLine,
+    endLine,
+    lineCount: selected.length,
+    content: selected.join("\n"),
+  };
+}
+
+async function fileFind(args: Record<string, unknown>, config: ToolPolicyConfig) {
+  return searchFileContents({
+    rootPath: required(args.path, "path"),
+    pattern: required(args.pattern, "pattern"),
+    caseSensitive: asBoolean(args.caseSensitive, false),
+    limit: clampInt(args.limit, 25, 1, 200),
+    config,
+  });
+}
+
+async function codeSearch(args: Record<string, unknown>, config: ToolPolicyConfig) {
+  return searchFileContents({
+    rootPath: required(args.path, "path"),
+    pattern: required(args.query, "query"),
+    caseSensitive: asBoolean(args.caseSensitive, false),
+    limit: clampInt(args.limit, 25, 1, 200),
+    config,
+    codeOnly: true,
+  });
+}
+
+async function codeSearchFiles(args: Record<string, unknown>, config: ToolPolicyConfig) {
+  const rootPath = required(args.path, "path");
+  assertReadPathAllowed(rootPath, config.sandbox.writeJailRoots, config.sandbox.readOnlyRoots);
+  const fullRoot = path.resolve(rootPath);
+  const query = required(args.query, "query");
+  const caseSensitive = asBoolean(args.caseSensitive, false);
+  const limit = clampInt(args.limit, 25, 1, 200);
+  const normalizedQuery = caseSensitive ? query : query.toLowerCase();
+  const matches: Array<{ path: string; name: string; type: "file" | "dir" }> = [];
+  const pending = [fullRoot];
+
+  while (pending.length > 0 && matches.length < limit) {
+    const current = pending.pop();
+    if (!current) {
+      continue;
+    }
+    const stat = await fs.stat(current);
+    if (stat.isFile()) {
+      const name = path.basename(current);
+      const haystack = caseSensitive ? name : name.toLowerCase();
+      if (haystack.includes(normalizedQuery)) {
+        matches.push({ path: current, name, type: "file" });
+      }
+      continue;
+    }
+
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      if (shouldSkipSearchEntry(entry.name)) {
+        continue;
+      }
+      const entryPath = path.join(current, entry.name);
+      const haystack = caseSensitive ? entry.name : entry.name.toLowerCase();
+      if (haystack.includes(normalizedQuery)) {
+        matches.push({
+          path: entryPath,
+          name: entry.name,
+          type: entry.isDirectory() ? "dir" : "file",
+        });
+        if (matches.length >= limit) {
+          break;
+        }
+      }
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      }
+    }
+  }
+
+  return {
+    path: fullRoot,
+    query,
+    count: matches.length,
+    matches,
+  };
+}
+
 async function fsWrite(args: Record<string, unknown>, config: ToolPolicyConfig) {
   const p = required(args.path, "path");
   const content = String(args.content ?? "");
@@ -385,20 +492,21 @@ async function fsDelete(args: Record<string, unknown>, config: ToolPolicyConfig)
   return { path: path.resolve(p), deleted: true };
 }
 
-async function httpGet(args: Record<string, unknown>, config: ToolPolicyConfig) {
+async function httpGet(args: Record<string, unknown>, config: ToolPolicyConfig, signal?: AbortSignal) {
   const url = required(args.url, "url");
-  const res = await fetchAllowlisted(url, { method: "GET" }, config.sandbox.networkAllowlist);
+  const res = await fetchAllowlisted(url, { method: "GET" }, config.sandbox.networkAllowlist, signal);
   const text = await res.response.text();
   return { url: res.finalUrl, status: res.response.status, bodySnippet: text.slice(0, 4000) };
 }
 
-async function httpPost(args: Record<string, unknown>, config: ToolPolicyConfig) {
+async function httpPost(args: Record<string, unknown>, config: ToolPolicyConfig, signal?: AbortSignal) {
   const url = required(args.url, "url");
   const body = JSON.stringify(args.body ?? {});
   const res = await fetchAllowlisted(
     url,
     { method: "POST", headers: { "Content-Type": "application/json" }, body },
     config.sandbox.networkAllowlist,
+    signal,
   );
   const text = await res.response.text();
   return { url: res.finalUrl, status: res.response.status, bodySnippet: text.slice(0, 4000) };
@@ -410,6 +518,7 @@ async function shellExec(
   consentReason?: string,
 ) {
   const command = required(args.command, "command");
+  const cwd = resolveOptionalCwd(args.cwd, config);
   const shellRisk = classifyShellRisk(command, config.sandbox.riskyShellPatterns);
   const approvalBypass = typeof consentReason === "string" && consentReason.startsWith("approval:");
   if (shellRisk.risky && config.sandbox.requireApprovalForRiskyShell && !approvalBypass) {
@@ -423,9 +532,11 @@ async function shellExec(
       timeout: 20000,
       windowsHide: true,
       maxBuffer: 1024 * 1024,
+      cwd,
     });
     return {
       command,
+      cwd,
       executable: parsed.file,
       argv: parsed.args,
       stdout: stdout.slice(0, 8000),
@@ -436,6 +547,7 @@ async function shellExec(
     const err = error as { stdout?: string; stderr?: string; code?: number | string; message: string };
     return {
       command,
+      cwd,
       executable: parsed.file,
       argv: parsed.args,
       stdout: (err.stdout ?? "").slice(0, 8000),
@@ -443,6 +555,44 @@ async function shellExec(
       exitCode: typeof err.code === "number" ? err.code : -1,
     };
   }
+}
+
+async function shellExecBackground(
+  args: Record<string, unknown>,
+  config: ToolPolicyConfig,
+  consentReason?: string,
+) {
+  const command = required(args.command, "command");
+  const cwd = resolveOptionalCwd(args.cwd, config);
+  const shellRisk = classifyShellRisk(command, config.sandbox.riskyShellPatterns);
+  const approvalBypass = typeof consentReason === "string" && consentReason.startsWith("approval:");
+  if (shellRisk.risky && config.sandbox.requireApprovalForRiskyShell && !approvalBypass) {
+    throw new Error(
+      `Risky shell command requires approval (matched pattern: ${shellRisk.matchedPattern ?? "unknown"})`,
+    );
+  }
+  const parsed = parseExecFileCommand(command);
+  return await new Promise<Record<string, unknown>>((resolve, reject) => {
+    const child = spawn(parsed.file, parsed.args, {
+      cwd,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.unref();
+    setTimeout(() => {
+      resolve({
+        command,
+        cwd,
+        executable: parsed.file,
+        argv: parsed.args,
+        pid: child.pid,
+        detached: true,
+        started: true,
+      });
+    }, 20);
+  });
 }
 
 async function gitStatus() {
@@ -816,11 +966,16 @@ async function fetchAllowlisted(
   url: string,
   init: RequestInit,
   allowlist: string[],
+  signal?: AbortSignal,
 ): Promise<{ response: Response; finalUrl: string }> {
   let current = url;
   for (let hop = 0; hop <= MAX_HTTP_REDIRECTS; hop += 1) {
     assertHostAllowed(current, allowlist);
-    const response = await fetch(current, { ...init, redirect: "manual", signal: AbortSignal.timeout(20000) });
+    const response = await fetch(current, {
+      ...init,
+      redirect: "manual",
+      signal: composeAbortSignal(20000, signal),
+    });
     if (!(response.status >= 300 && response.status < 400)) {
       return { response, finalUrl: current };
     }
@@ -831,6 +986,11 @@ async function fetchAllowlisted(
     current = new URL(location, current).toString();
   }
   throw new Error(`Too many redirects for ${url}`);
+}
+
+function composeAbortSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
 function secretFrom(config: Record<string, unknown>, directKey: string, envKey: string): string | undefined {
@@ -919,6 +1079,15 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+function resolveOptionalCwd(value: unknown, config: ToolPolicyConfig): string | undefined {
+  const cwd = asString(value);
+  if (!cwd) {
+    return undefined;
+  }
+  assertReadPathAllowed(cwd, config.sandbox.writeJailRoots, config.sandbox.readOnlyRoots);
+  return path.resolve(cwd);
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => asString(entry)).filter((entry): entry is string => Boolean(entry));
@@ -996,4 +1165,89 @@ function parseExecFileCommand(command: string): { file: string; args: string[] }
   }
   const args = tokens.slice(1);
   return { file, args };
+}
+
+async function searchFileContents(input: {
+  rootPath: string;
+  pattern: string;
+  caseSensitive: boolean;
+  limit: number;
+  config: ToolPolicyConfig;
+  codeOnly?: boolean;
+}): Promise<Record<string, unknown>> {
+  assertReadPathAllowed(input.rootPath, input.config.sandbox.writeJailRoots, input.config.sandbox.readOnlyRoots);
+  const fullRoot = path.resolve(input.rootPath);
+  const normalizedPattern = input.caseSensitive ? input.pattern : input.pattern.toLowerCase();
+  const matches: Array<{
+    path: string;
+    line: number;
+    lineText: string;
+  }> = [];
+  const pending = [fullRoot];
+
+  while (pending.length > 0 && matches.length < input.limit) {
+    const current = pending.pop();
+    if (!current) {
+      continue;
+    }
+    const stat = await fs.stat(current);
+    if (stat.isDirectory()) {
+      const entries = await fs.readdir(current, { withFileTypes: true });
+      for (const entry of entries) {
+        if (shouldSkipSearchEntry(entry.name)) {
+          continue;
+        }
+        const entryPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(entryPath);
+          continue;
+        }
+        if (input.codeOnly && !looksLikeCodeFile(entry.name)) {
+          continue;
+        }
+        pending.push(entryPath);
+      }
+      continue;
+    }
+    if (input.codeOnly && !looksLikeCodeFile(path.basename(current))) {
+      continue;
+    }
+    const content = await fs.readFile(current, "utf8");
+    const lines = content.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const lineText = lines[index] ?? "";
+      const haystack = input.caseSensitive ? lineText : lineText.toLowerCase();
+      if (!haystack.includes(normalizedPattern)) {
+        continue;
+      }
+      matches.push({
+        path: current,
+        line: index + 1,
+        lineText: lineText.slice(0, 400),
+      });
+      if (matches.length >= input.limit) {
+        break;
+      }
+    }
+  }
+
+  return {
+    path: fullRoot,
+    pattern: input.pattern,
+    count: matches.length,
+    matches,
+  };
+}
+
+function shouldSkipSearchEntry(name: string): boolean {
+  return name === ".git"
+    || name === "node_modules"
+    || name === "dist"
+    || name === "build"
+    || name === "coverage"
+    || name === ".next";
+}
+
+function looksLikeCodeFile(name: string): boolean {
+  return /\.(c|cc|cpp|cs|css|go|h|hpp|html|java|js|json|jsx|kt|md|mjs|mts|php|py|rb|rs|sh|sql|swift|toml|ts|tsx|vue|yaml|yml)$/i.test(name);
 }

@@ -98,6 +98,8 @@ export function buildOrchestrationPlan(input: OrchestrationRouterInput): Orchest
   };
   return {
     workflowTemplate,
+    summary: buildWorkflowTemplateSummary(task.mode, workflowTemplate, task.objective),
+    source: "workflow_template",
     routeDecision,
     steps: steps.slice(0, policy.maxSteps),
   };
@@ -149,18 +151,130 @@ function buildStepPlans(
     if (!input.prefs.providerId && provider?.providerId) {
       usedProviders.add(provider.providerId);
     }
+    const stepId = `orch-step-${index + 1}`;
+    const priorStepId = index > 0 ? `orch-step-${index}` : undefined;
+    const objective = buildFallbackStepObjective(input.objective, role, index, roles.length);
+    const expectedOutput = buildFallbackExpectedOutput(role);
     return {
-      stepId: `orch-step-${index + 1}`,
+      stepId,
+      index,
       role,
       stage: parallelStages && role === "researcher"
         ? 1
         : parallelStages && index > 1
           ? index
           : index + 1,
+      objective,
+      successCriteria: buildFallbackSuccessCriteria(role, expectedOutput),
+      suggestedTools: buildFallbackSuggestedTools(role, input.workflowTemplate),
+      expectedOutput,
+      parallelizable: parallelStages && role === "researcher",
+      dependsOnStepIds: priorStepId ? [priorStepId] : [],
+      delegatedRole: input.prefs.mode === "chat" ? undefined : role,
       providerId: provider?.providerId ?? input.prefs.providerId,
       model: provider?.model ?? input.prefs.model,
     };
   });
+}
+
+function buildWorkflowTemplateSummary(
+  mode: ChatMode,
+  workflowTemplate: string,
+  objective: string,
+): string {
+  const modeLabel = mode === "code" ? "Code" : mode === "cowork" ? "Cowork" : "Chat";
+  const conciseObjective = objective.trim().replace(/\s+/g, " ");
+  return `${modeLabel} orchestration plan for ${conciseObjective.slice(0, 160)} using ${workflowTemplate}.`;
+}
+
+function buildFallbackStepObjective(
+  objective: string,
+  role: OrchestrationRole,
+  index: number,
+  totalSteps: number,
+): string {
+  const base = objective.trim().replace(/\s+/g, " ");
+  switch (role) {
+    case "planner":
+      return `Define the execution path for "${base}" and identify the most efficient order of operations.`;
+    case "researcher":
+      return `Gather evidence and alternatives for "${base}" from a distinct angle.`;
+    case "worker":
+      return `Execute the main workstream for "${base}" and return actionable output.`;
+    case "answerer":
+      return `Produce the primary direct answer for "${base}".`;
+    case "coder":
+      return `Produce an implementation-ready technical response for "${base}".`;
+    case "reviewer":
+      return `Review the current work for correctness risks, regressions, and missing support.`;
+    case "qa-validator":
+      return `Validate the current work with concrete tests and failure checks.`;
+    case "critic":
+      return `Challenge the current work for gaps, weak assumptions, and unsupported claims.`;
+    case "synthesizer":
+      return totalSteps > 1
+        ? `Merge prior step outputs into one coherent final response for "${base}".`
+        : `Summarize the final response for "${base}".`;
+    default:
+      return `Advance step ${index + 1} for "${base}".`;
+  }
+}
+
+function buildFallbackExpectedOutput(role: OrchestrationRole): string {
+  switch (role) {
+    case "planner":
+      return "A concise execution plan with clear sequencing.";
+    case "researcher":
+      return "Evidence-backed findings with cited leads or constraints.";
+    case "worker":
+      return "Concrete work output ready for review.";
+    case "answerer":
+      return "A direct answer suitable for final delivery.";
+    case "coder":
+      return "Implementation details, patch strategy, and technical notes.";
+    case "reviewer":
+      return "A review summary with prioritized issues and residual risks.";
+    case "qa-validator":
+      return "Validation notes, test suggestions, and failure modes.";
+    case "critic":
+      return "A critique of weak spots, gaps, and uncertainty.";
+    case "synthesizer":
+      return "A cohesive final response that integrates prior results.";
+    default:
+      return "High-signal output for the next step.";
+  }
+}
+
+function buildFallbackSuccessCriteria(role: OrchestrationRole, expectedOutput: string): string {
+  switch (role) {
+    case "researcher":
+      return "Surface the strongest evidence, alternatives, and uncertainty without repeating prior angles.";
+    case "reviewer":
+    case "critic":
+      return "Identify the highest-risk gaps and make them easy for the next step to address.";
+    case "synthesizer":
+      return "Return one coherent answer that uses prior outputs instead of repeating them.";
+    default:
+      return `Return ${expectedOutput.toLowerCase()}`;
+  }
+}
+
+function buildFallbackSuggestedTools(role: OrchestrationRole, workflowTemplate: string): string[] {
+  switch (role) {
+    case "researcher":
+      return workflowTemplate.includes("research")
+        ? ["browser.search", "browser.navigate", "browser.extract", "http.get"]
+        : ["memory.search", "browser.search"];
+    case "coder":
+      return ["code.search_files", "code.search", "file.read_range", "shell.exec"];
+    case "reviewer":
+    case "qa-validator":
+      return ["code.search", "file.read_range", "tests.run", "lint.run"];
+    case "worker":
+      return ["memory.search", "code.search", "file.find"];
+    default:
+      return [];
+  }
 }
 
 function selectProviderForRole(

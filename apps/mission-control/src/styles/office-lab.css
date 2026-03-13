@@ -1,0 +1,351 @@
+.theme-signal-noir .office-lab-page {
+  padding-bottom: 28px;
+}
+
+.theme-signal-noir .office-lab-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.theme-signal-noir .office-lab-floor-panel,
+.theme-signal-noir .office-lab-inspector-panel,
+.theme-signal-noir .office-lab-rail-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.theme-signal-noir .office-lab-floor-panel::before,
+.theme-signal-noir .office-lab-inspector-panel::before,
+.theme-signal-noir .office-lab-rail-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(0deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 18px 18px;
+  opacity: 0.55;
+}
+
+.theme-signal-noir .office-lab-floor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.theme-signal-noir .office-lab-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.theme-signal-noir .office-lab-zone {
+  position: relative;
+  border: 1px solid rgba(92, 198, 223, 0.14);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(13, 18, 27, 0.98), rgba(8, 12, 19, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.theme-signal-noir .office-lab-zone.is-selected {
+  border-color: rgba(84, 221, 255, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(84, 221, 255, 0.14),
+    0 18px 36px rgba(0, 0, 0, 0.24);
+}
+
+.theme-signal-noir .office-lab-zone-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  padding: 14px 14px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-signal-noir .office-lab-zone-kicker {
+  margin: 0 0 6px;
+  color: var(--snr-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+}
+
+.theme-signal-noir .office-lab-zone-header h3 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.theme-signal-noir .office-lab-zone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+}
+
+.theme-signal-noir .office-lab-zone-summary {
+  margin: 0;
+  padding: 0 14px 12px;
+  color: var(--snr-text-muted);
+  min-height: 38px;
+}
+
+.theme-signal-noir .office-lab-room {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.theme-signal-noir .office-lab-agent {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(92, 198, 223, 0.12);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(18, 24, 35, 0.94), rgba(10, 14, 22, 0.98));
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.theme-signal-noir .office-lab-agent:hover,
+.theme-signal-noir .office-lab-agent.is-selected {
+  border-color: rgba(84, 221, 255, 0.3);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+}
+
+.theme-signal-noir .office-lab-agent-critical {
+  border-color: rgba(255, 86, 120, 0.22);
+}
+
+.theme-signal-noir .office-lab-agent-active {
+  border-color: rgba(84, 221, 255, 0.22);
+}
+
+.theme-signal-noir .office-lab-agent-warning {
+  border-color: rgba(255, 154, 69, 0.22);
+}
+
+.theme-signal-noir .office-lab-agent-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.theme-signal-noir .office-lab-agent-copy strong {
+  font-size: 15px;
+}
+
+.theme-signal-noir .office-lab-agent-copy span,
+.theme-signal-noir .office-lab-agent-action {
+  color: var(--snr-text-muted);
+}
+
+.theme-signal-noir .office-lab-agent-action {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 13px;
+}
+
+.theme-signal-noir .office-lab-agent-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.theme-signal-noir .office-lab-sprite {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto;
+  image-rendering: pixelated;
+}
+
+.theme-signal-noir .office-lab-sprite-horn,
+.theme-signal-noir .office-lab-sprite-head,
+.theme-signal-noir .office-lab-sprite-body {
+  position: absolute;
+  display: block;
+  border-radius: 2px;
+}
+
+.theme-signal-noir .office-lab-sprite-horn {
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  background: #f2d6b7;
+}
+
+.theme-signal-noir .office-lab-sprite-horn-left {
+  left: 8px;
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+}
+
+.theme-signal-noir .office-lab-sprite-horn-right {
+  right: 8px;
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+}
+
+.theme-signal-noir .office-lab-sprite-head {
+  top: 12px;
+  left: 14px;
+  width: 28px;
+  height: 20px;
+  background: #e7eef8;
+  box-shadow:
+    inset 0 -4px 0 rgba(32, 44, 64, 0.2),
+    0 0 0 4px rgba(10, 14, 22, 0.4);
+}
+
+.theme-signal-noir .office-lab-sprite-body {
+  top: 34px;
+  left: 18px;
+  width: 20px;
+  height: 14px;
+  background: linear-gradient(180deg, #6ef5a5, #2ab77f);
+}
+
+.theme-signal-noir .office-lab-sprite-critical .office-lab-sprite-body {
+  background: linear-gradient(180deg, #ff8da8, #f24673);
+}
+
+.theme-signal-noir .office-lab-sprite-warning .office-lab-sprite-body {
+  background: linear-gradient(180deg, #ffd296, #ff9a45);
+}
+
+.theme-signal-noir .office-lab-sprite-idle .office-lab-sprite-body {
+  background: linear-gradient(180deg, #8e9ab0, #586378);
+}
+
+.theme-signal-noir .office-lab-sidecar {
+  display: grid;
+  gap: 18px;
+}
+
+.theme-signal-noir .office-lab-inspector {
+  display: grid;
+  gap: 14px;
+}
+
+.theme-signal-noir .office-lab-inspector-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.theme-signal-noir .office-lab-inspector-summary {
+  margin: 0;
+  color: var(--snr-text-muted);
+}
+
+.theme-signal-noir .office-lab-inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.theme-signal-noir .office-lab-inspector-grid div {
+  padding: 10px 12px;
+  border: 1px solid rgba(92, 198, 223, 0.1);
+  border-radius: 10px;
+  background: rgba(9, 13, 20, 0.72);
+}
+
+.theme-signal-noir .office-lab-inspector-grid dt {
+  margin: 0 0 6px;
+  color: var(--snr-text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.theme-signal-noir .office-lab-inspector-grid dd {
+  margin: 0;
+}
+
+.theme-signal-noir .office-lab-rail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.theme-signal-noir .office-lab-rail-item {
+  padding: 12px;
+  border: 1px solid rgba(92, 198, 223, 0.1);
+  border-radius: 10px;
+  background: rgba(9, 13, 20, 0.76);
+}
+
+.theme-signal-noir .office-lab-rail-item strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.theme-signal-noir .office-lab-rail-item p {
+  margin: 0;
+  color: var(--snr-text-muted);
+}
+
+.theme-signal-noir .office-lab-rail-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--snr-text-muted);
+  font-size: 12px;
+}
+
+.theme-signal-noir .office-lab-empty-state,
+.theme-signal-noir .office-lab-empty-rail {
+  padding: 14px;
+  border: 1px dashed rgba(92, 198, 223, 0.16);
+  border-radius: 10px;
+  color: var(--snr-text-muted);
+  background: rgba(8, 12, 18, 0.56);
+}
+
+.theme-signal-noir .office-lab-button {
+  border: 1px solid rgba(92, 198, 223, 0.16);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(8, 16, 25, 0.9);
+  color: #dcebf7;
+  cursor: pointer;
+}
+
+.theme-signal-noir .office-lab-button:hover {
+  border-color: rgba(84, 221, 255, 0.34);
+}
+
+@media (max-width: 1100px) {
+  .theme-signal-noir .office-lab-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 800px) {
+  .theme-signal-noir .office-lab-floor-grid,
+  .theme-signal-noir .office-lab-skeleton-grid,
+  .theme-signal-noir .office-lab-inspector-grid {
+    grid-template-columns: 1fr;
+  }
+}

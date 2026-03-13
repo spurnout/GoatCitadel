@@ -21,6 +21,7 @@ type BrowserToolName =
 
 export interface BrowserExecutionContext {
   sessionId?: string;
+  signal?: AbortSignal;
 }
 
 interface BrowserStepInput {
@@ -231,7 +232,7 @@ async function executeBrowserSearch(
     }
 
     try {
-      const fallback = await executeBrowserSearchFallback(query, limit, config, engine);
+      const fallback = await executeBrowserSearchFallback(query, limit, config, engine, executionContext?.signal);
       if (fallback.results.length > 0) {
         return {
           ...fallback,
@@ -288,7 +289,7 @@ async function executeBrowserNavigate(
       };
     });
   } catch (playwrightError) {
-    const fallback = await executeBrowserNavigateFallback(url, maxChars, config);
+    const fallback = await executeBrowserNavigateFallback(url, maxChars, config, executionContext?.signal);
     return {
       ...fallback,
       action: "navigate",
@@ -335,7 +336,7 @@ async function executeBrowserExtract(
       };
     });
   } catch (playwrightError) {
-    const fallback = await executeBrowserExtractFallback(url, selector, maxChars, config);
+    const fallback = await executeBrowserExtractFallback(url, selector, maxChars, config, executionContext?.signal);
     return {
       ...fallback,
       action: "extract",
@@ -1115,6 +1116,7 @@ async function withBrowserPage(
     finalUrl: string,
   ) => Promise<Record<string, unknown>>,
 ): Promise<Record<string, unknown>> {
+  throwIfBrowserExecutionAborted(executionContext?.signal);
   assertAllowedHttpUrl(url);
   assertHostAllowed(url, config.sandbox.networkAllowlist);
 
@@ -1127,8 +1129,18 @@ async function withBrowserPage(
     ? cloneBrowserSessionState(getBrowserSessionState(browserSessionId))
     : undefined;
   const browser = await launchPlaywrightChromium(playwright, headless);
+  const abortSignal = executionContext?.signal;
+  const abortHandler = abortSignal
+    ? () => {
+        void browser.close().catch(() => undefined);
+      }
+    : undefined;
 
   try {
+    if (abortSignal && abortHandler) {
+      abortSignal.addEventListener("abort", abortHandler, { once: true });
+      throwIfBrowserExecutionAborted(abortSignal);
+    }
     const context = await browser.newContext(buildPlaywrightContextOptions(args, previousSessionState));
     if (previousSessionState?.geolocation) {
       await context.grantPermissions?.(["geolocation"], { origin: new URL(url).origin });
@@ -1185,7 +1197,10 @@ async function withBrowserPage(
       ...result,
     };
   } finally {
-    await browser.close();
+    if (abortSignal && abortHandler) {
+      abortSignal.removeEventListener("abort", abortHandler);
+    }
+    await browser.close().catch(() => undefined);
   }
 }
 
@@ -1247,6 +1262,19 @@ async function ensurePlaywrightChromiumInstalled(): Promise<void> {
     });
   }
   return playwrightChromiumInstallPromise;
+}
+
+function composeAbortSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
+function throwIfBrowserExecutionAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error("The operation was aborted.");
+    error.name = "AbortError";
+    throw error;
+  }
 }
 
 function resolvePlaywrightInstallDir(): string {
@@ -1636,12 +1664,13 @@ async function executeBrowserSearchFallback(
   limit: number,
   config: ToolPolicyConfig,
   engine: string,
+  signal?: AbortSignal,
 ): Promise<{
   finalUrl: string;
   results: Array<{ title: string; url: string; snippet: string }>;
 }> {
   const url = buildSearchUrl(engine, query);
-  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist, signal);
   return {
     finalUrl: page.finalUrl,
     results: parseSearchResults(page.html, limit, page.finalUrl),
@@ -1652,8 +1681,9 @@ async function executeBrowserNavigateFallback(
   url: string,
   maxChars: number,
   config: ToolPolicyConfig,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist, signal);
   const title = extractHtmlTitle(page.html) ?? page.finalUrl;
   const textSnippet = extractHtmlText(page.html, maxChars);
   return {
@@ -1671,8 +1701,9 @@ async function executeBrowserExtractFallback(
   selector: string,
   maxChars: number,
   config: ToolPolicyConfig,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist);
+  const page = await fetchTextAllowlisted(url, config.sandbox.networkAllowlist, signal);
   const title = extractHtmlTitle(page.html) ?? page.finalUrl;
   const text = extractHtmlText(page.html, maxChars);
   return {
@@ -1689,6 +1720,7 @@ async function executeBrowserExtractFallback(
 async function fetchTextAllowlisted(
   url: string,
   allowlist: string[],
+  signal?: AbortSignal,
 ): Promise<{ html: string; finalUrl: string }> {
   assertAllowedHttpUrl(url);
   assertHostAllowed(url, allowlist);
@@ -1696,7 +1728,7 @@ async function fetchTextAllowlisted(
   const response = await fetch(url, {
     method: "GET",
     redirect: "follow",
-    signal: AbortSignal.timeout(20_000),
+    signal: composeAbortSignal(20_000, signal),
     headers: {
       "User-Agent": "GoatCitadel/1.1.1 (+https://localhost)",
       Accept: "text/html,application/xhtml+xml",

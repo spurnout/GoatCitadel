@@ -129,7 +129,7 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ error: params.error.flatten() });
     }
     try {
-      return reply.send(fastify.gateway.connectMcpServer(params.data.serverId));
+      return reply.send(await fastify.gateway.connectMcpServer(params.data.serverId));
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }
@@ -172,7 +172,7 @@ export const mcpRoutes: FastifyPluginAsync = async (fastify) => {
     }
     try {
       return reply.send(
-        fastify.gateway.completeMcpOAuth(params.data.serverId, body.data.code, body.data.state),
+        await fastify.gateway.completeMcpOAuth(params.data.serverId, body.data.code, body.data.state),
       );
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });

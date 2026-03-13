@@ -7,8 +7,9 @@ This doc records the current office-direction policy for GoatCitadel. It is inte
 ## Current product posture
 
 - `Office` remains the stable product surface.
-- `Office Lab` stays a future client-side experiment after Wave 3 and the first Wave 4 reliability slice are stable.
-- The first `Office Lab` experiment will still use a vendored `pixel-agents` front-end/game layer.
+- `Office Lab` is a separate Mission Control tab with its own non-3D 2D office layout.
+- The current `Office Lab` implementation is pixel-inspired and deck-based rather than a second 3D camera/runtime profile.
+- It still uses GoatCitadel's live agent, approval, and event feeds rather than a separate office backend.
 
 ## Citadel-first direction
 
@@ -105,3 +106,4 @@ Every shipped asset must still be recorded with provenance and license notes in:
 - introducing office-specific backend APIs
 - inventing a second team-growth runtime outside the existing delegation/subagent/session model
 - replacing the current `Office` tab during the reliability work
+- returning to a second 3D office variant for the lab tab

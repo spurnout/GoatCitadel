@@ -63,6 +63,8 @@ function createTask(): OrchestrationTaskInput {
 function createPlan(): OrchestrationPlan {
   return {
     workflowTemplate: "cowork.research.synthesize.critic",
+    summary: "Parallel research, synthesis, and critique workflow.",
+    source: "workflow_template",
     routeDecision: {
       modePolicy: "cowork",
       workflowTemplate: "cowork.research.synthesize.critic",
@@ -82,10 +84,46 @@ function createPlan(): OrchestrationPlan {
       triggerReason: "cowork_explicit_orchestration",
     },
     steps: [
-      { stepId: "step-1", role: "researcher", stage: 1, providerId: "perplexity", model: "sonar" },
-      { stepId: "step-2", role: "researcher", stage: 1, providerId: "openai", model: "gpt-4.1-mini" },
-      { stepId: "step-3", role: "synthesizer", stage: 2, providerId: "anthropic", model: "claude-sonnet-4-6" },
-      { stepId: "step-4", role: "critic", stage: 3, providerId: "openai", model: "gpt-4.1-mini" },
+      {
+        stepId: "step-1",
+        index: 0,
+        role: "researcher",
+        stage: 1,
+        objective: "Gather the strongest current evidence.",
+        parallelizable: true,
+        providerId: "perplexity",
+        model: "sonar",
+      },
+      {
+        stepId: "step-2",
+        index: 1,
+        role: "researcher",
+        stage: 1,
+        objective: "Gather a second independent evidence pass.",
+        parallelizable: true,
+        providerId: "openai",
+        model: "gpt-4.1-mini",
+      },
+      {
+        stepId: "step-3",
+        index: 2,
+        role: "synthesizer",
+        stage: 2,
+        objective: "Merge the evidence into one recommendation.",
+        parallelizable: false,
+        providerId: "anthropic",
+        model: "claude-sonnet-4-6",
+      },
+      {
+        stepId: "step-4",
+        index: 3,
+        role: "critic",
+        stage: 3,
+        objective: "Identify the main weaknesses and caveats.",
+        parallelizable: false,
+        providerId: "openai",
+        model: "gpt-4.1-mini",
+      },
     ],
   };
 }
@@ -150,7 +188,16 @@ describe("orchestration engine", () => {
       plan: {
         ...createPlan(),
         steps: [
-          { stepId: "step-1", role: "planner", stage: 1, providerId: "openai", model: "gpt-4.1-mini" },
+          {
+            stepId: "step-1",
+            index: 0,
+            role: "planner",
+            stage: 1,
+            objective: "Draft a workable plan.",
+            parallelizable: false,
+            providerId: "openai",
+            model: "gpt-4.1-mini",
+          },
         ],
       },
       callbacks: {

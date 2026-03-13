@@ -5,6 +5,7 @@ import {
   type ChatTurnTraceRecord,
 } from "@goatcitadel/contracts";
 import { getChatToolRunDiagnostics, getTraceFallbackAttemptCount } from "./chat/chat-tool-diagnostics";
+import { ChatExecutionPlanSummary } from "./chat/ChatExecutionPlanSummary";
 
 function formatTime(value?: string): string {
   if (!value) {
@@ -66,6 +67,12 @@ export function ChatTraceCard({
               <p>Retryable: {trace.failure.retryable === false ? "no" : "yes"}</p>
             </div>
           ) : null}
+          {trace.executionPlan ? (
+            <div className="chat-trace-section">
+              <strong>Execution plan</strong>
+              <ChatExecutionPlanSummary plan={trace.executionPlan} />
+            </div>
+          ) : null}
           <div className="chat-trace-section">
             <strong>Routing</strong>
             <p>
@@ -98,6 +105,7 @@ export function ChatTraceCard({
                     {diagnostics.browserFailureClass ? <p>Browser failure: {diagnostics.browserFailureClass}</p> : null}
                     {diagnostics.summary ? <p>{diagnostics.summary}</p> : null}
                     {run.error ? <p>Error: {run.error}</p> : null}
+                    {run.failureGuidance ? <p>Next move: {run.failureGuidance}</p> : null}
                   </li>
                   );
                 })}

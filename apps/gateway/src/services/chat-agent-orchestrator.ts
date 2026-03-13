@@ -3,6 +3,7 @@ import type {
   ChatCitationRecord,
   ChatCompletionRequest,
   ChatCompletionResponse,
+  ChatExecutionPlanRecord,
   ChatMode,
   ChatSendMessageRequest,
   ChatStreamChunk,
@@ -20,6 +21,7 @@ import type {
   McpInvokeResponse,
 } from "@goatcitadel/contracts";
 import { getChatTurnRecoveryAction, type ChatTurnRecoveryAction } from "@goatcitadel/contracts";
+import { estimateTokensFromText } from "@goatcitadel/memory-core";
 import type { Storage } from "@goatcitadel/storage";
 import { hasLiveDataKeywords, EXPLICIT_WEB_PHRASES } from "../orchestration/live-data-detect.js";
 import type { McpBrowserFallbackTarget } from "./mcp-runtime.js";
@@ -60,11 +62,25 @@ const TOOL_REQUIRED_ARGS: Record<string, string[]> = {
   "browser.interact": ["url", "steps"],
   "http.get": ["url"],
   "http.post": ["url"],
+  "file.read_range": ["path", "startLine", "endLine"],
+  "file.find": ["path", "pattern"],
+  "code.search": ["path", "query"],
+  "code.search_files": ["path", "query"],
   "memory.search": ["query"],
   "memory.write": ["namespace", "title", "content"],
   "memory.upsert": ["namespace", "title", "content"],
   "embeddings.query": ["query"],
 };
+const MAX_EXPOSED_TOOLS_PER_TURN = {
+  chat: 8,
+  cowork: 12,
+  code: 10,
+} as const satisfies Record<ChatMode, number>;
+const TOOL_SCHEMA_TOKEN_BUDGET = {
+  chat: 2200,
+  cowork: 3200,
+  code: 2800,
+} as const satisfies Record<ChatMode, number>;
 
 interface ChatExecutionBudget {
   turnBudgetMs: number;
@@ -73,6 +89,8 @@ interface ChatExecutionBudget {
   maxToolRunsPerTurn: number;
   searchMaxResults: number;
   maxTokens?: number;
+  minSynthesisReserveMs: number;
+  expensiveToolMinimumRemainingMs: number;
 }
 
 class ChatTurnBudgetExceededError extends Error {
@@ -219,7 +237,7 @@ export class ChatAgentOrchestrator {
     const conversationMessages: ChatCompletionRequest["messages"] = [...input.historyMessages];
     const toolSchema = input.toolAutonomy === "manual"
       ? { tools: [], modelToCanonical: new Map<string, string>(), canonicalToModel: new Map<string, string>() }
-      : await this.buildToolSchema(input);
+      : await this.buildToolSchema(input, intents);
     const canUseTimeTool = toolSchema.canonicalToModel.has("time.now");
     const canUseSearchTool = toolSchema.canonicalToModel.has("browser.search");
     const localFileIntent = intents.localFile;
@@ -252,8 +270,14 @@ export class ChatAgentOrchestrator {
     let circuitBreakerReason: string | undefined;
     const toolFailureSignatureCounts = new Map<string, number>();
     const outputMessageId = input.outputMessageId ?? `assistant-${input.turnId}`;
-    const executionBudget = resolveChatExecutionBudget(input);
-    const turnBudgetDeadline = createTurnBudgetDeadline(executionBudget.turnBudgetMs);
+    const executionBudget = resolveChatExecutionBudget({
+      webMode: input.webMode,
+      thinkingLevel: input.thinkingLevel,
+      liveDataIntent: intents.liveData,
+    });
+    let effectiveTurnBudgetMs = executionBudget.turnBudgetMs;
+    let effectiveCompletionTimeoutMs = executionBudget.completionTimeoutMs;
+    let turnBudgetDeadline = createTurnBudgetDeadline(effectiveTurnBudgetMs);
 
     if (intents.missingLogPayload) {
       assistantContent = buildMissingLogInputTemplate();
@@ -292,7 +316,7 @@ export class ChatAgentOrchestrator {
       this.deps.storage.chatTurnTraces.patch(input.turnId, {
         status: "waiting_for_tool",
       });
-      ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
+      ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, effectiveTurnBudgetMs);
       const syntheticRun = await this.executeToolCall({
         input,
         turnId: input.turnId,
@@ -302,6 +326,14 @@ export class ChatAgentOrchestrator {
       });
       toolRunCount += 1;
       toolRuns.push(syntheticRun.record);
+      ({ turnBudgetDeadline, effectiveTurnBudgetMs, effectiveCompletionTimeoutMs } = extendTurnBudgetForExecutedBrowserTool({
+        toolName: syntheticRun.record.toolName,
+        toolStatus: syntheticRun.record.status,
+        webMode: input.webMode,
+        currentTurnBudgetMs: effectiveTurnBudgetMs,
+        currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
+        turnBudgetDeadline,
+      }));
       yield {
         type: "tool_start",
         sessionId: input.sessionId,
@@ -384,7 +416,7 @@ export class ChatAgentOrchestrator {
       this.deps.storage.chatTurnTraces.patch(input.turnId, {
         status: "waiting_for_tool",
       });
-      ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
+      ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, effectiveTurnBudgetMs);
       const liveDataQuery = deriveLiveDataQuery(input.content);
       const syntheticRun = await this.executeToolCall({
         input,
@@ -398,6 +430,14 @@ export class ChatAgentOrchestrator {
       });
       toolRunCount += 1;
       toolRuns.push(syntheticRun.record);
+      ({ turnBudgetDeadline, effectiveTurnBudgetMs, effectiveCompletionTimeoutMs } = extendTurnBudgetForExecutedBrowserTool({
+        toolName: syntheticRun.record.toolName,
+        toolStatus: syntheticRun.record.status,
+        webMode: input.webMode,
+        currentTurnBudgetMs: effectiveTurnBudgetMs,
+        currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
+        turnBudgetDeadline,
+      }));
       yield {
         type: "tool_start",
         sessionId: input.sessionId,
@@ -499,8 +539,8 @@ export class ChatAgentOrchestrator {
           };
 
           const completionTimeoutMs = Math.min(
-            executionBudget.completionTimeoutMs,
-            ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs),
+            effectiveCompletionTimeoutMs,
+            ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, effectiveTurnBudgetMs),
           );
           const completionRequest: ChatCompletionRequest = {
             providerId: input.providerId,
@@ -509,6 +549,7 @@ export class ChatAgentOrchestrator {
             stream: false,
             max_tokens: executionBudget.maxTokens,
             timeoutMs: completionTimeoutMs,
+            signal: input.signal,
             memory: {
               enabled: input.memoryMode !== "off",
               mode: input.memoryMode === "off" ? "off" : "qmd",
@@ -591,6 +632,7 @@ export class ChatAgentOrchestrator {
           })) as unknown as Array<Record<string, unknown>>,
         } as unknown as ChatCompletionMessage);
 
+        let shortCircuitedOnBudget = false;
         for (const toolCall of toolCalls) {
           throwIfChatTurnCancelled(input);
           if (toolRunCount >= executionBudget.maxToolRunsPerTurn) {
@@ -599,7 +641,30 @@ export class ChatAgentOrchestrator {
           if (circuitBreakerReason) {
             break;
           }
-          ensureChatTurnBudgetRemaining(turnBudgetDeadline, input.webMode, executionBudget.turnBudgetMs);
+          const remainingBeforeTool = ensureChatTurnBudgetRemaining(
+            turnBudgetDeadline,
+            input.webMode,
+            effectiveTurnBudgetMs,
+          );
+          const minimumRemainingBeforeTool = minimumRemainingBudgetForToolStart(
+            toolCall.toolName,
+            executionBudget,
+          );
+          if (remainingBeforeTool <= minimumRemainingBeforeTool) {
+            assistantContent = buildTurnBudgetExceededFallbackMessage(
+              input,
+              toolRuns,
+              effectiveTurnBudgetMs,
+            );
+            finalStatus = "completed";
+            finalFailure = buildChatTurnFailureRecord(
+              "budget_exceeded",
+              buildTurnBudgetExceededReason(input.webMode, effectiveTurnBudgetMs),
+              input.webMode === "deep" ? "retry_narrower" : "switch_to_deep_mode",
+            );
+            shortCircuitedOnBudget = true;
+            break;
+          }
           this.deps.storage.chatTurnTraces.patch(input.turnId, {
             status: "waiting_for_tool",
           });
@@ -612,8 +677,17 @@ export class ChatAgentOrchestrator {
             toolCallId: toolCall.id,
             localFileIntent,
             priorToolRuns: toolRuns,
+            turnBudgetDeadline,
           });
           toolRuns.push(executed.record);
+          ({ turnBudgetDeadline, effectiveTurnBudgetMs, effectiveCompletionTimeoutMs } = extendTurnBudgetForExecutedBrowserTool({
+            toolName: executed.record.toolName,
+            toolStatus: executed.record.status,
+            webMode: input.webMode,
+            currentTurnBudgetMs: effectiveTurnBudgetMs,
+            currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
+            turnBudgetDeadline,
+          }));
           yield {
             type: "tool_start",
             sessionId: input.sessionId,
@@ -651,7 +725,7 @@ export class ChatAgentOrchestrator {
             break;
           }
 
-          if (executed.record.status === "failed" || executed.record.status === "blocked") {
+      if (executed.record.status === "failed" || executed.record.status === "blocked") {
             const retryableFailure = executed.record.status === "failed"
               && isRetryableToolFailure(executed.record.error);
             if (!retryableFailure) {
@@ -669,10 +743,13 @@ export class ChatAgentOrchestrator {
                   : `Repeated tool failure for ${executed.record.toolName} (${nextCount} attempts): ${executed.record.error ?? "unknown error"}`;
                 break;
               }
-            }
           }
+        }
 
-          const toolResultPayload = executed.record.result ?? { error: executed.record.error ?? "Tool failed." };
+          const toolResultPayload = {
+            ...(executed.record.result ?? { error: executed.record.error ?? "Tool failed." }),
+            ...(executed.record.failureGuidance ? { failureGuidance: executed.record.failureGuidance } : {}),
+          };
           conversationMessages.push({
             role: "tool",
             tool_call_id: toolCall.id,
@@ -691,6 +768,10 @@ export class ChatAgentOrchestrator {
         }
 
         if (approvalPayload) {
+          break;
+        }
+
+        if (shortCircuitedOnBudget) {
           break;
         }
 
@@ -748,6 +829,7 @@ export class ChatAgentOrchestrator {
         input,
         toolRuns,
         circuitBreakerReason,
+        turnBudgetDeadline,
       });
     }
     if (finalStatus !== "cancelled") {
@@ -818,12 +900,23 @@ export class ChatAgentOrchestrator {
     };
   }
 
-  private async buildToolSchema(input: Pick<ChatAgentTurnInput, "sessionId" | "webMode">): Promise<{
+  private async buildToolSchema(
+    input: Pick<ChatAgentTurnInput, "sessionId" | "webMode" | "mode" | "content" | "historyMessages">,
+    intents: {
+      liveData: boolean;
+      localFile: boolean;
+    },
+  ): Promise<{
     tools: Array<Record<string, unknown>>;
     modelToCanonical: Map<string, string>;
     canonicalToModel: Map<string, string>;
   }> {
     const catalog = this.deps.listToolCatalog();
+    const recentToolRuns = this.deps.storage.chatToolRuns.listBySession(input.sessionId, 200);
+    const projectBound = Boolean(this.deps.storage.chatSessionProjects.get(input.sessionId)?.projectId);
+    const activePlan = selectActiveExecutionPlan(this.deps.storage.chatExecutionPlans.listBySession(input.sessionId, 20));
+    const suggestedTools = new Set(selectExecutionPlanSuggestedTools(activePlan));
+    const failedCounts = buildRecentToolFailureCounts(recentToolRuns);
     const filteredCatalog: ToolCatalogEntry[] = [];
     for (const tool of catalog) {
       if (input.webMode === "off" && isWebToolName(tool.toolName)) {
@@ -848,9 +941,58 @@ export class ChatAgentOrchestrator {
       }
       filteredCatalog.push(tool);
     }
+    const scoredCatalog = filteredCatalog
+      .map((tool) => ({
+        tool,
+        score: scoreToolForTurn({
+          tool,
+          mode: input.mode,
+          liveDataIntent: intents.liveData,
+          localFileIntent: intents.localFile,
+          projectBound,
+          suggestedTools,
+          failedCounts,
+          content: input.content,
+        }),
+      }))
+      .sort((left, right) => right.score - left.score);
+    const essentialToolNames = buildEssentialToolSet({
+      mode: input.mode,
+      webMode: input.webMode,
+      liveDataIntent: intents.liveData,
+      localFileIntent: intents.localFile,
+      projectBound,
+    });
     const modelToCanonical = new Map<string, string>();
     const canonicalToModel = new Map<string, string>();
-    const tools = filteredCatalog.map((tool) => {
+    const selectedCatalog: ToolCatalogEntry[] = [];
+    const selectedNames = new Set<string>();
+    for (const toolName of essentialToolNames) {
+      const candidate = scoredCatalog.find((entry) => entry.tool.toolName === toolName)?.tool;
+      if (!candidate || selectedNames.has(candidate.toolName)) {
+        continue;
+      }
+      selectedCatalog.push(candidate);
+      selectedNames.add(candidate.toolName);
+    }
+    const toolCountCap = MAX_EXPOSED_TOOLS_PER_TURN[input.mode];
+    let schemaTokenBudget = TOOL_SCHEMA_TOKEN_BUDGET[input.mode];
+    for (const tool of selectedCatalog) {
+      schemaTokenBudget -= estimateTokensFromText(JSON.stringify(tool));
+    }
+    for (const entry of scoredCatalog) {
+      if (selectedCatalog.length >= toolCountCap || selectedNames.has(entry.tool.toolName)) {
+        continue;
+      }
+      const estimated = estimateTokensFromText(JSON.stringify(entry.tool));
+      if (schemaTokenBudget - estimated < 0 && selectedCatalog.length > 0) {
+        continue;
+      }
+      selectedCatalog.push(entry.tool);
+      selectedNames.add(entry.tool.toolName);
+      schemaTokenBudget -= estimated;
+    }
+    const tools = selectedCatalog.map((tool) => {
       const modelName = toProviderToolFunctionName(tool.toolName, modelToCanonical);
       modelToCanonical.set(modelName, tool.toolName);
       canonicalToModel.set(tool.toolName, modelName);
@@ -858,7 +1000,7 @@ export class ChatAgentOrchestrator {
         type: "function",
         function: {
           name: modelName,
-          description: tool.description,
+          description: buildToolFunctionDescription(tool),
           parameters: normalizeToolParameters(tool),
         },
       };
@@ -883,6 +1025,7 @@ export class ChatAgentOrchestrator {
     toolCallId?: string;
     localFileIntent?: boolean;
     priorToolRuns?: ChatToolRunRecord[];
+    turnBudgetDeadline?: number;
   }): Promise<{
     record: ChatToolRunRecord;
     chunk?: ChatStreamChunk;
@@ -891,6 +1034,7 @@ export class ChatAgentOrchestrator {
       toolName: input.toolName,
       rawArgs: input.rawArgs,
       userContent: input.input.content,
+      historyMessages: input.input.historyMessages,
       webMode: input.input.webMode,
       localFileIntent: input.localFileIntent,
       priorToolRuns: input.priorToolRuns,
@@ -907,10 +1051,43 @@ export class ChatAgentOrchestrator {
       startedAt,
     });
 
+    const reusableResult = findReusableBrowserToolResult(
+      preflight.toolName,
+      input.rawArgs,
+      preflight.args,
+      input.priorToolRuns,
+    );
+    if (reusableResult) {
+      const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
+        status: "executed",
+        result: {
+          ...(reusableResult.result as Record<string, unknown>),
+          reusedPriorToolRunId: reusableResult.toolRunId,
+          reusedResult: true,
+        },
+        finishedAt: new Date().toISOString(),
+      });
+      return {
+        record: updated,
+        chunk: {
+          type: "tool_result",
+          sessionId: input.input.sessionId,
+          turnId: input.turnId,
+          toolRun: updated,
+        },
+      };
+    }
+
     if (preflight.blockedReason) {
       const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
         status: "blocked",
         error: preflight.blockedReason,
+        failureGuidance: buildToolFailureGuidance({
+          toolName: preflight.toolName,
+          status: "blocked",
+          args: preflight.args,
+          error: preflight.blockedReason,
+        }),
         finishedAt: new Date().toISOString(),
       });
       return {
@@ -928,6 +1105,12 @@ export class ChatAgentOrchestrator {
       const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
         status: "failed",
         error: preflight.failureReason,
+        failureGuidance: buildToolFailureGuidance({
+          toolName: preflight.toolName,
+          status: "failed",
+          args: preflight.args,
+          error: preflight.failureReason,
+        }),
         finishedAt: new Date().toISOString(),
       });
       return {
@@ -947,6 +1130,7 @@ export class ChatAgentOrchestrator {
         args: preflight.args,
         agentId: "assistant",
         sessionId: input.input.sessionId,
+        signal: input.input.signal,
         consentContext: {
           source: "agent",
           reason: `chat mode ${input.input.mode}`,
@@ -1034,6 +1218,13 @@ export class ChatAgentOrchestrator {
             status: "blocked",
             error: fallbackError,
             result: writeFallback.result.result,
+            failureGuidance: buildToolFailureGuidance({
+              toolName: preflight.toolName,
+              status: "blocked",
+              args: preflight.args,
+              error: fallbackError,
+              result: writeFallback.result.result,
+            }),
             finishedAt: new Date().toISOString(),
           });
           return {
@@ -1051,6 +1242,13 @@ export class ChatAgentOrchestrator {
           status: "blocked",
           error: result.policyReason,
           result: result.result,
+          failureGuidance: buildToolFailureGuidance({
+            toolName: preflight.toolName,
+            status: "blocked",
+            args: preflight.args,
+            error: result.policyReason,
+            result: result.result,
+          }),
           finishedAt: new Date().toISOString(),
         });
         return {
@@ -1072,6 +1270,7 @@ export class ChatAgentOrchestrator {
           toolName: preflight.toolName,
           args: preflight.args,
           result: result.result,
+          turnBudgetDeadline: input.turnBudgetDeadline,
         });
         if (finalized) {
           return finalized;
@@ -1101,6 +1300,7 @@ export class ChatAgentOrchestrator {
           toolName: preflight.toolName,
           args: preflight.args,
           error: (error as Error).message,
+          turnBudgetDeadline: input.turnBudgetDeadline,
         });
         if (recovered) {
           return recovered;
@@ -1109,6 +1309,12 @@ export class ChatAgentOrchestrator {
       const updated = this.deps.storage.chatToolRuns.patch(created.toolRunId, {
         status: "failed",
         error: (error as Error).message,
+        failureGuidance: buildToolFailureGuidance({
+          toolName: preflight.toolName,
+          status: "failed",
+          args: preflight.args,
+          error: (error as Error).message,
+        }),
         finishedAt: new Date().toISOString(),
       });
       return {
@@ -1131,6 +1337,7 @@ export class ChatAgentOrchestrator {
     args: Record<string, unknown>;
     result?: Record<string, unknown>;
     error?: string;
+    turnBudgetDeadline?: number;
   }): Promise<{
     record: ChatToolRunRecord;
     chunk: ChatStreamChunk;
@@ -1174,6 +1381,34 @@ export class ChatAgentOrchestrator {
         }
       }
     }
+    const alternateBuiltinResult = await this.tryAlternateBuiltinBrowserResult({
+      created: input.created,
+      turnInput: input.turnInput,
+      turnId: input.turnId,
+      toolName: input.toolName,
+      args: input.args,
+      fallbackChain,
+      classification,
+      normalizedResult,
+      error: input.error,
+      turnBudgetDeadline: input.turnBudgetDeadline,
+    });
+    if (alternateBuiltinResult) {
+      const updated = this.deps.storage.chatToolRuns.patch(input.created.toolRunId, {
+        status: "executed",
+        result: alternateBuiltinResult,
+        finishedAt: new Date().toISOString(),
+      });
+      return {
+        record: updated,
+        chunk: {
+          type: "tool_result",
+          sessionId: input.turnInput.sessionId,
+          turnId: input.turnId,
+          toolRun: updated,
+        },
+      };
+    }
     const fallbackAttempted = shouldAttemptBrowserFallback(input.toolName, classification.failureClass)
       && this.deps.invokeMcpTool
       && this.deps.listMcpBrowserFallbackTargets;
@@ -1184,6 +1419,7 @@ export class ChatAgentOrchestrator {
         toolName: input.toolName,
         args: input.args,
         fallbackChain,
+        turnBudgetDeadline: input.turnBudgetDeadline,
       });
       if (fallback) {
         const updated = this.deps.storage.chatToolRuns.patch(input.created.toolRunId, {
@@ -1230,6 +1466,18 @@ export class ChatAgentOrchestrator {
           },
           fallbackChain,
         ),
+        failureGuidance: buildToolFailureGuidance({
+          toolName: input.toolName,
+          status: "executed",
+          args: input.args,
+          result: withBrowserFallbackChain(
+            {
+              ...normalizedResult,
+              browserFailureClass: classification.failureClass,
+            },
+            fallbackChain,
+          ),
+        }),
         finishedAt: new Date().toISOString(),
       });
       return {
@@ -1260,6 +1508,13 @@ export class ChatAgentOrchestrator {
       status: "failed",
       error: classification.error ?? input.error ?? "browser execution failed",
       result: failureResult,
+      failureGuidance: buildToolFailureGuidance({
+        toolName: input.toolName,
+        status: "failed",
+        args: input.args,
+        result: failureResult,
+        error: classification.error ?? input.error ?? "browser execution failed",
+      }),
       finishedAt: new Date().toISOString(),
     });
     return {
@@ -1273,25 +1528,176 @@ export class ChatAgentOrchestrator {
     };
   }
 
+  private async tryAlternateBuiltinBrowserResult(input: {
+    created: ChatToolRunRecord;
+    turnInput: ChatAgentTurnInput;
+    turnId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    fallbackChain: Array<Record<string, unknown>>;
+    classification: {
+      failureClass?: string;
+      error?: string;
+    };
+    normalizedResult?: Record<string, unknown>;
+    error?: string;
+    turnBudgetDeadline?: number;
+  }): Promise<Record<string, unknown> | undefined> {
+    if (
+      input.toolName !== "browser.navigate"
+      && input.toolName !== "browser.extract"
+      && input.toolName !== "http.get"
+    ) {
+      return undefined;
+    }
+    if (
+      input.classification.failureClass !== "remote_blocked"
+      && input.classification.failureClass !== "http_error"
+      && input.classification.failureClass !== "unusable_output"
+      && input.classification.failureClass !== "runtime_error"
+    ) {
+      return undefined;
+    }
+
+    const syntheticCurrentFailure: ChatToolRunRecord = {
+      ...input.created,
+      status: "failed",
+      args: input.args,
+      error: input.classification.error ?? input.error ?? "browser execution failed",
+      result: {
+        ...(input.normalizedResult ?? {}),
+        engineTier: input.normalizedResult?.engineTier ?? "builtin",
+        engineLabel: input.normalizedResult?.engineLabel ?? "Built-in browser",
+        browserFailureClass: input.classification.failureClass ?? "runtime_error",
+      },
+      finishedAt: new Date().toISOString(),
+    };
+    const priorToolRuns = this.deps.storage.chatToolRuns
+      .listByTurn(input.turnId)
+      .filter((run) => run.toolRunId !== input.created.toolRunId);
+    const alternateUrls = selectRecentBrowserResultUrls(
+      input.turnInput.content,
+      [...priorToolRuns, syntheticCurrentFailure],
+      3,
+      3,
+    ).filter((url) => url !== input.args.url);
+
+    for (const url of alternateUrls) {
+      if (input.turnInput.signal?.aborted) {
+        break;
+      }
+      if (input.turnBudgetDeadline && Date.now() >= input.turnBudgetDeadline) {
+        break;
+      }
+      const alternateArgs = {
+        ...input.args,
+        url,
+      };
+      try {
+        const result = await this.deps.invokeTool({
+          toolName: input.toolName,
+          args: alternateArgs,
+          agentId: "assistant",
+          sessionId: input.turnInput.sessionId,
+          signal: input.turnInput.signal,
+          consentContext: {
+            source: "agent",
+            reason: `chat mode ${input.turnInput.mode}`,
+          },
+        });
+        if (result.outcome !== "executed") {
+          input.fallbackChain.push(buildBrowserFallbackChainEntry({
+            toolName: input.toolName,
+            engineTier: "builtin",
+            engineLabel: "Built-in browser",
+            result: {
+              url,
+              finalUrl: url,
+            },
+            error: result.outcome === "blocked"
+              ? result.policyReason
+              : "browser fallback requires approval",
+            browserFailureClass: "runtime_error",
+            status: "failed",
+          }));
+          continue;
+        }
+        const normalized = normalizeBrowserToolResult(input.toolName, result.result ?? {}, {
+          engineTier: "builtin",
+          engineLabel: "Built-in browser",
+        });
+        const classification = classifyBrowserToolResult(input.toolName, normalized);
+        input.fallbackChain.push(buildBrowserFallbackChainEntry({
+          toolName: input.toolName,
+          engineTier: "builtin",
+          engineLabel: "Built-in browser",
+          result: normalized,
+          error: classification.error,
+          browserFailureClass: classification.failureClass,
+          status: classification.failureClass ? "failed" : "executed",
+        }));
+        if (!classification.failureClass) {
+          return withBrowserFallbackChain(normalized, input.fallbackChain);
+        }
+      } catch (error) {
+        input.fallbackChain.push(buildBrowserFallbackChainEntry({
+          toolName: input.toolName,
+          engineTier: "builtin",
+          engineLabel: "Built-in browser",
+          result: {
+            url,
+            finalUrl: url,
+          },
+          error: (error as Error).message,
+          browserFailureClass: "runtime_error",
+          status: "failed",
+        }));
+      }
+    }
+
+    return undefined;
+  }
+
   private async tryBrowserFallbackAcrossMcpTiers(input: {
     turnInput: ChatAgentTurnInput;
     toolName: string;
     args: Record<string, unknown>;
     fallbackChain: Array<Record<string, unknown>>;
+    turnBudgetDeadline?: number;
   }): Promise<{ result: Record<string, unknown> } | undefined> {
     const targets = this.deps.listMcpBrowserFallbackTargets?.() ?? [];
     for (const target of targets) {
+      if (input.turnInput.signal?.aborted) {
+        break;
+      }
+      if (input.turnBudgetDeadline && Date.now() >= input.turnBudgetDeadline) {
+        break;
+      }
       const resolvedToolName = resolveBrowserFallbackToolName(target, input.toolName);
       if (!resolvedToolName) {
         continue;
       }
-      const response = await this.deps.invokeMcpTool?.({
-        serverId: target.serverId,
-        toolName: resolvedToolName,
-        arguments: buildBrowserFallbackArguments(input.toolName, input.args),
-        agentId: "assistant",
-        sessionId: input.turnInput.sessionId,
-      });
+      let response: McpInvokeResponse | undefined;
+      try {
+        response = await this.deps.invokeMcpTool?.({
+          serverId: target.serverId,
+          toolName: resolvedToolName,
+          arguments: buildBrowserFallbackArguments(input.toolName, input.args),
+          agentId: "assistant",
+          sessionId: input.turnInput.sessionId,
+          signal: input.turnInput.signal,
+        });
+      } catch (mcpError) {
+        input.fallbackChain.push(buildBrowserFallbackChainEntry({
+          toolName: resolvedToolName,
+          engineTier: target.tier,
+          engineLabel: target.label,
+          error: (mcpError as Error).message,
+          browserFailureClass: "runtime_error",
+          status: "failed",
+        }));
+        continue;
+      }
       if (!response) {
         continue;
       }
@@ -1326,6 +1732,7 @@ export class ChatAgentOrchestrator {
     toolName: string;
     rawArgs: Record<string, unknown>;
     userContent: string;
+    historyMessages: ChatCompletionRequest["messages"];
     webMode: ChatWebMode;
     localFileIntent?: boolean;
     priorToolRuns?: ChatToolRunRecord[];
@@ -1361,6 +1768,15 @@ export class ChatAgentOrchestrator {
             maxChars: 6000,
           },
         };
+      }
+      const groundedQuery = resolveGroundedBrowserSearchQuery({
+        rawArgs: args,
+        userContent: input.userContent,
+        historyMessages: input.historyMessages,
+        priorToolRuns: input.priorToolRuns,
+      });
+      if (groundedQuery) {
+        args.query = groundedQuery;
       }
     }
     if (
@@ -1459,6 +1875,7 @@ export class ChatAgentOrchestrator {
       args: fallbackArgs,
       agentId: "assistant",
       sessionId: input.input.sessionId,
+      signal: input.input.signal,
       consentContext: {
         source: "agent",
         reason: `chat mode ${input.input.mode}; safe write fallback`,
@@ -1475,6 +1892,7 @@ export class ChatAgentOrchestrator {
     input: ChatAgentTurnInput;
     toolRuns: ChatToolRunRecord[];
     circuitBreakerReason?: string;
+    turnBudgetDeadline?: number;
   }): Promise<string> {
     const deterministic = buildDeterministicToolSynthesisFallback(
       input.input.content,
@@ -1482,11 +1900,16 @@ export class ChatAgentOrchestrator {
       input.circuitBreakerReason,
     );
     const toolSummary = summarizeToolRunsForSynthesis(input.toolRuns);
+    const synthesisTimeoutMs = input.turnBudgetDeadline
+      ? Math.min(15000, Math.max(3000, input.turnBudgetDeadline - Date.now()))
+      : 15000;
     try {
       const completion = await this.deps.createChatCompletion({
         providerId: input.input.providerId,
         model: input.input.model,
         stream: false,
+        timeoutMs: synthesisTimeoutMs,
+        signal: input.input.signal,
         memory: {
           enabled: false,
           mode: "off",
@@ -1530,6 +1953,216 @@ export class ChatAgentOrchestrator {
     }
     return deterministic;
   }
+}
+
+function selectActiveExecutionPlan(plans: ChatExecutionPlanRecord[]): ChatExecutionPlanRecord | undefined {
+  const active = plans.find((plan) => plan.status === "running")
+    ?? plans.find((plan) => plan.status === "ready")
+    ?? plans.find((plan) => plan.status === "drafted");
+  return active ?? plans[0];
+}
+
+function selectExecutionPlanSuggestedTools(plan: ChatExecutionPlanRecord | undefined): string[] {
+  if (!plan) {
+    return [];
+  }
+  const activeStep = plan.steps.find((step) => step.status === "running")
+    ?? plan.steps.find((step) => step.status === "pending");
+  return activeStep?.suggestedTools ?? [];
+}
+
+function buildRecentToolFailureCounts(toolRuns: ChatToolRunRecord[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const run of toolRuns) {
+    if (run.status !== "failed" && run.status !== "blocked") {
+      continue;
+    }
+    counts.set(run.toolName, (counts.get(run.toolName) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function buildEssentialToolSet(input: {
+  mode: ChatMode;
+  webMode: ChatWebMode;
+  liveDataIntent: boolean;
+  localFileIntent: boolean;
+  projectBound: boolean;
+}): string[] {
+  const tools = new Set<string>(["time.now"]);
+  if (input.mode !== "chat" || input.localFileIntent) {
+    tools.add("memory.search");
+  }
+  if (input.liveDataIntent && input.webMode !== "off") {
+    tools.add("browser.search");
+    tools.add("browser.navigate");
+    tools.add("http.get");
+  }
+  if (input.localFileIntent || input.projectBound || input.mode === "code") {
+    tools.add("file.read_range");
+    tools.add("file.find");
+    tools.add("code.search");
+    tools.add("code.search_files");
+  }
+  if (input.mode === "code") {
+    tools.add("shell.exec");
+    tools.add("tests.run");
+    tools.add("lint.run");
+  }
+  return [...tools];
+}
+
+function scoreToolForTurn(input: {
+  tool: ToolCatalogEntry;
+  mode: ChatMode;
+  liveDataIntent: boolean;
+  localFileIntent: boolean;
+  projectBound: boolean;
+  suggestedTools: Set<string>;
+  failedCounts: Map<string, number>;
+  content: string;
+}): number {
+  const { tool } = input;
+  let score = 0;
+  if (tool.recommendedContexts?.includes(input.mode)) {
+    score += 4;
+  }
+  if (input.projectBound && tool.recommendedContexts?.includes("project_bound")) {
+    score += 2;
+  }
+  if (input.suggestedTools.has(tool.toolName)) {
+    score += 12;
+  }
+  if (input.liveDataIntent) {
+    score += scoreToolIntentMatch(tool, ["live_data", "web_lookup", "fetch_url", "api_lookup", "research"], 6);
+    if (tool.preferredForIntents?.includes("local_file") || tool.preferredForIntents?.includes("inspect_code")) {
+      score -= 4;
+    }
+  }
+  if (input.localFileIntent) {
+    score += scoreToolIntentMatch(
+      tool,
+      ["local_file", "inspect_code", "search_code", "search_files", "read_file", "targeted_read", "project_context"],
+      7,
+    );
+    if (isWebToolName(tool.toolName)) {
+      score -= 6;
+    }
+  }
+  if (input.mode === "chat") {
+    if (tool.category === "research" || tool.category === "knowledge" || tool.category === "session") {
+      score += 2;
+    }
+    if (tool.category === "shell" || tool.category === "git") {
+      score -= 2;
+    }
+  } else if (input.mode === "cowork") {
+    if (tool.category === "research" || tool.category === "fs" || tool.category === "ops" || tool.category === "knowledge") {
+      score += 2;
+    }
+  } else if (input.mode === "code") {
+    if (tool.category === "fs" || tool.category === "shell" || tool.category === "git" || tool.category === "ops") {
+      score += 3;
+    }
+    if (tool.category === "research" && !input.liveDataIntent) {
+      score -= 1;
+    }
+  }
+  const failureCount = input.failedCounts.get(tool.toolName) ?? 0;
+  if (failureCount > 0) {
+    score -= Math.min(8, failureCount * 3);
+  }
+  score += scoreToolLexicalMatch(tool, input.content);
+  if (tool.requiresApproval && input.mode === "chat") {
+    score -= 1;
+  }
+  return score;
+}
+
+function scoreToolIntentMatch(tool: ToolCatalogEntry, intents: string[], weight: number): number {
+  if (!tool.preferredForIntents) {
+    return 0;
+  }
+  const hits = intents.filter((intent) => tool.preferredForIntents?.includes(intent)).length;
+  return hits > 0 ? weight + hits : 0;
+}
+
+function scoreToolLexicalMatch(tool: ToolCatalogEntry, content: string): number {
+  const queryTokens = tokenizeToolSelectionText(content);
+  if (queryTokens.length === 0) {
+    return 0;
+  }
+  const haystack = [
+    tool.toolName,
+    tool.description,
+    ...(tool.preferredForIntents ?? []),
+    ...(tool.recommendedContexts ?? []),
+    ...(tool.usageHints ?? []),
+    ...tool.examples.map((item) => item.title),
+  ].join(" ").toLowerCase();
+  const hits = queryTokens.filter((token) => haystack.includes(token)).length;
+  return Math.min(4, hits);
+}
+
+function tokenizeToolSelectionText(value: string): string[] {
+  return [...new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  )];
+}
+
+function buildToolFunctionDescription(tool: ToolCatalogEntry): string {
+  const hints = tool.usageHints?.slice(0, 2) ?? [];
+  const examples = tool.examples.slice(0, 1).map((item) => `Example: ${item.title}.`);
+  return [tool.description, ...hints, ...examples].join(" ").trim();
+}
+
+function buildToolFailureGuidance(input: {
+  toolName: string;
+  status: ChatToolRunRecord["status"];
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string;
+}): string | undefined {
+  const normalizedError = (input.error ?? "").toLowerCase();
+  const host = readBlockedSourceHost(input.result ?? {}, input.args);
+  const browserFailureClass = typeof input.result?.browserFailureClass === "string"
+    ? input.result.browserFailureClass
+    : undefined;
+
+  if (input.toolName.startsWith("browser.") || input.toolName.startsWith("http.")) {
+    if (browserFailureClass === "remote_blocked" || normalizedError.includes("cloudflare") || normalizedError.includes("captcha")) {
+      return `Try an alternate host or source instead of retrying${host ? ` ${host}` : " the same blocked page"}.`;
+    }
+    if (browserFailureClass === "http_error" || /\b401\b|\b403\b|\b429\b|unauthorized|forbidden|auth/.test(normalizedError)) {
+      return /\b401\b|unauthorized|auth|token|credential/.test(normalizedError)
+        ? "Reconnect auth or switch to a source/provider with valid credentials."
+        : "Retry with an alternate source instead of the same failing host.";
+    }
+    if (browserFailureClass === "no_results") {
+      return "Broaden the query or try a more specific source.";
+    }
+    if (browserFailureClass === "unusable_output") {
+      return "Use a narrower page or a more specific extraction target before retrying.";
+    }
+  }
+
+  if (normalizedError.includes("write jail") || normalizedError.includes("outside write")) {
+    return "Use a safe fallback path inside the workspace write jail.";
+  }
+  if (input.toolName.startsWith("shell.") && normalizedError.includes("requires approval")) {
+    return "Use a safer restricted tool or request approval for the risky shell command.";
+  }
+  if (normalizedError.includes("query is required")) {
+    return "Retry with an explicit query, URL, or file path instead of a vague follow-up.";
+  }
+  if (input.status === "failed" || input.status === "blocked") {
+    return `Retry ${formatToolLabel(input.toolName)} with a narrower, more explicit input.`;
+  }
+  return undefined;
 }
 
 function normalizeToolParameters(tool: ToolCatalogEntry): Record<string, unknown> {
@@ -2346,6 +2979,35 @@ function inferToolArgValue(toolName: string, field: string, userContent: string)
   return undefined;
 }
 
+function resolveGroundedBrowserSearchQuery(input: {
+  rawArgs: Record<string, unknown>;
+  userContent: string;
+  historyMessages: ChatCompletionRequest["messages"];
+  priorToolRuns?: ChatToolRunRecord[];
+}): string | undefined {
+  const queryCandidates = readBrowserSearchQueryCandidatesFromArgs(input.rawArgs);
+  const currentQuery = queryCandidates[0];
+  if (currentQuery && !looksLikeContinuationSearchPrompt(currentQuery)) {
+    return currentQuery;
+  }
+
+  const alternatives = [
+    ...queryCandidates.slice(1),
+    inferMeaningfulQueryFromRecentToolRuns(input.priorToolRuns),
+    inferMeaningfulPriorUserQuery(input.userContent, input.historyMessages),
+  ].filter((value): value is string => typeof value === "string" && value.trim().length >= 3);
+  const bestAlternative = selectBestQueryCandidate(alternatives);
+  if (bestAlternative) {
+    return bestAlternative;
+  }
+
+  const inferredFromPrompt = inferQueryFromPrompt(input.userContent);
+  if (inferredFromPrompt && !looksLikeContinuationSearchPrompt(inferredFromPrompt)) {
+    return inferredFromPrompt;
+  }
+  return currentQuery;
+}
+
 function inferToolArgValueFromRecentToolRuns(
   toolName: string,
   field: string,
@@ -2459,25 +3121,7 @@ function selectBestRecentBrowserResultUrl(
   toolRuns: ChatToolRunRecord[],
   minimumScore: number,
 ): string | undefined {
-  const poisonedHosts = collectPoisonedBrowserHosts(toolRuns);
-  const candidates = collectRecentBrowserSearchCandidates(toolRuns, poisonedHosts);
-  if (candidates.length === 0) {
-    return undefined;
-  }
-  const derivedQuery = deriveLiveDataQuery(userContent);
-  const queryTokens = tokenizeBrowserSearchText(derivedQuery);
-  const newsLike = isLikelyNewsOrCurrentEventsQuery(userContent);
-  let best: { candidate: BrowserResultCandidate; score: number } | undefined;
-  for (const candidate of candidates) {
-    const score = scoreBrowserResultCandidate(candidate, derivedQuery, queryTokens, newsLike);
-    if (!best || score > best.score) {
-      best = { candidate, score };
-    }
-  }
-  if (!best || best.score < minimumScore) {
-    return undefined;
-  }
-  return best.candidate.url;
+  return selectRecentBrowserResultUrls(userContent, toolRuns, minimumScore, 1)[0];
 }
 
 function collectRecentBrowserSearchCandidates(
@@ -2524,6 +3168,32 @@ function collectRecentBrowserSearchCandidates(
   return [];
 }
 
+function selectRecentBrowserResultUrls(
+  userContent: string,
+  toolRuns: ChatToolRunRecord[],
+  minimumScore: number,
+  limit: number,
+): string[] {
+  const poisonedHosts = collectPoisonedBrowserHosts(toolRuns);
+  const candidates = collectRecentBrowserSearchCandidates(toolRuns, poisonedHosts);
+  if (candidates.length === 0) {
+    return [];
+  }
+  const derivedQuery = deriveLiveDataQuery(userContent);
+  const queryTokens = tokenizeBrowserSearchText(derivedQuery);
+  const newsLike = isLikelyNewsOrCurrentEventsQuery(userContent);
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      score: scoreBrowserResultCandidate(candidate, derivedQuery, queryTokens, newsLike),
+    }))
+    .filter((item) => item.score >= minimumScore)
+    .sort((left, right) => right.score - left.score)
+    .map((item) => item.candidate.url)
+    .filter((value, index, items) => items.indexOf(value) === index)
+    .slice(0, limit);
+}
+
 function collectPoisonedBrowserHosts(toolRuns: ChatToolRunRecord[]): Set<string> {
   const poisoned = new Set<string>();
 
@@ -2547,16 +3217,18 @@ function collectPoisonedBrowserHosts(toolRuns: ChatToolRunRecord[]): Set<string>
     if (!run || !run.result || typeof run.result !== "object") {
       continue;
     }
-    if (run.status !== "failed" && run.status !== "blocked") {
-      continue;
-    }
     const result = run.result as Record<string, unknown>;
     const fallbackUrl = typeof run.args?.url === "string" ? run.args.url : undefined;
 
-    // Check top-level result
-    addPoisonedFromResult(result, fallbackUrl);
+    if (run.status === "failed" || run.status === "blocked") {
+      // Check top-level result for failed/blocked runs.
+      addPoisonedFromResult(result, fallbackUrl);
+    }
 
-    // P2-8: Also scan fallback chain entries within the result.
+    // P2-8: Also scan fallback chain entries within the result,
+    // including "executed" runs recovered via MCP fallback — the
+    // builtin-level failure inside the chain still poisons the host
+    // for future builtin attempts.
     const fallbackChain = Array.isArray(result.fallbackChain) ? result.fallbackChain : [];
     for (const entry of fallbackChain) {
       if (entry && typeof entry === "object") {
@@ -2668,6 +3340,86 @@ function extractUsefulVisitedBrowserUrl(result: Record<string, unknown>): string
     }
   }
   return undefined;
+}
+
+function findReusableBrowserToolResult(
+  toolName: string,
+  rawArgs: Record<string, unknown>,
+  args: Record<string, unknown>,
+  priorToolRuns: ChatToolRunRecord[] | undefined,
+): ChatToolRunRecord | undefined {
+  if (
+    !priorToolRuns
+    || priorToolRuns.length === 0
+    || toolName !== "http.get"
+  ) {
+    return undefined;
+  }
+  if (typeof rawArgs.url !== "string" || rawArgs.url.trim().length === 0) {
+    return undefined;
+  }
+  const requestedUrl = normalizeBrowserReuseUrl(typeof args.url === "string" ? args.url : undefined);
+  if (!requestedUrl) {
+    return undefined;
+  }
+  for (let index = priorToolRuns.length - 1; index >= 0; index -= 1) {
+    const run = priorToolRuns[index];
+    if (
+      !run
+      || run.toolName !== toolName
+      || run.status !== "executed"
+      || !run.result
+      || typeof run.result !== "object"
+    ) {
+      continue;
+    }
+    const result = run.result as Record<string, unknown>;
+    const resolvedUrl = normalizeBrowserReuseUrl(
+      extractUsefulVisitedBrowserUrl(result)
+        ?? extractBrowserToolUrl(result)
+        ?? (typeof run.args?.url === "string" ? run.args.url : undefined),
+    );
+    if (!resolvedUrl || resolvedUrl !== requestedUrl) {
+      continue;
+    }
+    const failureClass = typeof result.browserFailureClass === "string"
+      ? result.browserFailureClass
+      : undefined;
+    if (failureClass && failureClass !== "no_results") {
+      continue;
+    }
+    const status = readBrowserStatusNumber(result.status);
+    if (typeof status === "number" && status >= 400) {
+      continue;
+    }
+    const usefulText = normalizeRecoveredContentText(
+      readFirstString(
+        result.textSnippet,
+        result.bodySnippet,
+        result.contentText,
+        result.text,
+        result.message,
+      ),
+    );
+    if (!usefulText) {
+      continue;
+    }
+    return run;
+  }
+  return undefined;
+}
+
+function normalizeBrowserReuseUrl(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function tokenizeBrowserSearchText(value: string): string[] {
@@ -2810,6 +3562,102 @@ function inferQueryFromPrompt(userContent: string): string | undefined {
   return derived;
 }
 
+function readBrowserSearchQueryCandidatesFromArgs(rawArgs: Record<string, unknown>): string[] {
+  const candidates: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value === "string" && value.trim().length >= 3) {
+      candidates.push(value.trim());
+      return;
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const nested = readFirstString(record.query, record.text, record.value, record.content);
+      if (nested && nested.length >= 3) {
+        candidates.push(nested);
+      }
+    }
+  };
+  push(rawArgs.query);
+  if (Array.isArray(rawArgs.queries)) {
+    for (const value of rawArgs.queries) {
+      push(value);
+    }
+  }
+  return candidates.filter((value, index, items) => items.indexOf(value) === index);
+}
+
+function selectBestQueryCandidate(candidates: string[]): string | undefined {
+  const ranked = candidates
+    .filter((candidate) => !looksLikeContinuationSearchPrompt(candidate))
+    .sort((left, right) => scoreQueryCandidate(right) - scoreQueryCandidate(left))[0];
+  return ranked ? sanitizeQueryClause(ranked).slice(0, 240) : undefined;
+}
+
+function inferMeaningfulQueryFromRecentToolRuns(toolRuns: ChatToolRunRecord[] | undefined): string | undefined {
+  if (!toolRuns || toolRuns.length === 0) {
+    return undefined;
+  }
+  for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
+    const run = toolRuns[index];
+    if (!run || run.toolName !== "browser.search" || run.status !== "executed") {
+      continue;
+    }
+    const query = typeof run.args?.query === "string" ? run.args.query.trim() : "";
+    if (query && !looksLikeContinuationSearchPrompt(query)) {
+      return query;
+    }
+  }
+  return undefined;
+}
+
+function inferMeaningfulPriorUserQuery(
+  currentUserContent: string,
+  historyMessages: ChatCompletionRequest["messages"],
+): string | undefined {
+  let skippedCurrentUser = false;
+  const normalizedCurrent = currentUserContent.trim();
+  for (let index = historyMessages.length - 1; index >= 0; index -= 1) {
+    const message = historyMessages[index] as unknown as Record<string, unknown>;
+    if (message.role !== "user") {
+      continue;
+    }
+    const content = extractMessageContent(message).trim();
+    if (!content) {
+      continue;
+    }
+    if (!skippedCurrentUser && content === normalizedCurrent) {
+      skippedCurrentUser = true;
+      continue;
+    }
+    const inferred = inferQueryFromPrompt(content) ?? deriveLiveDataQuery(content);
+    if (inferred && !looksLikeContinuationSearchPrompt(inferred)) {
+      return inferred;
+    }
+  }
+  return undefined;
+}
+
+function looksLikeContinuationSearchPrompt(value: string): boolean {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return false;
+  }
+  if (looksLikeFreshStandalonePrompt(value)) {
+    return false;
+  }
+  if (
+    /\b(one more time|again|better fallback|retry|re run|rerun|run that again|same search|that search|this search|from those results|from there|keep going|keep digging|another pass)\b/.test(normalized)
+  ) {
+    return true;
+  }
+  return /^(try|retry|search|run|continue|keep)\b/.test(normalized)
+    && normalized.split(" ").length <= 8;
+}
+
 function sanitizeQueryClause(value: string): string {
   return value
     .replace(/^["'`]+|["'`]+$/g, "")
@@ -2886,6 +3734,7 @@ function summarizeToolRunsForSynthesis(toolRuns: ChatToolRunRecord[]): string {
       `- ${run.toolName}`,
       `[${run.status}]`,
       run.error ? `error: ${run.error}` : undefined,
+      run.failureGuidance ? `guidance: ${run.failureGuidance}` : undefined,
       run.result ? `result: ${truncateJson(run.result, 280)}` : undefined,
     ].filter(Boolean);
     lines.push(summaryParts.join(" "));
@@ -2901,6 +3750,29 @@ function buildDeterministicToolSynthesisFallback(
   const extractionFallback = buildExtractionFailureFallback(userPrompt, toolRuns, reason);
   if (extractionFallback) {
     return extractionFallback;
+  }
+  const fetchedContent = recoverFetchedContentEvidence(toolRuns);
+  if (fetchedContent) {
+    const summaryPoints = summarizeRecoveredFetchedContent(fetchedContent.text, 3);
+    if (summaryPoints.length > 0) {
+      const sourceLabel = fetchedContent.title?.trim()
+        || (fetchedContent.url
+          ? formatRecoveredSearchLead({
+              title: null,
+              url: fetchedContent.url,
+            })
+          : "the fetched page");
+      const lines = [
+        `I couldn't finish that cleanly because ${reason ?? "the tool flow did not converge to a complete answer"}, but I did recover useful content from ${sourceLabel}:`,
+        "",
+        ...summaryPoints.map((point, index) => `${index + 1}. ${point}`),
+      ];
+      if (fetchedContent.url) {
+        lines.push("", `Source: ${sourceLabel} - ${fetchedContent.url}`);
+      }
+      lines.push("", "If you want, I can continue from this source with a narrower follow-up.");
+      return lines.join("\n");
+    }
   }
   const failures = toolRuns
     .filter((item) => item.status === "failed" || item.status === "blocked")
@@ -3154,11 +4026,14 @@ function buildToolFailureAppendix(toolRuns: ChatToolRunRecord[]): string | undef
   const opening = uniqueTools.length === 1
     ? `Note: ${uniqueTools[0]} failed while I was working, so parts of this answer may be incomplete.`
     : "Note: a few tools failed while I was working, so parts of this answer may be incomplete.";
+  const guidance = [...new Set(failedOrBlocked.map((run) => run.failureGuidance).filter(Boolean))][0];
   return [
     opening,
     "",
+    guidance ? `Best next move: ${guidance}` : undefined,
+    guidance ? "" : undefined,
     "If you want, I can retry with a narrower query or explicit source details.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildToolFailureFallbackMessage(
@@ -3169,6 +4044,10 @@ function buildToolFailureFallbackMessage(
   const blockedSource = inferBlockedSourceFailure(toolRuns);
   const strongestLeads = recoverTitleUrlItems(toolRuns, 3);
   if (strongestLeads.length > 0) {
+    const guidance = toolRuns
+      .filter((run) => run.status === "failed" || run.status === "blocked")
+      .map((run) => run.failureGuidance)
+      .find(Boolean);
     return [
       blockedSource
         ? `A source blocked automated browsing${blockedSource.host ? ` on ${blockedSource.host}` : ""}, but these look like the strongest leads so far:`
@@ -3176,8 +4055,10 @@ function buildToolFailureFallbackMessage(
       "",
       ...strongestLeads.map((item, index) => `${index + 1}. ${formatRecoveredSearchLead(item)}`),
       "",
+      guidance ? `Best next move: ${guidance}` : undefined,
+      guidance ? "" : undefined,
       "If you want, tell me which lead to keep digging into, or retry with a narrower query.",
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
 
   const lastFailure = toolRuns
@@ -3198,6 +4079,9 @@ function buildToolFailureFallbackMessage(
   ];
   if (lastFailure) {
     lines.push(`The blocker was in ${formatToolLabel(lastFailure.toolName)}.`);
+    if (lastFailure.failureGuidance) {
+      lines.push(`Best next move: ${lastFailure.failureGuidance}`);
+    }
   }
   if (evidence.length > 0) {
     lines.push(`Most useful partial result so far: ${evidence[0]}`);
@@ -3222,7 +4106,9 @@ export function defaultThinkingTokens(level: ChatThinkingLevel): number | undefi
 }
 
 function resolveChatExecutionBudget(
-  input: Pick<ChatAgentTurnInput, "webMode" | "thinkingLevel">,
+  input: Pick<ChatAgentTurnInput, "webMode" | "thinkingLevel"> & {
+    liveDataIntent?: boolean;
+  },
 ): ChatExecutionBudget {
   const defaultMaxTokens = defaultThinkingTokens(input.thinkingLevel);
   if (input.webMode === "deep") {
@@ -3233,6 +4119,8 @@ function resolveChatExecutionBudget(
       maxToolRunsPerTurn: MAX_TOOL_RUNS_PER_TURN,
       searchMaxResults: 8,
       maxTokens: Math.max(defaultMaxTokens ?? 900, 1200),
+      minSynthesisReserveMs: 15000,
+      expensiveToolMinimumRemainingMs: 30000,
     };
   }
   if (input.webMode === "quick") {
@@ -3243,6 +4131,8 @@ function resolveChatExecutionBudget(
       maxToolRunsPerTurn: 3,
       searchMaxResults: 4,
       maxTokens: Math.min(defaultMaxTokens ?? 600, 600),
+      minSynthesisReserveMs: 6000,
+      expensiveToolMinimumRemainingMs: 12000,
     };
   }
   if (input.webMode === "off") {
@@ -3253,6 +4143,20 @@ function resolveChatExecutionBudget(
       maxToolRunsPerTurn: 4,
       searchMaxResults: 0,
       maxTokens: Math.min(defaultMaxTokens ?? 700, 800),
+      minSynthesisReserveMs: 7000,
+      expensiveToolMinimumRemainingMs: 14000,
+    };
+  }
+  if (input.liveDataIntent) {
+    return {
+      turnBudgetMs: 50000,
+      completionTimeoutMs: 28000,
+      maxToolLoops: 3,
+      maxToolRunsPerTurn: 5,
+      searchMaxResults: 5,
+      maxTokens: Math.min(defaultMaxTokens ?? 900, 1100),
+      minSynthesisReserveMs: 10000,
+      expensiveToolMinimumRemainingMs: 26000,
     };
   }
   return {
@@ -3262,7 +4166,78 @@ function resolveChatExecutionBudget(
     maxToolRunsPerTurn: 5,
     searchMaxResults: 5,
     maxTokens: Math.min(defaultMaxTokens ?? 900, 1100),
+    minSynthesisReserveMs: 8000,
+    expensiveToolMinimumRemainingMs: 18000,
   };
+}
+
+function minimumRemainingBudgetForToolStart(
+  toolName: string,
+  executionBudget: ChatExecutionBudget,
+): number {
+  if (isExpensiveChatTool(toolName)) {
+    return Math.max(
+      executionBudget.expensiveToolMinimumRemainingMs,
+      executionBudget.minSynthesisReserveMs,
+    );
+  }
+  return executionBudget.minSynthesisReserveMs;
+}
+
+function isExpensiveChatTool(toolName: string): boolean {
+  return toolName === "browser.navigate"
+    || toolName === "browser.extract"
+    || toolName === "http.get";
+}
+
+function extendTurnBudgetForExecutedBrowserTool(input: {
+  toolName: string;
+  toolStatus: ChatToolRunRecord["status"];
+  webMode: ChatWebMode;
+  currentTurnBudgetMs: number;
+  currentCompletionTimeoutMs: number;
+  turnBudgetDeadline: number;
+}): {
+  turnBudgetDeadline: number;
+  effectiveTurnBudgetMs: number;
+  effectiveCompletionTimeoutMs: number;
+} {
+  if (
+    input.webMode !== "auto"
+    || input.toolStatus !== "executed"
+    || !shouldExtendTurnBudgetForBrowserExecution(input.toolName)
+  ) {
+    return {
+      turnBudgetDeadline: input.turnBudgetDeadline,
+      effectiveTurnBudgetMs: input.currentTurnBudgetMs,
+      effectiveCompletionTimeoutMs: input.currentCompletionTimeoutMs,
+    };
+  }
+  const extendedTurnBudgetMs = isExpensiveChatTool(input.toolName)
+    ? Math.max(input.currentTurnBudgetMs, 70000)
+    : Math.max(input.currentTurnBudgetMs, 50000);
+  const extendedCompletionTimeoutMs = isExpensiveChatTool(input.toolName)
+    ? Math.max(input.currentCompletionTimeoutMs, 28000)
+    : input.currentCompletionTimeoutMs;
+  if (
+    extendedTurnBudgetMs === input.currentTurnBudgetMs
+    && extendedCompletionTimeoutMs === input.currentCompletionTimeoutMs
+  ) {
+    return {
+      turnBudgetDeadline: input.turnBudgetDeadline,
+      effectiveTurnBudgetMs: input.currentTurnBudgetMs,
+      effectiveCompletionTimeoutMs: input.currentCompletionTimeoutMs,
+    };
+  }
+  return {
+    turnBudgetDeadline: input.turnBudgetDeadline + (extendedTurnBudgetMs - input.currentTurnBudgetMs),
+    effectiveTurnBudgetMs: extendedTurnBudgetMs,
+    effectiveCompletionTimeoutMs: extendedCompletionTimeoutMs,
+  };
+}
+
+function shouldExtendTurnBudgetForBrowserExecution(toolName: string): boolean {
+  return toolName === "browser.search" || isExpensiveChatTool(toolName);
 }
 
 function createTurnBudgetDeadline(turnBudgetMs: number): number {
@@ -3408,6 +4383,13 @@ function buildTurnBudgetExceededFallbackMessage(
   toolRuns: ChatToolRunRecord[],
   turnBudgetMs: number,
 ): string {
+  const fetchedContentFallback = buildFetchedContentBudgetFallback(
+    input.webMode,
+    toolRuns,
+  );
+  if (fetchedContentFallback) {
+    return fetchedContentFallback;
+  }
   const searchFallback = buildSearchResultBudgetFallback(
     input.webMode,
     toolRuns,
@@ -3426,6 +4408,43 @@ function buildTurnBudgetExceededFallbackMessage(
     return "I ran out of time before I could finish that deep-research pass. Narrow the scope or split it into smaller follow-ups and I can continue.";
   }
   return "I stopped that turn to keep chat responsive. If you want a slower, more exhaustive pass, enable Deep research and resend it.";
+}
+
+function buildFetchedContentBudgetFallback(
+  webMode: ChatWebMode,
+  toolRuns: ChatToolRunRecord[],
+): string | undefined {
+  const recoveredContent = recoverFetchedContentEvidence(toolRuns);
+  if (!recoveredContent) {
+    return undefined;
+  }
+  const summaryPoints = summarizeRecoveredFetchedContent(recoveredContent.text, 3);
+  if (summaryPoints.length === 0) {
+    return undefined;
+  }
+  const sourceLabel = recoveredContent.title?.trim()
+    || (recoveredContent.url
+      ? formatRecoveredSearchLead({
+          title: null,
+          url: recoveredContent.url,
+        })
+      : "the fetched page");
+  const sourceLine = recoveredContent.url
+    ? `${sourceLabel} - ${recoveredContent.url}`
+    : sourceLabel;
+  return [
+    webMode === "deep"
+      ? `I ran out of time before I could finish the full deep-research pass, but I did recover useful content from ${sourceLabel}:`
+      : `I ran out of time before I could finish a full pass, but I did recover useful content from ${sourceLabel}:`,
+    "",
+    ...summaryPoints.map((point, index) => `${index + 1}. ${point}`),
+    "",
+    `Source: ${sourceLine}`,
+    "",
+    webMode === "deep"
+      ? "If you want, ask me to continue from this page with a narrower follow-up."
+      : "If you want, ask me to continue from this page with a narrower follow-up, or retry in Deep mode for a slower pass.",
+  ].join("\n");
 }
 
 function buildSearchResultBudgetFallback(
@@ -3453,6 +4472,95 @@ function buildSearchResultBudgetFallback(
   return lines.join("\n");
 }
 
+interface RecoveredFetchedContentEvidence {
+  title?: string;
+  url?: string;
+  text: string;
+}
+
+function recoverFetchedContentEvidence(
+  toolRuns: ChatToolRunRecord[],
+): RecoveredFetchedContentEvidence | undefined {
+  for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
+    const run = toolRuns[index];
+    if (
+      !run
+      || run.status !== "executed"
+      || !run.result
+      || typeof run.result !== "object"
+      || (run.toolName !== "browser.navigate" && run.toolName !== "browser.extract" && run.toolName !== "http.get")
+    ) {
+      continue;
+    }
+    const result = run.result as Record<string, unknown>;
+    const failureClass = typeof result.browserFailureClass === "string"
+      ? result.browserFailureClass
+      : undefined;
+    if (failureClass && failureClass !== "no_results") {
+      continue;
+    }
+    const status = readBrowserStatusNumber(result.status);
+    if (typeof status === "number" && status >= 400) {
+      continue;
+    }
+    const text = normalizeRecoveredContentText(
+      readFirstString(
+        result.textSnippet,
+        result.bodySnippet,
+        result.contentText,
+        result.text,
+        result.message,
+      ),
+    );
+    if (!text || text.length < 80) {
+      continue;
+    }
+    return {
+      title: readFirstString(result.title),
+      url: extractUsefulVisitedBrowserUrl(result) ?? extractBrowserToolUrl(result),
+      text,
+    };
+  }
+  return undefined;
+}
+
+function normalizeRecoveredContentText(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .trim();
+  return normalized || undefined;
+}
+
+function summarizeRecoveredFetchedContent(value: string, limit: number): string[] {
+  const normalized = normalizeRecoveredContentText(value);
+  if (!normalized) {
+    return [];
+  }
+  const rawSegments = normalized.split(/(?<=[.!?])\s+|\s*[•·]\s+|\s{2,}/);
+  const points: string[] = [];
+  const seen = new Set<string>();
+  for (const rawSegment of rawSegments) {
+    const segment = normalizeRecoveredContentText(rawSegment);
+    if (!segment || segment.length < 45) {
+      continue;
+    }
+    const dedupeKey = segment.toLowerCase();
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    points.push(truncatePlainText(segment, 220));
+    if (points.length >= limit) {
+      return points;
+    }
+  }
+  return [truncatePlainText(normalized, 280)];
+}
+
 function formatRecoveredSearchLead(item: { title: string | null; url: string }): string {
   const title = item.title?.trim();
   if (title) {
@@ -3464,6 +4572,18 @@ function formatRecoveredSearchLead(item: { title: string | null; url: string }):
   } catch {
     return item.url;
   }
+}
+
+function truncatePlainText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const truncated = value.slice(0, maxChars);
+  const lastSpace = truncated.lastIndexOf(" ");
+  if (lastSpace >= Math.max(40, Math.floor(maxChars * 0.6))) {
+    return `${truncated.slice(0, lastSpace).trim()}...`;
+  }
+  return `${truncated.trim()}...`;
 }
 
 export function normalizeAgentInputFromSend(

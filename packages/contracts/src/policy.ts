@@ -25,6 +25,7 @@ export interface ToolInvokeRequest {
   agentId: string;
   sessionId: string;
   taskId?: string;
+  signal?: AbortSignal;
   consentContext?: {
     operatorId?: string;
     source?: "ui" | "tui" | "agent";

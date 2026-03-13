@@ -21,7 +21,7 @@ interface JsonRpcEnvelope {
 }
 
 interface StdioClient {
-  request(method: string, params?: Record<string, unknown>): Promise<JsonRpcEnvelope>;
+  request(method: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<JsonRpcEnvelope>;
   notify(method: string, params?: Record<string, unknown>): void;
   close(): void;
   readStderr(): string;
@@ -95,7 +95,7 @@ export async function discoverMcpTools(
 
 export async function invokeMcpRuntimeTool(
   server: McpServerRecord,
-  input: Pick<McpInvokeRequest, "toolName" | "arguments">,
+  input: Pick<McpInvokeRequest, "toolName" | "arguments" | "signal">,
   timeoutMs = DEFAULT_STDIO_TIMEOUT_MS,
 ): Promise<McpRuntimeInvocationResult> {
   if (server.transport !== "stdio") {
@@ -115,7 +115,7 @@ export async function invokeMcpRuntimeTool(
       const response = await client.request("tools/call", {
         name: input.toolName,
         arguments: input.arguments ?? {},
-      });
+      }, input.signal);
       if (response.error) {
         const detail = stringifyUnknown(response.error.data);
         return {
@@ -145,7 +145,7 @@ export async function invokeMcpRuntimeTool(
         ok: true,
         output,
       };
-    });
+    }, input.signal);
   } catch (error) {
     return {
       ok: false,
@@ -308,6 +308,7 @@ async function withStdioMcpClient<T>(
   server: McpServerRecord,
   timeoutMs: number,
   run: (client: StdioClient) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const command = resolveSpawnCommand(server.command ?? "");
   const child = spawn(command, server.args ?? [], {
@@ -376,7 +377,11 @@ async function withStdioMcpClient<T>(
     }
   });
 
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<JsonRpcEnvelope> => {
+  const request = (
+    method: string,
+    params: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<JsonRpcEnvelope> => {
     if (closed) {
       return Promise.reject(new Error(`MCP server ${server.label} is already closed.`));
     }
@@ -389,11 +394,42 @@ async function withStdioMcpClient<T>(
     };
     child.stdin.write(`${JSON.stringify(envelope)}\n`);
     return new Promise<JsonRpcEnvelope>((resolve, reject) => {
+      const cleanupAbort = () => {
+        if (signal && onAbort) {
+          signal.removeEventListener("abort", onAbort);
+        }
+      };
       const timer = setTimeout(() => {
         pending.delete(id);
+        cleanupAbort();
         reject(new Error(`Timed out waiting for MCP ${method} response from ${server.label}. ${stderrBuffer.trim()}`.trim()));
       }, timeoutMs);
-      pending.set(id, { resolve, reject, timer });
+      const wrappedResolve = (value: JsonRpcEnvelope) => {
+        cleanupAbort();
+        resolve(value);
+      };
+      const wrappedReject = (reason?: unknown) => {
+        cleanupAbort();
+        reject(reason);
+      };
+      const onAbort = signal
+        ? () => {
+            pending.delete(id);
+            clearTimeout(timer);
+            wrappedReject(createMcpAbortError());
+            if (!closed) {
+              child.kill();
+            }
+          }
+        : undefined;
+      if (signal) {
+        if (signal.aborted) {
+          onAbort?.();
+          return;
+        }
+        signal.addEventListener("abort", onAbort!, { once: true });
+      }
+      pending.set(id, { resolve: wrappedResolve, reject: wrappedReject, timer });
     });
   };
 
@@ -428,7 +464,7 @@ async function withStdioMcpClient<T>(
         name: "goatcitadel-gateway",
         version: "0.6.0-beta.2",
       },
-    });
+    }, signal);
     client.notify("notifications/initialized", {});
     return await run(client);
   } catch (error) {
@@ -440,6 +476,12 @@ async function withStdioMcpClient<T>(
   } finally {
     client.close();
   }
+}
+
+function createMcpAbortError(): Error {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
 }
 
 function resolveSpawnCommand(command: string): string {

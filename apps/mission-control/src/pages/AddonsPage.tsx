@@ -5,6 +5,7 @@ import {
   fetchAddonsCatalog,
   fetchInstalledAddons,
   installAddon,
+  isApiRequestError,
   launchAddon,
   stopAddon,
   uninstallAddon,
@@ -21,8 +22,10 @@ export function AddonsPage() {
   const [installed, setInstalled] = useState<Record<string, AddonInstalledRecord>>({});
   const [statusByAddonId, setStatusByAddonId] = useState<Record<string, AddonStatusRecord>>({});
   const [busyAddonId, setBusyAddonId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [statusWarning, setStatusWarning] = useState<string | null>(null);
   const [confirmInstallAddon, setConfirmInstallAddon] = useState<AddonCatalogEntry | null>(null);
   const [confirmUninstallAddon, setConfirmUninstallAddon] = useState<AddonCatalogEntry | null>(null);
 
@@ -33,29 +36,43 @@ export function AddonsPage() {
     ]);
     setCatalog(catalogResponse.items);
     setInstalled(Object.fromEntries(installedResponse.items.map((item) => [item.addonId, item])));
-    const statuses = await Promise.all(
+    const statuses = await Promise.allSettled(
       catalogResponse.items.map(async (item) => [item.addonId, await fetchAddonStatus(item.addonId)] as const),
     );
-    setStatusByAddonId(Object.fromEntries(statuses));
+    const nextStatusByAddonId: Record<string, AddonStatusRecord> = {};
+    let failedStatusCount = 0;
+    for (const result of statuses) {
+      if (result.status === "fulfilled") {
+        const [addonId, status] = result.value;
+        nextStatusByAddonId[addonId] = status;
+        continue;
+      }
+      failedStatusCount += 1;
+    }
+    setStatusByAddonId(nextStatusByAddonId);
+    setStatusWarning(
+      failedStatusCount > 0
+        ? `Some add-on readiness checks could not be refreshed (${failedStatusCount}/${catalogResponse.items.length}). Retry if you need current runtime status.`
+        : null,
+    );
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    void load()
-      .then(() => {
-        if (!cancelled) {
-          setError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError((err as Error).message);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+  const refresh = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      await load();
+      setError(null);
+    } catch (err) {
+      setStatusWarning(null);
+      setError(formatAddonsLoadError(err));
+    } finally {
+      setIsLoading(false);
+    }
   }, [load]);
+
+  useEffect(() => {
+    void refresh().catch(() => undefined);
+  }, [refresh]);
 
   const sortedCatalog = useMemo(
     () => [...catalog].sort((left, right) => left.label.localeCompare(right.label)),
@@ -141,7 +158,15 @@ export function AddonsPage() {
     <section className="card stack-page">
       {pageCopy.addons.guide ? <PageGuideCard {...pageCopy.addons.guide} /> : null}
       {info ? <p className="status-banner ok">{info}</p> : null}
-      {error ? <p className="status-banner warning">{error}</p> : null}
+      {error ? (
+        <div className="status-banner warning">
+          <span>{error}</span>
+          <button type="button" onClick={() => void refresh()} disabled={isLoading}>
+            {isLoading ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      ) : null}
+      {statusWarning ? <p className="status-banner warning">{statusWarning}</p> : null}
       <div className="stack-list">
         {sortedCatalog.map((addon) => {
           const addonStatus = statusByAddonId[addon.addonId];
@@ -293,4 +318,16 @@ export function AddonsPage() {
       />
     </section>
   );
+}
+
+function formatAddonsLoadError(error: unknown): string {
+  if (isApiRequestError(error)) {
+    if (error.kind === "network") {
+      return "Add-ons data could not be loaded because the browser lost contact with the gateway. Retry the request, and re-check gateway access if it keeps happening.";
+    }
+    if (error.status === 401) {
+      return "Add-ons data could not be loaded because gateway authentication is no longer valid. Reconnect to the gateway, then retry.";
+    }
+  }
+  return (error as Error).message || "Failed to load add-ons.";
 }

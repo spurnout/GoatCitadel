@@ -9,6 +9,9 @@ export interface ToolDefinition {
   argSchema?: Record<string, unknown>;
   examples?: Array<{ title: string; args: Record<string, unknown> }>;
   pack: ToolPack;
+  recommendedContexts?: string[];
+  preferredForIntents?: string[];
+  usageHints?: string[];
 }
 
 const BUILTIN_TOOLS: ToolDefinition[] = [
@@ -90,7 +93,145 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     riskLevel: "caution",
     requiresApproval: false,
     description: "Read a file inside allowed read roots.",
+    argSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+      },
+      required: ["path"],
+    },
+    examples: [
+      {
+        title: "Read a project file",
+        args: { path: "./apps/gateway/src/services/gateway-service.ts" },
+      },
+    ],
     pack: "core",
+    recommendedContexts: ["chat", "cowork", "code", "project_bound"],
+    preferredForIntents: ["local_file", "read_file"],
+    usageHints: [
+      "Use for a single whole-file read when you already know the path.",
+      "Prefer file.read_range when you only need a focused section.",
+    ],
+  },
+  {
+    name: "file.read_range",
+    category: "fs",
+    riskLevel: "safe",
+    requiresApproval: false,
+    description: "Read a specific line range from a file inside allowed read roots.",
+    argSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        startLine: { type: "integer", minimum: 1 },
+        endLine: { type: "integer", minimum: 1 },
+      },
+      required: ["path", "startLine", "endLine"],
+    },
+    examples: [
+      {
+        title: "Read a focused TypeScript range",
+        args: {
+          path: "./apps/gateway/src/services/chat-agent-orchestrator.ts",
+          startLine: 880,
+          endLine: 980,
+        },
+      },
+    ],
+    pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["local_file", "inspect_code", "targeted_read"],
+    usageHints: [
+      "Prefer this over fs.read when you only need a local slice of a file.",
+    ],
+  },
+  {
+    name: "file.find",
+    category: "fs",
+    riskLevel: "safe",
+    requiresApproval: false,
+    description: "Search file contents under an allowed path for a text pattern.",
+    argSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        pattern: { type: "string" },
+        caseSensitive: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+      },
+      required: ["path", "pattern"],
+    },
+    examples: [
+      {
+        title: "Find a symbol in one package",
+        args: { path: "./apps/gateway/src", pattern: "failureGuidance", limit: 20 },
+      },
+    ],
+    pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["local_file", "search_text", "inspect_code"],
+    usageHints: [
+      "Use for recursive text search when you know the directory root.",
+    ],
+  },
+  {
+    name: "code.search",
+    category: "fs",
+    riskLevel: "safe",
+    requiresApproval: false,
+    description: "Search code and config files under an allowed path for a code/text query.",
+    argSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        query: { type: "string" },
+        caseSensitive: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+      },
+      required: ["path", "query"],
+    },
+    examples: [
+      {
+        title: "Search gateway code for a helper",
+        args: { path: "./apps/gateway/src", query: "buildToolFailureFallbackMessage", limit: 20 },
+      },
+    ],
+    pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["local_file", "inspect_code", "search_code"],
+    usageHints: [
+      "Prefer this over file.find for code-oriented symbol or helper lookup.",
+    ],
+  },
+  {
+    name: "code.search_files",
+    category: "fs",
+    riskLevel: "safe",
+    requiresApproval: false,
+    description: "Search file and directory names under an allowed path.",
+    argSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        query: { type: "string" },
+        caseSensitive: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+      },
+      required: ["path", "query"],
+    },
+    examples: [
+      {
+        title: "Find test files for a service",
+        args: { path: "./apps/gateway/src", query: "chat-agent-orchestrator", limit: 20 },
+      },
+    ],
+    pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["local_file", "search_files", "inspect_code"],
+    usageHints: [
+      "Use when you need candidate file paths before reading contents.",
+    ],
   },
   {
     name: "fs.write",
@@ -147,6 +288,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "HTTP GET request to allowlisted hosts.",
     pack: "core",
+    recommendedContexts: ["chat", "cowork", "code"],
+    preferredForIntents: ["live_data", "fetch_url", "api_lookup"],
+    usageHints: [
+      "Prefer for direct URL/API fetches when full browser automation is unnecessary.",
+    ],
   },
   {
     name: "http.post",
@@ -162,7 +308,53 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     riskLevel: "danger",
     requiresApproval: true,
     description: "Run shell command with policy gating.",
+    argSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        cwd: { type: "string" },
+      },
+      required: ["command"],
+    },
+    examples: [
+      {
+        title: "Run a targeted test command",
+        args: { command: "pnpm --filter @goatcitadel/gateway test -- src/routes/chat.routes.test.ts" },
+      },
+    ],
     pack: "core",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["run_command", "verify_change", "project_task"],
+    usageHints: [
+      "Use for foreground commands where captured stdout/stderr matters.",
+    ],
+  },
+  {
+    name: "shell.exec_background",
+    category: "shell",
+    riskLevel: "danger",
+    requiresApproval: true,
+    description: "Start a shell command in the background and return its process details.",
+    argSchema: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        cwd: { type: "string" },
+      },
+      required: ["command"],
+    },
+    examples: [
+      {
+        title: "Start the local dev server in the background",
+        args: { command: "pnpm dev", cwd: "./apps/mission-control" },
+      },
+    ],
+    pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["background_process", "long_running_command", "project_task"],
+    usageHints: [
+      "Use for long-running dev servers or watchers that should not block the turn.",
+    ],
   },
   {
     name: "git.exec",
@@ -243,6 +435,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Run restricted test commands.",
     pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["verify_change", "run_tests"],
+    usageHints: [
+      "Prefer this over shell.exec when you specifically want a test run.",
+    ],
   },
   {
     name: "lint.run",
@@ -251,6 +448,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Run restricted lint commands.",
     pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["verify_change", "lint"],
+    usageHints: [
+      "Prefer this over shell.exec for lint-only validation.",
+    ],
   },
   {
     name: "build.run",
@@ -259,6 +461,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Run restricted build commands.",
     pack: "devops",
+    recommendedContexts: ["cowork", "code", "project_bound"],
+    preferredForIntents: ["verify_change", "build"],
+    usageHints: [
+      "Prefer this over shell.exec for build verification.",
+    ],
   },
   {
     name: "browser.search",
@@ -267,6 +474,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Search web using browser automation.",
     pack: "core",
+    recommendedContexts: ["chat", "cowork", "code"],
+    preferredForIntents: ["live_data", "web_lookup", "research"],
+    usageHints: [
+      "Use to discover candidate sources before navigating to a page.",
+    ],
   },
   {
     name: "browser.navigate",
@@ -275,6 +487,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Navigate to page and extract page text.",
     pack: "core",
+    recommendedContexts: ["chat", "cowork", "code"],
+    preferredForIntents: ["web_lookup", "fetch_url", "research"],
+    usageHints: [
+      "Use when you already have a specific page URL to inspect.",
+    ],
   },
   {
     name: "browser.extract",
@@ -283,6 +500,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Extract text from selected CSS selector.",
     pack: "core",
+    recommendedContexts: ["cowork", "code"],
+    preferredForIntents: ["web_extract", "research"],
+    usageHints: [
+      "Use for targeted extraction when a generic page read is too noisy.",
+    ],
   },
   {
     name: "browser.screenshot",
@@ -404,6 +626,11 @@ const BUILTIN_TOOLS: ToolDefinition[] = [
     requiresApproval: false,
     description: "Search indexed memory and return ranked snippets.",
     pack: "knowledge",
+    recommendedContexts: ["chat", "cowork", "code"],
+    preferredForIntents: ["memory_lookup", "project_context"],
+    usageHints: [
+      "Use before re-asking the same project or user-context question.",
+    ],
   },
   {
     name: "docs.ingest",
@@ -530,6 +757,9 @@ export class ToolRegistry {
       argSchema: tool.argSchema ?? {},
       examples: tool.examples ?? [],
       pack: tool.pack,
+      recommendedContexts: tool.recommendedContexts,
+      preferredForIntents: tool.preferredForIntents,
+      usageHints: tool.usageHints,
     }));
   }
 }

@@ -68,6 +68,7 @@ function makeThread(): ChatThreadResponse {
               startedAt: "2026-03-08T00:00:00.500Z",
               finishedAt: "2026-03-08T00:00:00.900Z",
               error: "remote site blocked automation (Cloudflare 403)",
+              failureGuidance: "Try the next viable source instead of retrying the blocked host.",
               result: {
                 url: "https://www.movieinsider.com/movies",
                 finalUrl: "https://www.movieinsider.com/movies",
@@ -90,6 +91,39 @@ function makeThread(): ChatThreadResponse {
             retryable: true,
             recommendedAction: "retry_narrower",
           },
+          executionPlan: {
+            planId: "plan-1",
+            sessionId: "session-1",
+            turnId: "turn-1",
+            mode: "chat",
+            planningMode: "advisory",
+            status: "ready",
+            source: "planner",
+            advisoryOnly: true,
+            objective: "Show the user a safe advisory plan.",
+            summary: "Keep the first step small, then confirm before doing deeper work.",
+            steps: [
+              {
+                stepId: "step-1",
+                index: 0,
+                objective: "Inspect the current session state.",
+                status: "completed",
+                parallelizable: false,
+                summary: "Session trace and failure state loaded.",
+                suggestedTools: ["memory.search"],
+              },
+              {
+                stepId: "step-2",
+                index: 1,
+                objective: "Propose the next focused recovery step.",
+                status: "pending",
+                parallelizable: false,
+                suggestedTools: ["browser.navigate"],
+              },
+            ],
+            createdAt: "2026-03-08T00:00:00.000Z",
+            updatedAt: "2026-03-08T00:00:02.000Z",
+          },
         },
         toolRuns: [
           {
@@ -101,6 +135,7 @@ function makeThread(): ChatThreadResponse {
             startedAt: "2026-03-08T00:00:00.500Z",
             finishedAt: "2026-03-08T00:00:00.900Z",
             error: "remote site blocked automation (Cloudflare 403)",
+            failureGuidance: "Try the next viable source instead of retrying the blocked host.",
             result: {
               url: "https://www.movieinsider.com/movies",
               finalUrl: "https://www.movieinsider.com/movies",
@@ -174,5 +209,9 @@ describe("ChatThreadView", () => {
     expect(detailsText).toContain("HTTP status: 403");
     expect(detailsText).toContain("Fallback reason: primary blocked by remote site");
     expect(detailsText).toContain("Next step: Retry with a narrower request");
+    expect(detailsText).toContain("Try the next viable source instead of retrying the blocked host.");
+    expect(detailsText).toContain("Keep the first step small, then confirm before doing deeper work.");
+    expect(detailsText).toContain("Propose the next focused recovery step.");
+    expect(detailsText).toContain("Status: pending");
   });
 });

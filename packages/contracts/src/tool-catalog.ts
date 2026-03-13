@@ -3,6 +3,7 @@ import type { ToolCategory, ToolPack, ToolRiskLevel } from "./tools.js";
 export interface ToolCatalogExample {
   title: string;
   args: Record<string, unknown>;
+  description?: string;
 }
 
 export interface ToolCatalogEntry {
@@ -14,4 +15,7 @@ export interface ToolCatalogEntry {
   argSchema: Record<string, unknown>;
   examples: ToolCatalogExample[];
   pack: ToolPack;
+  recommendedContexts?: string[];
+  preferredForIntents?: string[];
+  usageHints?: string[];
 }

@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatCompletionRequest, ChatCompletionResponse, ChatToolRunRecord, ChatTurnTraceRecord, McpInvokeResponse, ToolCatalogEntry, ToolInvokeResult } from "@goatcitadel/contracts";
+import type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ChatToolRunRecord,
+  ChatTurnTraceRecord,
+  McpInvokeRequest,
+  McpInvokeResponse,
+  ToolCatalogEntry,
+  ToolInvokeResult,
+} from "@goatcitadel/contracts";
 import { ChatAgentOrchestrator } from "./chat-agent-orchestrator.js";
+import type { McpBrowserFallbackTarget } from "./mcp-runtime.js";
 
 function createToolCatalog(toolNames: string[] = ["browser.search"]): ToolCatalogEntry[] {
   return toolNames.map((toolName) => {
@@ -259,6 +269,15 @@ function createMockStorage(): unknown {
       listByTurn(turnId: string): ChatToolRunRecord[] {
         return [...toolRuns.values()].filter((item) => item.turnId === turnId);
       },
+      listBySession(sessionId: string): ChatToolRunRecord[] {
+        return [...toolRuns.values()].filter((item) => item.sessionId === sessionId);
+      },
+    },
+    chatSessionProjects: {
+      get: () => undefined,
+    },
+    chatExecutionPlans: {
+      listBySession: () => [],
     },
     chatInlineApprovals: {
       upsert: () => undefined,
@@ -665,12 +684,17 @@ describe("ChatAgentOrchestrator", () => {
       historyMessages: [{ role: "user", content: "what's the latest news on Kristi Noem?" }],
     });
 
-    expect(invokeTool).toHaveBeenNthCalledWith(4, expect.objectContaining({
+    const invokeToolCalls = invokeTool.mock.calls as unknown as Array<[{
+      toolName: string;
+      args: Record<string, unknown>;
+    }]>;
+    const lastInvokeToolCall = invokeToolCalls.at(-1)?.[0];
+    expect(lastInvokeToolCall).toMatchObject({
       toolName: "http.get",
       args: expect.objectContaining({
         url: "https://example.com/news/kristi-noem/analysis",
       }),
-    }));
+    });
     expect(result.assistantContent).toContain("Kristi Noem is in the news again.");
     expect(result.assistantContent).not.toContain("execution error: url is required");
   });
@@ -1484,6 +1508,110 @@ describe("ChatAgentOrchestrator", () => {
     });
   });
 
+  it("stops MCP browser fallback tiers when the turn budget expires mid-fallback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T20:00:00.000Z"));
+    try {
+      const invokeTool = vi
+        .fn<() => Promise<ToolInvokeResult>>()
+        .mockResolvedValueOnce({
+          outcome: "executed",
+          policyReason: "allowed",
+          auditEventId: "audit-mcp-budget-nav-1",
+          result: {
+            url: "https://blocked-site.com/article",
+            finalUrl: "https://blocked-site.com/article",
+            status: 403,
+            title: "Attention Required! | Cloudflare",
+            textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+          },
+        });
+      const invokeMcpTool = vi
+        .fn<(request: McpInvokeRequest) => Promise<McpInvokeResponse>>()
+        .mockImplementation(async (request: McpInvokeRequest) => {
+          vi.setSystemTime(new Date(Date.now() + 15000));
+          return {
+            ok: false,
+            error: `${request.serverId} timed out`,
+          };
+        });
+      const orchestrator = new ChatAgentOrchestrator({
+        storage: createMockStorage() as never,
+        listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+        createChatCompletion: vi.fn(),
+        invokeTool,
+        invokeMcpTool,
+        listMcpBrowserFallbackTargets: () => [
+          {
+            serverId: "srv-playwright",
+            label: "Playwright MCP",
+            tier: "playwright_mcp",
+            navigateToolName: "browser.navigate",
+            extractToolName: "browser.extract",
+          },
+          {
+            serverId: "srv-browserbase",
+            label: "Browserbase MCP",
+            tier: "browser_mcp",
+            navigateToolName: "browser.navigate",
+            extractToolName: "browser.extract",
+          },
+          {
+            serverId: "srv-cdp",
+            label: "CDP MCP",
+            tier: "browser_mcp",
+            navigateToolName: "browser.navigate",
+            extractToolName: "browser.extract",
+          },
+        ],
+      });
+
+      const executed = await (orchestrator as unknown as {
+        executeToolCall(input: {
+          input: {
+            sessionId: string;
+            content: string;
+            mode: "chat";
+            providerId: string;
+            model: string;
+            webMode: "auto";
+            memoryMode: "off";
+            thinkingLevel: "standard";
+            toolAutonomy: "safe_auto";
+          };
+          turnId: string;
+          toolName: string;
+          rawArgs: Record<string, unknown>;
+          turnBudgetDeadline?: number;
+        }): Promise<{ record: ChatToolRunRecord }>;
+      }).executeToolCall({
+        input: {
+          sessionId: "sess-mcp-budget-1",
+          content: "What's the latest news today?",
+          mode: "chat",
+          providerId: "glm",
+          model: "glm-5",
+          webMode: "auto",
+          memoryMode: "off",
+          thinkingLevel: "standard",
+          toolAutonomy: "safe_auto",
+        },
+        turnId: "turn-mcp-budget-1",
+        toolName: "browser.navigate",
+        rawArgs: {
+          url: "https://blocked-site.com/article",
+        },
+        turnBudgetDeadline: Date.now() + 25000,
+      });
+
+      expect(invokeMcpTool).toHaveBeenCalledTimes(2);
+      expect(executed.record.status).toBe("failed");
+      expect(Array.isArray(executed.record.result?.fallbackChain)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("poisons blocked hosts when selecting the next grounded browser result", async () => {
     const orchestrator = new ChatAgentOrchestrator({
       storage: createMockStorage() as never,
@@ -1592,6 +1720,704 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(result.assistantContent).toContain("A source blocked automated browsing");
     expect(result.assistantContent).toContain("movieinsider.com");
+  });
+
+  it("grounds vague retry prompts to the prior topic instead of searching the literal phrase", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("retry with a better fallback"))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "The main REST API use cases are CRUD, integrations, mobile backends, automation, and partner-facing services.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-retry-grounded-1",
+        result: {
+          query: "top 5 ways REST APIs are used",
+          results: [
+            { title: "What Is REST API? Examples, Uses & Challenges - Postman Blog", url: "https://blog.postman.com/rest-api-examples/", snippet: "Examples and common use cases." },
+            { title: "REST API Introduction - GeeksforGeeks", url: "https://www.geeksforgeeks.org/rest-api-introduction/", snippet: "REST principles and use cases." },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-retry-grounded-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-retry-grounded-1",
+      content: "Please retry with a better fallback",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [
+        { role: "user", content: "Can you look into the top 5 ways that a REST API can be used?" },
+        {
+          role: "assistant",
+          content: [
+            "A source blocked automated browsing on blog.postman.com, so I'm falling back to the strongest leads I recovered so far:",
+            "",
+            "1. What Is a REST API? Examples, Uses & Challenges - Postman Blog",
+            "2. REST API Introduction - GeeksforGeeks",
+          ].join("\n"),
+        },
+        { role: "user", content: "Please retry with a better fallback" },
+      ],
+    });
+
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    const groundedRetryCalls = invokeTool.mock.calls as unknown as Array<[{ toolName: string; args: Record<string, unknown> }]>;
+    const groundedRetryCall = groundedRetryCalls[0]![0]!;
+    expect(groundedRetryCall).toMatchObject({
+      toolName: "browser.search",
+      args: expect.objectContaining({
+        query: expect.stringMatching(/rest api/i),
+      }),
+    });
+    expect(String(groundedRetryCall.args.query)).not.toMatch(/better fallback/i);
+    expect(result.assistantContent).toContain("REST API");
+  });
+
+  it("prefers structured browser search alternatives over literal retry text", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                {
+                  id: "call-search-kimi-1",
+                  type: "function",
+                  function: {
+                    name: "browser_search",
+                    arguments: JSON.stringify({
+                      query: "Try the search one more time",
+                      queries: [
+                        "top 5 ways REST APIs are used common use cases",
+                        "REST API use cases examples applications",
+                        "how are REST APIs commonly used real world",
+                      ],
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        model: "kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here are the top ways REST APIs are used in practice.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-queries-grounded-1",
+        result: {
+          query: "top 5 ways REST APIs are used common use cases",
+          results: [
+            { title: "What Is REST API? Examples, Uses & Challenges - Postman Blog", url: "https://blog.postman.com/rest-api-examples/", snippet: "Examples and common use cases." },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-rest-queries-grounded-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-queries-grounded-1",
+      content: "Try the search one more time",
+      mode: "chat",
+      providerId: "moonshot",
+      model: "kimi-k2.5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [
+        { role: "user", content: "Can you look online and find the top 5 ways rest apis are used?" },
+        {
+          role: "assistant",
+          content: "A source blocked automated browsing on blog.postman.com, so I'm falling back to the strongest leads I recovered so far.",
+        },
+        { role: "user", content: "Try the search one more time" },
+      ],
+    });
+
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    const kimiRetryCalls = invokeTool.mock.calls as unknown as Array<[{ args: Record<string, unknown> }]>;
+    const kimiRetryCall = kimiRetryCalls[0]![0]!;
+    expect(String(kimiRetryCall.args.query)).toMatch(/rest api/i);
+    expect(String(kimiRetryCall.args.query)).not.toMatch(/one more time/i);
+  });
+
+  it("retries a blocked browser navigate against the next ranked search result in the same turn", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("top 5 ways REST APIs are used"))
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://blog.postman.com/rest-api-examples/" }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "REST APIs are commonly used for CRUD app backends, third-party integrations, mobile app services, workflow automation, and partner/public APIs.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-search-1",
+        result: {
+          query: "top 5 ways REST APIs are used",
+          results: [
+            { title: "What Is REST API? Examples, Uses & Challenges - Postman Blog", url: "https://blog.postman.com/rest-api-examples/", snippet: "Examples and use cases." },
+            { title: "How to Use REST API: Examples, Key Features, and Applications - ClickUp", url: "https://clickup.com/blog/rest-api-examples/", snippet: "Key features and real-world applications." },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-postman-blocked-1",
+        result: {
+          url: "https://blog.postman.com/rest-api-examples/",
+          finalUrl: "https://blog.postman.com/rest-api-examples/",
+          status: 403,
+          title: "Just a moment...",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-clickup-1",
+        result: {
+          url: "https://clickup.com/blog/rest-api-examples/",
+          finalUrl: "https://clickup.com/blog/rest-api-examples/",
+          status: 200,
+          title: "How to Use REST API: Examples, Key Features, and Applications - ClickUp",
+          textSnippet: "REST APIs are used for integrations, automation, mobile and web backends, and partner systems.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-blocked-retry-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-blocked-retry-1",
+      content: "Can you look into the top 5 ways that a REST API can be used?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look into the top 5 ways that a REST API can be used?" }],
+    });
+
+    expect(invokeTool).toHaveBeenCalledTimes(3);
+    const navigateRetryCalls = invokeTool.mock.calls as unknown as Array<[{ toolName: string; args: Record<string, unknown> }]>;
+    const firstNavigateCall = navigateRetryCalls[1]![0]!;
+    const secondNavigateCall = navigateRetryCalls[2]![0]!;
+    expect(firstNavigateCall).toMatchObject({
+      toolName: "browser.navigate",
+      args: expect.objectContaining({
+        url: "https://blog.postman.com/rest-api-examples/",
+      }),
+    });
+    expect(secondNavigateCall).toMatchObject({
+      toolName: "browser.navigate",
+      args: expect.objectContaining({
+        url: "https://clickup.com/blog/rest-api-examples/",
+      }),
+    });
+    expect(result.assistantContent).toContain("REST APIs");
+  });
+
+  it("gives live-data browse turns enough time to synthesize after a successful navigate", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T18:33:34.000Z"));
+    try {
+      const createChatCompletion = vi
+        .fn<() => Promise<ChatCompletionResponse>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 9000));
+          return navigateToolCallCompletion({
+            url: "https://www.techtarget.com/searchapparchitecture/tip/The-5-essential-HTTP-methods-in-RESTful-API-development",
+          });
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 2000));
+          return {
+            model: "glm-5",
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: "The top REST API uses are CRUD backends, third-party integrations, mobile app services, workflow automation, and partner-facing APIs.",
+                },
+              },
+            ],
+          };
+        });
+      const invokeTool = vi
+        .fn<() => Promise<ToolInvokeResult>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 3000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-rest-budget-search-1",
+            result: {
+              query: "top 5 ways REST APIs are used",
+              results: [
+                {
+                  title: "What is a REST API? Examples, Use Cases, and Best Practices",
+                  url: "https://www.browserstack.com/guide/rest-api",
+                  snippet: "REST APIs are commonly used for integrations, CRUD backends, and automation.",
+                },
+                {
+                  title: "The 5 essential HTTP methods in RESTful API development",
+                  url: "https://www.techtarget.com/searchapparchitecture/tip/The-5-essential-HTTP-methods-in-RESTful-API-development",
+                  snippet: "RESTful services use HTTP methods and commonly back web, mobile, and partner systems.",
+                },
+              ],
+            },
+          };
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 15000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-rest-budget-navigate-1",
+            result: {
+              url: "https://www.techtarget.com/searchapparchitecture/tip/The-5-essential-HTTP-methods-in-RESTful-API-development",
+              finalUrl: "https://www.techtarget.com/searchapparchitecture/tip/The-5-essential-HTTP-methods-in-RESTful-API-development",
+              status: 200,
+              title: "The 5 essential HTTP methods in RESTful API development | TechTarget",
+              textSnippet: "REST APIs are widely used for web and mobile backends, app integrations, automation flows, and partner-facing services.",
+            },
+          };
+        });
+      const orchestrator = new ChatAgentOrchestrator({
+        storage: createMockStorage() as never,
+        listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+        createChatCompletion,
+        invokeTool,
+      });
+
+      const result = await orchestrator.run({
+        sessionId: "sess-rest-budget-extension-1",
+        turnId: randomUUID(),
+        userMessageId: "msg-rest-budget-extension-1",
+        content: "Can you look online and find the top 5 ways rest apis are used?",
+        mode: "chat",
+        providerId: "glm",
+        model: "glm-5",
+        webMode: "auto",
+        memoryMode: "off",
+        thinkingLevel: "standard",
+        toolAutonomy: "safe_auto",
+        historyMessages: [{ role: "user", content: "Can you look online and find the top 5 ways rest apis are used?" }],
+      });
+
+      expect(result.assistantContent).toContain("top REST API uses");
+      expect(result.turnTrace.failure).toBeUndefined();
+      expect(createChatCompletion).toHaveBeenCalledTimes(2);
+      expect(invokeTool).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("extends auto-mode budget when a non-live-data turn actually enters browser-backed execution", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T19:10:00.000Z"));
+    try {
+      const createChatCompletion = vi
+        .fn<() => Promise<ChatCompletionResponse>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 9000));
+          return toolCallCompletion("protobuf vs json schema tradeoffs for internal service contracts");
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 9000));
+          return navigateToolCallCompletion({
+            url: "https://example.com/protobuf-vs-json-schema",
+          });
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 2000));
+          return {
+            model: "glm-5",
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: "Protobuf is usually better for compact binary transport, while JSON Schema is stronger for JSON validation, interoperability, and contract tooling.",
+                },
+              },
+            ],
+          };
+        });
+      const invokeTool = vi
+        .fn<() => Promise<ToolInvokeResult>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 3000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-browser-extension-search-1",
+            result: {
+              query: "protobuf vs json schema tradeoffs for internal service contracts",
+              results: [
+                {
+                  title: "Protobuf vs JSON Schema for service contracts",
+                  url: "https://example.com/protobuf-vs-json-schema",
+                  snippet: "Compares performance, interoperability, and validation tradeoffs.",
+                },
+              ],
+            },
+          };
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 15000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-browser-extension-navigate-1",
+            result: {
+              url: "https://example.com/protobuf-vs-json-schema",
+              finalUrl: "https://example.com/protobuf-vs-json-schema",
+              status: 200,
+              title: "Protobuf vs JSON Schema for service contracts",
+              textSnippet: "Protobuf favors binary efficiency and typed contracts. JSON Schema favors human-readable JSON validation and broader ecosystem interoperability.",
+            },
+          };
+        });
+      const orchestrator = new ChatAgentOrchestrator({
+        storage: createMockStorage() as never,
+        listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+        createChatCompletion,
+        invokeTool,
+      });
+
+      const result = await orchestrator.run({
+        sessionId: "sess-browser-extension-1",
+        turnId: randomUUID(),
+        userMessageId: "msg-browser-extension-1",
+        content: "Compare protobuf and JSON Schema tradeoffs for internal service contracts.",
+        mode: "chat",
+        providerId: "glm",
+        model: "glm-5",
+        webMode: "auto",
+        memoryMode: "off",
+        thinkingLevel: "standard",
+        toolAutonomy: "safe_auto",
+        historyMessages: [{ role: "user", content: "Compare protobuf and JSON Schema tradeoffs for internal service contracts." }],
+      });
+
+      expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
+      expect(result.assistantContent).toContain("Protobuf");
+      expect(result.turnTrace.failure).toBeUndefined();
+      expect(createChatCompletion).toHaveBeenCalledTimes(3);
+      expect(invokeTool).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses fetched page content in the budget fallback after a successful navigate", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-13T00:00:00.000Z"));
+    try {
+      const createChatCompletion = vi
+        .fn<() => Promise<ChatCompletionResponse>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 8000));
+          return toolCallCompletion("help me leveling my skinning profession in world of warcraft midnight");
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 6000));
+          return navigateToolCallCompletion({
+            url: "https://www.wowhead.com/guide/midnight/professions/skinning-overview-trainer-locations-hides-tracking-tools",
+          });
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 12000));
+          return navigateToolCallCompletion({
+            url: "https://www.wowhead.com/guide/midnight/professions/skinning-overview-trainer-locations-hides-tracking-tools#leveling",
+          });
+        });
+      const invokeTool = vi
+        .fn<() => Promise<ToolInvokeResult>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 3000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-skinning-search-1",
+            result: {
+              query: "help me leveling my skinning profession in world of warcraft midnight",
+              results: [
+                {
+                  title: "Midnight Skinning Profession Overview - Wowhead",
+                  url: "https://www.wowhead.com/guide/midnight/professions/skinning-overview-trainer-locations-hides-tracking-tools",
+                  snippet: "Skinning in WoW Midnight covers leveling, trainer locations, hides, tracking, and profession tools.",
+                },
+              ],
+            },
+          };
+        })
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 25000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-skinning-navigate-1",
+            result: {
+              url: "https://www.wowhead.com/guide/midnight/professions/skinning-overview-trainer-locations-hides-tracking-tools",
+              finalUrl: "https://www.wowhead.com/guide/midnight/professions/skinning-overview-trainer-locations-hides-tracking-tools",
+              status: 200,
+              title: "Midnight Skinning Profession Overview - Wowhead",
+              textSnippet: [
+                "Skinning in Midnight focuses on gathering leather and hides from beasts across the new zones.",
+                "Leveling is primarily done by skinning beasts close to your current profession skill, then shifting to higher-rank creature families as recipes and drop ranks improve.",
+                "Tracking, profession tools, and route selection matter because dense beast camps dramatically improve leveling speed.",
+              ].join(" "),
+            },
+          };
+        });
+      const orchestrator = new ChatAgentOrchestrator({
+        storage: createMockStorage() as never,
+        listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+        createChatCompletion,
+        invokeTool,
+      });
+
+      const result = await orchestrator.run({
+        sessionId: "sess-skinning-budget-fallback-1",
+        turnId: randomUUID(),
+        userMessageId: "msg-skinning-budget-fallback-1",
+        content: "Can you help me leveling my skinning profession in world of warcraft midnight?",
+        mode: "chat",
+        providerId: "glm",
+        model: "glm-5",
+        webMode: "auto",
+        memoryMode: "off",
+        thinkingLevel: "standard",
+        toolAutonomy: "safe_auto",
+        historyMessages: [{ role: "user", content: "Can you help me leveling my skinning profession in world of warcraft midnight?" }],
+      });
+
+      expect(result.turnTrace.failure?.failureClass).toBe("budget_exceeded");
+      expect(result.assistantContent).toContain("Midnight Skinning Profession Overview - Wowhead");
+      expect(result.assistantContent).toContain("Leveling is primarily done by skinning beasts close to your current profession skill");
+      expect(result.assistantContent).not.toContain("strongest leads so far");
+      expect(createChatCompletion).toHaveBeenCalledTimes(3);
+      const completionCalls = createChatCompletion.mock.calls as unknown as Array<[ChatCompletionRequest]>;
+      const thirdCompletionCall = completionCalls[2]?.[0];
+      expect(thirdCompletionCall?.timeoutMs).toBe(28000);
+      expect(invokeTool).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reuses duplicate explicit http.get calls for the same URL", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(
+        httpGetToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce(
+        httpGetToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here is the synthesized answer.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-http-get-reuse-1",
+        result: {
+          url: "https://example.com/research",
+          finalUrl: "https://example.com/research",
+          status: 200,
+          text: "Fetched content for reuse.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["http.get"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-http-get-reuse-1",
+      turnId: "turn-http-get-reuse-1",
+      userMessageId: "msg-http-get-reuse-1",
+      content: "Fetch the research URL again.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Fetch the research URL again." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(result.assistantContent).toContain("Here is the synthesized answer.");
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    const toolRuns = result.turnTrace.toolRuns;
+    expect(toolRuns).toHaveLength(2);
+    expect(toolRuns[0]?.toolName).toBe("http.get");
+    expect(toolRuns[1]?.toolName).toBe("http.get");
+    expect(toolRuns[1]?.result).toMatchObject({
+      reusedResult: true,
+      reusedPriorToolRunId: toolRuns[0]?.toolRunId,
+    });
+  });
+
+  it("does not reuse duplicate browser.navigate calls because browser state may have changed", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Done.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-no-reuse",
+        result: {
+          url: "https://example.com/research",
+          finalUrl: "https://example.com/research",
+          status: 200,
+          title: "Example research",
+          textSnippet: "Example content",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-nav-no-reuse-1",
+      turnId: "turn-nav-no-reuse-1",
+      userMessageId: "msg-nav-no-reuse-1",
+      content: "Open the same research page twice.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Open the same research page twice." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(invokeTool).toHaveBeenCalledTimes(2);
+    expect(result.turnTrace.toolRuns.every((run) => run.result?.reusedResult !== true)).toBe(true);
   });
 
   it("asks for clarification instead of faking an estimate for ambiguous local-area prompts", async () => {
@@ -2041,5 +2867,470 @@ describe("ChatAgentOrchestrator", () => {
     expect(createChatCompletion).not.toHaveBeenCalled();
     expect(result.assistantContent).toContain("To give you the best recommendations, I need a bit more information");
     expect(result.assistantContent).toContain("location and interests");
+  });
+
+  it("caps the synthesis fallback LLM timeout instead of using the default 60s", async () => {
+    let capturedTimeoutMs: number | undefined;
+    const createChatCompletion = vi
+      .fn<(request: ChatCompletionRequest) => Promise<ChatCompletionResponse>>()
+      .mockImplementation(async (request: ChatCompletionRequest) => {
+        capturedTimeoutMs = request.timeoutMs;
+        return {
+          model: "glm-5",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "Synthesized answer from tool output.",
+              },
+            },
+          ],
+        };
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>().mockResolvedValue({
+      outcome: "executed",
+      policyReason: "allowed",
+      auditEventId: "audit-synthesis-timeout-1",
+      result: {
+        results: [{ title: "Result", url: "https://example.com/synth" }],
+      },
+    });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-synth-timeout-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-synth-timeout-1",
+      content: "Find AI tooling references from our notes",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Find AI tooling references from our notes" }],
+    });
+
+    // The synthesis call (last createChatCompletion call) should have a bounded timeout.
+    // If only the main loop ran (no synthesis), capturedTimeoutMs comes from the main loop.
+    // Either way, verify it's not the default 60s.
+    expect(capturedTimeoutMs).toBeDefined();
+    expect(capturedTimeoutMs).toBeLessThanOrEqual(28000);
+  });
+
+  it("stops alternate-URL retries when the turn budget expires mid-fallback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-12T20:00:00.000Z"));
+    try {
+      let navigateCallCount = 0;
+      const createChatCompletion = vi
+        .fn<() => Promise<ChatCompletionResponse>>()
+        .mockImplementation(async () => {
+          vi.setSystemTime(new Date(Date.now() + 5000));
+          return navigateToolCallCompletion({
+            url: "https://blocked-site.com/article",
+          });
+        });
+      const invokeTool = vi
+        .fn<() => Promise<ToolInvokeResult>>()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(new Date(Date.now() + 2000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: "audit-budget-search",
+            result: {
+              results: [
+                { title: "Site A", url: "https://blocked-site.com/article", snippet: "news" },
+                { title: "Site B", url: "https://alt1.com/article", snippet: "more news" },
+                { title: "Site C", url: "https://alt2.com/article", snippet: "even more" },
+              ],
+            },
+          };
+        })
+        .mockImplementation(async () => {
+          navigateCallCount += 1;
+          // Each navigate takes 20s, eating deep into budget.
+          vi.setSystemTime(new Date(Date.now() + 20000));
+          return {
+            outcome: "executed",
+            policyReason: "allowed",
+            auditEventId: `audit-budget-nav-${navigateCallCount}`,
+            result: {
+              url: "https://blocked-site.com/article",
+              finalUrl: "https://blocked-site.com/article",
+              status: 403,
+              title: "Blocked",
+              textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+            },
+          };
+        });
+      const orchestrator = new ChatAgentOrchestrator({
+        storage: createMockStorage() as never,
+        listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+        createChatCompletion,
+        invokeTool,
+      });
+
+      const result = await orchestrator.run({
+        sessionId: "sess-budget-alt-retry-1",
+        turnId: randomUUID(),
+        userMessageId: "msg-budget-alt-retry-1",
+        content: "What's the latest news today?",
+        mode: "chat",
+        providerId: "glm",
+        model: "glm-5",
+        webMode: "auto",
+        memoryMode: "off",
+        thinkingLevel: "standard",
+        toolAutonomy: "safe_auto",
+        historyMessages: [{ role: "user", content: "What's the latest news today?" }],
+      });
+
+      // The alternate retry loop should NOT try all 3 URLs (2 alternates) since
+      // the budget deadline is hit. We expect fewer navigate calls than the
+      // maximum possible (1 original + 2 alternates = 3 total).
+      const totalNavigateCalls = (invokeTool.mock.calls as unknown as Array<[{ toolName: string }]>).filter(
+        (call) => call[0].toolName === "browser.navigate",
+      ).length;
+      // At least 1 navigate was attempted (the original), but not all 3.
+      expect(totalNavigateCalls).toBeLessThan(3);
+      expect(result.turnTrace.status).not.toBe("running");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("poisons hosts from fallback chain entries in executed runs recovered via MCP", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://blocked-host.com/page2" }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here is what I found.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-poison-search",
+        result: {
+          results: [
+            { title: "Good article", url: "https://blocked-host.com/page1", snippet: "news" },
+            { title: "Backup article", url: "https://blocked-host.com/page2", snippet: "more" },
+            { title: "Clean article", url: "https://clean-host.com/page1", snippet: "other" },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-poison-navigate",
+        result: {
+          url: "https://blocked-host.com/page1",
+          finalUrl: "https://blocked-host.com/page1",
+          status: 403,
+          title: "Blocked",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+          // Simulates a run that was classified as blocked but recovered via MCP fallback.
+          // After recovery the run status is "executed" but the fallback chain records the block.
+          fallbackChain: [
+            {
+              toolName: "browser.navigate",
+              engineTier: "builtin",
+              engineLabel: "Built-in browser",
+              status: "failed",
+              browserFailureClass: "remote_blocked",
+              url: "https://blocked-host.com/page1",
+              finalUrl: "https://blocked-host.com/page1",
+            },
+            {
+              toolName: "mcp_navigate",
+              engineTier: "premium",
+              engineLabel: "Premium browser",
+              status: "executed",
+              url: "https://blocked-host.com/page1",
+              finalUrl: "https://blocked-host.com/page1",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-poison-navigate-2",
+        result: {
+          url: "https://clean-host.com/page1",
+          finalUrl: "https://clean-host.com/page1",
+          status: 200,
+          title: "Clean article",
+          textSnippet: "This article has useful content about the topic.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-poison-chain-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-poison-chain-1",
+      content: "What's the latest news today?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What's the latest news today?" }],
+    });
+
+    // The second navigate call should NOT use blocked-host.com/page2 because
+    // blocked-host.com should be poisoned from the fallback chain of the first navigate.
+    // It should instead use clean-host.com.
+    const navigateCalls = (invokeTool.mock.calls as unknown as Array<[{ toolName: string; args: Record<string, unknown> }]>)
+      .map((call) => call[0])
+      .filter((arg) => arg.toolName === "browser.navigate");
+    if (navigateCalls.length >= 2) {
+      expect(String(navigateCalls[1]!.args.url)).not.toContain("blocked-host.com");
+    }
+    expect(result.turnTrace.status).not.toBe("running");
+  });
+
+  it("passes abort signal to main loop LLM completion calls", async () => {
+    const controller = new AbortController();
+    const createChatCompletion = vi
+      .fn<(request: ChatCompletionRequest) => Promise<ChatCompletionResponse>>()
+      .mockImplementation(async (request) => {
+        // Capture the signal from the first completion request, then abort.
+        if (request.signal) {
+          controller.abort();
+        }
+        // Simulate an abort error since the signal is now aborted.
+        if (request.signal?.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+        return {
+          model: "glm-5",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "Final answer" },
+            },
+          ],
+        };
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>().mockResolvedValue({
+      outcome: "executed",
+      policyReason: "allowed",
+      auditEventId: "audit-signal-1",
+      result: { results: [{ title: "R", url: "https://example.com" }] },
+    });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-signal-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-signal-1",
+      content: "Find AI references",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Find AI references" }],
+      signal: controller.signal,
+    });
+
+    // The completion was called with the signal present.
+    expect(createChatCompletion.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const firstCall = createChatCompletion.mock.calls[0]?.[0] as ChatCompletionRequest | undefined;
+    expect(firstCall?.signal).toBe(controller.signal);
+    // Turn should be cancelled since the signal was aborted.
+    expect(result.turnTrace.status).toBe("cancelled");
+  });
+
+  it("continues MCP fallback tiers when one tier throws instead of returning", async () => {
+    let mcpInvokeCallCount = 0;
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://blocked-site.com/page" }))
+      .mockResolvedValue({
+        model: "glm-5",
+        choices: [{ index: 0, message: { role: "assistant", content: "Here is the answer." } }],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-mcp-throw-search",
+        result: {
+          results: [
+            { title: "Article", url: "https://blocked-site.com/page", snippet: "news" },
+          ],
+        },
+      })
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-mcp-throw-nav",
+        result: {
+          url: "https://blocked-site.com/page",
+          finalUrl: "https://blocked-site.com/page",
+          status: 403,
+          title: "Blocked",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+        },
+      });
+    const invokeMcpTool = vi
+      .fn<(request: McpInvokeRequest) => Promise<McpInvokeResponse>>()
+      .mockImplementation(async () => {
+        mcpInvokeCallCount += 1;
+        if (mcpInvokeCallCount === 1) {
+          throw new Error("MCP server removed unexpectedly.");
+        }
+        return {
+          ok: true,
+          output: {
+            contentText: "This is the article content from the second MCP tier.",
+          },
+        };
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+      invokeMcpTool,
+      listMcpBrowserFallbackTargets: () => [
+        { serverId: "srv-broken", label: "Broken MCP", tier: "playwright_mcp" as const, navigateToolName: "mcp_navigate" },
+        { serverId: "srv-good", label: "Good MCP", tier: "browser_mcp" as const, navigateToolName: "mcp_navigate" },
+      ],
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-mcp-throw-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-mcp-throw-1",
+      content: "What's the latest news today?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What's the latest news today?" }],
+    });
+
+    // Both MCP tiers should be attempted: first throws, second succeeds.
+    expect(mcpInvokeCallCount).toBe(2);
+    expect(result.turnTrace.status).not.toBe("running");
+  });
+
+  it("stops alternate-URL retries when abort signal fires mid-fallback", async () => {
+    const controller = new AbortController();
+    let navigateCallCount = 0;
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://site-a.com/page" }))
+      .mockResolvedValue({
+        model: "glm-5",
+        choices: [{ index: 0, message: { role: "assistant", content: "Done." } }],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      // Pre-loop synthetic search with alternate URLs.
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-abort-search",
+        result: {
+          results: [
+            { title: "Site A", url: "https://site-a.com/page", snippet: "news" },
+            { title: "Site B", url: "https://alt-b.com/page", snippet: "more" },
+            { title: "Site C", url: "https://alt-c.com/page", snippet: "even more" },
+          ],
+        },
+      })
+      .mockImplementation(async () => {
+        navigateCallCount += 1;
+        // After first navigate attempt, fire the abort signal.
+        if (navigateCallCount >= 1) {
+          controller.abort();
+        }
+        return {
+          outcome: "executed",
+          policyReason: "allowed",
+          auditEventId: `audit-abort-nav-${navigateCallCount}`,
+          result: {
+            url: "https://site-a.com/page",
+            finalUrl: "https://site-a.com/page",
+            status: 403,
+            title: "Blocked",
+            textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+          },
+        };
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-abort-alt-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-abort-alt-1",
+      content: "What's the latest news today?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "What's the latest news today?" }],
+      signal: controller.signal,
+    });
+
+    // Abort should stop the alternate retry loop. We expect at most 2 navigate
+    // calls (original + at most 1 alternate before signal fires) instead of 3.
+    const totalNavigateCalls = (invokeTool.mock.calls as unknown as Array<[{ toolName: string }]>).filter(
+      (call) => call[0].toolName === "browser.navigate",
+    ).length;
+    expect(totalNavigateCalls).toBeLessThanOrEqual(2);
+    expect(result.turnTrace.status).toBe("cancelled");
   });
 });

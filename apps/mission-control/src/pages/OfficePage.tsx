@@ -54,13 +54,14 @@ const PLAYBACK_STEP_MS = 12_000;
 const ACTIVITY_TRANSITION_WINDOW_MS = 18_000;
 const MAX_VISIBLE_COLLAB_EDGES = 8;
 const MAX_VISIBLE_ZONE_LANES = 6;
-const OPERATOR_STORAGE_KEY = "goatcitadel.office.operator";
 const OPERATOR_NAME_OPTIONS = [
   "GoatHerder",
   "Lead Herder",
   "Herd Captain",
   "Trail Commander",
 ].map((value) => ({ value, label: value }));
+
+export type OfficePageVariant = "stable" | "lab";
 
 type AgentRisk = "none" | "approval" | "blocked" | "error";
 type OfficeDockTab = "inspector" | "operators" | "approvals" | "rail";
@@ -183,6 +184,46 @@ const DEFAULT_OPERATOR_PREFS: OperatorPreferences = {
   followSelection: false,
 };
 
+const LAB_OPERATOR_PREFS: OperatorPreferences = {
+  name: "Citadel Marshal",
+  preset: "nightwatch",
+  layoutMode: "immersive",
+  motionMode: "balanced",
+  showCollabOverlay: true,
+  showInspectorDock: false,
+  showRailDock: true,
+  idleMillingEnabled: true,
+  focusMode: true,
+  quietMode: true,
+  followSelection: true,
+};
+
+const OFFICE_PAGE_VARIANTS: Record<OfficePageVariant, {
+  pageId: "office" | "officeLab";
+  storageKey: string;
+  eyebrow: string;
+  headerHint: string;
+  defaultPrefs: OperatorPreferences;
+  initialDockTab: OfficeDockTab;
+}> = {
+  stable: {
+    pageId: "office",
+    storageKey: "goatcitadel.office.operator",
+    eyebrow: "Office",
+    headerHint: "Herd HQ stays immersive. Use the dock and inspector to move between visual awareness and operational detail.",
+    defaultPrefs: DEFAULT_OPERATOR_PREFS,
+    initialDockTab: "inspector",
+  },
+  lab: {
+    pageId: "officeLab",
+    storageKey: "goatcitadel.office.lab.operator",
+    eyebrow: "Office Lab",
+    headerHint: "Citadel Lab keeps the same live office runtime but starts from a separate citadel-first profile so both offices can be compared safely.",
+    defaultPrefs: LAB_OPERATOR_PREFS,
+    initialDockTab: "rail",
+  },
+};
+
 const MOTION_MODE_OPTIONS: Array<{ value: OfficeMotionMode; label: string }> = [
   { value: "cinematic", label: "Cinematic" },
   { value: "balanced", label: "Balanced" },
@@ -233,15 +274,23 @@ const OfficeCanvasScene = lazy(async () => {
   return { default: module.OfficeCanvas };
 });
 
-export function OfficePage() {
+interface OfficePageProps {
+  variant?: OfficePageVariant;
+}
+
+export function OfficePage({ variant = "stable" }: OfficePageProps) {
+  const variantConfig = OFFICE_PAGE_VARIANTS[variant];
   const [directory, setDirectory] = useState<AgentDirectoryRecord[]>([]);
   const [operators, setOperators] = useState<OperatorsResponse["items"]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalsResponse["items"]>([]);
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<SelectedEntityId>("operator");
-  const [operatorPrefs, setOperatorPrefs] = useState<OperatorPreferences>(readOperatorPreferences);
+  const [operatorPrefs, setOperatorPrefs] = useState<OperatorPreferences>(() => readOperatorPreferences(
+    variantConfig.storageKey,
+    variantConfig.defaultPrefs,
+  ));
   const [assetPack, setAssetPack] = useState<OfficeAssetPack>({});
-  const [dockTab, setDockTab] = useState<OfficeDockTab>("inspector");
+  const [dockTab, setDockTab] = useState<OfficeDockTab>(variantConfig.initialDockTab);
   const [focusedZoneOverride, setFocusedZoneOverride] = useState<OfficeZoneId | null>(null);
   const [playback, setPlayback] = useState<PlaybackState>({
     mode: "live",
@@ -344,8 +393,8 @@ export function OfficePage() {
   }, []);
 
   useEffect(() => {
-    persistOperatorPreferences(operatorPrefs);
-  }, [operatorPrefs]);
+    persistOperatorPreferences(variantConfig.storageKey, operatorPrefs, variantConfig.defaultPrefs);
+  }, [operatorPrefs, variantConfig.defaultPrefs, variantConfig.storageKey]);
 
   useEffect(() => {
     let active = true;
@@ -655,7 +704,7 @@ export function OfficePage() {
     return scheduleSceneActivation(() => setSceneReady(true));
   }, []);
 
-  const officeCopy = pageCopy.office;
+  const officeCopy = pageCopy[variantConfig.pageId];
   const officeGuide = officeCopy.guide ?? {
     what: "Live WebGL operations room for agent activity.",
     when: "Use this for real-time observability.",
@@ -942,7 +991,7 @@ export function OfficePage() {
   if (loading) {
     return (
       <section className="office-v5">
-        <PageHeader eyebrow="Office" title={officeCopy.title} subtitle={officeCopy.subtitle} className="page-header-citadel" />
+        <PageHeader eyebrow={variantConfig.eyebrow} title={officeCopy.title} subtitle={officeCopy.subtitle} className="page-header-citadel" />
         <CardSkeleton lines={10} />
       </section>
     );
@@ -951,10 +1000,10 @@ export function OfficePage() {
   return (
     <section className={`office-v5 ${operatorPrefs.focusMode ? "office-focus-mode" : ""}`}>
       <PageHeader
-        eyebrow="Office"
+        eyebrow={variantConfig.eyebrow}
         title={officeCopy.title}
         subtitle={officeCopy.subtitle}
-        hint="Herd HQ stays immersive. Use the dock and inspector to move between visual awareness and operational detail."
+        hint={variantConfig.headerHint}
         className="page-header-citadel"
         actions={(
           <div className="office-page-actions">
@@ -2448,44 +2497,44 @@ async function checkAssetExists(path: string): Promise<boolean> {
   }
 }
 
-function readOperatorPreferences(): OperatorPreferences {
+function readOperatorPreferences(storageKey: string, defaults: OperatorPreferences): OperatorPreferences {
   if (typeof window === "undefined") {
-    return { ...DEFAULT_OPERATOR_PREFS };
+    return { ...defaults };
   }
 
   try {
-    const raw = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) {
-      return { ...DEFAULT_OPERATOR_PREFS };
+      return { ...defaults };
     }
     const parsed = JSON.parse(raw) as Partial<OperatorPreferences>;
     return {
-      name: sanitizeName(parsed.name) || DEFAULT_OPERATOR_PREFS.name,
-      preset: isPreset(parsed.preset) ? parsed.preset : DEFAULT_OPERATOR_PREFS.preset,
+      name: sanitizeName(parsed.name) || defaults.name,
+      preset: isPreset(parsed.preset) ? parsed.preset : defaults.preset,
       layoutMode: "immersive",
-      motionMode: isMotionMode(parsed.motionMode) ? parsed.motionMode : DEFAULT_OPERATOR_PREFS.motionMode,
-      showCollabOverlay: asBoolean(parsed.showCollabOverlay, DEFAULT_OPERATOR_PREFS.showCollabOverlay),
-      showInspectorDock: asBoolean(parsed.showInspectorDock, DEFAULT_OPERATOR_PREFS.showInspectorDock),
-      showRailDock: asBoolean(parsed.showRailDock, DEFAULT_OPERATOR_PREFS.showRailDock),
-      idleMillingEnabled: asBoolean(parsed.idleMillingEnabled, DEFAULT_OPERATOR_PREFS.idleMillingEnabled),
-      focusMode: asBoolean(parsed.focusMode, DEFAULT_OPERATOR_PREFS.focusMode),
-      quietMode: asBoolean(parsed.quietMode, DEFAULT_OPERATOR_PREFS.quietMode),
-      followSelection: asBoolean(parsed.followSelection, DEFAULT_OPERATOR_PREFS.followSelection),
+      motionMode: isMotionMode(parsed.motionMode) ? parsed.motionMode : defaults.motionMode,
+      showCollabOverlay: asBoolean(parsed.showCollabOverlay, defaults.showCollabOverlay),
+      showInspectorDock: asBoolean(parsed.showInspectorDock, defaults.showInspectorDock),
+      showRailDock: asBoolean(parsed.showRailDock, defaults.showRailDock),
+      idleMillingEnabled: asBoolean(parsed.idleMillingEnabled, defaults.idleMillingEnabled),
+      focusMode: asBoolean(parsed.focusMode, defaults.focusMode),
+      quietMode: asBoolean(parsed.quietMode, defaults.quietMode),
+      followSelection: asBoolean(parsed.followSelection, defaults.followSelection),
     };
   } catch {
-    return { ...DEFAULT_OPERATOR_PREFS };
+    return { ...defaults };
   }
 }
 
-function persistOperatorPreferences(value: OperatorPreferences): void {
+function persistOperatorPreferences(storageKey: string, value: OperatorPreferences, defaults: OperatorPreferences): void {
   if (typeof window === "undefined") {
     return;
   }
   const payload: OperatorPreferences = {
-    name: sanitizeName(value.name) || DEFAULT_OPERATOR_PREFS.name,
-    preset: isPreset(value.preset) ? value.preset : DEFAULT_OPERATOR_PREFS.preset,
+    name: sanitizeName(value.name) || defaults.name,
+    preset: isPreset(value.preset) ? value.preset : defaults.preset,
     layoutMode: "immersive",
-    motionMode: isMotionMode(value.motionMode) ? value.motionMode : DEFAULT_OPERATOR_PREFS.motionMode,
+    motionMode: isMotionMode(value.motionMode) ? value.motionMode : defaults.motionMode,
     showCollabOverlay: value.showCollabOverlay,
     showInspectorDock: value.showInspectorDock,
     showRailDock: value.showRailDock,
@@ -2494,7 +2543,7 @@ function persistOperatorPreferences(value: OperatorPreferences): void {
     quietMode: value.quietMode,
     followSelection: value.followSelection,
   };
-  window.localStorage.setItem(OPERATOR_STORAGE_KEY, JSON.stringify(payload));
+  window.localStorage.setItem(storageKey, JSON.stringify(payload));
 }
 
 function sanitizeName(value?: string): string | undefined {

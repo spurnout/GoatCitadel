@@ -82,6 +82,9 @@ describe("Storage.deleteChatSessionData", () => {
     assert.equal(countRows(storage, "prompt_pack_scores", "run_id = 'pack-run-sess-1'"), 0);
     assert.equal(countRows(storage, "memory_context_packs", "session_id = 'sess-1'"), 0);
     assert.equal(countRows(storage, "memory_qmd_runs", "session_id = 'sess-1'"), 0);
+    assert.equal(countRows(storage, "chat_execution_plans", "session_id = 'sess-1'"), 0);
+    assert.equal(countRows(storage, "chat_execution_plan_steps", "plan_id = 'plan-sess-1'"), 0);
+    assert.equal(countRows(storage, "chat_conversation_summaries", "session_id = 'sess-1'"), 0);
     assert.equal(countRows(storage, "tool_access_decisions", "session_id = 'sess-1'"), 0);
     assert.equal(countRows(storage, "tool_invocations", "session_id = 'sess-1'"), 0);
     assert.equal(countRows(storage, "policy_blocks", "session_id = 'sess-1'"), 0);
@@ -175,6 +178,39 @@ function seedChatSession(storage: Storage, sessionId: string): void {
     role: "qa",
     index: 0,
     startedAt: now,
+  });
+  storage.chatExecutionPlans.create({
+    planId: `plan-${sessionId}`,
+    sessionId,
+    turnId: `turn-${sessionId}`,
+    mode: "cowork",
+    planningMode: "advisory",
+    source: "planner",
+    advisoryOnly: true,
+    objective: "test objective",
+    summary: "test summary",
+    steps: [
+      {
+        stepId: `plan-step-${sessionId}`,
+        index: 0,
+        objective: "review failures",
+        status: "pending",
+      },
+    ],
+    createdAt: now,
+    updatedAt: now,
+  });
+  storage.chatConversationSummaries.upsert({
+    sessionId,
+    branchHeadTurnId: `turn-${sessionId}`,
+    startTurnId: `turn-${sessionId}`,
+    endTurnId: `turn-${sessionId}`,
+    turnIds: [`turn-${sessionId}`],
+    sourceHash: `summary-hash-${sessionId}`,
+    tokenEstimate: 24,
+    summary: "compact summary",
+    createdAt: now,
+    updatedAt: now,
   });
   storage.chatAttachments.create({
     attachmentId: `attachment-${sessionId}`,

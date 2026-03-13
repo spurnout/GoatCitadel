@@ -243,6 +243,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     name: "chat_turn_trace_shape_repair",
     up: repairChatTurnTraceShape,
   },
+  {
+    version: 30,
+    name: "chat_plans_and_summaries",
+    up: createChatPlansAndSummariesSchema,
+  },
 ];
 
 function createBaseSchema(db: DatabaseSync): void {
@@ -816,6 +821,87 @@ function repairChatTurnTraceShape(db: DatabaseSync): void {
       ON chat_turn_traces(session_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_session_parent_started
       ON chat_turn_traces(session_id, parent_turn_id, started_at DESC);
+  `);
+}
+
+function createChatPlansAndSummariesSchema(db: DatabaseSync): void {
+  addColumnIfMissing(db, "chat_turn_traces", "execution_plan_id", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_tool_runs", "failure_guidance", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_runs", "execution_plan_id", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "failure_guidance", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "child_session_id", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "child_turn_id", "TEXT");
+  addColumnIfMissingIfTableExists(db, "chat_delegation_steps", "citations_json", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_execution_plans (
+      plan_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      planning_mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      source TEXT NOT NULL,
+      advisory_only INTEGER NOT NULL DEFAULT 0,
+      objective TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_execution_plans_session
+      ON chat_execution_plans(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_execution_plans_turn
+      ON chat_execution_plans(turn_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_execution_plan_steps (
+      plan_id TEXT NOT NULL,
+      step_id TEXT PRIMARY KEY,
+      step_index INTEGER NOT NULL,
+      objective TEXT NOT NULL,
+      success_criteria TEXT,
+      suggested_tools_json TEXT,
+      expected_output TEXT,
+      parallelizable INTEGER NOT NULL DEFAULT 0,
+      depends_on_step_ids_json TEXT,
+      delegated_role TEXT,
+      status TEXT NOT NULL,
+      summary TEXT,
+      error TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      child_run_id TEXT,
+      child_session_id TEXT,
+      child_turn_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_execution_plan_steps_plan
+      ON chat_execution_plan_steps(plan_id, step_index ASC);
+
+    CREATE TABLE IF NOT EXISTS chat_conversation_summaries (
+      summary_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      branch_head_turn_id TEXT NOT NULL,
+      start_turn_id TEXT NOT NULL,
+      end_turn_id TEXT NOT NULL,
+      turn_ids_json TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      token_estimate INTEGER NOT NULL,
+      summary_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(session_id, branch_head_turn_id, start_turn_id, end_turn_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_conversation_summaries_session
+      ON chat_conversation_summaries(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_conversation_summaries_branch
+      ON chat_conversation_summaries(session_id, branch_head_turn_id, created_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_chat_turn_traces_execution_plan
+      ON chat_turn_traces(execution_plan_id);
   `);
 }
 

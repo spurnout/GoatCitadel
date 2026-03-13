@@ -66,6 +66,36 @@ rl.on("line", (line) => {
 });
 `;
 
+const MCP_SLOW_CALL_SCRIPT = String.raw`
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function reply(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+}
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    reply(message.id, {
+      protocolVersion: "2024-11-05",
+      capabilities: { tools: {} },
+      serverInfo: { name: "test-mcp", version: "1.0.0" },
+    });
+    return;
+  }
+  if (message.method === "tools/call") {
+    setTimeout(() => {
+      reply(message.id, {
+        structuredContent: {
+          url: message.params.arguments.url,
+          finalUrl: message.params.arguments.url,
+          status: 200,
+        },
+      });
+    }, 100);
+  }
+});
+`;
+
 describe("mcp runtime", () => {
   it("discovers tools from a stdio MCP server", async () => {
     const server = createTestServer(MCP_TEST_SCRIPT);
@@ -93,5 +123,22 @@ describe("mcp runtime", () => {
       },
       contentText: undefined,
     });
+  });
+
+  it("aborts a slow MCP tool call when the signal fires", async () => {
+    const server = createTestServer(MCP_SLOW_CALL_SCRIPT);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+
+    const result = await invokeMcpRuntimeTool(server, {
+      toolName: "browser.navigate",
+      arguments: {
+        url: "https://example.com/releases",
+      },
+      signal: controller.signal,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("aborted");
   });
 });

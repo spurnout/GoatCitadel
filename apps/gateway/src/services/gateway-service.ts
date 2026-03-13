@@ -7,6 +7,10 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { EventIngestService } from "@goatcitadel/gateway-core";
 import { MeshService } from "@goatcitadel/mesh-core";
+import {
+  estimateTokensFromText,
+  truncateByTokenEstimate,
+} from "@goatcitadel/memory-core";
 import { OrchestrationEngine } from "@goatcitadel/orchestration";
 import {
   ToolPolicyEngine,
@@ -273,6 +277,7 @@ import { ApprovalExplainerService } from "./approval-explainer-service.js";
 import { scoutCapabilityUpgradeSuggestions } from "./chat-capability-scout.js";
 import {
   collectMcpBrowserFallbackTargets,
+  discoverMcpTools,
   inferMcpToolsForServer,
   invokeMcpRuntimeTool,
 } from "./mcp-runtime.js";
@@ -281,6 +286,7 @@ import {
   looksLowConfidenceResponse,
   shouldExtractLearnedMemoryContent,
 } from "./learned-memory-utils.js";
+import { buildConversationCompactionSummary } from "./chat-compaction.js";
 import {
   assertChatSessionActive,
   buildChatSessionUpdatedPayload,
@@ -302,6 +308,7 @@ import {
 } from "../orchestration/router.js";
 import type {
   OrchestrationExecutionResult,
+  OrchestrationPlan as ModeOrchestrationPlan,
   OrchestrationRole,
   OrchestrationRouterInput,
   OrchestrationStepExecutionResult,
@@ -937,6 +944,43 @@ interface ActiveChatTurnExecution {
   startedAt: string;
   controller: AbortController;
 }
+
+interface PreparedChatExecutionPlanResolution {
+  routerInput: OrchestrationRouterInput;
+  orchestrationPlan: ModeOrchestrationPlan;
+  executionPlanDraft: {
+    source: "planner" | "workflow_template" | "planner_with_template_fallback";
+    advisoryOnly: boolean;
+    objective: string;
+    summary: string;
+    steps: Array<{
+      stepId: string;
+      index: number;
+      objective: string;
+      successCriteria?: string;
+      suggestedTools?: string[];
+      expectedOutput?: string;
+      parallelizable: boolean;
+      dependsOnStepIds?: string[];
+      delegatedRole?: string;
+      status: "pending" | "running" | "completed" | "failed" | "cancelled";
+      summary?: string;
+      error?: string;
+      startedAt?: string;
+      finishedAt?: string;
+      childRunId?: string;
+      childSessionId?: string;
+      childTurnId?: string;
+    }>;
+  };
+}
+
+const CHAT_COMPACTION_RECENT_TURN_LIMIT = 6;
+const CHAT_COMPACTION_WINDOW_SIZE = 8;
+const CHAT_COMPACTION_TRIGGER_TOKENS = 2200;
+const CHAT_COMPACTION_SUMMARY_TOKEN_BUDGET = 360;
+const CHAT_PLANNER_MAX_STEPS = 8;
+const CHAT_PLANNER_MIN_STEPS = 3;
 
 export class GatewayService {
   private readonly storage: Storage;
@@ -3413,9 +3457,19 @@ export class GatewayService {
         if (!serverId) {
           return { ok: false, command, args, message: `Usage: /mcp ${action} <serverId>` };
         }
-        const updated = action === "connect"
-          ? this.connectMcpServer(serverId)
-          : this.disconnectMcpServer(serverId);
+        let updated: McpServerRecord;
+        try {
+          updated = action === "connect"
+            ? await this.connectMcpServer(serverId)
+            : this.disconnectMcpServer(serverId);
+        } catch (error) {
+          return {
+            ok: false,
+            command,
+            args,
+            message: (error as Error).message,
+          };
+        }
         return {
           ok: true,
           command,
@@ -7597,9 +7651,9 @@ export class GatewayService {
     };
   }
 
-  private resolvePreparedTurnOrchestration(
+  private async resolvePreparedTurnOrchestration(
     prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
-  ): OrchestrationRouterInput & { plan: ReturnType<typeof buildOrchestrationPlan> } | undefined {
+  ): Promise<PreparedChatExecutionPlanResolution | undefined> {
     const mode = prepared.normalized.mode ?? prepared.prefs.mode;
     const runtime = this.llmService.getRuntimeConfig({
       useCache: true,
@@ -7620,13 +7674,17 @@ export class GatewayService {
       capabilities,
       policy,
     };
-    if (!shouldUseModeOrchestration(routerInput)) {
+    const advisoryOnly = prepared.prefs.planningMode === "advisory";
+    if (!advisoryOnly && !shouldUseModeOrchestration(routerInput)) {
       return undefined;
     }
-    const plan = this.applyApprovedSpecialistsToPlan(prepared, buildOrchestrationPlan(routerInput));
+    const templatePlan = this.applyApprovedSpecialistsToPlan(prepared, buildOrchestrationPlan(routerInput));
+    const executionPlanDraft = await this.generatePreparedExecutionPlanDraft(prepared, routerInput, templatePlan, advisoryOnly);
+    const plan = applyExecutionPlanDraftToOrchestrationPlan(templatePlan, executionPlanDraft);
     return {
-      ...routerInput,
-      plan,
+      routerInput,
+      orchestrationPlan: plan,
+      executionPlanDraft,
     };
   }
 
@@ -7693,6 +7751,82 @@ export class GatewayService {
     };
   }
 
+  private async generatePreparedExecutionPlanDraft(
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    routerInput: OrchestrationRouterInput,
+    templatePlan: ModeOrchestrationPlan,
+    advisoryOnly: boolean,
+  ): Promise<PreparedChatExecutionPlanResolution["executionPlanDraft"]> {
+    const fallbackDraft = buildExecutionPlanDraftFromOrchestrationPlan(templatePlan, {
+      objective: prepared.content,
+      advisoryOnly,
+    });
+    try {
+      const completion = await this.createChatCompletion({
+        providerId: prepared.prefs.providerId,
+        model: prepared.prefs.model,
+        stream: false,
+        memory: {
+          enabled: false,
+          mode: "off",
+        },
+        response_format: {
+          type: "json_object",
+        },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are GoatCitadel's execution planner.",
+              "Return strict JSON with keys: summary, steps.",
+              `Return between ${CHAT_PLANNER_MIN_STEPS} and ${CHAT_PLANNER_MAX_STEPS} steps.`,
+              "Each step must include: objective, successCriteria, suggestedTools, expectedOutput, parallelizable, dependsOnStepIds, delegatedRole.",
+              "Use delegatedRole only from the allowed role list.",
+              "If the mode is chat, delegatedRole must be null for all steps.",
+              "Keep step objectives specific, practical, and directly tied to the user request.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              mode: routerInput.task.mode,
+              planningMode: prepared.prefs.planningMode,
+              objective: prepared.content,
+              workflowTemplate: templatePlan.workflowTemplate,
+              routeDecision: templatePlan.routeDecision,
+              allowedRoles: [...new Set(templatePlan.steps.map((step) => step.role))],
+              templateSteps: templatePlan.steps.map((step) => ({
+                stepId: step.stepId,
+                role: step.role,
+                objective: step.objective,
+                successCriteria: step.successCriteria,
+                suggestedTools: step.suggestedTools,
+                expectedOutput: step.expectedOutput,
+                parallelizable: step.parallelizable,
+                dependsOnStepIds: step.dependsOnStepIds,
+                delegatedRole: step.delegatedRole ?? null,
+              })),
+            }),
+          },
+        ],
+      });
+      const payload = parseLooseJsonRecord(extractCompletionText(completion));
+      const planned = payload
+        ? coercePlannerExecutionPlanDraft(payload, templatePlan, {
+          advisoryOnly,
+          mode: routerInput.task.mode,
+          objective: prepared.content,
+        })
+        : undefined;
+      if (!planned) {
+        return fallbackDraft;
+      }
+      return planned;
+    } catch {
+      return fallbackDraft;
+    }
+  }
+
   private buildChatOrchestrationSummary(input: {
     runId: string;
     objective: string;
@@ -7701,11 +7835,14 @@ export class GatewayService {
     stepResults: OrchestrationStepExecutionResult[];
     finalSummary?: string;
     finalized?: boolean;
+    advisoryOnly?: boolean;
   }): NonNullable<ChatTurnTraceRecord["orchestration"]> {
     const completedCount = input.stepResults.filter((step) => step.status === "completed").length;
     const failedCount = input.stepResults.filter((step) => step.status === "failed").length;
     const status: ChatDelegationRunRecord["status"] = !input.finalized
       ? "running"
+      : input.advisoryOnly
+        ? "completed"
       : completedCount === 0
         ? "failed"
         : failedCount > 0
@@ -7744,13 +7881,33 @@ export class GatewayService {
     input: ChatSendMessageRequest,
     signal?: AbortSignal,
     onProgress?: (summary: NonNullable<ChatTurnTraceRecord["orchestration"]>) => Promise<void> | void,
-  ): Promise<OrchestrationExecutionResult & { summary: NonNullable<ChatTurnTraceRecord["orchestration"]> }> {
-    const orchestration = this.resolvePreparedTurnOrchestration(prepared);
+    resolvedOrchestration?: PreparedChatExecutionPlanResolution,
+  ): Promise<
+    OrchestrationExecutionResult
+    & {
+      summary: NonNullable<ChatTurnTraceRecord["orchestration"]>;
+      executionPlanId: string;
+    }
+  > {
+    const orchestration = resolvedOrchestration ?? await this.resolvePreparedTurnOrchestration(prepared);
     if (!orchestration) {
       throw new Error("Prepared chat turn is not eligible for orchestration");
     }
     const runId = randomUUID();
-    const runMode = orchestration.plan.routeDecision.parallelism === "parallel" ? "parallel" : "sequential";
+    const runMode = orchestration.orchestrationPlan.routeDecision.parallelism === "parallel" ? "parallel" : "sequential";
+    const persistedExecutionPlan = this.storage.chatExecutionPlans.create({
+      sessionId: prepared.session.sessionId,
+      turnId: prepared.turnId,
+      mode: orchestration.routerInput.task.mode,
+      planningMode: prepared.prefs.planningMode,
+      source: orchestration.executionPlanDraft.source,
+      advisoryOnly: orchestration.executionPlanDraft.advisoryOnly,
+      objective: orchestration.executionPlanDraft.objective,
+      summary: orchestration.executionPlanDraft.summary,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      steps: orchestration.executionPlanDraft.steps,
+    });
     this.recordDevDiagnostic({
       level: "info",
       category: "orchestration",
@@ -7758,40 +7915,41 @@ export class GatewayService {
       message: "Starting chat orchestration run",
       sessionId: prepared.session.sessionId,
       turnId: prepared.turnId,
-      providerId: orchestration.plan.steps.at(0)?.providerId,
-      modelId: orchestration.plan.steps.at(0)?.model,
+      providerId: orchestration.orchestrationPlan.steps.at(0)?.providerId,
+      modelId: orchestration.orchestrationPlan.steps.at(0)?.model,
       context: {
-        workflowTemplate: orchestration.plan.workflowTemplate,
-        visibility: orchestration.plan.routeDecision.visibility,
-        roles: orchestration.plan.routeDecision.selectedRoles,
+        workflowTemplate: orchestration.orchestrationPlan.workflowTemplate,
+        visibility: orchestration.orchestrationPlan.routeDecision.visibility,
+        roles: orchestration.orchestrationPlan.routeDecision.selectedRoles,
         parallelism: runMode,
       },
     });
     const runTrace = {
       primaryProviderId: input.providerId ?? prepared.prefs.providerId,
       primaryModel: input.model ?? prepared.prefs.model,
-      effectiveProviderId: orchestration.plan.steps.at(-1)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-      effectiveModel: orchestration.plan.steps.at(-1)?.model ?? input.model ?? prepared.prefs.model,
+      effectiveProviderId: orchestration.orchestrationPlan.steps.at(-1)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+      effectiveModel: orchestration.orchestrationPlan.steps.at(-1)?.model ?? input.model ?? prepared.prefs.model,
     } satisfies ChatTurnTraceRecord["routing"];
     this.storage.chatDelegationRuns.create({
       runId,
       sessionId: prepared.session.sessionId,
       taskId: `chat-orchestration:${prepared.turnId}`,
       objective: prepared.content,
-      roles: orchestration.plan.routeDecision.selectedRoles,
+      roles: orchestration.orchestrationPlan.routeDecision.selectedRoles,
       mode: runMode,
       providerId: input.providerId ?? prepared.prefs.providerId,
       model: input.model ?? prepared.prefs.model,
       status: "running",
-      visibility: orchestration.plan.routeDecision.visibility,
-      workflowTemplate: orchestration.plan.workflowTemplate,
-      routeDecision: orchestration.plan.routeDecision,
+      visibility: orchestration.orchestrationPlan.routeDecision.visibility,
+      workflowTemplate: orchestration.orchestrationPlan.workflowTemplate,
+      executionPlanId: persistedExecutionPlan.planId,
+      routeDecision: orchestration.orchestrationPlan.routeDecision,
       citations: [],
       trace: runTrace,
     });
 
     const persistedStepIds = new Map<string, string>();
-    for (const [index, step] of orchestration.plan.steps.entries()) {
+    for (const [index, step] of orchestration.orchestrationPlan.steps.entries()) {
       const persistedStepId = `${runId}:${step.stepId}`;
       persistedStepIds.set(step.stepId, persistedStepId);
       this.storage.chatDelegationSteps.create({
@@ -7809,21 +7967,76 @@ export class GatewayService {
     const initialSummary = this.buildChatOrchestrationSummary({
       runId,
       objective: prepared.content,
-      modePolicy: orchestration.task.mode,
-      routeDecision: orchestration.plan.routeDecision,
+      modePolicy: orchestration.routerInput.task.mode,
+      routeDecision: orchestration.orchestrationPlan.routeDecision,
       stepResults: currentSteps,
       finalized: false,
     });
     await onProgress?.(initialSummary);
 
+    if (orchestration.executionPlanDraft.advisoryOnly) {
+      const advisoryOutput = renderExecutionPlanAsMarkdown({
+        mode: orchestration.routerInput.task.mode,
+        objective: orchestration.executionPlanDraft.objective,
+        summary: orchestration.executionPlanDraft.summary,
+        steps: persistedExecutionPlan.steps,
+      });
+      const advisorySummary = this.buildChatOrchestrationSummary({
+        runId,
+        objective: prepared.content,
+        modePolicy: orchestration.routerInput.task.mode,
+        routeDecision: orchestration.orchestrationPlan.routeDecision,
+        stepResults: [],
+        finalSummary: orchestration.executionPlanDraft.summary,
+        finalized: true,
+        advisoryOnly: true,
+      });
+      this.storage.chatDelegationRuns.patch(runId, {
+        status: "completed",
+        visibility: advisorySummary.visibility,
+        workflowTemplate: advisorySummary.workflowTemplate,
+        routeDecision: advisorySummary.routeDecision,
+        finalSummary: orchestration.executionPlanDraft.summary,
+        stitchedOutput: advisoryOutput,
+        citations: [],
+        trace: runTrace,
+        finishedAt: new Date().toISOString(),
+      });
+      this.storage.chatExecutionPlans.patch(persistedExecutionPlan.planId, {
+        status: "ready",
+        summary: orchestration.executionPlanDraft.summary,
+        finishedAt: new Date().toISOString(),
+      });
+      await onProgress?.(advisorySummary);
+      return {
+        finalOutput: advisoryOutput,
+        finalSummary: orchestration.executionPlanDraft.summary,
+        citations: [],
+        routeDecision: orchestration.orchestrationPlan.routeDecision,
+        stepResults: [],
+        summary: advisorySummary,
+        executionPlanId: persistedExecutionPlan.planId,
+      };
+    }
+
     const result = await executeOrchestrationPlan({
-      task: orchestration.task,
-      plan: orchestration.plan,
+      task: orchestration.routerInput.task,
+      plan: orchestration.orchestrationPlan,
       callbacks: {
         createChatCompletion: (request) => this.createChatCompletion({
           ...request,
           signal,
         }),
+        executeDelegatedStep: async ({ task, plan, priorSteps, step, stepIndex }) =>
+          this.executeDelegatedPlanStep(prepared, {
+            task,
+            plan,
+            priorSteps,
+            step,
+            stepIndex,
+            runId,
+            signal,
+          }),
         onStepResult: async (step, allSteps) => {
           currentSteps = [...allSteps];
           this.recordDevDiagnostic({
@@ -7849,14 +8062,24 @@ export class GatewayService {
             summary: step.summary,
             output: step.output,
             error: step.error,
+            failureGuidance: step.failureGuidance ?? (step.error ? buildDelegationFailureGuidance(step.error, step.role) : undefined),
+            childSessionId: step.childSessionId,
+            childTurnId: step.childTurnId,
+            citations: step.citations,
             finishedAt: step.finishedAt,
             durationMs: step.durationMs,
+          });
+          this.storage.chatExecutionPlans.patch(persistedExecutionPlan.planId, {
+            steps: mergeExecutionPlanStepStatuses(
+              this.storage.chatExecutionPlans.get(persistedExecutionPlan.planId).steps,
+              allSteps,
+            ),
           });
           const summary = this.buildChatOrchestrationSummary({
             runId,
             objective: prepared.content,
-            modePolicy: orchestration.task.mode,
-            routeDecision: orchestration.plan.routeDecision,
+            modePolicy: orchestration.routerInput.task.mode,
+            routeDecision: orchestration.orchestrationPlan.routeDecision,
             stepResults: currentSteps,
             finalized: false,
           });
@@ -7868,8 +8091,8 @@ export class GatewayService {
     const summary = this.buildChatOrchestrationSummary({
       runId,
       objective: prepared.content,
-      modePolicy: orchestration.task.mode,
-      routeDecision: orchestration.plan.routeDecision,
+      modePolicy: orchestration.routerInput.task.mode,
+      routeDecision: orchestration.orchestrationPlan.routeDecision,
       stepResults: result.stepResults,
       finalSummary: result.finalSummary,
       finalized: true,
@@ -7889,6 +8112,15 @@ export class GatewayService {
       },
       finishedAt: new Date().toISOString(),
     });
+    this.storage.chatExecutionPlans.patch(persistedExecutionPlan.planId, {
+      status: summary.status === "failed" ? "failed" : "completed",
+      summary: result.finalSummary,
+      finishedAt: new Date().toISOString(),
+      steps: mergeExecutionPlanStepStatuses(
+        this.storage.chatExecutionPlans.get(persistedExecutionPlan.planId).steps,
+        result.stepResults,
+      ),
+    });
     await onProgress?.(summary);
     this.recordDevDiagnostic({
       level: summary.status === "failed" ? "warn" : "info",
@@ -7907,7 +8139,151 @@ export class GatewayService {
     return {
       ...result,
       summary,
+      executionPlanId: persistedExecutionPlan.planId,
     };
+  }
+
+  private async executeDelegatedPlanStep(
+    prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
+    input: {
+      task: OrchestrationRouterInput["task"];
+      plan: ModeOrchestrationPlan;
+      priorSteps: OrchestrationStepExecutionResult[];
+      step: ModeOrchestrationPlan["steps"][number];
+      stepIndex: number;
+      runId: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<OrchestrationStepExecutionResult> {
+    const startedAt = new Date().toISOString();
+    const delegatedRole = input.step.delegatedRole ?? input.step.role;
+    const parentProjectId = this.storage.chatSessionProjects.get(prepared.session.sessionId)?.projectId;
+    const childSession = this.createChatSession({
+      workspaceId: prepared.workspaceId,
+      title: `Delegate · ${toTitleCase(delegatedRole)}`,
+      projectId: parentProjectId,
+      mode: input.task.mode,
+    });
+
+    this.updateChatSessionPrefs(childSession.sessionId, {
+      mode: input.task.mode,
+      planningMode: "off",
+      providerId: input.step.providerId ?? prepared.prefs.providerId,
+      model: input.step.model ?? prepared.prefs.model,
+      webMode: prepared.prefs.webMode,
+      memoryMode: prepared.prefs.memoryMode,
+      thinkingLevel: prepared.prefs.thinkingLevel,
+      toolAutonomy: prepared.effectiveToolAutonomy,
+      orchestrationEnabled: false,
+      orchestrationIntensity: "minimal",
+      orchestrationVisibility: "explicit",
+      orchestrationProviderPreference: prepared.prefs.orchestrationProviderPreference,
+      orchestrationReviewDepth: prepared.prefs.orchestrationReviewDepth,
+      orchestrationParallelism: "sequential",
+      codeAutoApply: prepared.prefs.codeAutoApply,
+      proactiveMode: "off",
+      retrievalMode: prepared.autonomy.retrievalMode,
+      reflectionMode: "off",
+    });
+
+    const conversationContext = input.task.conversation
+      .slice(-6)
+      .map((message) => `${message.role.toUpperCase()}: ${truncateSummaryLine(message.content, 320)}`)
+      .join("\n");
+    const priorStepContext = input.priorSteps
+      .slice(-4)
+      .map((step) => [
+        `${toTitleCase(step.role)} (${step.status})`,
+        truncateSummaryLine(step.summary ?? step.output ?? step.error ?? "No handoff provided.", 320),
+      ].join(": "))
+      .join("\n");
+    const content = [
+      `Delegated role: ${delegatedRole}`,
+      `Parent objective: ${input.task.objective}`,
+      `Plan summary: ${input.plan.summary}`,
+      `Current step objective: ${input.step.objective}`,
+      input.step.successCriteria ? `Success criteria: ${input.step.successCriteria}` : undefined,
+      input.step.expectedOutput ? `Expected output: ${input.step.expectedOutput}` : undefined,
+      input.step.suggestedTools?.length ? `Suggested tools: ${input.step.suggestedTools.join(", ")}` : undefined,
+      input.step.dependsOnStepIds?.length ? `Depends on: ${input.step.dependsOnStepIds.join(", ")}` : undefined,
+      conversationContext ? `Conversation context:\n${conversationContext}` : undefined,
+      priorStepContext ? `Prior handoffs:\n${priorStepContext}` : undefined,
+      "Produce only the delegated output for this step. Be concrete, cite evidence when available, and name any blocking issue explicitly.",
+    ].filter(Boolean).join("\n\n");
+
+    try {
+      if (input.signal?.aborted) {
+        throw new ChatTurnCancelledError(prepared.turnId);
+      }
+      const response = await this.agentSendChatMessage(childSession.sessionId, {
+        content,
+        providerId: input.step.providerId ?? prepared.prefs.providerId,
+        model: input.step.model ?? prepared.prefs.model,
+        mode: input.task.mode,
+        webMode: prepared.prefs.webMode,
+        memoryMode: prepared.prefs.memoryMode,
+        thinkingLevel: prepared.prefs.thinkingLevel,
+      });
+      if (input.signal?.aborted) {
+        throw new ChatTurnCancelledError(prepared.turnId);
+      }
+
+      const output = response.assistantMessage?.content?.trim()
+        || response.trace?.failure?.message?.trim()
+        || "(delegate returned no output)";
+      const finishedAt = new Date().toISOString();
+      const failed = response.trace?.status === "failed" || response.trace?.status === "cancelled";
+      const failureGuidance = failed && response.trace?.failure?.message
+        ? buildDelegationFailureGuidance(response.trace.failure.message, delegatedRole)
+        : undefined;
+
+      return {
+        stepId: input.step.stepId,
+        role: input.step.role,
+        index: input.stepIndex,
+        specialistCandidateId: input.step.specialistCandidate?.candidateId,
+        specialistTitle: input.step.specialistCandidate?.title,
+        specialistRole: input.step.specialistCandidate?.role,
+        providerId: response.trace?.routing?.effectiveProviderId ?? input.step.providerId ?? prepared.prefs.providerId,
+        model: response.trace?.model ?? input.step.model ?? prepared.prefs.model,
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        status: failed ? "failed" : "completed",
+        output,
+        summary: truncateSummaryLine(output, 180),
+        error: failed ? response.trace?.failure?.message ?? output : undefined,
+        failureGuidance,
+        citations: response.citations ?? [],
+        routing: response.routing,
+        childRunId: input.runId,
+        childSessionId: childSession.sessionId,
+        childTurnId: response.turnId,
+      };
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        stepId: input.step.stepId,
+        role: input.step.role,
+        index: input.stepIndex,
+        specialistCandidateId: input.step.specialistCandidate?.candidateId,
+        specialistTitle: input.step.specialistCandidate?.title,
+        specialistRole: input.step.specialistCandidate?.role,
+        providerId: input.step.providerId ?? prepared.prefs.providerId,
+        model: input.step.model ?? prepared.prefs.model,
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+        status: "failed",
+        summary: `${toTitleCase(delegatedRole)} failed`,
+        error: message,
+        failureGuidance: buildDelegationFailureGuidance(message, delegatedRole),
+        citations: [],
+        childRunId: input.runId,
+        childSessionId: childSession.sessionId,
+      };
+    }
   }
 
   private async *streamPreparedAgentChatTurn(
@@ -7915,6 +8291,7 @@ export class GatewayService {
     input: ChatSendMessageRequest,
     prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
     threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
+    resolvedOrchestration?: PreparedChatExecutionPlanResolution,
   ): AsyncGenerator<ChatStreamChunk> {
     const turnId = prepared.turnId;
     const assistantMessageId = prepared.assistantMessageId;
@@ -7931,7 +8308,7 @@ export class GatewayService {
         sourceTurnId: prepared.sourceTurnId,
       };
 
-      const modeOrchestration = this.resolvePreparedTurnOrchestration(prepared);
+      const modeOrchestration = resolvedOrchestration ?? await this.resolvePreparedTurnOrchestration(prepared);
       if (modeOrchestration) {
         const mode = prepared.normalized.mode ?? prepared.prefs.mode;
         const initialTrace = this.storage.chatTurnTraces.create({
@@ -7943,7 +8320,7 @@ export class GatewayService {
           sourceTurnId: prepared.sourceTurnId,
           status: "running",
           mode,
-          model: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+          model: modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
           webMode: prepared.normalized.webMode ?? prepared.prefs.webMode,
           memoryMode: prepared.normalized.memoryMode ?? prepared.prefs.memoryMode,
           thinkingLevel: prepared.normalized.thinkingLevel ?? prepared.prefs.thinkingLevel,
@@ -7951,8 +8328,8 @@ export class GatewayService {
           routing: {
             primaryProviderId: input.providerId ?? prepared.prefs.providerId,
             primaryModel: input.model ?? prepared.prefs.model,
-            effectiveProviderId: modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-            effectiveModel: modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            effectiveProviderId: modeOrchestration.orchestrationPlan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+            effectiveModel: modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
           },
         });
         yield {
@@ -7962,18 +8339,21 @@ export class GatewayService {
           trace: initialTrace,
         };
 
+        let executionPlanId: string | undefined;
         const orchestrationResult = await this.executePreparedModeOrchestration(prepared, input, controller.signal, async (summary) => {
           this.storage.chatTurnTraces.patch(turnId, {
+            executionPlanId,
             orchestration: summary,
-            model: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            model: summary.steps.at(-1)?.model ?? modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
             routing: {
               primaryProviderId: input.providerId ?? prepared.prefs.providerId,
               primaryModel: input.model ?? prepared.prefs.model,
-              effectiveProviderId: summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-              effectiveModel: summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+              effectiveProviderId: summary.steps.at(-1)?.providerId ?? modeOrchestration.orchestrationPlan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+              effectiveModel: summary.steps.at(-1)?.model ?? modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
             },
           });
-        });
+        }, modeOrchestration);
+        executionPlanId = orchestrationResult.executionPlanId;
 
         let finalText = orchestrationResult.finalOutput.trim();
         if (!finalText) {
@@ -8005,14 +8385,15 @@ export class GatewayService {
         let hydratedTrace: ChatTurnTraceRecord = {
           ...this.storage.chatTurnTraces.patch(turnId, {
             assistantMessageId,
+            executionPlanId: orchestrationResult.executionPlanId,
             status: orchestrationResult.summary.status === "failed" ? "failed" : "completed",
             finishedAt: new Date().toISOString(),
-            model: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+            model: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
             routing: {
               primaryProviderId: input.providerId ?? prepared.prefs.providerId,
               primaryModel: input.model ?? prepared.prefs.model,
-              effectiveProviderId: orchestrationResult.summary.steps.at(-1)?.providerId ?? modeOrchestration.plan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
-              effectiveModel: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.plan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
+              effectiveProviderId: orchestrationResult.summary.steps.at(-1)?.providerId ?? modeOrchestration.orchestrationPlan.steps.at(0)?.providerId ?? input.providerId ?? prepared.prefs.providerId,
+              effectiveModel: orchestrationResult.summary.steps.at(-1)?.model ?? modeOrchestration.orchestrationPlan.steps.at(0)?.model ?? input.model ?? prepared.prefs.model,
             },
             retrieval: prepared.retrievalTrace,
             reflection: {
@@ -8403,7 +8784,8 @@ export class GatewayService {
           "chat_thread_turn_appended",
         );
       }
-      if (this.resolvePreparedTurnOrchestration(prepared)) {
+      const modeOrchestration = await this.resolvePreparedTurnOrchestration(prepared);
+      if (modeOrchestration) {
         this.recordDevDiagnostic({
           level: "info",
           category: "orchestration",
@@ -8417,6 +8799,7 @@ export class GatewayService {
           input,
           prepared,
           "chat_thread_turn_appended",
+          modeOrchestration,
         );
       }
       const controller = this.beginActiveChatTurnExecution(sessionId, prepared.turnId, "agent-send");
@@ -8929,11 +9312,18 @@ export class GatewayService {
     input: ChatSendMessageRequest,
     prepared: Awaited<ReturnType<GatewayService["prepareAgentChatTurn"]>>,
     threadEventType: "chat_thread_turn_appended" | "chat_thread_turn_retried" | "chat_thread_turn_edited",
+    resolvedOrchestration?: PreparedChatExecutionPlanResolution,
   ): Promise<ChatSendMessageResponse> {
     let assistantMessage: ChatMessageRecord | undefined;
     let trace: ChatTurnTraceRecord | undefined;
     let citations: ChatCitationRecord[] = [];
-    for await (const chunk of this.streamPreparedAgentChatTurn(sessionId, input, prepared, threadEventType)) {
+    for await (const chunk of this.streamPreparedAgentChatTurn(
+      sessionId,
+      input,
+      prepared,
+      threadEventType,
+      resolvedOrchestration,
+    )) {
       if (chunk.type === "message_done") {
         assistantMessage = {
           messageId: chunk.messageId,
@@ -11779,22 +12169,33 @@ export class GatewayService {
     return { deleted };
   }
 
-  public connectMcpServer(serverId: string): McpServerRecord {
-    const connected = this.patchMcpServerState(serverId, {
-      status: "connected",
-      lastConnectedAt: new Date().toISOString(),
+  public async connectMcpServer(serverId: string): Promise<McpServerRecord> {
+    const connecting = this.patchMcpServerState(serverId, {
+      status: "connecting",
       lastError: undefined,
     });
-    const tools = this.readMcpTools();
-    const existing = tools.filter((item) => item.serverId === serverId);
-    const inferred = inferMcpToolsForServer(connected, existing);
-    if (inferred.length > 0) {
-      this.writeMcpTools([
-        ...tools.filter((item) => item.serverId !== serverId),
-        ...inferred,
-      ]);
+    try {
+      const tools = this.readMcpTools();
+      const existing = tools.filter((item) => item.serverId === serverId);
+      const resolvedTools = await this.resolveConnectedMcpTools(connecting, existing);
+      if (resolvedTools.length > 0) {
+        this.writeMcpTools([
+          ...tools.filter((item) => item.serverId !== serverId),
+          ...resolvedTools,
+        ]);
+      }
+      return this.patchMcpServerState(serverId, {
+        status: "connected",
+        lastConnectedAt: new Date().toISOString(),
+        lastError: undefined,
+      });
+    } catch (error) {
+      this.patchMcpServerState(serverId, {
+        status: "error",
+        lastError: (error as Error).message,
+      });
+      throw error;
     }
-    return connected;
   }
 
   public disconnectMcpServer(serverId: string): McpServerRecord {
@@ -11818,7 +12219,7 @@ export class GatewayService {
     return { authorizeUrl, state };
   }
 
-  public completeMcpOAuth(serverId: string, code: string, state?: string): McpServerRecord {
+  public async completeMcpOAuth(serverId: string, code: string, state?: string): Promise<McpServerRecord> {
     const authRows = this.readMcpAuthState();
     const authRow = authRows[serverId];
     if (!authRow) {
@@ -11957,6 +12358,7 @@ export class GatewayService {
     const runtime = await invokeMcpRuntimeTool(server, {
       toolName: input.toolName,
       arguments: input.arguments,
+      signal: input.signal,
     });
     const output = runtime.output
       ? {
@@ -13711,6 +14113,9 @@ export class GatewayService {
     patch: Partial<Pick<McpServerRecord, "status" | "lastConnectedAt" | "lastError">>,
   ): McpServerRecord {
     const now = new Date().toISOString();
+    const hasStatus = Object.prototype.hasOwnProperty.call(patch, "status");
+    const hasLastConnectedAt = Object.prototype.hasOwnProperty.call(patch, "lastConnectedAt");
+    const hasLastError = Object.prototype.hasOwnProperty.call(patch, "lastError");
     let updated: McpServerRecord | undefined;
     const servers = this.readMcpServers().map((item) => {
       if (item.serverId !== serverId) {
@@ -13718,9 +14123,9 @@ export class GatewayService {
       }
       updated = {
         ...item,
-        status: patch.status ?? item.status,
-        lastConnectedAt: patch.lastConnectedAt ?? item.lastConnectedAt,
-        lastError: patch.lastError ?? item.lastError,
+        status: hasStatus ? (patch.status ?? item.status) : item.status,
+        lastConnectedAt: hasLastConnectedAt ? patch.lastConnectedAt : item.lastConnectedAt,
+        lastError: hasLastError ? patch.lastError : item.lastError,
         updatedAt: now,
       };
       return updated;
@@ -13730,6 +14135,19 @@ export class GatewayService {
     }
     this.writeMcpServers(servers);
     return updated;
+  }
+
+  private async resolveConnectedMcpTools(
+    server: McpServerRecord,
+    existingTools: McpToolRecord[],
+  ): Promise<McpToolRecord[]> {
+    if (server.transport === "stdio") {
+      const discovered = await discoverMcpTools(server);
+      if (discovered.length > 0) {
+        return discovered;
+      }
+    }
+    return inferMcpToolsForServer(server, existingTools);
   }
 
   private readMcpTools(): McpToolRecord[] {
@@ -14775,7 +15193,7 @@ export class GatewayService {
           content: baseContent,
         };
       }));
-    const messages = mapped.slice(-80);
+    const messages = await this.compactTranscriptMessages(sessionId, transcript, mapped);
     if (options?.guidanceSystemInstruction?.trim()) {
       return [
         {
@@ -14791,10 +15209,23 @@ export class GatewayService {
   private listHydratedChatTurnTraces(sessionId: string, limit = 200): ChatTurnTraceRecord[] {
     const traces = this.storage.chatTurnTraces.listBySession(sessionId, limit);
     const toolRunsByTurnId = this.storage.chatToolRuns.listByTurnIds(traces.map((trace) => trace.turnId));
+    const executionPlansById = new Map(
+      traces
+        .filter((trace) => trace.executionPlanId)
+        .map((trace) => {
+          try {
+            return [trace.executionPlanId!, this.storage.chatExecutionPlans.get(trace.executionPlanId!)] as const;
+          } catch {
+            return undefined;
+          }
+        })
+        .filter((entry): entry is readonly [string, ReturnType<Storage["chatExecutionPlans"]["get"]>] => Boolean(entry)),
+    );
     return traces.map((trace) => ({
       ...trace,
       toolRuns: toolRunsByTurnId.get(trace.turnId) ?? [],
       citations: trace.citations ?? [],
+      executionPlan: trace.executionPlanId ? executionPlansById.get(trace.executionPlanId) : undefined,
       capabilityUpgradeSuggestions: trace.capabilityUpgradeSuggestions,
     }));
   }
@@ -14881,7 +15312,12 @@ export class GatewayService {
     if (currentUserMessage) {
       orderedMessages.push(currentUserMessage);
     }
-    return this.buildLlmMessagesFromRecords(orderedMessages, options);
+    return this.buildLlmMessagesFromRecords(orderedMessages, {
+      ...options,
+      sessionId,
+      branchHeadTurnId: pathTurnIds.at(-1),
+      branchTurnIds: pathTurnIds,
+    });
   }
 
   private async buildLlmMessagesFromRecords(
@@ -14890,6 +15326,9 @@ export class GatewayService {
       providerId?: string;
       model?: string;
       guidanceSystemInstruction?: string;
+      sessionId?: string;
+      branchHeadTurnId?: string;
+      branchTurnIds?: string[];
     },
   ): Promise<ChatCompletionRequest["messages"]> {
     const runtime = this.llmService.getRuntimeConfig();
@@ -14915,7 +15354,15 @@ export class GatewayService {
         content: await this.buildUserMessageContent(message, supportsVision),
       };
     }));
-    const messages = mapped.slice(-80);
+    const messages = options?.sessionId && options.branchTurnIds && options.branchTurnIds.length > 0
+      ? await this.compactBranchMappedMessages({
+        sessionId: options.sessionId,
+        branchHeadTurnId: options.branchHeadTurnId ?? options.branchTurnIds.at(-1) ?? options.sessionId,
+        branchTurnIds: options.branchTurnIds,
+        records,
+        mapped,
+      })
+      : mapped;
     if (!options?.guidanceSystemInstruction?.trim()) {
       return messages;
     }
@@ -14926,6 +15373,149 @@ export class GatewayService {
       },
       ...messages,
     ];
+  }
+
+  private async compactTranscriptMessages(
+    sessionId: string,
+    transcript: TranscriptEvent[],
+    mapped: ChatCompletionRequest["messages"],
+  ): Promise<ChatCompletionRequest["messages"]> {
+    if (mapped.length <= CHAT_COMPACTION_RECENT_TURN_LIMIT * 2) {
+      return mapped;
+    }
+    if (estimateTokensFromText(stringifyMessagesForTokenEstimate(mapped)) <= CHAT_COMPACTION_TRIGGER_TOKENS) {
+      return mapped;
+    }
+    const records = transcript
+      .filter((event) => event.type === "message.user" || event.type === "message.assistant")
+      .map((event) => ({
+        messageId: event.eventId,
+        sessionId,
+        role: event.type === "message.user" ? "user" : "assistant",
+        actorType: event.type === "message.user" ? "user" : "agent",
+        actorId: event.type === "message.user" ? "operator" : "assistant",
+        content: this.extractMessagePreview(event.payload),
+        timestamp: event.timestamp,
+      } satisfies ChatMessageRecord));
+    const recentRecords = records.slice(-(CHAT_COMPACTION_RECENT_TURN_LIMIT * 2));
+    const summary = buildConversationCompactionSummary(records.slice(0, Math.max(0, records.length - recentRecords.length)));
+    const recentMessages = mapped.slice(-(CHAT_COMPACTION_RECENT_TURN_LIMIT * 2));
+    if (!summary) {
+      return recentMessages;
+    }
+    return [
+      {
+        role: "system",
+        content: truncateByTokenEstimate(summary, CHAT_COMPACTION_SUMMARY_TOKEN_BUDGET),
+      },
+      ...recentMessages,
+    ];
+  }
+
+  private async compactBranchMappedMessages(input: {
+    sessionId: string;
+    branchHeadTurnId: string;
+    branchTurnIds: string[];
+    records: ChatMessageRecord[];
+    mapped: ChatCompletionRequest["messages"];
+  }): Promise<ChatCompletionRequest["messages"]> {
+    const totalTokens = estimateTokensFromText(stringifyMessagesForTokenEstimate(input.mapped));
+    if (
+      input.branchTurnIds.length <= CHAT_COMPACTION_RECENT_TURN_LIMIT
+      || totalTokens <= CHAT_COMPACTION_TRIGGER_TOKENS
+    ) {
+      return input.mapped;
+    }
+
+    const recentTurnIds = input.branchTurnIds.slice(-CHAT_COMPACTION_RECENT_TURN_LIMIT);
+    const olderTurnIds = input.branchTurnIds.slice(0, Math.max(0, input.branchTurnIds.length - recentTurnIds.length));
+    if (olderTurnIds.length === 0) {
+      return input.mapped;
+    }
+
+    const grouped = buildBranchRecordGroups(input.branchTurnIds, input.records);
+    const summaryMessages: ChatCompletionRequest["messages"] = [];
+    for (let index = 0; index < olderTurnIds.length; index += CHAT_COMPACTION_WINDOW_SIZE) {
+      const windowTurnIds = olderTurnIds.slice(index, index + CHAT_COMPACTION_WINDOW_SIZE);
+      const windowMessages = windowTurnIds.flatMap((turnId) => grouped.turnMessagesById.get(turnId) ?? []);
+      if (windowMessages.length === 0) {
+        continue;
+      }
+      const summary = this.getOrCreateConversationSummary({
+        sessionId: input.sessionId,
+        branchHeadTurnId: input.branchHeadTurnId,
+        turnIds: windowTurnIds,
+        messages: windowMessages,
+      });
+      if (!summary) {
+        continue;
+      }
+      summaryMessages.push({
+        role: "system",
+        content: summary,
+      });
+    }
+
+    const verbatimMessages = recentTurnIds.flatMap((turnId) => grouped.turnMessagesById.get(turnId) ?? []);
+    const finalVerbatimRecords = [...verbatimMessages, ...grouped.trailingMessages];
+    const mappedVerbatim = await Promise.all(finalVerbatimRecords.map(async (message) => {
+      const mappedIndex = input.records.findIndex((item) => item.messageId === message.messageId);
+      if (mappedIndex >= 0) {
+        return input.mapped[mappedIndex]!;
+      }
+      return message.role === "assistant"
+        ? { role: "assistant" as const, content: message.content }
+        : { role: "user" as const, content: message.content };
+    }));
+
+    return [
+      ...summaryMessages,
+      ...mappedVerbatim,
+    ];
+  }
+
+  private getOrCreateConversationSummary(input: {
+    sessionId: string;
+    branchHeadTurnId: string;
+    turnIds: string[];
+    messages: ChatMessageRecord[];
+  }): string | undefined {
+    if (input.turnIds.length === 0 || input.messages.length === 0) {
+      return undefined;
+    }
+    const source = input.messages
+      .map((message) => `${message.role.toUpperCase()}: ${message.content.trim()}`)
+      .filter((line) => line.length > 0)
+      .join("\n\n");
+    if (!source) {
+      return undefined;
+    }
+    const sourceHash = createHash("sha256").update(source).digest("hex");
+    const existing = this.storage.chatConversationSummaries
+      .listByBranch(input.sessionId, input.branchHeadTurnId)
+      .find((summary) =>
+        summary.startTurnId === input.turnIds[0]
+        && summary.endTurnId === input.turnIds.at(-1)
+        && summary.sourceHash === sourceHash
+      );
+    if (existing) {
+      return existing.summary;
+    }
+    const summary = buildConversationCompactionSummary(input.messages);
+    if (!summary) {
+      return undefined;
+    }
+    const persisted = this.storage.chatConversationSummaries.upsert({
+      sessionId: input.sessionId,
+      branchHeadTurnId: input.branchHeadTurnId,
+      startTurnId: input.turnIds[0]!,
+      endTurnId: input.turnIds.at(-1)!,
+      turnIds: input.turnIds,
+      sourceHash,
+      tokenEstimate: estimateTokensFromText(source),
+      summary,
+    });
+    return persisted.summary;
   }
 
   private async buildUserMessageContent(
@@ -17143,6 +17733,274 @@ function buildDelegationUserPrompt(input: {
     previous,
     "Produce your role output now.",
   ].join("\n\n");
+}
+
+function renderExecutionPlanAsMarkdown(input: {
+  mode: ChatMode;
+  objective: string;
+  summary: string;
+  steps: PreparedChatExecutionPlanResolution["executionPlanDraft"]["steps"];
+}): string {
+  const modeLabel = input.mode === "cowork"
+    ? "Cowork plan"
+    : input.mode === "code"
+      ? "Code plan"
+      : "Chat plan";
+  const stepLines = input.steps.map((step) => {
+    const parts = [
+      `${step.index + 1}. ${step.objective}`,
+      step.successCriteria ? `Success: ${step.successCriteria}` : undefined,
+      step.expectedOutput ? `Output: ${step.expectedOutput}` : undefined,
+      step.suggestedTools?.length ? `Suggested tools: ${step.suggestedTools.join(", ")}` : undefined,
+      step.dependsOnStepIds?.length ? `Depends on: ${step.dependsOnStepIds.join(", ")}` : undefined,
+      step.delegatedRole ? `Delegated role: ${step.delegatedRole}` : undefined,
+    ].filter(Boolean);
+    return parts.join("\n   ");
+  });
+  return [
+    `## ${modeLabel}`,
+    "",
+    `Objective: ${input.objective}`,
+    "",
+    input.summary,
+    "",
+    "Planned steps:",
+    ...stepLines,
+  ].join("\n");
+}
+
+function stringifyMessagesForTokenEstimate(messages: ChatCompletionRequest["messages"]): string {
+  return messages
+    .map((message) => {
+      const content = typeof message.content === "string"
+        ? message.content
+        : extractStringFromUnknown(message.content);
+      return `${message.role.toUpperCase()}: ${content}`;
+    })
+    .join("\n\n");
+}
+
+function truncateSummaryLine(content: string, maxLength = 220): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function buildBranchRecordGroups(
+  branchTurnIds: string[],
+  records: ChatMessageRecord[],
+): {
+  turnMessagesById: Map<string, ChatMessageRecord[]>;
+  trailingMessages: ChatMessageRecord[];
+} {
+  const turnMessagesById = new Map<string, ChatMessageRecord[]>();
+  let cursor = 0;
+  for (const turnId of branchTurnIds) {
+    const turnMessages: ChatMessageRecord[] = [];
+    if (cursor < records.length) {
+      turnMessages.push(records[cursor]!);
+      cursor += 1;
+    }
+    if (cursor < records.length && records[cursor]?.role === "assistant") {
+      turnMessages.push(records[cursor]!);
+      cursor += 1;
+    }
+    turnMessagesById.set(turnId, turnMessages);
+  }
+  return {
+    turnMessagesById,
+    trailingMessages: records.slice(cursor),
+  };
+}
+
+function buildExecutionPlanDraftFromOrchestrationPlan(
+  templatePlan: ModeOrchestrationPlan,
+  input: {
+    objective: string;
+    advisoryOnly: boolean;
+  },
+): PreparedChatExecutionPlanResolution["executionPlanDraft"] {
+  return {
+    source: templatePlan.source,
+    advisoryOnly: input.advisoryOnly,
+    objective: input.objective,
+    summary: templatePlan.summary,
+    steps: templatePlan.steps.map((step, index) => ({
+      stepId: step.stepId,
+      index,
+      objective: step.objective,
+      successCriteria: step.successCriteria,
+      suggestedTools: step.suggestedTools,
+      expectedOutput: step.expectedOutput,
+      parallelizable: step.parallelizable,
+      dependsOnStepIds: step.dependsOnStepIds,
+      delegatedRole: input.advisoryOnly || templatePlan.routeDecision.modePolicy === "chat"
+        ? undefined
+        : step.delegatedRole,
+      status: "pending",
+    })),
+  };
+}
+
+function coercePlannerExecutionPlanDraft(
+  payload: Record<string, unknown>,
+  templatePlan: ModeOrchestrationPlan,
+  input: {
+    advisoryOnly: boolean;
+    mode: ChatMode;
+    objective: string;
+  },
+): PreparedChatExecutionPlanResolution["executionPlanDraft"] | undefined {
+  const rawSteps = Array.isArray(payload.steps)
+    ? payload.steps.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+    : [];
+  if (rawSteps.length === 0) {
+    return undefined;
+  }
+  const allowedDelegatedRoles = new Set(templatePlan.steps.map((step) => step.role));
+  let usedFallback = false;
+  const steps = templatePlan.steps.map((templateStep, index) => {
+    const raw = rawSteps[index];
+    const objective = typeof raw?.objective === "string" && raw.objective.trim()
+      ? raw.objective.trim()
+      : templateStep.objective;
+    if (objective === templateStep.objective) {
+      usedFallback = true;
+    }
+    const successCriteria = typeof raw?.successCriteria === "string" && raw.successCriteria.trim()
+      ? raw.successCriteria.trim()
+      : templateStep.successCriteria;
+    const suggestedTools = Array.isArray(raw?.suggestedTools)
+      ? dedupeStrings(
+        raw.suggestedTools
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      )
+      : templateStep.suggestedTools;
+    const expectedOutput = typeof raw?.expectedOutput === "string" && raw.expectedOutput.trim()
+      ? raw.expectedOutput.trim()
+      : templateStep.expectedOutput;
+    const dependsOnStepIds = Array.isArray(raw?.dependsOnStepIds)
+      ? dedupeStrings(
+        raw.dependsOnStepIds
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter((value) => templatePlan.steps.some((step) => step.stepId === value)),
+      )
+      : templateStep.dependsOnStepIds;
+    const delegatedRole = input.mode === "chat" || input.advisoryOnly
+      ? undefined
+      : typeof raw?.delegatedRole === "string" && allowedDelegatedRoles.has(raw.delegatedRole as OrchestrationRole)
+        ? raw.delegatedRole
+        : templateStep.delegatedRole;
+    return {
+      stepId: templateStep.stepId,
+      index,
+      objective,
+      successCriteria,
+      suggestedTools: suggestedTools?.length ? suggestedTools : undefined,
+      expectedOutput,
+      parallelizable: typeof raw?.parallelizable === "boolean" ? raw.parallelizable : templateStep.parallelizable,
+      dependsOnStepIds: dependsOnStepIds?.length ? dependsOnStepIds : undefined,
+      delegatedRole,
+      status: "pending" as const,
+    };
+  });
+  const summary = typeof payload.summary === "string" && payload.summary.trim()
+    ? payload.summary.trim()
+    : templatePlan.summary;
+  if (summary === templatePlan.summary) {
+    usedFallback = true;
+  }
+  return {
+    source: usedFallback ? "planner_with_template_fallback" : "planner",
+    advisoryOnly: input.advisoryOnly,
+    objective: input.objective,
+    summary,
+    steps,
+  };
+}
+
+function applyExecutionPlanDraftToOrchestrationPlan(
+  templatePlan: ModeOrchestrationPlan,
+  draft: PreparedChatExecutionPlanResolution["executionPlanDraft"],
+): ModeOrchestrationPlan {
+  const steps = templatePlan.steps.map((step, index) => {
+    const planned = draft.steps[index];
+    if (!planned) {
+      return step;
+    }
+    return {
+      ...step,
+      index: planned.index,
+      objective: planned.objective,
+      successCriteria: planned.successCriteria,
+      suggestedTools: planned.suggestedTools,
+      expectedOutput: planned.expectedOutput,
+      parallelizable: planned.parallelizable,
+      dependsOnStepIds: planned.dependsOnStepIds,
+      delegatedRole: planned.delegatedRole,
+    };
+  });
+  return {
+    ...templatePlan,
+    summary: draft.summary,
+    source: draft.source,
+    advisoryOnly: draft.advisoryOnly,
+    routeDecision: {
+      ...templatePlan.routeDecision,
+      selectedRoles: steps.map((step) => step.role),
+      selectedProviders: steps.map((step) => ({
+        role: step.role,
+        providerId: step.providerId,
+        model: step.model,
+      })),
+    },
+    steps,
+  };
+}
+
+function mergeExecutionPlanStepStatuses(
+  planSteps: PreparedChatExecutionPlanResolution["executionPlanDraft"]["steps"],
+  results: OrchestrationStepExecutionResult[],
+): PreparedChatExecutionPlanResolution["executionPlanDraft"]["steps"] {
+  return planSteps.map((planStep, index) => {
+    const result = results.find((item) => item.stepId === planStep.stepId) ?? results.find((item) => item.index === index);
+    if (!result) {
+      return planStep;
+    }
+    return {
+      ...planStep,
+      status: result.status === "skipped" ? "cancelled" : result.status,
+      summary: result.summary,
+      error: result.error,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+      childRunId: result.childRunId,
+      childSessionId: result.childSessionId,
+      childTurnId: result.childTurnId,
+    };
+  });
+}
+
+function buildDelegationFailureGuidance(error: string, role: string): string {
+  const normalized = error.toLowerCase();
+  if (/\bauth|login|token|credential|permission\b/.test(normalized)) {
+    return `${toTitleCase(role)} hit an auth or permission barrier. Reconnect the required account or switch to another source.`;
+  }
+  if (/\btimeout|timed out|deadline|aborted\b/.test(normalized)) {
+    return `${toTitleCase(role)} ran out of time. Retry with a narrower brief or fewer sources.`;
+  }
+  if (/\bblocked|deny|denied|approval|policy|jail\b/.test(normalized)) {
+    return `${toTitleCase(role)} hit a restricted action. Use a safer fallback path or request approval explicitly.`;
+  }
+  if (/\bnot found|404|missing\b/.test(normalized)) {
+    return `${toTitleCase(role)} could not find the expected input. Retry with a more explicit file, path, or source reference.`;
+  }
+  return `Retry the ${role} delegate with a narrower brief or a different tool/source strategy.`;
 }
 
 function normalizePromptTestCode(value: string): string {

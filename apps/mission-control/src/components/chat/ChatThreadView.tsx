@@ -16,6 +16,7 @@ import type {
 import { StatusChip } from "../StatusChip";
 import { ChatStreamStatusBar, type ChatStreamStatus } from "./ChatStreamStatusBar";
 import { getChatToolRunDiagnostics } from "./chat-tool-diagnostics";
+import { ChatExecutionPlanSummary } from "./ChatExecutionPlanSummary";
 
 export interface ChatThreadNotice {
   id: string;
@@ -197,6 +198,7 @@ function ChatTurnDetails({
                   {diagnostics.httpStatus !== undefined ? <p>HTTP status: {diagnostics.httpStatus}</p> : null}
                   {diagnostics.summary ? <p>{diagnostics.summary}</p> : null}
                   {run.error ? <p>Error: {run.error}</p> : null}
+                  {run.failureGuidance ? <p>Next move: {run.failureGuidance}</p> : null}
                 </li>
               );
             })}
@@ -234,6 +236,12 @@ function ChatTurnDetails({
           <p>Failure class: {turn.trace.failure.failureClass}</p>
           <p>{turn.trace.failure.message}</p>
           <p>Retryable: {turn.trace.failure.retryable === false ? "no" : "yes"}</p>
+        </div>
+      ) : null}
+      {turn.trace.executionPlan ? (
+        <div className="chat-v11-turn-section">
+          <h5>Execution plan</h5>
+          <ChatExecutionPlanSummary plan={turn.trace.executionPlan} />
         </div>
       ) : null}
       {turn.trace.orchestration ? (
