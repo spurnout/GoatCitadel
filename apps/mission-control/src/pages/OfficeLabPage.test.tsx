@@ -147,7 +147,7 @@ describe("OfficeLabPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders a separate 2D office surface with zone layout and live rail data", async () => {
+  it("renders a separate 2D office surface with an agent-office style room map and overlay panels", async () => {
     let renderer = create(<div />);
     try {
       await act(async () => {
@@ -166,7 +166,8 @@ describe("OfficeLabPage", () => {
       expect(text).toContain("QA");
       expect(text).toContain("Drafted fallback plan.");
       expect(text).toContain("Ran regression pass.");
-      expect(text).toContain("Live Rail");
+      expect(text).toContain("Task Board");
+      expect(text).toContain("System Log");
       expect(text).toContain("Reload office");
       expect(apiMocks.fetchAgents).toHaveBeenCalledWith("all", 300);
       expect(apiMocks.fetchApprovals).toHaveBeenCalledWith("pending");

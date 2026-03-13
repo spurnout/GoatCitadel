@@ -8,7 +8,7 @@ This doc records the current office-direction policy for GoatCitadel. It is inte
 
 - `Office` remains the stable product surface.
 - `Office Lab` is a separate Mission Control tab with its own non-3D 2D office layout.
-- The current `Office Lab` implementation is pixel-inspired and deck-based rather than a second 3D camera/runtime profile.
+- The current `Office Lab` implementation is an agent-office-style pixel room map rather than a second 3D camera/runtime profile.
 - It still uses GoatCitadel's live agent, approval, and event feeds rather than a separate office backend.
 
 ## Citadel-first direction
@@ -66,8 +66,8 @@ GoatCitadel follows a clone-first policy when licensing is clean:
 
 Current donor roles:
 
-- `pixel-agents`: first temporary `Office Lab` renderer/runtime base
-- `agent-office`: strongest donor for constrained self-growing team behavior and office/game structure
+- `agent-office`: primary donor for the current `Office Lab` renderer/layout and future constrained self-growing team behavior
+- `pixel-agents`: secondary donor for alternate renderer ideas, not the current base
 - `agentroom`: strongest donor for office behavior, project focus, and session adjacency
 - `tenacitOS`: strongest donor for function-first Mission Control layout and modular shell structure
 - `Star Office UI`: named-zone and status-mapping donor only, not a direct art base

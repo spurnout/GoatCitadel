@@ -15,6 +15,7 @@ export async function runSmoke(): Promise<void> {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "goatcitadel-smoke-"));
   const priorRoot = process.env.GOATCITADEL_ROOT_DIR;
+  const priorAuthMode = process.env.GOATCITADEL_AUTH_MODE;
 
   try {
     await cp(path.join(repoRoot, "config"), path.join(tempRoot, "config"), { recursive: true });
@@ -22,6 +23,7 @@ export async function runSmoke(): Promise<void> {
     await mkdir(path.join(tempRoot, "data", "audit"), { recursive: true });
     await mkdir(path.join(tempRoot, "workspace"), { recursive: true });
     process.env.GOATCITADEL_ROOT_DIR = tempRoot;
+    process.env.GOATCITADEL_AUTH_MODE = "none";
 
     const app = await buildApp();
     try {
@@ -48,6 +50,11 @@ export async function runSmoke(): Promise<void> {
       delete process.env.GOATCITADEL_ROOT_DIR;
     } else {
       process.env.GOATCITADEL_ROOT_DIR = priorRoot;
+    }
+    if (priorAuthMode === undefined) {
+      delete process.env.GOATCITADEL_AUTH_MODE;
+    } else {
+      process.env.GOATCITADEL_AUTH_MODE = priorAuthMode;
     }
     await rm(tempRoot, { recursive: true, force: true });
   }

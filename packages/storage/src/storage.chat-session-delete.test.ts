@@ -194,6 +194,7 @@ function seedChatSession(storage: Storage, sessionId: string): void {
         stepId: `plan-step-${sessionId}`,
         index: 0,
         objective: "review failures",
+        parallelizable: false,
         status: "pending",
       },
     ],

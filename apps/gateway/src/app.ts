@@ -44,7 +44,7 @@ import { daemonRoutes } from "./routes/daemon.js";
 import { improvementRoutes } from "./routes/improvement.js";
 import { workspacesRoutes } from "./routes/workspaces.js";
 import { durableRoutes } from "./routes/durable.js";
-import { isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
+import { isLoopbackDevOrigin, isTailnetDevOrigin, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
 import { isSuspiciousEncodedPath } from "./path-guard.js";
 import { enterDevDiagnosticsContext } from "./dev-diagnostics/service.js";
 
@@ -64,6 +64,10 @@ export async function buildApp() {
         return;
       }
       if (allowedOrigins.has(origin)) {
+        cb(null, true);
+        return;
+      }
+      if (process.env.NODE_ENV !== "production" && isLoopbackDevOrigin(origin)) {
         cb(null, true);
         return;
       }

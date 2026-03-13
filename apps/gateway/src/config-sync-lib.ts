@@ -74,7 +74,7 @@ export async function syncUnifiedConfig(
 
     const normalized = normalizeSection(sectionValue, target.filename);
     const outPath = path.join(configDir, target.filename);
-    await warnIfSplitIsNewer(outPath, unifiedPath, unifiedMtimeMs);
+    await warnIfSplitIsNewer(outPath, unifiedPath, unifiedMtimeMs, serializeJson(normalized));
     const changed = await writeJsonIfChanged(outPath, normalized);
     if (changed) {
       syncedSections.push(target.filename);
@@ -151,7 +151,7 @@ function readSection(payload: Record<string, unknown>, aliases: string[]): unkno
 }
 
 async function writeJsonIfChanged(filePath: string, data: unknown): Promise<boolean> {
-  const next = `${JSON.stringify(data, null, 2)}\n`;
+  const serialized = serializeJson(data);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
 
   let current = "";
@@ -163,9 +163,11 @@ async function writeJsonIfChanged(filePath: string, data: unknown): Promise<bool
     }
   }
 
-  if (current === next) {
+  if (normalizeComparableContent(current) === normalizeComparableContent(serialized)) {
     return false;
   }
+
+  const next = applyPreferredLineEndings(serialized, detectLineEnding(current));
 
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -181,6 +183,29 @@ async function writeJsonIfChanged(filePath: string, data: unknown): Promise<bool
   return true;
 }
 
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, "\n");
+}
+
+function normalizeComparableContent(value: string): string {
+  return normalizeLineEndings(value).trimEnd();
+}
+
+function detectLineEnding(value: string): "\r\n" | "\n" {
+  return value.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function applyPreferredLineEndings(value: string, lineEnding: "\r\n" | "\n"): string {
+  if (lineEnding === "\n") {
+    return normalizeLineEndings(value);
+  }
+  return normalizeLineEndings(value).replace(/\n/g, "\r\n");
+}
+
+function serializeJson(data: unknown): string {
+  return `${JSON.stringify(data, null, 2)}\n`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -189,6 +214,7 @@ async function warnIfSplitIsNewer(
   splitPath: string,
   unifiedPath: string,
   unifiedMtimeMs: number,
+  nextContent: string,
 ): Promise<void> {
   let splitStat: Awaited<ReturnType<typeof fs.stat>> | undefined;
   try {
@@ -202,6 +228,17 @@ async function warnIfSplitIsNewer(
 
   if (!splitStat || splitStat.mtimeMs <= unifiedMtimeMs) {
     return;
+  }
+
+  try {
+    const current = await fs.readFile(splitPath, "utf8");
+    if (normalizeComparableContent(current) === normalizeComparableContent(nextContent)) {
+      return;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
   }
 
   console.warn(

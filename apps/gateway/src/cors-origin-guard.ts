@@ -14,6 +14,21 @@ export function isTailnetDevOrigin(origin: string, shortHostAllowlist: Set<strin
   }
 }
 
+export function isLoopbackDevOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    return parsed.hostname === "localhost"
+      || parsed.hostname === "127.0.0.1"
+      || parsed.hostname === "::1"
+      || parsed.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 export function isTailnetOrPrivateHost(hostname: string, shortHostAllowlist: Set<string>): boolean {
   const host = hostname.trim().toLowerCase();
   if (!host) {

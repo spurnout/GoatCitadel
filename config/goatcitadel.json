@@ -9,7 +9,7 @@
     "workspaceDir": "./workspace",
     "worktreesDir": "./.worktrees",
     "auth": {
-      "mode": "none",
+      "mode": "token",
       "allowLoopbackBypass": false,
       "token": {
         "queryParam": "access_token"
@@ -55,9 +55,9 @@
       }
     },
     "mesh": {
-      "enabled": false,
+      "enabled": true,
       "mode": "lan",
-      "nodeId": "bld-258388",
+      "nodeId": "bld-main",
       "discovery": {
         "mdns": true,
         "staticPeers": []
@@ -306,7 +306,7 @@
       {
         "providerId": "perplexity",
         "label": "Perplexity",
-        "baseUrl": "https://api.perplexity.ai/v1",
+        "baseUrl": "https://api.perplexity.ai",
         "apiStyle": "openai-chat-completions",
         "defaultModel": "sonar",
         "apiKeyEnv": "PERPLEXITY_API_KEY"

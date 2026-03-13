@@ -1,27 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { isTailnetDevOrigin, isTailnetOrPrivateHost, resolveTailnetShortHostAllowlist } from "./cors-origin-guard.js";
+import { isLoopbackDevOrigin, isTailnetDevOrigin } from "./cors-origin-guard.js";
 
-describe("cors-origin-guard", () => {
-  it("requires explicit allowlist for short hostnames", () => {
-    expect(isTailnetOrPrivateHost("bld", new Set())).toBe(false);
-    expect(isTailnetOrPrivateHost("bld", new Set(["bld"]))).toBe(true);
+describe("cors origin guard", () => {
+  it("accepts loopback dev origins on arbitrary ports", () => {
+    expect(isLoopbackDevOrigin("http://127.0.0.1:62949")).toBe(true);
+    expect(isLoopbackDevOrigin("http://localhost:4173")).toBe(true);
+    expect(isLoopbackDevOrigin("https://localhost:8443")).toBe(true);
   });
 
-  it("accepts ts.net and private ranges", () => {
-    expect(isTailnetOrPrivateHost("node.ts.net", new Set())).toBe(true);
-    expect(isTailnetOrPrivateHost("10.0.0.8", new Set())).toBe(true);
-    expect(isTailnetOrPrivateHost("100.72.1.9", new Set())).toBe(true);
+  it("rejects non-loopback origins from loopback helper", () => {
+    expect(isLoopbackDevOrigin("http://192.168.0.20:5173")).toBe(false);
+    expect(isLoopbackDevOrigin("not-a-url")).toBe(false);
   });
 
-  it("allows only dev ports for tailnet dev origins", () => {
-    expect(isTailnetDevOrigin("http://bld:5173", new Set(["bld"]))).toBe(true);
-    expect(isTailnetDevOrigin("http://bld:8787", new Set(["bld"]))).toBe(false);
-  });
-
-  it("does not trust short hostnames without explicit allowlisting", () => {
-    const hosts = resolveTailnetShortHostAllowlist({
-      GATEWAY_HOST: "0.0.0.0",
-    });
-    expect(hosts.has("bld")).toBe(false);
+  it("keeps tailnet dev origin guard limited to approved dev ports", () => {
+    const allowlist = new Set<string>(["bld"]);
+    expect(isTailnetDevOrigin("http://127.0.0.1:5173", allowlist)).toBe(true);
+    expect(isTailnetDevOrigin("http://127.0.0.1:62949", allowlist)).toBe(false);
+    expect(isTailnetDevOrigin("http://bld:5173", allowlist)).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { buildApp } from "../apps/gateway/src/app.ts";
 import type { PromptPackRecord, PromptPackReportRecord, PromptPackRunRecord, PromptPackScoreRecord, PromptPackTestRecord } from "@goatcitadel/contracts";
+import type { AuthConfig } from "../apps/gateway/src/config.ts";
 
 const TARGET_CODES = ["TEST-04", "TEST-12", "TEST-23", "TEST-32"] as const;
 
@@ -15,10 +16,10 @@ async function main(): Promise<void> {
 
   const app = await buildApp();
   await app.ready();
+  const authHeaders = buildInternalAuthHeaders(app.gatewayConfig.assistant.auth);
 
   try {
-    const pack = await resolvePromptPack(app);
-    const tests = await listTests(app, pack.packId);
+    const { pack, tests } = await resolvePromptPack(app, authHeaders);
     const byCode = new Map(tests.map((test) => [normalizeCode(test.code), test]));
 
     const missing = TARGET_CODES.filter((code) => !byCode.has(normalizeCode(code)));
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
         method: "POST",
         url: `/api/v1/prompt-packs/${encodeURIComponent(pack.packId)}/tests/${encodeURIComponent(test.testId)}/run`,
         headers: {
+          ...authHeaders,
           "Idempotency-Key": `gate-run-${test.testId}-${Date.now()}`,
         },
         payload: {},
@@ -94,6 +96,7 @@ async function main(): Promise<void> {
         method: "POST",
         url: `/api/v1/prompt-packs/${encodeURIComponent(pack.packId)}/tests/${encodeURIComponent(test.testId)}/auto-score`,
         headers: {
+          ...authHeaders,
           "Idempotency-Key": `gate-score-${run.runId}-${Date.now()}`,
         },
         payload: { runId: run.runId, force: true },
@@ -118,7 +121,7 @@ async function main(): Promise<void> {
       });
     }
 
-    const report = await getReport(app, pack.packId);
+    const report = await getReport(app, pack.packId, authHeaders);
     const finishedAt = new Date();
     const durationMs = finishedAt.getTime() - startedAt.getTime();
     const timestamp = formatStamp(finishedAt);
@@ -149,10 +152,14 @@ async function main(): Promise<void> {
   }
 }
 
-async function resolvePromptPack(app: Awaited<ReturnType<typeof buildApp>>): Promise<PromptPackRecord> {
+async function resolvePromptPack(
+  app: Awaited<ReturnType<typeof buildApp>>,
+  authHeaders: Record<string, string>,
+): Promise<{ pack: PromptPackRecord; tests: PromptPackTestRecord[] }> {
   const response = await app.inject({
     method: "GET",
     url: "/api/v1/prompt-packs?limit=200",
+    headers: authHeaders,
   });
   if (response.statusCode !== 200) {
     throw new Error(`Failed to list prompt packs: HTTP ${response.statusCode}`);
@@ -164,11 +171,18 @@ async function resolvePromptPack(app: Awaited<ReturnType<typeof buildApp>>): Pro
   }
 
   let selected: PromptPackRecord | undefined;
+  let selectedTests: PromptPackTestRecord[] = [];
   let selectedMatchCount = -1;
   let selectedTestCount = -1;
 
+  const testsByPackId = new Map(
+    await Promise.all(
+      packs.map(async (pack) => [pack.packId, await listTests(app, pack.packId, authHeaders)] as const),
+    ),
+  );
+
   for (const pack of packs) {
-    const tests = await listTests(app, pack.packId);
+    const tests = testsByPackId.get(pack.packId) ?? [];
     const byCode = new Set(tests.map((test) => normalizeCode(test.code)));
     const matchCount = TARGET_CODES.filter((code) => byCode.has(normalizeCode(code))).length;
     if (
@@ -176,6 +190,7 @@ async function resolvePromptPack(app: Awaited<ReturnType<typeof buildApp>>): Pro
       || (matchCount === selectedMatchCount && tests.length > selectedTestCount)
     ) {
       selected = pack;
+      selectedTests = tests;
       selectedMatchCount = matchCount;
       selectedTestCount = tests.length;
     }
@@ -184,16 +199,21 @@ async function resolvePromptPack(app: Awaited<ReturnType<typeof buildApp>>): Pro
   if (!selected) {
     throw new Error("Unable to resolve a prompt pack for gate run.");
   }
-  return selected;
+  return {
+    pack: selected,
+    tests: selectedTests,
+  };
 }
 
 async function listTests(
   app: Awaited<ReturnType<typeof buildApp>>,
   packId: string,
+  authHeaders: Record<string, string>,
 ): Promise<PromptPackTestRecord[]> {
   const response = await app.inject({
     method: "GET",
     url: `/api/v1/prompt-packs/${encodeURIComponent(packId)}/tests?limit=2000`,
+    headers: authHeaders,
   });
   if (response.statusCode !== 200) {
     throw new Error(`Failed to list tests for ${packId}: HTTP ${response.statusCode}`);
@@ -205,15 +225,43 @@ async function listTests(
 async function getReport(
   app: Awaited<ReturnType<typeof buildApp>>,
   packId: string,
+  authHeaders: Record<string, string>,
 ): Promise<PromptPackReportRecord> {
   const response = await app.inject({
     method: "GET",
     url: `/api/v1/prompt-packs/${encodeURIComponent(packId)}/report`,
+    headers: authHeaders,
   });
   if (response.statusCode !== 200) {
     throw new Error(`Failed to fetch prompt report for ${packId}: HTTP ${response.statusCode}`);
   }
   return safeJson<PromptPackReportRecord>(response.body);
+}
+
+function buildInternalAuthHeaders(auth: AuthConfig): Record<string, string> {
+  if (auth.mode === "none") {
+    return {};
+  }
+
+  if (auth.mode === "token") {
+    const token = auth.token.value?.trim();
+    if (!token) {
+      throw new Error("Prompt gate runner requires a configured token when gateway auth mode is token.");
+    }
+    return {
+      authorization: `Bearer ${token}`,
+      "x-goatcitadel-token": token,
+    };
+  }
+
+  const username = auth.basic.username?.trim();
+  const password = auth.basic.password ?? "";
+  if (!username || !password.trim()) {
+    throw new Error("Prompt gate runner requires configured basic auth credentials when gateway auth mode is basic.");
+  }
+  return {
+    authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`,
+  };
 }
 
 function renderReport(input: {

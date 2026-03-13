@@ -12,8 +12,6 @@ import {
   writeText,
 } from "./shared.mjs";
 import {
-  defaultGatewayUrl,
-  defaultUiUrl,
   delay,
   requestJson,
   startVerificationStack,
@@ -118,6 +116,9 @@ export async function runDeepCoreLane(context, options = {}) {
     if (!seedResponse.ok) {
       throw new Error(`verification seed failed: ${JSON.stringify(seedResponse.body)}`);
     }
+    const onboardingStateResponse = await requestJson(stack.gatewayUrl, "/api/v1/onboarding/state");
+    const onboardingCompleted = Boolean(onboardingStateResponse.body?.completed);
+    const shellLandingTab = onboardingCompleted ? "dashboard" : "onboarding";
 
     const browser = await chromium.launch({ headless: true });
     try {
@@ -137,7 +138,8 @@ export async function runDeepCoreLane(context, options = {}) {
         const metrics = {};
         for (const target of TAB_ROUTES) {
           await page.goto(`${stack.uiUrl}/?tab=${encodeURIComponent(target.tab)}`, { waitUntil: "domcontentloaded" });
-          await page.waitForSelector("text=Command Deck", { timeout: 20000 });
+          await waitForMissionControlShell(page);
+          await waitForTabReady(page, target.tab === "dashboard" ? shellLandingTab : target.tab);
           await page.waitForTimeout(800);
           metrics[target.tab] = "ok";
         }
@@ -166,7 +168,8 @@ export async function runDeepCoreLane(context, options = {}) {
           window.localStorage.setItem("goatcitadel.ui.workspace_id.v1", String(workspaceId));
         }, seedResponse.body.workspaceId);
         await page.goto(`${stack.uiUrl}/?tab=chat`, { waitUntil: "domcontentloaded" });
-        await page.waitForSelector("text=Chat Workspace", { timeout: 20000 });
+        await waitForMissionControlShell(page);
+        await waitForTabReady(page, "chat");
         await setBrowserCorrelation(page, correlationId, seedResponse.body.sessionId);
         await page.getByRole("button", {
           name: String(seedResponse.body.sessionTitle ?? "Verification Core Session"),
@@ -199,10 +202,13 @@ export async function runDeepCoreLane(context, options = {}) {
         title: "Command palette and diagnostics panel are reachable",
         subsystem: "shell",
       }, async ({ correlationId }) => {
-        await page.goto(`${stack.uiUrl}/?tab=dashboard`, { waitUntil: "domcontentloaded" });
+        await page.goto(`${stack.uiUrl}/?tab=${encodeURIComponent(shellLandingTab)}`, { waitUntil: "domcontentloaded" });
+        await waitForMissionControlShell(page);
+        await waitForTabReady(page, shellLandingTab);
         await setBrowserCorrelation(page, correlationId);
         await page.getByRole("button", { name: "Command Palette" }).click();
-        await page.waitForSelector("text=Go to Chat Workspace", { timeout: 15000 });
+        await page.getByPlaceholder("Type a page or action...").fill("chat");
+        await page.waitForSelector("text=/Go to Chat Workspace/i", { timeout: 15000 });
         await page.keyboard.press("Escape");
         await page.getByRole("button", { name: "Diagnostics" }).click();
         await page.waitForSelector('[aria-label="Developer diagnostics"]', { timeout: 15000 });
@@ -227,7 +233,9 @@ export async function runDeepCoreLane(context, options = {}) {
         title: "Effects switching and chat/dashboard perf smoke",
         subsystem: "core-browser",
       }, async ({ correlationId }) => {
-        await page.goto(`${stack.uiUrl}/?tab=dashboard`, { waitUntil: "domcontentloaded" });
+        await page.goto(`${stack.uiUrl}/?tab=${encodeURIComponent(shellLandingTab)}`, { waitUntil: "domcontentloaded" });
+        await waitForMissionControlShell(page);
+        await waitForTabReady(page, shellLandingTab);
         await page.getByRole("button", { name: "Reduced" }).click();
         await page.waitForTimeout(400);
         const dashboardPerf = await measureLongTaskProfile(page, async () => {
@@ -239,6 +247,8 @@ export async function runDeepCoreLane(context, options = {}) {
           });
         });
         await page.goto(`${stack.uiUrl}/?tab=chat`, { waitUntil: "domcontentloaded" });
+        await waitForMissionControlShell(page);
+        await waitForTabReady(page, "chat");
         const chatPerf = await measureLongTaskProfile(page, async () => {
           await page.evaluate(async () => {
             const rail = document.querySelector(".chat-v11-session-rail");
@@ -642,6 +652,36 @@ async function runLiveProviderScenarios(context, gatewayUrl) {
         };
       });
     }
+  }
+}
+
+async function waitForMissionControlShell(page, timeoutMs = 30000) {
+  await page.waitForFunction(() => {
+    const shell = document.querySelector(".layout-shell");
+    const accessGate = document.querySelector(".gateway-access-shell");
+    return Boolean(shell) && !accessGate;
+  }, { timeout: timeoutMs });
+  await page.waitForSelector(".shell-topbar", { timeout: timeoutMs });
+}
+
+async function waitForTabReady(page, tab, timeoutMs = 30000) {
+  switch (tab) {
+    case "onboarding":
+      await page.waitForSelector("text=Step 1: Gateway Access", { timeout: timeoutMs });
+      break;
+    case "dashboard":
+      await page.waitForSelector(".dashboard-page", { timeout: timeoutMs });
+      break;
+    case "chat":
+      await page.waitForSelector(".chat-v11", { timeout: timeoutMs });
+      break;
+    default:
+      await page.waitForFunction(() => {
+        const loading = document.querySelector(".shell-page-loading");
+        return !loading;
+      }, { timeout: timeoutMs });
+      await page.waitForSelector(".shell-topbar", { timeout: timeoutMs });
+      break;
   }
 }
 

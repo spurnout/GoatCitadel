@@ -203,6 +203,7 @@ export class ChatAgentOrchestrator {
     const now = new Date().toISOString();
     const intents = {
       liveData: detectLiveDataIntent(input.content),
+      webLookup: detectWebLookupIntent(input.content, input.historyMessages),
       time: detectTimeIntent(input.content),
       localFile: detectLocalFileIntent(input.content),
       missingLogPayload: detectMissingLogPayloadIntent(input.content),
@@ -273,7 +274,7 @@ export class ChatAgentOrchestrator {
     const executionBudget = resolveChatExecutionBudget({
       webMode: input.webMode,
       thinkingLevel: input.thinkingLevel,
-      liveDataIntent: intents.liveData,
+      liveDataIntent: intents.webLookup,
     });
     let effectiveTurnBudgetMs = executionBudget.turnBudgetMs;
     let effectiveCompletionTimeoutMs = executionBudget.completionTimeoutMs;
@@ -299,7 +300,7 @@ export class ChatAgentOrchestrator {
     }
     if (!assistantContent) {
       const settingsConflict = buildLiveDataSettingsConflictMessage({
-        liveDataIntent: intents.liveData,
+        webLookupIntent: intents.webLookup,
         timeIntent: intents.time,
         localFileIntent,
         webMode: input.webMode,
@@ -330,6 +331,7 @@ export class ChatAgentOrchestrator {
         toolName: syntheticRun.record.toolName,
         toolStatus: syntheticRun.record.status,
         webMode: input.webMode,
+        webLookupIntent: intents.webLookup,
         currentTurnBudgetMs: effectiveTurnBudgetMs,
         currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
         turnBudgetDeadline,
@@ -434,6 +436,7 @@ export class ChatAgentOrchestrator {
         toolName: syntheticRun.record.toolName,
         toolStatus: syntheticRun.record.status,
         webMode: input.webMode,
+        webLookupIntent: intents.webLookup,
         currentTurnBudgetMs: effectiveTurnBudgetMs,
         currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
         turnBudgetDeadline,
@@ -684,6 +687,7 @@ export class ChatAgentOrchestrator {
             toolName: executed.record.toolName,
             toolStatus: executed.record.status,
             webMode: input.webMode,
+            webLookupIntent: intents.webLookup,
             currentTurnBudgetMs: effectiveTurnBudgetMs,
             currentCompletionTimeoutMs: effectiveCompletionTimeoutMs,
             turnBudgetDeadline,
@@ -824,13 +828,48 @@ export class ChatAgentOrchestrator {
       }
     }
 
+    if (
+      !approvalPayload
+      && finalStatus !== "cancelled"
+      && toolRuns.length > 0
+      && looksLikeDegradedAssistantFallbackContent(assistantContent)
+    ) {
+      const repairedFallback = await this.synthesizeToolOutcomeFallback({
+        input,
+        toolRuns,
+        circuitBreakerReason: finalFailure?.message ?? circuitBreakerReason,
+        turnBudgetDeadline,
+        allowOverBudget: true,
+      });
+      const repairedContent = repairedFallback.content.trim();
+      if (
+        repairedContent.length > 0
+        && !looksLikeDegradedAssistantFallbackContent(repairedContent)
+      ) {
+        assistantContent = repairedContent;
+      }
+      if (!finalFailure) {
+        finalFailure = buildChatTurnFailureRecord(
+          "unknown",
+          "Tool execution completed, but the first answer degraded into a fallback-style response and required repair.",
+        );
+      }
+    }
+
     if (!approvalPayload && finalStatus !== "cancelled" && assistantContent.trim().length === 0) {
-      assistantContent = await this.synthesizeToolOutcomeFallback({
+      const synthesizedFallback = await this.synthesizeToolOutcomeFallback({
         input,
         toolRuns,
         circuitBreakerReason,
         turnBudgetDeadline,
       });
+      assistantContent = synthesizedFallback.content;
+      if (synthesizedFallback.deterministic && !finalFailure && toolRuns.length > 0) {
+        finalFailure = buildChatTurnFailureRecord(
+          "unknown",
+          "Tool execution completed, but final answer synthesis fell back to deterministic recovery.",
+        );
+      }
     }
     if (finalStatus !== "cancelled") {
       assistantContent = appendToolFailureConstraints(assistantContent, toolRuns);
@@ -904,6 +943,7 @@ export class ChatAgentOrchestrator {
     input: Pick<ChatAgentTurnInput, "sessionId" | "webMode" | "mode" | "content" | "historyMessages">,
     intents: {
       liveData: boolean;
+      webLookup: boolean;
       localFile: boolean;
     },
   ): Promise<{
@@ -914,12 +954,22 @@ export class ChatAgentOrchestrator {
     const catalog = this.deps.listToolCatalog();
     const recentToolRuns = this.deps.storage.chatToolRuns.listBySession(input.sessionId, 200);
     const projectBound = Boolean(this.deps.storage.chatSessionProjects.get(input.sessionId)?.projectId);
-    const activePlan = selectActiveExecutionPlan(this.deps.storage.chatExecutionPlans.listBySession(input.sessionId, 20));
+    const activePlan = this.deps.storage.chatExecutionPlans
+      ? selectActiveExecutionPlan(this.deps.storage.chatExecutionPlans.listBySession(input.sessionId, 20))
+      : undefined;
     const suggestedTools = new Set(selectExecutionPlanSuggestedTools(activePlan));
     const failedCounts = buildRecentToolFailureCounts(recentToolRuns);
     const filteredCatalog: ToolCatalogEntry[] = [];
     for (const tool of catalog) {
       if (input.webMode === "off" && isWebToolName(tool.toolName)) {
+        continue;
+      }
+      if (!shouldExposeWebToolForTurn({
+        toolName: tool.toolName,
+        mode: input.mode,
+        webMode: input.webMode,
+        webLookupIntent: intents.webLookup,
+      })) {
         continue;
       }
       if (!this.deps.evaluateToolAccess) {
@@ -948,6 +998,7 @@ export class ChatAgentOrchestrator {
           tool,
           mode: input.mode,
           liveDataIntent: intents.liveData,
+          webLookupIntent: intents.webLookup,
           localFileIntent: intents.localFile,
           projectBound,
           suggestedTools,
@@ -960,6 +1011,7 @@ export class ChatAgentOrchestrator {
       mode: input.mode,
       webMode: input.webMode,
       liveDataIntent: intents.liveData,
+      webLookupIntent: intents.webLookup,
       localFileIntent: intents.localFile,
       projectBound,
     });
@@ -1893,16 +1945,19 @@ export class ChatAgentOrchestrator {
     toolRuns: ChatToolRunRecord[];
     circuitBreakerReason?: string;
     turnBudgetDeadline?: number;
-  }): Promise<string> {
+    allowOverBudget?: boolean;
+  }): Promise<{ content: string; deterministic: boolean }> {
     const deterministic = buildDeterministicToolSynthesisFallback(
       input.input.content,
       input.toolRuns,
       input.circuitBreakerReason,
     );
-    const toolSummary = summarizeToolRunsForSynthesis(input.toolRuns);
-    const synthesisTimeoutMs = input.turnBudgetDeadline
-      ? Math.min(15000, Math.max(3000, input.turnBudgetDeadline - Date.now()))
-      : 15000;
+    const toolSummary = summarizeToolRunsForSynthesis(input.toolRuns, input.input.content);
+    const synthesisTimeoutMs = input.allowOverBudget
+      ? 20000
+      : input.turnBudgetDeadline
+        ? Math.min(15000, Math.max(3000, input.turnBudgetDeadline - Date.now()))
+        : 15000;
     try {
       const completion = await this.deps.createChatCompletion({
         providerId: input.input.providerId,
@@ -1946,12 +2001,18 @@ export class ChatAgentOrchestrator {
       const message = completion.choices?.[0]?.message as Record<string, unknown> | undefined;
       const synthesized = extractMessageContent(message ?? {}).trim();
       if (synthesized.length > 0) {
-        return synthesized;
+        return {
+          content: synthesized,
+          deterministic: false,
+        };
       }
     } catch {
       // Deterministic fallback below.
     }
-    return deterministic;
+    return {
+      content: deterministic,
+      deterministic: true,
+    };
   }
 }
 
@@ -1986,6 +2047,7 @@ function buildEssentialToolSet(input: {
   mode: ChatMode;
   webMode: ChatWebMode;
   liveDataIntent: boolean;
+  webLookupIntent: boolean;
   localFileIntent: boolean;
   projectBound: boolean;
 }): string[] {
@@ -1993,7 +2055,7 @@ function buildEssentialToolSet(input: {
   if (input.mode !== "chat" || input.localFileIntent) {
     tools.add("memory.search");
   }
-  if (input.liveDataIntent && input.webMode !== "off") {
+  if (input.webLookupIntent && input.webMode !== "off") {
     tools.add("browser.search");
     tools.add("browser.navigate");
     tools.add("http.get");
@@ -2016,6 +2078,7 @@ function scoreToolForTurn(input: {
   tool: ToolCatalogEntry;
   mode: ChatMode;
   liveDataIntent: boolean;
+  webLookupIntent: boolean;
   localFileIntent: boolean;
   projectBound: boolean;
   suggestedTools: Set<string>;
@@ -2039,6 +2102,9 @@ function scoreToolForTurn(input: {
       score -= 4;
     }
   }
+  if (input.webLookupIntent && !input.liveDataIntent) {
+    score += scoreToolIntentMatch(tool, ["web_lookup", "fetch_url", "api_lookup", "research"], 5);
+  }
   if (input.localFileIntent) {
     score += scoreToolIntentMatch(
       tool,
@@ -2052,6 +2118,9 @@ function scoreToolForTurn(input: {
   if (input.mode === "chat") {
     if (tool.category === "research" || tool.category === "knowledge" || tool.category === "session") {
       score += 2;
+    }
+    if (isWebToolName(tool.toolName) && !input.webLookupIntent) {
+      score -= 20;
     }
     if (tool.category === "shell" || tool.category === "git") {
       score -= 2;
@@ -2635,6 +2704,59 @@ function detectExplicitWebLookupIntent(content: string): boolean {
   return EXPLICIT_WEB_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
+function detectDirectUrlIntent(content: string): boolean {
+  return /\bhttps?:\/\/\S+/i.test(content);
+}
+
+function detectWebLookupIntent(
+  content: string,
+  historyMessages: ChatCompletionRequest["messages"],
+): boolean {
+  return (
+    detectLiveDataIntent(content)
+    || detectDirectUrlIntent(content)
+    || detectWebFollowUpIntent(content, historyMessages)
+  );
+}
+
+function detectWebFollowUpIntent(
+  content: string,
+  historyMessages: ChatCompletionRequest["messages"],
+): boolean {
+  const lower = content.toLowerCase();
+  const followUpSignals = [
+    "retry with a better fallback",
+    "try the search one more time",
+    "search one more time",
+    "continue from this source",
+    "continue from that source",
+    "continue from this page",
+    "continue from that page",
+    "use a different source",
+    "use another source",
+    "try a different source",
+    "search again",
+    "look again",
+  ];
+  if (!followUpSignals.some((signal) => lower.includes(signal))) {
+    return false;
+  }
+  return historyMessages.some((message) => {
+    const raw = (message as { content?: unknown }).content;
+    if (typeof raw !== "string" || !raw.trim()) {
+      return false;
+    }
+    const normalized = raw.toLowerCase();
+    return (
+      detectLiveDataIntent(raw)
+      || detectDirectUrlIntent(raw)
+      || normalized.includes("source blocked automated browsing")
+      || normalized.includes("recover useful content from")
+      || normalized.includes("switch to deep mode")
+    );
+  });
+}
+
 function deriveLiveDataQuery(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -2658,7 +2780,8 @@ function deriveLiveDataQuery(content: string): string {
   if (/\b(?:what|which)\s+happened\s+today\b/i.test(cleaned) || /\b(?:things|stories|events)\s+that\s+happened\s+today\b/i.test(cleaned)) {
     return "top news headlines today";
   }
-  return cleaned || normalized;
+  const sanitized = sanitizeQueryClause(cleaned || normalized);
+  return sanitized || cleaned || normalized;
 }
 
 function inferMemoryQueryFromPrompt(userContent: string): string | undefined {
@@ -2838,25 +2961,25 @@ function looksLikeFreshStandalonePrompt(userPrompt: string): boolean {
 }
 
 function buildLiveDataSettingsConflictMessage(input: {
-  liveDataIntent: boolean;
+  webLookupIntent: boolean;
   timeIntent: boolean;
   localFileIntent: boolean;
   webMode: ChatWebMode;
   toolAutonomy: ChatAgentTurnInput["toolAutonomy"];
 }): string | undefined {
-  if (!input.liveDataIntent || input.timeIntent || input.localFileIntent) {
+  if (!input.webLookupIntent || input.timeIntent || input.localFileIntent) {
     return undefined;
   }
   if (input.webMode === "off") {
     return [
-      "I can't fetch live web data for that because Web is set to Off for this chat.",
-      "Switch Web to Auto, Quick, or Deep and resend if you want a grounded current-events answer, or ask for a non-live summary instead.",
+      "I can't fetch web-backed information for that because Web is set to Off for this chat.",
+      "Switch Web to Auto, Quick, or Deep and resend if you want a grounded web-backed answer, or ask for a non-web summary instead.",
     ].join(" ");
   }
   if (input.toolAutonomy === "manual") {
     return [
-      "I can't fetch live web data for that because tool autonomy is set to Manual for this chat, so I can't run the browser tools needed to verify current information.",
-      "Switch tool autonomy to Safe Auto and resend, or ask a non-live question instead.",
+      "I can't fetch web-backed information for that because tool autonomy is set to Manual for this chat, so I can't run the browser tools needed to verify it.",
+      "Switch tool autonomy to Safe Auto and resend, or ask a non-web question instead.",
     ].join(" ");
   }
   return undefined;
@@ -2864,6 +2987,24 @@ function buildLiveDataSettingsConflictMessage(input: {
 
 function isWebToolName(toolName: string): boolean {
   return WEB_TOOL_NAMES.has(toolName);
+}
+
+function shouldExposeWebToolForTurn(input: {
+  toolName: string;
+  mode: ChatMode;
+  webMode: ChatWebMode;
+  webLookupIntent: boolean;
+}): boolean {
+  if (!isWebToolName(input.toolName)) {
+    return true;
+  }
+  if (input.webMode === "off") {
+    return false;
+  }
+  if (input.mode !== "chat") {
+    return true;
+  }
+  return input.webLookupIntent;
 }
 
 function looksLikeClarificationAnswer(answer: string, question: string): boolean {
@@ -3057,13 +3198,15 @@ function redirectSearchPortalNavigateUrl(
     const parsed = new URL(requestedUrl);
     const hostname = parsed.hostname.toLowerCase();
     const pathname = parsed.pathname.toLowerCase();
-    if (!isSearchPortalHost(hostname) && !isLikelyLandingOrResultsPath(pathname)) {
+    const avoidCommunityHost = isLikelyCommunityHost(hostname) && !queryExplicitlyRequestsCommunitySources(userContent);
+    if (!isSearchPortalHost(hostname) && !isLikelyLandingOrResultsPath(pathname) && !avoidCommunityHost) {
       return undefined;
     }
   } catch {
     return undefined;
   }
-  return selectBestRecentBrowserResultUrl(userContent, toolRuns, 3);
+  const alternatives = selectRecentBrowserResultUrls(userContent, toolRuns, 3, 5);
+  return alternatives.find((candidate) => candidate !== requestedUrl);
 }
 
 interface BrowserResultCandidate {
@@ -3114,6 +3257,13 @@ const SEARCH_PORTAL_HOST_PATTERNS = [
   /^([a-z0-9-]+\.)?duckduckgo\.com$/i,
   /^search\.yahoo\.com$/i,
   /^www\.search\.yahoo\.com$/i,
+];
+
+const COMMUNITY_HOST_PATTERNS = [
+  /(^|\.)reddit\.com$/i,
+  /(^|\.)quora\.com$/i,
+  /(^|\.)stackoverflow\.com$/i,
+  /(^|\.)stackexchange\.com$/i,
 ];
 
 function selectBestRecentBrowserResultUrl(
@@ -3348,12 +3498,17 @@ function findReusableBrowserToolResult(
   args: Record<string, unknown>,
   priorToolRuns: ChatToolRunRecord[] | undefined,
 ): ChatToolRunRecord | undefined {
+  const normalizedToolName = normalizeToolNameForComparison(toolName);
   if (
     !priorToolRuns
     || priorToolRuns.length === 0
-    || toolName !== "http.get"
   ) {
     return undefined;
+  }
+  if (toolName !== "http.get" && toolName !== "browser.navigate" && toolName !== "browser.extract") {
+    if (normalizedToolName !== "http.get" && normalizedToolName !== "browser.navigate" && normalizedToolName !== "browser.extract") {
+      return undefined;
+    }
   }
   if (typeof rawArgs.url !== "string" || rawArgs.url.trim().length === 0) {
     return undefined;
@@ -3362,11 +3517,17 @@ function findReusableBrowserToolResult(
   if (!requestedUrl) {
     return undefined;
   }
+  if (normalizedToolName === "browser.navigate") {
+    return findReusableRecentBrowserNavigateResult(requestedUrl, priorToolRuns);
+  }
+  if (normalizedToolName === "browser.extract") {
+    return findReusableRecentBrowserExtractResult(requestedUrl, priorToolRuns);
+  }
   for (let index = priorToolRuns.length - 1; index >= 0; index -= 1) {
     const run = priorToolRuns[index];
     if (
       !run
-      || run.toolName !== toolName
+      || normalizeToolNameForComparison(run.toolName) !== normalizedToolName
       || run.status !== "executed"
       || !run.result
       || typeof run.result !== "object"
@@ -3403,6 +3564,131 @@ function findReusableBrowserToolResult(
     );
     if (!usefulText) {
       continue;
+    }
+    return run;
+  }
+  return undefined;
+}
+
+const BROWSER_REUSE_INVALIDATING_TOOL_NAMES = new Set([
+  "browser.navigate",
+  "browser.extract",
+  "browser.interact",
+  "browser.cookies.get",
+  "browser.cookies.set",
+  "browser.cookies.clear",
+  "browser.storage.get",
+  "browser.storage.set",
+  "browser.storage.clear",
+  "browser.context.configure",
+]);
+
+function findReusableRecentBrowserExtractResult(
+  requestedUrl: string,
+  priorToolRuns: ChatToolRunRecord[],
+): ChatToolRunRecord | undefined {
+  for (let index = priorToolRuns.length - 1; index >= 0; index -= 1) {
+    const run = priorToolRuns[index];
+    if (!run || run.status !== "executed") {
+      continue;
+    }
+    if (!BROWSER_REUSE_INVALIDATING_TOOL_NAMES.has(run.toolName)) {
+      if (!BROWSER_REUSE_INVALIDATING_TOOL_NAMES.has(normalizeToolNameForComparison(run.toolName) ?? "")) {
+        continue;
+      }
+    }
+    if (
+      normalizeToolNameForComparison(run.toolName) !== "browser.navigate"
+      || !run.result
+      || typeof run.result !== "object"
+    ) {
+      return undefined;
+    }
+    const result = run.result as Record<string, unknown>;
+    const resolvedUrl = normalizeBrowserReuseUrl(
+      extractUsefulVisitedBrowserUrl(result)
+        ?? extractBrowserToolUrl(result)
+        ?? (typeof run.args?.url === "string" ? run.args.url : undefined),
+    );
+    if (!resolvedUrl || resolvedUrl !== requestedUrl) {
+      return undefined;
+    }
+    const failureClass = typeof result.browserFailureClass === "string"
+      ? result.browserFailureClass
+      : undefined;
+    if (failureClass && failureClass !== "no_results") {
+      return undefined;
+    }
+    const status = readBrowserStatusNumber(result.status);
+    if (typeof status === "number" && status >= 400) {
+      return undefined;
+    }
+    const usefulText = normalizeRecoveredContentText(
+      readFirstString(
+        result.contentText,
+        result.text,
+        result.bodySnippet,
+        result.textSnippet,
+        result.message,
+      ),
+    );
+    if (!usefulText || usefulText.length < 160) {
+      return undefined;
+    }
+    return run;
+  }
+  return undefined;
+}
+
+function findReusableRecentBrowserNavigateResult(
+  requestedUrl: string,
+  priorToolRuns: ChatToolRunRecord[],
+): ChatToolRunRecord | undefined {
+  for (let index = priorToolRuns.length - 1; index >= 0; index -= 1) {
+    const run = priorToolRuns[index];
+    if (!run || run.status !== "executed") {
+      continue;
+    }
+    if (!BROWSER_REUSE_INVALIDATING_TOOL_NAMES.has(normalizeToolNameForComparison(run.toolName) ?? "")) {
+      continue;
+    }
+    if (
+      normalizeToolNameForComparison(run.toolName) !== "browser.navigate"
+      || !run.result
+      || typeof run.result !== "object"
+    ) {
+      return undefined;
+    }
+    const result = run.result as Record<string, unknown>;
+    const resolvedUrl = normalizeBrowserReuseUrl(
+      extractUsefulVisitedBrowserUrl(result)
+        ?? extractBrowserToolUrl(result)
+        ?? (typeof run.args?.url === "string" ? run.args.url : undefined),
+    );
+    if (!resolvedUrl || resolvedUrl !== requestedUrl) {
+      return undefined;
+    }
+    const failureClass = typeof result.browserFailureClass === "string"
+      ? result.browserFailureClass
+      : undefined;
+    if (failureClass && failureClass !== "no_results") {
+      return undefined;
+    }
+    const status = readBrowserStatusNumber(result.status);
+    if (typeof status === "number" && status >= 400) {
+      return undefined;
+    }
+    const usefulText = normalizeRecoveredContentText(
+      readFirstString(
+        result.contentText,
+        result.text,
+        result.bodySnippet,
+        result.textSnippet,
+        result.message,
+      ),
+    );
+    if (!usefulText) {
+      return undefined;
     }
     return run;
   }
@@ -3461,12 +3747,29 @@ function isLikelyLandingOrResultsPath(pathname: string): boolean {
   return /\/(search|results|topics|topic|tag|tags)(\/|$)/i.test(pathname);
 }
 
+function normalizeToolNameForComparison(toolName: string | undefined): string | undefined {
+  return typeof toolName === "string" ? toolName.replace(/_/g, ".") : undefined;
+}
+
+function isLikelyCommunityHost(hostname: string): boolean {
+  return COMMUNITY_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+}
+
+function queryExplicitlyRequestsCommunitySources(value: string): boolean {
+  return /\b(reddit|quora|stack ?overflow|stackexchange|forum|forums|community|communities|discussion|discussions)\b/i.test(value);
+}
+
 function isLikelyNewsOrCurrentEventsQuery(value: string): boolean {
   const normalized = value.toLowerCase();
   return /\b(latest|today|right now|news|recent|recently|lately)\b/.test(normalized)
     || /\bcurrent\s+(news|events|headlines?|score|scores|markets?)\b/.test(normalized)
     || normalized.includes("what's going on with")
     || normalized.includes("whats going on with");
+}
+
+function queryExplicitlyRequestsUseCases(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return /\b(use case|use cases|used for|top\s+\d+\s+uses?|ways?\s+.*\bused|applications?)\b/.test(normalized);
 }
 
 function scoreBrowserResultCandidate(
@@ -3479,6 +3782,7 @@ function scoreBrowserResultCandidate(
   const normalizedSnippet = normalizeBrowserSearchText(candidate.snippet);
   const normalizedPath = normalizeBrowserSearchText(candidate.path);
   const normalizedQuery = normalizeBrowserSearchText(query);
+  const useCaseIntent = queryExplicitlyRequestsUseCases(query);
   const titleMatches = countMatchingQueryTokens(normalizedTitle, queryTokens);
   const snippetMatches = countMatchingQueryTokens(normalizedSnippet, queryTokens);
   const pathMatches = countMatchingQueryTokens(normalizedPath, queryTokens);
@@ -3509,6 +3813,40 @@ function scoreBrowserResultCandidate(
   }
   if (isLikelyLandingOrResultsPath(candidate.path)) {
     score -= 2;
+  }
+  if (!newsLike && isLikelyCommunityHost(candidate.hostname) && !queryExplicitlyRequestsCommunitySources(query)) {
+    score -= 6;
+  }
+  if (useCaseIntent) {
+    const title = candidate.title ?? "";
+    const snippet = candidate.snippet ?? "";
+    const exactUseCaseTitle = /\b(use case|use cases)\b/i.test(title);
+    const useCaseTitle = /\b(use case|use cases|used for|applications?|examples?|real[- ]world|in practice|commonly used|widely used)\b/i.test(title);
+    const useCaseSnippet = /\b(use case|use cases|used for|applications?|examples?|commonly used|widely used|integrations?|automation|workflows?|web and mobile|mobile and web|partner api|partner apis|third-party services?)\b/i.test(snippet);
+    const definitionTitle = /\b(what is|benefits?|definition|basics?|principles?|architectural style|http methods?)\b/i.test(title);
+    const definitionSnippet = /\b(what is|benefits?|architectural style|http requests?|crud|data formats?)\b/i.test(snippet);
+    const definitionPath = /\/definition(\/|$)|\/discover\/what-is|\/what-is[-/]/i.test(candidate.path);
+
+    if (exactUseCaseTitle) {
+      score += 11;
+    } else if (useCaseTitle) {
+      score += 5;
+    }
+    if (useCaseSnippet) {
+      score += 7;
+    }
+    if (/\/guide(\/|$)/i.test(candidate.path)) {
+      score += 2;
+    }
+    if (definitionTitle && !exactUseCaseTitle) {
+      score -= 6;
+    }
+    if (definitionSnippet && !useCaseSnippet) {
+      score -= 4;
+    }
+    if (definitionPath) {
+      score -= 9;
+    }
   }
   if (newsLike) {
     if (/\/(news|politics|article|story)(\/|$)/i.test(candidate.path) || /\b(news|times|post|reuters|apnews|axios|politico|npr|cnn|abc|nbc|cbs|fox)\b/i.test(candidate.hostname)) {
@@ -3662,6 +4000,8 @@ function sanitizeQueryClause(value: string): string {
   return value
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/^(please|can you|could you|would you)\b[:,\s-]*/i, "")
+    .replace(/^(?:please\s+)?(?:look|search|browse|check|research)\b(?:\s+(?:online|on the web|the web|web|internet))?(?:\s+(?:and|to|for|about|into))?\s*/i, "")
+    .replace(/^(?:find(?:\s+out)?|tell|show|give|explain|summarize)\b(?:\s+me)?(?:\s+about)?\s*/i, "")
     .replace(/^(from|on|about)\s+/i, "")
     .replace(/\b(return|respond|output)\b.*$/i, "")
     .replace(/\s+/g, " ")
@@ -3724,20 +4064,13 @@ function buildMissingLogInputTemplate(): string {
   ].join("\n");
 }
 
-function summarizeToolRunsForSynthesis(toolRuns: ChatToolRunRecord[]): string {
+function summarizeToolRunsForSynthesis(toolRuns: ChatToolRunRecord[], userPrompt?: string): string {
   if (toolRuns.length === 0) {
     return "";
   }
   const lines: string[] = [];
   for (const run of toolRuns.slice(-8)) {
-    const summaryParts = [
-      `- ${run.toolName}`,
-      `[${run.status}]`,
-      run.error ? `error: ${run.error}` : undefined,
-      run.failureGuidance ? `guidance: ${run.failureGuidance}` : undefined,
-      run.result ? `result: ${truncateJson(run.result, 280)}` : undefined,
-    ].filter(Boolean);
-    lines.push(summaryParts.join(" "));
+    lines.push(summarizeToolRunForSynthesis(run, userPrompt));
   }
   return lines.join("\n");
 }
@@ -3751,28 +4084,11 @@ function buildDeterministicToolSynthesisFallback(
   if (extractionFallback) {
     return extractionFallback;
   }
-  const fetchedContent = recoverFetchedContentEvidence(toolRuns);
-  if (fetchedContent) {
-    const summaryPoints = summarizeRecoveredFetchedContent(fetchedContent.text, 3);
-    if (summaryPoints.length > 0) {
-      const sourceLabel = fetchedContent.title?.trim()
-        || (fetchedContent.url
-          ? formatRecoveredSearchLead({
-              title: null,
-              url: fetchedContent.url,
-            })
-          : "the fetched page");
-      const lines = [
-        `I couldn't finish that cleanly because ${reason ?? "the tool flow did not converge to a complete answer"}, but I did recover useful content from ${sourceLabel}:`,
-        "",
-        ...summaryPoints.map((point, index) => `${index + 1}. ${point}`),
-      ];
-      if (fetchedContent.url) {
-        lines.push("", `Source: ${sourceLabel} - ${fetchedContent.url}`);
-      }
-      lines.push("", "If you want, I can continue from this source with a narrower follow-up.");
-      return lines.join("\n");
-    }
+  const recoveredAnswer = buildRecoveredEvidenceAnswer(userPrompt, toolRuns, {
+    note: `This is a partial answer recovered from tool output because ${reason ?? "the final synthesis pass did not finish cleanly"}.`,
+  });
+  if (recoveredAnswer) {
+    return recoveredAnswer;
   }
   const failures = toolRuns
     .filter((item) => item.status === "failed" || item.status === "blocked")
@@ -3944,6 +4260,17 @@ function mentionsToolFailureConstraints(content: string, failedRuns: ChatToolRun
     }
   }
   return false;
+}
+
+function looksLikeDegradedAssistantFallbackContent(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized.startsWith("i ran out of time before i could finish")
+    || normalized.startsWith("i couldn't finish that cleanly because")
+    || normalized.includes("recover useful content from")
+    || normalized.includes("strongest leads so far");
 }
 
 function truncateJson(value: unknown, maxChars: number): string {
@@ -4194,6 +4521,7 @@ function extendTurnBudgetForExecutedBrowserTool(input: {
   toolName: string;
   toolStatus: ChatToolRunRecord["status"];
   webMode: ChatWebMode;
+  webLookupIntent?: boolean;
   currentTurnBudgetMs: number;
   currentCompletionTimeoutMs: number;
   turnBudgetDeadline: number;
@@ -4214,10 +4542,10 @@ function extendTurnBudgetForExecutedBrowserTool(input: {
     };
   }
   const extendedTurnBudgetMs = isExpensiveChatTool(input.toolName)
-    ? Math.max(input.currentTurnBudgetMs, 70000)
+    ? Math.max(input.currentTurnBudgetMs, input.webLookupIntent ? 90000 : 70000)
     : Math.max(input.currentTurnBudgetMs, 50000);
   const extendedCompletionTimeoutMs = isExpensiveChatTool(input.toolName)
-    ? Math.max(input.currentCompletionTimeoutMs, 28000)
+    ? Math.max(input.currentCompletionTimeoutMs, input.webLookupIntent ? 40000 : 28000)
     : input.currentCompletionTimeoutMs;
   if (
     extendedTurnBudgetMs === input.currentTurnBudgetMs
@@ -4386,6 +4714,7 @@ function buildTurnBudgetExceededFallbackMessage(
   const fetchedContentFallback = buildFetchedContentBudgetFallback(
     input.webMode,
     toolRuns,
+    input.content,
   );
   if (fetchedContentFallback) {
     return fetchedContentFallback;
@@ -4413,38 +4742,13 @@ function buildTurnBudgetExceededFallbackMessage(
 function buildFetchedContentBudgetFallback(
   webMode: ChatWebMode,
   toolRuns: ChatToolRunRecord[],
+  userPrompt: string,
 ): string | undefined {
-  const recoveredContent = recoverFetchedContentEvidence(toolRuns);
-  if (!recoveredContent) {
-    return undefined;
-  }
-  const summaryPoints = summarizeRecoveredFetchedContent(recoveredContent.text, 3);
-  if (summaryPoints.length === 0) {
-    return undefined;
-  }
-  const sourceLabel = recoveredContent.title?.trim()
-    || (recoveredContent.url
-      ? formatRecoveredSearchLead({
-          title: null,
-          url: recoveredContent.url,
-        })
-      : "the fetched page");
-  const sourceLine = recoveredContent.url
-    ? `${sourceLabel} - ${recoveredContent.url}`
-    : sourceLabel;
-  return [
-    webMode === "deep"
-      ? `I ran out of time before I could finish the full deep-research pass, but I did recover useful content from ${sourceLabel}:`
-      : `I ran out of time before I could finish a full pass, but I did recover useful content from ${sourceLabel}:`,
-    "",
-    ...summaryPoints.map((point, index) => `${index + 1}. ${point}`),
-    "",
-    `Source: ${sourceLine}`,
-    "",
-    webMode === "deep"
-      ? "If you want, ask me to continue from this page with a narrower follow-up."
-      : "If you want, ask me to continue from this page with a narrower follow-up, or retry in Deep mode for a slower pass.",
-  ].join("\n");
+  return buildRecoveredEvidenceAnswer(userPrompt, toolRuns, {
+    note: webMode === "deep"
+      ? "This is a partial answer recovered before the deep pass finished."
+      : "This is a partial answer recovered before the turn hit its response budget.",
+  });
 }
 
 function buildSearchResultBudgetFallback(
@@ -4505,10 +4809,10 @@ function recoverFetchedContentEvidence(
     }
     const text = normalizeRecoveredContentText(
       readFirstString(
-        result.textSnippet,
-        result.bodySnippet,
         result.contentText,
         result.text,
+        result.bodySnippet,
+        result.textSnippet,
         result.message,
       ),
     );
@@ -4535,30 +4839,318 @@ function normalizeRecoveredContentText(value: string | undefined): string | unde
   return normalized || undefined;
 }
 
-function summarizeRecoveredFetchedContent(value: string, limit: number): string[] {
+const RECOVERED_CONTENT_PROMPT_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "can",
+  "could",
+  "find",
+  "for",
+  "how",
+  "i",
+  "into",
+  "is",
+  "me",
+  "of",
+  "online",
+  "out",
+  "please",
+  "tell",
+  "that",
+  "the",
+  "top",
+  "what",
+  "with",
+]);
+
+const RECOVERED_CONTENT_BOILERPLATE_PATTERNS = [
+  /\bthis website uses cookies\b/i,
+  /\blearn more got it\b/i,
+  /\bskip to content\b/i,
+  /\bfree trial\b/i,
+  /\bbook demo\b/i,
+  /\bsearch support login\b/i,
+  /\bshare on linkedin\b/i,
+  /\btable of contents\b/i,
+  /\bready to get started\b/i,
+  /\bstart free trial\b/i,
+  /\bopen a new account\b/i,
+  /\bproduct integrations pricing resources company\b/i,
+  /\bblog\s*>\b/i,
+];
+
+function summarizeRecoveredFetchedContent(value: string, limit: number, userPrompt?: string): string[] {
   const normalized = normalizeRecoveredContentText(value);
   if (!normalized) {
     return [];
   }
+  const promptTerms = extractRecoveredContentPromptTerms(userPrompt);
   const rawSegments = normalized.split(/(?<=[.!?])\s+|\s*[•·]\s+|\s{2,}/);
-  const points: string[] = [];
+  const rankedSegments: Array<{
+    segment: string;
+    score: number;
+    index: number;
+  }> = [];
   const seen = new Set<string>();
-  for (const rawSegment of rawSegments) {
+  rawSegments.forEach((rawSegment, index) => {
     const segment = normalizeRecoveredContentText(rawSegment);
     if (!segment || segment.length < 45) {
-      continue;
+      return;
     }
     const dedupeKey = segment.toLowerCase();
     if (seen.has(dedupeKey)) {
-      continue;
+      return;
     }
     seen.add(dedupeKey);
-    points.push(truncatePlainText(segment, 220));
-    if (points.length >= limit) {
-      return points;
+    rankedSegments.push({
+      segment,
+      score: scoreRecoveredContentSegment(segment, promptTerms, userPrompt),
+      index,
+    });
+  });
+
+  const preferred = rankedSegments
+    .filter((item) => item.score > -40)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, limit)
+    .map((item) => truncatePlainText(item.segment, 220));
+  if (preferred.length > 0) {
+    return preferred;
+  }
+
+  const firstUsable = rankedSegments
+    .sort((left, right) => left.index - right.index)
+    .find((item) => item.score > -1000);
+  if (firstUsable) {
+    return [truncatePlainText(firstUsable.segment, 220)];
+  }
+
+  return [truncatePlainText(normalized, 280)];
+}
+
+function extractRecoveredContentPromptTerms(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  const matches = value.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const unique = new Set<string>();
+  for (const match of matches) {
+    if (match.length < 3 || RECOVERED_CONTENT_PROMPT_STOPWORDS.has(match)) {
+      continue;
+    }
+    unique.add(match);
+  }
+  return [...unique];
+}
+
+function scoreRecoveredContentSegment(segment: string, promptTerms: string[], userPrompt?: string): number {
+  const normalized = segment.toLowerCase();
+  if (RECOVERED_CONTENT_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return -1000;
+  }
+
+  const useCaseIntent = queryExplicitlyRequestsUseCases(userPrompt ?? "");
+  let score = 0;
+  if (segment.length >= 70 && segment.length <= 260) {
+    score += 8;
+  }
+  if (/\b(rest api|rest apis|api|apis)\b/i.test(segment)) {
+    score += 8;
+  }
+  if (/\b(used|use case|use cases|used for|widely used|commonly used|applications?|integrat(?:e|ion|ions)|backends?|mobile|automation|workflow|workflows|partner-facing|web services?)\b/i.test(segment)) {
+    score += 20;
+  }
+  if (/\b(for example|for instance|such as|might use)\b/i.test(segment)) {
+    score += 10;
+  }
+  if (/\b(what is|how do|benefits?|best practices?|security)\b/i.test(segment)) {
+    score -= 10;
+  }
+  if (/\b(published:|technical writer and editor|senior technology editor|hypertext transfer protocol|architectural style)\b/i.test(segment)) {
+    score -= 24;
+  }
+  if (/\b(application\/json|application\/xml|application\/x-web\+xml|application\/x-www-form-urlencoded|multipart|crud|http verb|restful web services)\b/i.test(segment)) {
+    score -= 28;
+  }
+  if (/\b(sign up|trial|demo|pricing|company|support|login)\b/i.test(segment)) {
+    score -= 20;
+  }
+  if (useCaseIntent) {
+    if (/\b(cloud consumers|cloud services?|distributed environments|web services?|web and mobile|mobile and web|integrations?|automation|sites such as|partner|public api|iot|devices?)\b/i.test(segment)) {
+      score += 18;
+    }
+    if (/\b(logical choice|ways to|widely used across|commonly used across|used across)\b/i.test(segment)) {
+      score += 12;
+    }
+    if (/\b(client|server|resource|endpoint|header|body|uri|url|requests?|responses?|http method|http methods|programming languages?|json|xml|plain text|create, retrieve, update|fundamentally relies|principal parts|self descriptive|stateless)\b/i.test(segment)) {
+      score -= 16;
+    }
+    if (/^(the client is|the server is|the resource is|client requests include|a rest api fundamentally relies|a rest api uses existing http methodologies|usually, response details|the server provides)\b/i.test(normalized)) {
+      score -= 24;
     }
   }
-  return [truncatePlainText(normalized, 280)];
+  for (const term of promptTerms) {
+    if (normalized.includes(term)) {
+      score += 4;
+    }
+  }
+  return score;
+}
+
+interface SearchSnippetEvidence {
+  title?: string;
+  url?: string;
+  snippet: string;
+}
+
+function recoverSearchSnippetEvidence(toolRuns: ChatToolRunRecord[]): SearchSnippetEvidence[] {
+  for (let index = toolRuns.length - 1; index >= 0; index -= 1) {
+    const run = toolRuns[index];
+    if (
+      !run
+      || run.toolName !== "browser.search"
+      || run.status !== "executed"
+      || !run.result
+      || typeof run.result !== "object"
+    ) {
+      continue;
+    }
+    const results = Array.isArray((run.result as Record<string, unknown>).results)
+      ? ((run.result as Record<string, unknown>).results as Array<Record<string, unknown>>)
+      : [];
+    const snippets = results
+      .map((item) => ({
+        title: typeof item.title === "string" ? item.title : undefined,
+        url: typeof item.url === "string" ? item.url : undefined,
+        snippet: normalizeRecoveredContentText(typeof item.snippet === "string" ? item.snippet : "") ?? "",
+      }))
+      .filter((item) => item.snippet.length >= 40);
+    if (snippets.length > 0) {
+      return snippets;
+    }
+  }
+  return [];
+}
+
+function collectRecoveredAnswerPoints(
+  toolRuns: ChatToolRunRecord[],
+  userPrompt: string,
+  limit: number,
+): string[] {
+  const points: string[] = [];
+  const seen = new Set<string>();
+  const pushPoint = (value: string) => {
+    const normalized = normalizeRecoveredContentText(value);
+    if (!normalized) {
+      return;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    points.push(normalized);
+  };
+
+  const fetchedContent = recoverFetchedContentEvidence(toolRuns);
+  if (fetchedContent) {
+    for (const point of summarizeRecoveredFetchedContent(fetchedContent.text, Math.max(limit, 4), userPrompt)) {
+      pushPoint(point);
+    }
+  }
+
+  for (const evidence of recoverSearchSnippetEvidence(toolRuns)) {
+    for (const point of summarizeRecoveredFetchedContent(evidence.snippet, 1, userPrompt)) {
+      pushPoint(point);
+    }
+    if (points.length >= limit) {
+      break;
+    }
+  }
+
+  return points.slice(0, limit);
+}
+
+function buildRecoveredEvidenceAnswer(
+  userPrompt: string,
+  toolRuns: ChatToolRunRecord[],
+  options: {
+    note: string;
+  },
+): string | undefined {
+  const points = collectRecoveredAnswerPoints(toolRuns, userPrompt, 5);
+  if (points.length === 0) {
+    return undefined;
+  }
+  const fetchedContent = recoverFetchedContentEvidence(toolRuns);
+  const firstSearchLead = recoverSearchSnippetEvidence(toolRuns)[0];
+  const sourceTitle = fetchedContent?.title?.trim()
+    ?? firstSearchLead?.title?.trim()
+    ?? (fetchedContent?.url
+      ? formatRecoveredSearchLead({ title: null, url: fetchedContent.url })
+      : (firstSearchLead?.url
+        ? formatRecoveredSearchLead({ title: null, url: firstSearchLead.url })
+        : undefined));
+  const sourceUrl = fetchedContent?.url ?? firstSearchLead?.url;
+  const lines = [
+    buildRecoveredEvidenceIntro(userPrompt),
+    "",
+    ...points.map((point, index) => `${index + 1}. ${truncatePlainText(point, 220)}`),
+  ];
+  if (sourceTitle || sourceUrl) {
+    const sourceLine = sourceUrl
+      ? `${sourceTitle ?? sourceUrl} - ${sourceUrl}`
+      : sourceTitle;
+    lines.push("", `Primary source: ${sourceLine}`);
+  }
+  lines.push("", options.note);
+  return lines.join("\n");
+}
+
+function buildRecoveredEvidenceIntro(userPrompt: string): string {
+  const normalized = userPrompt.toLowerCase();
+  if (/\btop\s+\d+\b.*\b(use|uses|use case|use cases)\b/.test(normalized) || /\b(use case|use cases)\b/.test(normalized)) {
+    return "Based on the sources I did retrieve, these look like the strongest relevant use cases:";
+  }
+  if (/\bcompare|comparison|differences?\b/.test(normalized)) {
+    return "Based on the sources I did retrieve, these are the strongest comparison points:";
+  }
+  return "Based on the sources I did retrieve, these are the strongest relevant points:";
+}
+
+function summarizeToolRunForSynthesis(run: ChatToolRunRecord, userPrompt?: string): string {
+  const baseParts = [
+    `- ${run.toolName}`,
+    `[${run.status}]`,
+    run.error ? `error: ${run.error}` : undefined,
+    run.failureGuidance ? `guidance: ${run.failureGuidance}` : undefined,
+  ].filter(Boolean);
+  if (run.result && typeof run.result === "object") {
+    if (run.toolName === "browser.search") {
+      const searchLeads = recoverSearchSnippetEvidence([run])
+        .slice(0, 3)
+        .map((item) => `${item.title ?? item.url ?? "result"}${item.snippet ? ` :: ${truncatePlainText(item.snippet, 140)}` : ""}`);
+      if (searchLeads.length > 0) {
+        return `${baseParts.join(" ")} results: ${searchLeads.join(" | ")}`;
+      }
+    }
+    if (run.toolName === "browser.navigate" || run.toolName === "browser.extract" || run.toolName === "http.get") {
+      const fetched = recoverFetchedContentEvidence([run]);
+      if (fetched) {
+        const summaryPoints = summarizeRecoveredFetchedContent(fetched.text, 3, userPrompt);
+        const source = fetched.url ?? fetched.title ?? "fetched page";
+        if (summaryPoints.length > 0) {
+          return `${baseParts.join(" ")} source: ${source} content: ${summaryPoints.join(" | ")}`;
+        }
+      }
+    }
+  }
+  if (run.result) {
+    return `${baseParts.join(" ")} result: ${truncateJson(run.result, 280)}`;
+  }
+  return baseParts.join(" ");
 }
 
 function formatRecoveredSearchLead(item: { title: string | null; url: string }): string {

@@ -8899,6 +8899,8 @@ export class GatewayService {
         }
 
         const dedupedTurnCitations = dedupeChatCitations(turnResult.turnTrace.citations ?? []);
+        const persistedTurnFailure = turnResult.turnTrace.failure
+          ?? inferDegradedAssistantTurnFailure(turnResult.assistantContent);
         if (turnResult.requiresApproval || turnResult.turnTrace.status === "cancelled") {
           const traceWithMeta = this.storage.chatTurnTraces.patch(turnId, {
             retrieval: prepared.retrievalTrace,
@@ -8914,6 +8916,7 @@ export class GatewayService {
               truncated: prepared.resolvedGuidance.truncated,
             },
             citations: dedupedTurnCitations,
+            failure: persistedTurnFailure,
           });
           if (turnResult.turnTrace.status !== "cancelled") {
             this.updateActiveLeafOrThrow(sessionId, prepared.parentTurnId, turnId);
@@ -8986,6 +8989,7 @@ export class GatewayService {
             truncated: prepared.resolvedGuidance.truncated,
           },
           citations: dedupedTurnCitations,
+          failure: persistedTurnFailure,
         });
         let hydratedTrace: ChatTurnTraceRecord = {
           ...trace,
@@ -14560,8 +14564,7 @@ export class GatewayService {
       : undefined;
     let approval: ApprovalRequest;
 
-    this.storage.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.storage.runImmediateTransaction(() => {
       if (deviceToken) {
         this.gatewaySql.prepare(`
           INSERT INTO auth_device_grants (
@@ -14619,11 +14622,7 @@ export class GatewayService {
           status: approval.status,
         },
       });
-      this.storage.db.exec("COMMIT");
-    } catch (error) {
-      this.storage.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
 
     await this.recordApprovalResolutionEffects(approval!, input);
     await this.storage.audit.append("approvals", {
@@ -14674,8 +14673,7 @@ export class GatewayService {
     const resolvedAt = new Date().toISOString();
     let approval: ApprovalRequest | undefined;
 
-    this.storage.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.storage.runImmediateTransaction(() => {
       this.gatewaySql.prepare(`
         UPDATE auth_device_requests
         SET status = 'expired',
@@ -14704,11 +14702,7 @@ export class GatewayService {
           },
         });
       }
-      this.storage.db.exec("COMMIT");
-    } catch (error) {
-      this.storage.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
 
     if (approval) {
       await this.recordApprovalResolutionEffects(approval, resolutionInput);
@@ -15983,6 +15977,7 @@ export class GatewayService {
       memory: this.config.assistant.memory,
       mesh: this.config.assistant.mesh,
       npu: this.config.assistant.npu,
+      sqlite: this.config.assistant.sqlite,
       durable: this.config.assistant.durable,
       features: this.readFeatureFlags(),
       budgets: this.config.assistant.budgets,
@@ -16480,6 +16475,27 @@ function buildEmptyAssistantTurnFallbackText(): string {
     "What I need from you next",
     "- Retry once, or provide tighter constraints (explicit query/url/path) for deterministic tool execution.",
   ].join("\n");
+}
+
+function inferDegradedAssistantTurnFailure(content: string): ChatTurnFailureRecord | undefined {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (
+    normalized.startsWith("i ran out of time before i could finish")
+    || normalized.startsWith("i couldn't finish that cleanly because")
+    || normalized.includes("recover useful content from")
+    || normalized.includes("strongest leads so far")
+  ) {
+    return {
+      failureClass: "unknown",
+      message: "Assistant response degraded into a fallback-style partial answer after tool execution.",
+      retryable: true,
+      recommendedAction: "retry_narrower",
+    };
+  }
+  return undefined;
 }
 
 function sanitizeAttachmentFileName(input: string): string {

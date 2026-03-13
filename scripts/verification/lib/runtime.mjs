@@ -1,13 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { repoRoot, sanitizeFilePart, spawnVerificationProcess, writeText } from "./shared.mjs";
-
-export const defaultGatewayUrl = "http://127.0.0.1:8787";
-export const defaultUiUrl = "http://127.0.0.1:5173";
 
 export async function prepareVerificationRuntime(runId) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `goatcitadel-verify-${sanitizeFilePart(runId)}-`));
@@ -24,36 +22,59 @@ export async function prepareVerificationRuntime(runId) {
 
 export async function startVerificationStack(context, options = {}) {
   const runtimeRoot = options.runtimeRoot ?? await prepareVerificationRuntime(context.runId);
+  const gatewayPort = await resolveAvailablePort(Number(options.gatewayPort ?? 8787));
+  const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
   const gatewayEnv = {
     GOATCITADEL_ROOT_DIR: runtimeRoot,
     GATEWAY_HOST: "127.0.0.1",
-    GATEWAY_PORT: "8787",
+    GATEWAY_PORT: String(gatewayPort),
     GOATCITADEL_AUTH_MODE: "none",
     GOATCITADEL_DEV_DIAGNOSTICS_ENABLED: "true",
     GOATCITADEL_DEV_DIAGNOSTICS_VERBOSE: "false",
     ...options.gatewayEnv,
   };
-  const uiEnv = {
-    VITE_GATEWAY_URL: defaultGatewayUrl,
-    VITE_GOATCITADEL_DEV_DIAGNOSTICS_ENABLED: "true",
-    VITE_GOATCITADEL_DEV_DIAGNOSTICS_VERBOSE: "false",
-    ...options.uiEnv,
-  };
 
   const gateway = await startProcess(context, "gateway", [pnpmCommand(), "--dir", repoRoot, "dev:gateway"], gatewayEnv);
   let ui;
+  let uiPort;
+  let uiUrl;
   try {
-    await waitForHttp(`${defaultGatewayUrl}/health`, "Gateway health");
+    await waitForHttp(`${gatewayUrl}/health`, "Gateway health");
     if (options.includeUi !== false) {
-      ui = await startProcess(context, "ui", [pnpmCommand(), "--dir", repoRoot, "dev:ui"], uiEnv);
-      await waitForHttp(defaultUiUrl, "Mission Control UI");
+      uiPort = await resolveAvailablePort(Number(options.uiPort ?? 5173));
+      uiUrl = `http://127.0.0.1:${uiPort}`;
+      const uiEnv = {
+        VITE_GATEWAY_URL: gatewayUrl,
+        VITE_GOATCITADEL_DEV_DIAGNOSTICS_ENABLED: "true",
+        VITE_GOATCITADEL_DEV_DIAGNOSTICS_VERBOSE: "false",
+        ...options.uiEnv,
+      };
+      ui = await startProcess(
+        context,
+        "ui",
+        [
+          pnpmCommand(),
+          "--dir",
+          repoRoot,
+          "--filter",
+          "@goatcitadel/mission-control",
+          "exec",
+          "vite",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          String(uiPort),
+        ],
+        uiEnv,
+      );
+      await waitForHttp(uiUrl, "Mission Control UI");
     }
     return {
       runtimeRoot,
       gateway,
       ui,
-      gatewayUrl: defaultGatewayUrl,
-      uiUrl: defaultUiUrl,
+      gatewayUrl,
+      uiUrl,
     };
   } catch (error) {
     await stopVerificationStack({ runtimeRoot, gateway, ui });
@@ -170,6 +191,44 @@ export function pnpmCommand() {
 
 export function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolveAvailablePort(preferredPort) {
+  const preferredIsFree = await isPortFree(preferredPort);
+  if (preferredIsFree) {
+    return preferredPort;
+  }
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : undefined;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (!port) {
+          reject(new Error("failed to resolve an available port"));
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
 }
 
 async function removeRuntimeRootWithRetry(runtimeRoot, attempts = 6) {

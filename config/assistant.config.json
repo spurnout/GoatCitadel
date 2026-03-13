@@ -94,6 +94,11 @@
       }
     }
   },
+  "sqlite": {
+    "cacheSizeKb": 32768,
+    "tempStoreMemory": true,
+    "walAutoCheckpointPages": 4000
+  },
   "durable": {
     "enabled": false,
     "diagnosticsEnabled": false,

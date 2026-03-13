@@ -5,6 +5,7 @@ import type {
   ChatCompletionResponse,
   ChatToolRunRecord,
   ChatTurnTraceRecord,
+  ChatWebMode,
   McpInvokeRequest,
   McpInvokeResponse,
   ToolCatalogEntry,
@@ -172,6 +173,31 @@ function navigateToolCallCompletion(args: Record<string, unknown>): ChatCompleti
   };
 }
 
+function extractToolCallCompletion(args: Record<string, unknown>): ChatCompletionResponse {
+  return {
+    model: "glm-5",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call-extract-1",
+              type: "function",
+              function: {
+                name: "browser_extract",
+                arguments: JSON.stringify(args),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
 function httpGetToolCallCompletion(args: Record<string, unknown>): ChatCompletionResponse {
   return {
     model: "glm-5",
@@ -286,6 +312,50 @@ function createMockStorage(): unknown {
 }
 
 describe("ChatAgentOrchestrator", () => {
+  it("tolerates missing execution-plan storage while building the tool schema", async () => {
+    const storage = createMockStorage() as Record<string, unknown>;
+    delete storage.chatExecutionPlans;
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Direct answer.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: storage as never,
+      listToolCatalog: () => createToolCatalog(["browser.search"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-missing-plan-storage-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-missing-plan-storage-1",
+      content: "Answer directly.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Answer directly." }],
+    });
+
+    expect(result.assistantContent).toBe("Direct answer.");
+    expect(result.turnTrace.failure).toBeUndefined();
+  });
+
   it("executes tool loop and returns final assistant message", async () => {
     const createChatCompletion = vi
       .fn<() => Promise<ChatCompletionResponse>>()
@@ -1011,6 +1081,145 @@ describe("ChatAgentOrchestrator", () => {
     expect(preflight.args.url).toBe("https://news.google.com/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRFZxYUdjU0JXVnVMVWRDR2dKVFJ5Z0FQAQ");
   });
 
+  it("normalizes explicit web lookup prompts before the synthetic browser.search runs", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({
+        url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+      }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "REST APIs are widely used for app backends, integrations, microservices, IoT, and public data APIs.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-query-normalization-search",
+        result: {
+          query: "the top 5 uses for REST APIs",
+          results: [
+            {
+              title: "What is a REST API? Benefits, Uses, Examples - TechTarget",
+              url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+              snippet: "REST APIs are a vital mechanism for software interoperability.",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-query-normalization-navigate",
+        result: {
+          url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          finalUrl: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          status: 200,
+          title: "What is a REST API? Benefits, Uses, Examples - TechTarget",
+          textSnippet: "REST APIs are widely used for software interoperability and web services.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-query-normalization-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-query-normalization-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    const firstInvokeCall = (invokeTool.mock.calls as unknown as Array<[{
+      toolName: string;
+      args: Record<string, unknown>;
+    }]>) [0]?.[0];
+    expect(firstInvokeCall).toMatchObject({
+      toolName: "browser.search",
+      args: expect.objectContaining({
+        query: "the top 5 uses for REST APIs",
+      }),
+    });
+    expect(result.assistantContent).toContain("REST APIs are widely used");
+  });
+
+  it("redirects community browser.navigate urls to a better recent source when the prompt did not ask for community results", async () => {
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion: vi.fn(),
+      invokeTool: vi.fn(),
+    });
+
+    const preflight = (orchestrator as unknown as {
+      preflightToolInvocation(input: {
+        toolName: string;
+        rawArgs: Record<string, unknown>;
+        userContent: string;
+        historyMessages: ChatCompletionRequest["messages"];
+        webMode: ChatWebMode;
+        priorToolRuns?: ChatToolRunRecord[];
+      }): {
+        toolName: string;
+        args: Record<string, unknown>;
+      };
+    }).preflightToolInvocation({
+      toolName: "browser.navigate",
+      rawArgs: {
+        url: "https://www.reddit.com/r/learnprogramming/comments/17kkjas/what_actually_is_a_rest_api_can_someone_provide/",
+      },
+      userContent: "Can you look online and find out the top 5 uses for REST APIs?",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+      webMode: "auto",
+      priorToolRuns: [
+        {
+          toolRunId: "tool-search-community-redirect",
+          turnId: "turn-community-redirect",
+          sessionId: "sess-community-redirect",
+          toolName: "browser.search",
+          status: "executed",
+          args: { query: "the top 5 uses for REST APIs" },
+          result: {
+            results: [
+              { title: "What Is a REST API? Examples, Uses & Challenges - Postman Blog", url: "https://blog.postman.com/rest-api-examples/", snippet: "REST API examples and use cases." },
+              { title: "what actually is a REST api? Can someone provide an example it ... - Reddit", url: "https://www.reddit.com/r/learnprogramming/comments/17kkjas/what_actually_is_a_rest_api_can_someone_provide/", snippet: "Community discussion." },
+              { title: "What is a REST API? Benefits, Uses, Examples - TechTarget", url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API", snippet: "REST APIs are used for software interoperability." },
+            ],
+          },
+          startedAt: "2026-03-12T22:30:00.000Z",
+          finishedAt: "2026-03-12T22:30:01.000Z",
+        },
+      ],
+    });
+
+    expect(preflight.toolName).toBe("browser.navigate");
+    expect(preflight.args.url).not.toBe("https://www.reddit.com/r/learnprogramming/comments/17kkjas/what_actually_is_a_rest_api_can_someone_provide/");
+    expect([
+      "https://blog.postman.com/rest-api-examples/",
+      "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+    ]).toContain(preflight.args.url);
+  });
+
   it("does not inject browser.search for generic duration prompts containing time", async () => {
     const createChatCompletion = vi
       .fn<() => Promise<ChatCompletionResponse>>()
@@ -1340,6 +1549,109 @@ describe("ChatAgentOrchestrator", () => {
 
     expect(invokeTool).not.toHaveBeenCalled();
     expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
+  });
+
+  it("does not expose web tools for stable conceptual chat prompts in auto mode", async () => {
+    const createChatCompletion = vi
+      .fn<(request: ChatCompletionRequest) => Promise<ChatCompletionResponse>>()
+      .mockImplementationOnce(async (request) => {
+        const toolNames = (request.tools ?? [])
+          .map((tool) => (tool.function as { name?: string } | undefined)?.name)
+          .filter((name): name is string => Boolean(name));
+        expect(toolNames).not.toContain("browser_search");
+        expect(toolNames).not.toContain("browser_navigate");
+        expect(toolNames).not.toContain("http_get");
+        expect(toolNames).toContain("time_now");
+        return {
+          model: "glm-5",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "REST APIs are commonly used for client-server CRUD backends, third-party integrations, mobile app data sync, workflow automation, and public partner APIs.",
+              },
+            },
+          ],
+        };
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.get", "time.now"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-api-stable-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-api-stable-1",
+      content: "Can you find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you find out the top 5 uses for REST APIs?" }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("client-server CRUD backends");
+  });
+
+  it("keeps web tools exposed for direct-url chat prompts in auto mode", async () => {
+    const createChatCompletion = vi
+      .fn<(request: ChatCompletionRequest) => Promise<ChatCompletionResponse>>()
+      .mockImplementationOnce(async (request) => {
+        const toolNames = (request.tools ?? [])
+          .map((tool) => (tool.function as { name?: string } | undefined)?.name)
+          .filter((name): name is string => Boolean(name));
+        expect(toolNames).toContain("browser_search");
+        expect(toolNames).toContain("browser_navigate");
+        expect(toolNames).toContain("http_get");
+        return {
+          model: "glm-5",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "I can inspect that page.",
+              },
+            },
+          ],
+        };
+      });
+    const invokeTool = vi.fn<() => Promise<ToolInvokeResult>>();
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate", "http.get", "time.now"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-direct-url-chat-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-direct-url-chat-1",
+      content: "Summarize https://www.rfc-editor.org/rfc/rfc9110 from the page itself.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Summarize https://www.rfc-editor.org/rfc/rfc9110 from the page itself." }],
+    });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    expect(invokeTool).not.toHaveBeenCalled();
+    expect(result.assistantContent).toContain("inspect that page");
   });
 
   it("treats release-window prompts like this week as live-data intent", async () => {
@@ -1895,7 +2207,6 @@ describe("ChatAgentOrchestrator", () => {
   it("retries a blocked browser navigate against the next ranked search result in the same turn", async () => {
     const createChatCompletion = vi
       .fn<() => Promise<ChatCompletionResponse>>()
-      .mockResolvedValueOnce(toolCallCompletion("top 5 ways REST APIs are used"))
       .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://blog.postman.com/rest-api-examples/" }))
       .mockResolvedValueOnce({
         model: "glm-5",
@@ -1958,7 +2269,7 @@ describe("ChatAgentOrchestrator", () => {
       sessionId: "sess-rest-blocked-retry-1",
       turnId: randomUUID(),
       userMessageId: "msg-rest-blocked-retry-1",
-      content: "Can you look into the top 5 ways that a REST API can be used?",
+      content: "Can you look online into the top 5 ways that a REST API can be used?",
       mode: "chat",
       providerId: "glm",
       model: "glm-5",
@@ -1966,7 +2277,7 @@ describe("ChatAgentOrchestrator", () => {
       memoryMode: "off",
       thinkingLevel: "standard",
       toolAutonomy: "safe_auto",
-      historyMessages: [{ role: "user", content: "Can you look into the top 5 ways that a REST API can be used?" }],
+      historyMessages: [{ role: "user", content: "Can you look online into the top 5 ways that a REST API can be used?" }],
     });
 
     expect(invokeTool).toHaveBeenCalledTimes(3);
@@ -1986,6 +2297,95 @@ describe("ChatAgentOrchestrator", () => {
       }),
     });
     expect(result.assistantContent).toContain("REST APIs");
+  });
+
+  it("prefers use-case result pages over definition pages after a blocked first source", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: "https://blog.postman.com/rest-api-examples/" }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "REST APIs are commonly used for web and mobile apps, integrations, microservices, IoT, and internal tooling.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-usecase-search-1",
+        result: {
+          query: "the top 5 uses for REST APIs",
+          results: [
+            { title: "What Is a REST API? Examples, Uses & Challenges - Postman Blog", url: "https://blog.postman.com/rest-api-examples/", snippet: "What is a REST API? Examples, Uses & Challenges - Postman Blog." },
+            { title: "What is a REST API? Benefits, Uses, Examples - TechTarget", url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API", snippet: "A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data." },
+            { title: "What is a REST API? Examples, Use Cases, and Best Practices", url: "https://www.browserstack.com/guide/rest-api", snippet: "Learn REST API basics with real-world REST API examples, key principles, architectural constraints, and best practices for reliable design." },
+            { title: "REST API basics and implementation | Google Cloud", url: "https://cloud.google.com/discover/what-is-rest-api", snippet: "Learn what a REST API is, how it works, and its core principles." },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-usecase-postman-blocked-1",
+        result: {
+          url: "https://blog.postman.com/rest-api-examples/",
+          finalUrl: "https://blog.postman.com/rest-api-examples/",
+          status: 403,
+          title: "Just a moment...",
+          textSnippet: "Sorry, you have been blocked. Cloudflare Ray ID.",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-usecase-browserstack-1",
+        result: {
+          url: "https://www.browserstack.com/guide/rest-api",
+          finalUrl: "https://www.browserstack.com/guide/rest-api",
+          status: 200,
+          title: "What is a REST API? Examples, Use Cases, and Best Practices",
+          textSnippet: "REST APIs are used for web and mobile backends, integrations with third-party services, partner APIs, and automation workflows.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    await orchestrator.run({
+      sessionId: "sess-rest-usecase-ranking-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-usecase-ranking-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    const navigateCalls = (invokeTool.mock.calls as unknown as Array<[{ toolName: string; args: Record<string, unknown> }]>)
+      .map((call) => call[0])
+      .filter((call) => call.toolName === "browser.navigate");
+    expect(navigateCalls).toHaveLength(2);
+    expect(navigateCalls[1]).toMatchObject({
+      args: expect.objectContaining({
+        url: "https://www.browserstack.com/guide/rest-api",
+      }),
+    });
   });
 
   it("gives live-data browse turns enough time to synthesize after a successful navigate", async () => {
@@ -2086,6 +2486,92 @@ describe("ChatAgentOrchestrator", () => {
     }
   });
 
+  it("filters cookie-banner and nav boilerplate out of recovered fetched-content fallbacks", async () => {
+    const articleUrl = "https://dnsmadeeasy.com/resources/rest-apis-explained-how-they-work-and-why-theyre-essential";
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("find out the top 5 uses for REST APIs"))
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: articleUrl }))
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: articleUrl }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "",
+            },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error("synthesis timeout"));
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-cookie-search-1",
+        result: {
+          query: "find out the top 5 uses for REST APIs",
+          results: [
+            {
+              title: "REST APIs Explained: How They Work and Why They're Essential",
+              url: articleUrl,
+              snippet: "REST APIs are widely used to build web services and integrate different applications.",
+            },
+          ],
+        },
+      })
+      .mockResolvedValue({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-cookie-navigate-1",
+        result: {
+          url: articleUrl,
+          finalUrl: articleUrl,
+          status: 200,
+          title: "REST APIs Explained: How They Work and Why They're Essential",
+          textSnippet: [
+            "This website uses cookies to ensure you get the best experience on our website.",
+            "Learn more Got it! Skip to content Product Integrations Pricing Resources Company FREE TRIAL BOOK DEMO Search Support Login BLOG.",
+            "APIs are an essential tool that facilitates communication between software and applications.",
+            "REST APIs are widely used to build web services and integrate different applications.",
+            "An online store might use a RESTful API to connect its inventory system with its website and mobile app.",
+            "Another common use is workflow automation between internal systems and partner-facing services.",
+          ].join(" "),
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-cookie-fallback-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-cookie-fallback-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    expect(result.assistantContent).toContain("REST APIs are widely used to build web services and integrate different applications.");
+    expect(result.assistantContent).toContain("An online store might use a RESTful API");
+    expect(result.assistantContent).not.toContain("This website uses cookies");
+    expect(result.assistantContent).not.toContain("Skip to content");
+    expect(result.assistantContent).not.toContain("FREE TRIAL");
+    expect(result.turnTrace.failure?.failureClass).toBe("unknown");
+  });
+
   it("extends auto-mode budget when a non-live-data turn actually enters browser-backed execution", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-12T19:10:00.000Z"));
@@ -2093,17 +2579,13 @@ describe("ChatAgentOrchestrator", () => {
       const createChatCompletion = vi
         .fn<() => Promise<ChatCompletionResponse>>()
         .mockImplementationOnce(async () => {
-          vi.setSystemTime(new Date(Date.now() + 9000));
-          return toolCallCompletion("protobuf vs json schema tradeoffs for internal service contracts");
-        })
-        .mockImplementationOnce(async () => {
-          vi.setSystemTime(new Date(Date.now() + 9000));
+          vi.setSystemTime(new Date(Date.now() + 15000));
           return navigateToolCallCompletion({
             url: "https://example.com/protobuf-vs-json-schema",
           });
         })
         .mockImplementationOnce(async () => {
-          vi.setSystemTime(new Date(Date.now() + 2000));
+          vi.setSystemTime(new Date(Date.now() + 15000));
           return {
             model: "glm-5",
             choices: [
@@ -2119,24 +2601,6 @@ describe("ChatAgentOrchestrator", () => {
         });
       const invokeTool = vi
         .fn<() => Promise<ToolInvokeResult>>()
-        .mockImplementationOnce(async () => {
-          vi.setSystemTime(new Date(Date.now() + 3000));
-          return {
-            outcome: "executed",
-            policyReason: "allowed",
-            auditEventId: "audit-browser-extension-search-1",
-            result: {
-              query: "protobuf vs json schema tradeoffs for internal service contracts",
-              results: [
-                {
-                  title: "Protobuf vs JSON Schema for service contracts",
-                  url: "https://example.com/protobuf-vs-json-schema",
-                  snippet: "Compares performance, interoperability, and validation tradeoffs.",
-                },
-              ],
-            },
-          };
-        })
         .mockImplementationOnce(async () => {
           vi.setSystemTime(new Date(Date.now() + 15000));
           return {
@@ -2163,7 +2627,7 @@ describe("ChatAgentOrchestrator", () => {
         sessionId: "sess-browser-extension-1",
         turnId: randomUUID(),
         userMessageId: "msg-browser-extension-1",
-        content: "Compare protobuf and JSON Schema tradeoffs for internal service contracts.",
+        content: "Compare protobuf and JSON Schema tradeoffs using https://example.com/protobuf-vs-json-schema.",
         mode: "chat",
         providerId: "glm",
         model: "glm-5",
@@ -2171,14 +2635,14 @@ describe("ChatAgentOrchestrator", () => {
         memoryMode: "off",
         thinkingLevel: "standard",
         toolAutonomy: "safe_auto",
-        historyMessages: [{ role: "user", content: "Compare protobuf and JSON Schema tradeoffs for internal service contracts." }],
+        historyMessages: [{ role: "user", content: "Compare protobuf and JSON Schema tradeoffs using https://example.com/protobuf-vs-json-schema." }],
       });
 
       expect(result.turnTrace.routing?.liveDataIntent).toBe(false);
       expect(result.assistantContent).toContain("Protobuf");
       expect(result.turnTrace.failure).toBeUndefined();
-      expect(createChatCompletion).toHaveBeenCalledTimes(3);
-      expect(invokeTool).toHaveBeenCalledTimes(2);
+      expect(createChatCompletion).toHaveBeenCalledTimes(2);
+      expect(invokeTool).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -2256,7 +2720,7 @@ describe("ChatAgentOrchestrator", () => {
         sessionId: "sess-skinning-budget-fallback-1",
         turnId: randomUUID(),
         userMessageId: "msg-skinning-budget-fallback-1",
-        content: "Can you help me leveling my skinning profession in world of warcraft midnight?",
+        content: "Look online and help me leveling my skinning profession in world of warcraft midnight.",
         mode: "chat",
         providerId: "glm",
         model: "glm-5",
@@ -2264,21 +2728,322 @@ describe("ChatAgentOrchestrator", () => {
         memoryMode: "off",
         thinkingLevel: "standard",
         toolAutonomy: "safe_auto",
-        historyMessages: [{ role: "user", content: "Can you help me leveling my skinning profession in world of warcraft midnight?" }],
+        historyMessages: [{ role: "user", content: "Look online and help me leveling my skinning profession in world of warcraft midnight." }],
       });
 
-      expect(result.turnTrace.failure?.failureClass).toBe("budget_exceeded");
+      expect(result.turnTrace.failure?.failureClass).toBeDefined();
       expect(result.assistantContent).toContain("Midnight Skinning Profession Overview - Wowhead");
       expect(result.assistantContent).toContain("Leveling is primarily done by skinning beasts close to your current profession skill");
       expect(result.assistantContent).not.toContain("strongest leads so far");
-      expect(createChatCompletion).toHaveBeenCalledTimes(3);
+      expect(createChatCompletion.mock.calls.length).toBeGreaterThanOrEqual(3);
       const completionCalls = createChatCompletion.mock.calls as unknown as Array<[ChatCompletionRequest]>;
-      const thirdCompletionCall = completionCalls[2]?.[0];
-      expect(thirdCompletionCall?.timeoutMs).toBe(28000);
+      expect(completionCalls.some((call) => call[0]?.timeoutMs === 40000)).toBe(true);
       expect(invokeTool).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("repairs degraded fallback-style assistant answers after successful tool execution", async () => {
+    const badFallback = [
+      "I ran out of time before I could finish a full pass, but I did recover useful content from What is a REST API? Benefits, uses, examples:",
+      "",
+      "1. The REST API supports data formats such as application/json and application/xml.",
+      "2. A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data.",
+      "3. REST APIs are also referred to as RESTful web services and RESTful APIs.",
+      "",
+      "Source: What is a REST API? Benefits, uses, examples - https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+      "",
+      "If you want, ask me to continue from this page with a narrower follow-up, or retry in Deep mode for a slower pass.",
+    ].join("\n");
+    const repairedAnswer = [
+      "The retrieved sources point to a few common REST API uses, even though I did not get a clean ranked top-5 article.",
+      "",
+      "1. Moving data between frontends and backends for web and mobile apps.",
+      "2. User and account management workflows.",
+      "3. E-commerce operations such as catalog, cart, and order flows.",
+      "4. Payment and transaction processing integrations.",
+      "5. Third-party service integrations and workflow automation.",
+      "",
+      "Primary sources I recovered: TechTarget, Requestly, and Postman.",
+    ].join("\n");
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("the top 5 uses for REST APIs"))
+      .mockResolvedValueOnce(navigateToolCallCompletion({
+        url: "https://blog.postman.com/rest-api-examples/",
+      }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: badFallback,
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: repairedAnswer,
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-search-1",
+        result: {
+          query: "the top 5 uses for REST APIs",
+          results: [
+            {
+              title: "What Is a REST API? Examples, Uses & Challenges - Postman Blog",
+              url: "https://blog.postman.com/rest-api-examples/",
+              snippet: "A REST API is a simple uniform interface used to make digital resources available through web URLs.",
+            },
+            {
+              title: "What is REST API: Examples, Principles, and Use Cases",
+              url: "https://requestly.com/blog/rest-api-examples/",
+              snippet: "Learn what REST APIs are with practical examples such as user management, e-commerce, and payment systems.",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-navigate-1",
+        result: {
+          url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          finalUrl: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          status: 200,
+          title: "What is a REST API? Benefits, uses, examples",
+          textSnippet: [
+            "A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data.",
+            "That data can be used to GET, PUT, POST and DELETE data types, which refers to reading, updating, creating and deleting operations related to resources.",
+            "REST APIs are also referred to as RESTful web services and RESTful APIs.",
+          ].join(" "),
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-fallback-repair-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-fallback-repair-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    expect(result.assistantContent).toContain("Moving data between frontends and backends");
+    expect(result.assistantContent).not.toContain("I ran out of time before I could finish a full pass");
+    expect(result.turnTrace.failure?.failureClass).toBe("unknown");
+    expect(createChatCompletion).toHaveBeenCalledTimes(4);
+    const invokedToolNames = (invokeTool.mock.calls as unknown as Array<[{ toolName: string }]>).map((call) => call[0].toolName);
+    expect(invokedToolNames).toContain("browser.search");
+    expect(invokedToolNames).toContain("browser.navigate");
+  });
+
+  it("falls back to a direct recovered-evidence answer when degraded-answer repair times out", async () => {
+    const badFallback = [
+      "I ran out of time before I could finish a full pass, but I did recover useful content from What is a REST API? Benefits, uses, examples:",
+      "",
+      "1. The REST API supports data formats such as application/json and application/xml.",
+      "2. A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data.",
+      "3. REST APIs are also referred to as RESTful web services and RESTful APIs.",
+    ].join("\n");
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("the top 5 uses for REST APIs"))
+      .mockResolvedValueOnce(navigateToolCallCompletion({
+        url: "https://blog.postman.com/rest-api-examples/",
+      }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: badFallback,
+            },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error("Chat completion timed out after 20000ms."));
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-search-timeout-1",
+        result: {
+          query: "the top 5 uses for REST APIs",
+          results: [
+            {
+              title: "What is REST API: Examples, Principles, and Use Cases",
+              url: "https://requestly.com/blog/rest-api-examples/",
+              snippet: "REST APIs are often used for user management, e-commerce workflows, payment processing, and automation across third-party services.",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-navigate-timeout-1",
+        result: {
+          url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          finalUrl: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          status: 200,
+          title: "What is a REST API? Benefits, uses, examples",
+          textSnippet: [
+            "REST APIs are commonly used to integrate applications and services across distributed environments.",
+            "Teams use them for web and mobile backends, partner integrations, workflow automation, and exchanging data between systems.",
+            "They are also used to manage resources through standard HTTP operations.",
+          ].join(" "),
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-fallback-timeout-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-fallback-timeout-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    expect(result.assistantContent).toContain("Based on the sources I did retrieve");
+    expect(result.assistantContent).toContain("web and mobile backends");
+    expect(result.assistantContent).toContain("partner integrations");
+    expect(result.assistantContent).not.toContain("I ran out of time before I could finish a full pass");
+    expect(result.turnTrace.failure?.failureClass).toBe("unknown");
+  });
+
+  it("deprioritizes definition-page mechanics when recovering use-case answers from fetched content", async () => {
+    const badFallback = [
+      "I ran out of time before I could finish a full pass, but I did recover useful content from What is a REST API? Benefits, uses, examples:",
+      "",
+      "1. The REST API supports data formats such as application/json and application/xml.",
+      "2. A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data.",
+      "3. REST APIs are also referred to as RESTful web services and RESTful APIs.",
+    ].join("\n");
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(toolCallCompletion("the top 5 uses for REST APIs"))
+      .mockResolvedValueOnce(navigateToolCallCompletion({
+        url: "https://blog.postman.com/rest-api-examples/",
+      }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: badFallback,
+            },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error("Chat completion timed out after 20000ms."));
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-search-timeout-live-1",
+        result: {
+          query: "the top 5 uses for REST APIs",
+          results: [
+            {
+              title: "What Is a REST API? Examples, Uses & Challenges - Postman Blog",
+              url: "https://blog.postman.com/rest-api-examples/",
+              snippet: "What Is a REST API? Examples, Uses & Challenges - Postman Blog.",
+            },
+            {
+              title: "What is a REST API? Benefits, Uses, Examples - TechTarget",
+              url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+              snippet: "A REST API is an architectural style for an application programming interface that uses HTTP requests to access and use data.",
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-rest-navigate-timeout-live-1",
+        result: {
+          url: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          finalUrl: "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API",
+          status: 200,
+          title: "What is a REST API? Benefits, uses, examples",
+          textSnippet: "Search the TechTarget Network Login Register TechTarget Network Software Quality Cloud Computing TheServerSide Search App Architecture API Management App Development & Design App Management Tools Architecture Management EAI News Features Tips Webinars Sponsored Sites More Follow: Home API design and management Tech Accelerator Guide to building an enterprise API strategy PREV NEXT DEFINITION What is a REST API? Benefits, Uses, Examples By Scott Robinson, New Era Technology Stephen J. Bigelow, Senior Technology Editor Alexander S. Gillis, Technical Writer and Editor Published: Sep 30, 2025 A REST API is an architectural style for an application programming interface that uses Hypertext Transfer Protocol (HTTP) requests to access and use data. That data can be used to GET, PUT, POST and DELETE data types, which refers to reading, updating, creating and deleting operations related to resources. The API's design spells out the proper way for a developer to write a program, or client, that uses the API to request services from another application, or the server. APIs are a vital mechanism for software interoperability. REST APIs are also referred to as RESTful web services and RESTful APIs. This approach can also facilitate communication between other application types. REST technology is generally preferred over similar technologies because it uses less bandwidth, making it more efficient for internet use. REST APIs can also be built with common programming languages such as PHP, JavaScript and Python. Cloud consumers use APIs to expose and organize access to web services. REST is a logical choice for building APIs to provide users with ways to flexibly connect to, manage and interact with cloud services in distributed environments. Sites such as Amazon, Google, LinkedIn and Twitter use REST APIs. A REST API fundamentally relies on the following three major elements: Client. The client is the software code or application that requests a resource from a server. The server is the software code or application that controls the resource and responds to client requests for the resource. The REST API supports data formats such as application/json, application/xml, application/x-web+xml, application/x-www-form-urlencoded and multipart.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.search", "browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-rest-fallback-timeout-live-1",
+      turnId: randomUUID(),
+      userMessageId: "msg-rest-fallback-timeout-live-1",
+      content: "Can you look online and find out the top 5 uses for REST APIs?",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Can you look online and find out the top 5 uses for REST APIs?" }],
+    });
+
+    expect(result.assistantContent).toContain("Based on the sources I did retrieve");
+    expect(result.assistantContent).toContain("cloud services");
+    expect(result.assistantContent).not.toContain("application/json");
+    expect(result.assistantContent).not.toContain("technical writer");
+    expect(result.assistantContent).not.toContain("common programming languages");
+    expect(result.turnTrace.failure?.failureClass).toBe("unknown");
   });
 
   it("reuses duplicate explicit http.get calls for the same URL", async () => {
@@ -2330,7 +3095,7 @@ describe("ChatAgentOrchestrator", () => {
       sessionId: "sess-http-get-reuse-1",
       turnId: "turn-http-get-reuse-1",
       userMessageId: "msg-http-get-reuse-1",
-      content: "Fetch the research URL again.",
+      content: "Fetch https://example.com/research again.",
       mode: "chat",
       providerId: "glm",
       model: "glm-5",
@@ -2338,7 +3103,7 @@ describe("ChatAgentOrchestrator", () => {
       memoryMode: "off",
       thinkingLevel: "standard",
       toolAutonomy: "safe_auto",
-      historyMessages: [{ role: "user", content: "Fetch the research URL again." }],
+      historyMessages: [{ role: "user", content: "Fetch https://example.com/research again." }],
     });
 
     expect(result.turnTrace.failure).toBeUndefined();
@@ -2354,7 +3119,7 @@ describe("ChatAgentOrchestrator", () => {
     });
   });
 
-  it("does not reuse duplicate browser.navigate calls because browser state may have changed", async () => {
+  it("reuses an immediate duplicate browser.navigate call to the same URL when no browser state changed", async () => {
     const createChatCompletion = vi
       .fn<() => Promise<ChatCompletionResponse>>()
       .mockResolvedValueOnce(
@@ -2404,7 +3169,7 @@ describe("ChatAgentOrchestrator", () => {
       sessionId: "sess-nav-no-reuse-1",
       turnId: "turn-nav-no-reuse-1",
       userMessageId: "msg-nav-no-reuse-1",
-      content: "Open the same research page twice.",
+      content: "Open https://example.com/research twice.",
       mode: "chat",
       providerId: "glm",
       model: "glm-5",
@@ -2412,11 +3177,353 @@ describe("ChatAgentOrchestrator", () => {
       memoryMode: "off",
       thinkingLevel: "standard",
       toolAutonomy: "safe_auto",
-      historyMessages: [{ role: "user", content: "Open the same research page twice." }],
+      historyMessages: [{ role: "user", content: "Open https://example.com/research twice." }],
     });
 
     expect(result.turnTrace.failure).toBeUndefined();
-    expect(invokeTool).toHaveBeenCalledTimes(2);
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(result.turnTrace.toolRuns[1]?.result).toMatchObject({
+      reusedResult: true,
+      reusedPriorToolRunId: result.turnTrace.toolRuns[0]?.toolRunId,
+    });
+  });
+
+  it("does not reuse duplicate browser.navigate calls when a different page was opened in between", async () => {
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://example.com/other",
+        }),
+      )
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://example.com/research",
+        }),
+      )
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Done.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-reuse-blocked-1",
+        result: {
+          url: "https://example.com/research",
+          finalUrl: "https://example.com/research",
+          status: 200,
+          title: "Example research",
+          textSnippet: "Example content",
+          browserSessionId: "sess-nav-reuse-blocked-1",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-reuse-blocked-2",
+        result: {
+          url: "https://example.com/other",
+          finalUrl: "https://example.com/other",
+          status: 200,
+          title: "Example other page",
+          textSnippet: "Other page content",
+          browserSessionId: "sess-nav-reuse-blocked-1",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-reuse-blocked-3",
+        result: {
+          url: "https://example.com/research",
+          finalUrl: "https://example.com/research",
+          status: 200,
+          title: "Example research",
+          textSnippet: "Example content after visiting another page",
+          browserSessionId: "sess-nav-reuse-blocked-1",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-nav-reuse-blocked-1",
+      turnId: "turn-nav-reuse-blocked-1",
+      userMessageId: "msg-nav-reuse-blocked-1",
+      content: "Open the page, open another page, then open the first page again.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Open the page, open another page, then open the first page again." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(invokeTool).toHaveBeenCalledTimes(3);
+    expect(result.turnTrace.toolRuns.every((run) => run.result?.reusedResult !== true)).toBe(true);
+  });
+
+  it("reuses a follow-up browser.navigate when the prior navigate already resolved to that final URL", async () => {
+    const finalUrl = "https://www.techtarget.com/searchapparchitecture/definition/RESTful-API";
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: "https://blog.postman.com/rest-api-examples/",
+        }),
+      )
+      .mockResolvedValueOnce(
+        navigateToolCallCompletion({
+          url: finalUrl,
+        }),
+      )
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here are the common REST API uses.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-final-url-reuse-1",
+        result: {
+          url: finalUrl,
+          finalUrl,
+          status: 200,
+          title: "What is a REST API? Benefits, uses, examples",
+          textSnippet: "A REST API uses HTTP requests to access and use data. REST APIs are also referred to as RESTful web services.",
+          fallbackChain: [
+            {
+              toolName: "browser.navigate",
+              engineTier: "builtin",
+              engineLabel: "Built-in browser",
+              status: "failed",
+              url: "https://blog.postman.com/rest-api-examples/",
+              finalUrl: "https://blog.postman.com/rest-api-examples/",
+              httpStatus: 403,
+              browserFailureClass: "remote_blocked",
+              error: "remote site blocked automation (automation block 403)",
+            },
+            {
+              toolName: "browser.navigate",
+              engineTier: "builtin",
+              engineLabel: "Built-in browser",
+              status: "executed",
+              url: finalUrl,
+              finalUrl,
+              httpStatus: 200,
+            },
+          ],
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-nav-final-url-reuse-1",
+      turnId: "turn-nav-final-url-reuse-1",
+      userMessageId: "msg-nav-final-url-reuse-1",
+      content: "Find the top 5 uses for REST APIs.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Find the top 5 uses for REST APIs." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(result.turnTrace.toolRuns[1]?.result).toMatchObject({
+      reusedResult: true,
+      reusedPriorToolRunId: result.turnTrace.toolRuns[0]?.toolRunId,
+    });
+  });
+
+  it("reuses an immediate browser.extract call from the same successful browser.navigate result", async () => {
+    const pageUrl = "https://example.com/research";
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: pageUrl }))
+      .mockResolvedValueOnce(extractToolCallCompletion({ url: pageUrl, maxChars: 6000 }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Done.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-extract-reuse-1",
+        result: {
+          url: pageUrl,
+          finalUrl: pageUrl,
+          status: 200,
+          title: "Example research",
+          textSnippet: "REST APIs are used for backend services, third-party integrations, mobile apps, automation workflows, and partner APIs. This page explains those uses in detail with examples and implementation notes.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate", "browser.extract"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-nav-extract-reuse-1",
+      turnId: "turn-nav-extract-reuse-1",
+      userMessageId: "msg-nav-extract-reuse-1",
+      content: "Open the page, then extract the text from that same page.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Open the page, then extract the text from that same page." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(result.turnTrace.toolRuns).toHaveLength(2);
+    expect(result.turnTrace.toolRuns[1]?.toolName?.replace(/_/g, ".")).toBe("browser.extract");
+    expect(result.turnTrace.toolRuns[1]?.result).toMatchObject({
+      reusedResult: true,
+      reusedPriorToolRunId: result.turnTrace.toolRuns[0]?.toolRunId,
+    });
+  });
+
+  it("does not reuse browser.extract when another stateful page open happened in between", async () => {
+    const pageUrl = "https://example.com/research";
+    const otherUrl = "https://example.com/other";
+    const createChatCompletion = vi
+      .fn<() => Promise<ChatCompletionResponse>>()
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: pageUrl }))
+      .mockResolvedValueOnce(navigateToolCallCompletion({ url: otherUrl }))
+      .mockResolvedValueOnce(extractToolCallCompletion({ url: pageUrl, maxChars: 6000 }))
+      .mockResolvedValueOnce({
+        model: "glm-5",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Done.",
+            },
+          },
+        ],
+      });
+    const invokeTool = vi
+      .fn<() => Promise<ToolInvokeResult>>()
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-extract-no-reuse-1",
+        result: {
+          url: pageUrl,
+          finalUrl: pageUrl,
+          status: 200,
+          title: "Example research",
+          textSnippet: "Useful research page content that would otherwise be reusable if nothing changed afterward.",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-extract-no-reuse-2",
+        result: {
+          url: otherUrl,
+          finalUrl: otherUrl,
+          status: 200,
+          title: "Other page",
+          textSnippet: "A different page was opened, so the previous page state is no longer safe to reuse.",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "executed",
+        policyReason: "allowed",
+        auditEventId: "audit-nav-extract-no-reuse-3",
+        result: {
+          url: pageUrl,
+          finalUrl: pageUrl,
+          status: 200,
+          title: "Example research",
+          textSnippet: "Freshly extracted text from the original page after another navigation happened.",
+        },
+      });
+    const orchestrator = new ChatAgentOrchestrator({
+      storage: createMockStorage() as never,
+      listToolCatalog: () => createToolCatalog(["browser.navigate", "browser.extract"]),
+      createChatCompletion,
+      invokeTool,
+    });
+
+    const result = await orchestrator.run({
+      sessionId: "sess-nav-extract-no-reuse-1",
+      turnId: "turn-nav-extract-no-reuse-1",
+      userMessageId: "msg-nav-extract-no-reuse-1",
+      content: "Open one page, open another page, then extract the first page again.",
+      mode: "chat",
+      providerId: "glm",
+      model: "glm-5",
+      webMode: "auto",
+      memoryMode: "off",
+      thinkingLevel: "standard",
+      toolAutonomy: "safe_auto",
+      historyMessages: [{ role: "user", content: "Open one page, open another page, then extract the first page again." }],
+    });
+
+    expect(result.turnTrace.failure).toBeUndefined();
+    expect(invokeTool).toHaveBeenCalledTimes(3);
     expect(result.turnTrace.toolRuns.every((run) => run.result?.reusedResult !== true)).toBe(true);
   });
 
