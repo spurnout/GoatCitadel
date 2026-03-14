@@ -352,6 +352,7 @@ import {
   resolveGatewayInstallToken as resolveGatewayInstallTokenFromPlanner,
 } from "./gateway/auth-credential-planner.js";
 import { verifyBackupAtPath } from "./gateway/backup-verify.js";
+import { buildDelegatedChatSendRequest } from "./delegated-chat-request.js";
 
 export interface ApprovalResolveResult {
   approval: ApprovalRequest;
@@ -8215,15 +8216,19 @@ export class GatewayService {
       if (input.signal?.aborted) {
         throw new ChatTurnCancelledError(prepared.turnId);
       }
-      const response = await this.agentSendChatMessage(childSession.sessionId, {
-        content,
-        providerId: input.step.providerId ?? prepared.prefs.providerId,
-        model: input.step.model ?? prepared.prefs.model,
-        mode: input.task.mode,
-        webMode: prepared.prefs.webMode,
-        memoryMode: prepared.prefs.memoryMode,
-        thinkingLevel: prepared.prefs.thinkingLevel,
-      });
+      const response = await this.agentSendChatMessage(
+        childSession.sessionId,
+        buildDelegatedChatSendRequest({
+          content,
+          providerId: input.step.providerId ?? prepared.prefs.providerId,
+          model: input.step.model ?? prepared.prefs.model,
+          mode: input.task.mode,
+          webMode: prepared.prefs.webMode,
+          memoryMode: prepared.prefs.memoryMode,
+          thinkingLevel: prepared.prefs.thinkingLevel,
+          retrievalMode: prepared.autonomy.retrievalMode,
+        }),
+      );
       if (input.signal?.aborted) {
         throw new ChatTurnCancelledError(prepared.turnId);
       }

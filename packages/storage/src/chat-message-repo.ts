@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ChatInputPart, ChatMessageRecord, ChatMessageRole } from "@goatcitadel/contracts";
 import { safeJsonParse } from "./safe-json.js";
@@ -97,14 +98,16 @@ export class ChatMessageRepository {
     if (messages.length === 0) {
       return;
     }
-    this.db.exec("BEGIN IMMEDIATE");
+    const savepointName = `chat_messages_upsert_many_${randomUUID().replaceAll("-", "_")}`;
+    this.db.exec(`SAVEPOINT ${savepointName}`);
     try {
       for (const message of messages) {
         this.upsert(message, now);
       }
-      this.db.exec("COMMIT");
+      this.db.exec(`RELEASE SAVEPOINT ${savepointName}`);
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+      this.db.exec(`RELEASE SAVEPOINT ${savepointName}`);
       throw error;
     }
   }

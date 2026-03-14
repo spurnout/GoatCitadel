@@ -148,8 +148,7 @@ export class ChatExecutionPlanRepository {
     const createdAt = input.createdAt ?? new Date().toISOString();
     const updatedAt = input.updatedAt ?? createdAt;
 
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.withSavepoint(() => {
       this.insertPlanStmt.run({
         planId,
         sessionId: input.sessionId,
@@ -167,19 +166,14 @@ export class ChatExecutionPlanRepository {
         finishedAt: input.finishedAt ?? null,
       });
       this.replaceSteps(planId, input.steps);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
 
     return this.get(planId);
   }
 
   public patch(planId: string, input: ChatExecutionPlanPatchInput): ChatExecutionPlanRecord {
     const current = this.get(planId);
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    this.withSavepoint(() => {
       this.patchPlanStmt.run({
         planId,
         status: input.status ?? current.status,
@@ -191,11 +185,7 @@ export class ChatExecutionPlanRepository {
       if (input.steps) {
         this.replaceSteps(planId, input.steps);
       }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
     return this.get(planId);
   }
 
@@ -218,9 +208,10 @@ export class ChatExecutionPlanRepository {
   private replaceSteps(planId: string, steps: ChatExecutionPlanStepRecord[]): void {
     this.deleteStepsByPlanStmt.run(planId);
     for (const step of steps) {
+      const logicalStepId = step.stepId || randomUUID();
       this.insertStepStmt.run({
         planId,
-        stepId: step.stepId || randomUUID(),
+        stepId: toPersistedExecutionPlanStepId(planId, logicalStepId),
         index: step.index,
         objective: step.objective,
         successCriteria: step.successCriteria ?? null,
@@ -238,6 +229,20 @@ export class ChatExecutionPlanRepository {
         childSessionId: step.childSessionId ?? null,
         childTurnId: step.childTurnId ?? null,
       });
+    }
+  }
+
+  private withSavepoint<T>(work: () => T): T {
+    const savepointName = `chat_execution_plan_${randomUUID().replaceAll("-", "_")}`;
+    this.db.exec(`SAVEPOINT ${savepointName}`);
+    try {
+      const result = work();
+      this.db.exec(`RELEASE SAVEPOINT ${savepointName}`);
+      return result;
+    } catch (error) {
+      this.db.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+      this.db.exec(`RELEASE SAVEPOINT ${savepointName}`);
+      throw error;
     }
   }
 
@@ -265,7 +270,7 @@ export class ChatExecutionPlanRepository {
 
 function mapStep(row: ChatExecutionPlanStepRow): ChatExecutionPlanStepRecord {
   return {
-    stepId: row.step_id,
+    stepId: toLogicalExecutionPlanStepId(row.plan_id, row.step_id),
     index: row.step_index,
     objective: row.objective,
     successCriteria: row.success_criteria ?? undefined,
@@ -287,4 +292,15 @@ function mapStep(row: ChatExecutionPlanStepRow): ChatExecutionPlanStepRecord {
     childSessionId: row.child_session_id ?? undefined,
     childTurnId: row.child_turn_id ?? undefined,
   };
+}
+
+function toPersistedExecutionPlanStepId(planId: string, logicalStepId: string): string {
+  return `${planId}:${logicalStepId}`;
+}
+
+function toLogicalExecutionPlanStepId(planId: string, persistedStepId: string): string {
+  const prefix = `${planId}:`;
+  return persistedStepId.startsWith(prefix)
+    ? persistedStepId.slice(prefix.length)
+    : persistedStepId;
 }

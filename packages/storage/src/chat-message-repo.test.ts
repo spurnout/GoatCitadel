@@ -22,10 +22,14 @@ afterEach(() => {
 });
 
 function createRepo(): ChatMessageRepository {
+  return createRepoWithDb().repo;
+}
+
+function createRepoWithDb(): { repo: ChatMessageRepository; db: ReturnType<typeof createDatabase> } {
   const dbPath = path.join(os.tmpdir(), `goatcitadel-chat-messages-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
-  return new ChatMessageRepository(db);
+  return { repo: new ChatMessageRepository(db), db };
 }
 
 describe("ChatMessageRepository", () => {
@@ -78,5 +82,42 @@ describe("ChatMessageRepository", () => {
     }
     const page = repo.list("sess-1", 2, "m4");
     assert.deepEqual(page.map((item) => item.messageId), ["m2", "m3"]);
+  });
+
+  it("upsertMany works inside an outer transaction", () => {
+    const { repo, db } = createRepoWithDb();
+    const messages = [
+      {
+        messageId: "m1",
+        sessionId: "sess-nested",
+        role: "user" as const,
+        actorType: "user" as const,
+        actorId: "operator",
+        content: "first",
+        timestamp: "2026-03-05T01:00:00.000Z",
+      },
+      {
+        messageId: "m2",
+        sessionId: "sess-nested",
+        role: "assistant" as const,
+        actorType: "agent" as const,
+        actorId: "assistant",
+        content: "second",
+        timestamp: "2026-03-05T01:00:01.000Z",
+      },
+    ];
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      repo.upsertMany(messages);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const items = repo.list("sess-nested");
+    assert.equal(items.length, 2);
+    assert.deepEqual(items.map((item) => item.messageId), ["m1", "m2"]);
   });
 });

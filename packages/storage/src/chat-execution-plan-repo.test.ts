@@ -22,10 +22,17 @@ afterEach(() => {
 });
 
 function createRepo(): ChatExecutionPlanRepository {
+  return createRepoWithDb().repo;
+}
+
+function createRepoWithDb(): { repo: ChatExecutionPlanRepository; db: ReturnType<typeof createDatabase> } {
   const dbPath = path.join(os.tmpdir(), `goatcitadel-chat-execution-plan-${randomUUID()}.db`);
   createdFiles.push(dbPath);
   const db = createDatabase({ dbPath });
-  return new ChatExecutionPlanRepository(db);
+  return {
+    repo: new ChatExecutionPlanRepository(db),
+    db,
+  };
 }
 
 describe("ChatExecutionPlanRepository", () => {
@@ -102,5 +109,131 @@ describe("ChatExecutionPlanRepository", () => {
     const bySession = repo.listBySession("sess-1");
     assert.equal(bySession.length, 1);
     assert.equal(bySession[0]?.steps[1]?.childRunId, "delegation-run-1");
+  });
+
+  it("allows repeated logical step ids across different plans", () => {
+    const repo = createRepo();
+
+    const first = repo.create({
+      sessionId: "sess-a",
+      turnId: "turn-a",
+      mode: "cowork",
+      planningMode: "off",
+      source: "workflow_template",
+      objective: "Plan A",
+      summary: "First plan",
+      steps: [
+        {
+          stepId: "orch-step-1",
+          index: 0,
+          objective: "Research",
+          parallelizable: false,
+          status: "pending",
+        },
+        {
+          stepId: "orch-step-2",
+          index: 1,
+          objective: "Synthesize",
+          dependsOnStepIds: ["orch-step-1"],
+          parallelizable: false,
+          status: "pending",
+        },
+      ],
+    });
+
+    const second = repo.create({
+      sessionId: "sess-b",
+      turnId: "turn-b",
+      mode: "cowork",
+      planningMode: "off",
+      source: "workflow_template",
+      objective: "Plan B",
+      summary: "Second plan",
+      steps: [
+        {
+          stepId: "orch-step-1",
+          index: 0,
+          objective: "Research",
+          parallelizable: false,
+          status: "pending",
+        },
+        {
+          stepId: "orch-step-2",
+          index: 1,
+          objective: "Critique",
+          dependsOnStepIds: ["orch-step-1"],
+          parallelizable: false,
+          status: "pending",
+        },
+      ],
+    });
+
+    assert.deepEqual(first.steps.map((step) => step.stepId), ["orch-step-1", "orch-step-2"]);
+    assert.deepEqual(second.steps.map((step) => step.stepId), ["orch-step-1", "orch-step-2"]);
+    assert.deepEqual(second.steps[1]?.dependsOnStepIds, ["orch-step-1"]);
+  });
+
+  it("supports execution plan writes inside an outer transaction", () => {
+    const { repo, db } = createRepoWithDb();
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const created = repo.create({
+        sessionId: "sess-nested",
+        turnId: "turn-nested",
+        mode: "cowork",
+        planningMode: "off",
+        source: "planner",
+        objective: "Nested write",
+        summary: "Create a plan inside an outer transaction.",
+        steps: [
+          {
+            stepId: "step-1",
+            index: 0,
+            objective: "Write inside nested transaction",
+            parallelizable: false,
+            status: "pending",
+          },
+        ],
+      });
+
+      const patched = repo.patch(created.planId, {
+        status: "running",
+        summary: "Nested write succeeded.",
+      });
+
+      assert.equal(patched.status, "running");
+      assert.equal(patched.steps[0]?.stepId, "step-1");
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  });
+
+  it("reads old rows where step_id lacks the planId prefix", () => {
+    const { repo, db } = createRepoWithDb();
+
+    const planId = randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO chat_execution_plans (
+        plan_id, session_id, turn_id, mode, planning_mode, status, source, advisory_only,
+        objective, summary, created_at, updated_at
+      ) VALUES (?, 'sess-old', 'turn-old', 'cowork', 'off', 'drafted', 'workflow_template', 0,
+        'Legacy plan', 'Legacy summary', ?, ?)
+    `).run(planId, now, now);
+
+    // Insert step with OLD format: step_id is just the logical id, no planId prefix
+    db.prepare(`
+      INSERT INTO chat_execution_plan_steps (
+        plan_id, step_id, step_index, objective, parallelizable, status
+      ) VALUES (?, 'orch-step-1', 0, 'Old step', 0, 'pending')
+    `).run(planId);
+
+    const loaded = repo.get(planId);
+    assert.equal(loaded.steps.length, 1);
+    // toLogicalExecutionPlanStepId should return the raw value when no prefix matches
+    assert.equal(loaded.steps[0]?.stepId, "orch-step-1");
   });
 });

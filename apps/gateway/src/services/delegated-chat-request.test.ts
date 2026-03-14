@@ -1,0 +1,31 @@
+import { describe, expect, it } from "vitest";
+import { buildDelegatedChatSendRequest } from "./delegated-chat-request.js";
+
+describe("buildDelegatedChatSendRequest", () => {
+  it("keeps the requested mode but forces delegated turns onto the non-orchestrated path", () => {
+    for (const mode of ["cowork", "code"] as const) {
+      const request = buildDelegatedChatSendRequest({
+        content: "Delegated role: researcher",
+        providerId: "openai",
+        model: "gpt-5",
+        mode,
+        webMode: "auto",
+        memoryMode: "auto",
+        thinkingLevel: "extended",
+        retrievalMode: "layered",
+      });
+
+      expect(request.mode).toBe(mode);
+      expect(request.prefsOverride).toMatchObject({
+        planningMode: "off",
+        orchestrationEnabled: false,
+        orchestrationIntensity: "minimal",
+        orchestrationVisibility: "explicit",
+        orchestrationParallelism: "sequential",
+        proactiveMode: "off",
+        retrievalMode: "layered",
+        reflectionMode: "off",
+      });
+    }
+  });
+});
